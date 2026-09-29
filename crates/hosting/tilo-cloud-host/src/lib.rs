@@ -9,7 +9,7 @@ use std::{
     fs::{File, OpenOptions},
     path::{Path, PathBuf},
 };
-use tilo_peer_state::{
+use tilo_room::{
     NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin,
     transport::{Retention, retention},
 };
@@ -220,7 +220,7 @@ struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     delivery: Option<delivery::DeliveryState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    private_agent_ledger: Option<tilo_peer_state::owner_commit::PrivateAgentLedger>,
+    private_agent_ledger: Option<tilo_room::owner_commit::PrivateAgentLedger>,
     machine_id: String,
     room: String,
     // Sealed apart from the state file (see `host_secret`); never serialized.
@@ -805,9 +805,8 @@ impl Store {
                     .map_err(anyhow::Error::msg)?;
                 let workspace = tilo_relay::room_workspace_id(&state.room)?.to_string();
                 for receipt in ledger.facts.values() {
-                    if let tilo_peer_state::owner_commit::AgentRuntimeFact::Admitted {
-                        intent, ..
-                    } = &receipt.change.fact
+                    if let tilo_room::owner_commit::AgentRuntimeFact::Admitted { intent, .. } =
+                        &receipt.change.fact
                         && (intent.scope.machine != state.machine_id
                             || intent.scope.host != state.room
                             || intent.scope.caller.user_public_key != bound.root
@@ -1178,7 +1177,7 @@ impl Store {
         state.outbox.extend(baseline_publications(messages)?);
         state
             .private_agent_ledger
-            .get_or_insert_with(tilo_peer_state::owner_commit::PrivateAgentLedger::default);
+            .get_or_insert_with(tilo_room::owner_commit::PrivateAgentLedger::default);
         state.bound = Some(Bound {
             root: r.host_certificate.user_public_key,
             authority: r.host_certificate.clone(),
@@ -1435,9 +1434,9 @@ fn initial_state(room: &str, cert: &DeviceCert, key: &SigningKey) -> Result<Seed
             bytes,
         });
     }
-    let mut room_doc = tilo_peer_state::room::candidate(
+    let mut room_doc = tilo_room::room::candidate(
         None,
-        &tilo_peer_state::seed_room(room, cert, std::slice::from_ref(cert))
+        &tilo_room::seed_room(room, cert, std::slice::from_ref(cert))
             .map_err(anyhow::Error::msg)?,
     )
     .map_err(anyhow::Error::msg)?;

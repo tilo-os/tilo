@@ -225,7 +225,7 @@ pub struct WorkspaceBinding {
     /// Local shell governor pin supplied by the native owner. Neither workspace
     /// membership nor a same-user relay identity implies this authority.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
+    pub shell_authority: Option<tilo_room::retained_proof::RetentionAuthority>,
     /// Programmatic host capability. Persisted/admin configuration cannot opt
     /// into checkpoint-prefix recovery semantics.
     #[serde(skip)]

@@ -2,7 +2,7 @@
 use anyhow::{Result, anyhow, bail, ensure};
 use serde::Serialize;
 use std::path::Path;
-use tilo_peer_state::owner_commit::AgentRuntimeFact;
+use tilo_room::owner_commit::AgentRuntimeFact;
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 /// An actual durable host command phase. `completed` means recipient acceptance,

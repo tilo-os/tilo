@@ -5,13 +5,13 @@ tilo_automerge_isolate::test_worker!();
 
 use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::desktop_command::DesktopCommandError;
-use tilo_peer_state::document_import::{
+use tilo_room::desktop_command::DesktopCommandError;
+use tilo_room::document_import::{
     self as import, DecideArgument, DocumentImportDecisionV1, DocumentImportProposalV1,
     DocumentImportTerms, ImportAction, ImportState, ProposeArgument,
 };
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_room::{NeighbourMsg, TransportOrigin};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_host::SessionOwner;
 use ui::automerge::{ActorId, AutoCommit, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
@@ -27,9 +27,7 @@ fn now_unix() -> u64 {
 
 /// A member device admitted through the room's own invitation.
 fn member(owner: &mut SessionOwner, seed: u8, label: &str) -> (DeviceCert, SigningKey) {
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     use tilo_workspace_host::collaboration::{CollaborationService, IssueInvitationRequest};
     let root = SigningKey::from_bytes(&[seed; 32]);

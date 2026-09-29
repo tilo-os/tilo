@@ -624,7 +624,7 @@ impl LocalHost {
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_room::retained_proof::RetentionAuthority::new(
                         owner.peer().room(),
                         owner.peer().authority().clone(),
                     )
@@ -753,7 +753,7 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
     if !session.is_ready() {
         bail!("native subscription has not finished its initial replay");
     }
-    use tilo_peer_state::transport::{Retention, retention};
+    use tilo_room::transport::{Retention, retention};
     if !owner.permits_publication() {
         bail!("durable barrier failed; publication is suspended until restore");
     }
@@ -762,7 +762,7 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
         .lock()
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send(owner, |bytes, kind| {
-            let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
+            let message: tilo_room::NeighbourMsg = postcard::from_bytes(bytes)?;
             if !relay_publishable(&owner.peer().authority().device_public_key, &message) {
                 return Ok(());
             }
@@ -789,9 +789,9 @@ pub fn publish(owner: &SessionOwner, session: &NativeSubscription) -> Result<()>
 /// `host_device` is the publishing host's device key. Every host that sends
 /// durable publications over the relay co-edit carrier applies this rule.
 #[must_use]
-pub fn relay_publishable(host_device: &[u8; 32], message: &tilo_peer_state::NeighbourMsg) -> bool {
+pub fn relay_publishable(host_device: &[u8; 32], message: &tilo_room::NeighbourMsg) -> bool {
     match message {
-        tilo_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+        tilo_room::NeighbourMsg::AppDocument { envelope, .. } => {
             envelope.author.as_bytes() == host_device
         }
         _ => true,
@@ -802,13 +802,13 @@ fn publish_committed(owner: &SessionOwner, session: &NativeSubscription) -> Resu
     if !session.is_ready() {
         bail!("native subscription has not finished its initial replay");
     }
-    use tilo_peer_state::transport::{Retention, retention};
+    use tilo_room::transport::{Retention, retention};
     session
         .publication
         .lock()
         .map_err(|_| anyhow::anyhow!("publication cursor unavailable"))?
         .send_committed(owner, |bytes, kind| {
-            let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(bytes)?;
+            let message: tilo_room::NeighbourMsg = postcard::from_bytes(bytes)?;
             if !relay_publishable(&owner.peer().authority().device_public_key, &message) {
                 return Ok(());
             }
@@ -847,8 +847,8 @@ fn prepare_ready_publication(owner: &SessionOwner) -> Result<bool> {
     Ok(true)
 }
 /// Variant name for diagnostics; never inspects payloads.
-pub fn message_kind(message: &tilo_peer_state::NeighbourMsg) -> &'static str {
-    use tilo_peer_state::NeighbourMsg as M;
+pub fn message_kind(message: &tilo_room::NeighbourMsg) -> &'static str {
+    use tilo_room::NeighbourMsg as M;
     match message {
         M::SyncReq { .. } => "SyncReq",
         M::SyncResp { .. } => "SyncResp",
@@ -984,11 +984,11 @@ async fn handle_collaboration_exchange(
     host: &LocalHost,
     service: &crate::collaboration::CollaborationService,
     remote_endpoint: [u8; 32],
-    request: tilo_peer_state::join::JoinTransportRequest,
+    request: tilo_room::join::JoinTransportRequest,
     session: &mut Option<NativeSubscription>,
     replaying: &mut bool,
-) -> tilo_peer_state::join::JoinTransportResponse {
-    use tilo_peer_state::join::{JoinInspection, JoinTransportRequest, JoinTransportResponse};
+) -> tilo_room::join::JoinTransportResponse {
+    use tilo_room::join::{JoinInspection, JoinTransportRequest, JoinTransportResponse};
 
     let now = tilo_delivery_protocol::clock::now_ns();
     let request_id = match &request {
@@ -1090,7 +1090,7 @@ async fn handle_collaboration_admin(
     use tilo_action_broker::collaboration_admin::{
         CollaborationAdminError, CollaborationAdminOperation, CollaborationRole,
     };
-    use tilo_peer_state::join::MemberRole;
+    use tilo_room::join::MemberRole;
 
     let rejected = |message: String| CollaborationAdminError::Rejected(message);
     if request.room != owner.peer().room() {
@@ -1139,7 +1139,7 @@ async fn handle_collaboration_admin(
                 .map_err(|error| rejected(error.to_string()))?;
             reconcile = true;
             serde_json::json!({
-                "invite": tilo_peer_state::join::encode_invitation_text(&completion.issued.signed_invitation),
+                "invite": tilo_room::join::encode_invitation_text(&completion.issued.signed_invitation),
                 "invite_id": hex::encode(completion.issued.invite_id),
                 "expires_at_ms": completion.expires_at_ns / 1_000_000,
             })
@@ -1265,14 +1265,14 @@ where
                         let (origin, bytes) = match message {
                             Inbound::Delta { author, data } => (
                                 if *replaying {
-                                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(author)
+                                    tilo_room::TransportOrigin::RetainedRelayDelta(author)
                                 } else {
-                                    tilo_peer_state::TransportOrigin::RelayDelta(author)
+                                    tilo_room::TransportOrigin::RelayDelta(author)
                                 },
                                 data,
                             ),
                             Inbound::Presence { author, payload } => (
-                                tilo_peer_state::TransportOrigin::UntrustedPresence(author),
+                                tilo_room::TransportOrigin::UntrustedPresence(author),
                                 payload,
                             ),
                             Inbound::Ready { .. }
@@ -1280,7 +1280,7 @@ where
                             | Inbound::Replayed { .. }
                             | Inbound::Refused { .. } => unreachable!(),
                         };
-                        let decoded = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&bytes)
+                        let decoded = postcard::from_bytes::<tilo_room::NeighbourMsg>(&bytes)
                             .map_err(anyhow::Error::from);
                         let update = committed.begin(owner)?;
                         let received = decoded.and_then(|message| owner.receive(origin, message));
@@ -1537,8 +1537,8 @@ struct ActionRuntime {
     signing: crate::host_signing::HostSigning,
     signatures: crate::host_signing::SignatureMailbox,
     commits: crate::owner_commit::OwnerCommitMailbox,
-    network_sender: tokio::sync::mpsc::Sender<tilo_peer_state::NeighbourMsg>,
-    network: tokio::sync::mpsc::Receiver<tilo_peer_state::NeighbourMsg>,
+    network_sender: tokio::sync::mpsc::Sender<tilo_room::NeighbourMsg>,
+    network: tokio::sync::mpsc::Receiver<tilo_room::NeighbourMsg>,
     actions: Option<crate::action_host::ActionHost>,
     policy_time: Option<tilo_action_broker::peer_actions::PolicyTime>,
     retired: bool,
@@ -1586,7 +1586,7 @@ impl ActionRuntime {
     }
 
     fn retire(&mut self) -> Result<(), String> {
-        use tilo_peer_state::owner_commit::OwnerCommitService;
+        use tilo_room::owner_commit::OwnerCommitService;
         if self.retired {
             return Ok(());
         }
@@ -2022,7 +2022,7 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                 if let Some(command) = command {
                     // Join grants wait for the relay-retained room state.
                     if !committed.governance_reconciled() {
-                        let _ = command.reply.send(tilo_peer_state::join::JoinTransportResponse::Error {
+                        let _ = command.reply.send(tilo_room::join::JoinTransportResponse::Error {
                             code: 503,
                             message: "workspace authority is reconciling retained state".into(),
                         });
@@ -2307,11 +2307,11 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         let _timing = crate::action_timing::Timing::slow("owner_inbound");
                         let (origin, bytes) = match message {
                             Inbound::Delta {author,data} => (
-                                if replaying { tilo_peer_state::TransportOrigin::RetainedRelayDelta(author) }
-                                else { tilo_peer_state::TransportOrigin::RelayDelta(author) },
+                                if replaying { tilo_room::TransportOrigin::RetainedRelayDelta(author) }
+                                else { tilo_room::TransportOrigin::RelayDelta(author) },
                                 data,
                             ),
-                            Inbound::Presence {author,payload} => (tilo_peer_state::TransportOrigin::UntrustedPresence(author),payload),
+                            Inbound::Presence {author,payload} => (tilo_room::TransportOrigin::UntrustedPresence(author),payload),
                             // The session peer serves no remote-action route; the relay only
                             // forwards these to devices that registered one.
                             Inbound::RemoteAction {..} => continue,
@@ -2325,10 +2325,10 @@ pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Inbound::Ready {..} => unreachable!(),
                         };
                         let inbound_bytes = bytes.len();
-                        let decoded: Result<tilo_peer_state::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
+                        let decoded: Result<tilo_room::NeighbourMsg> = postcard::from_bytes(&bytes).map_err(anyhow::Error::from);
                         // Legacy-window video is never owner state.
                         #[cfg(feature = "media")]
-                        if let (tilo_peer_state::TransportOrigin::UntrustedPresence(author), Ok(message)) = (&origin, &decoded)
+                        if let (tilo_room::TransportOrigin::UntrustedPresence(author), Ok(message)) = (&origin, &decoded)
                             && crate::legacy_windows::LegacyWindows::carries(message) {
                             if let Some(installed) = delivery_ingress.as_mut() { installed.legacy_window(*author, message); }
                             continue;
@@ -2674,7 +2674,7 @@ mod tests {
 
     async fn inbound_followup_case(incomplete: bool) {
         use crate::committed_authority::{CommittedAuthority, Observation};
-        use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+        use tilo_room::{NeighbourMsg, TransportOrigin};
         let temp = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
         let host = LocalHost::start(&owner).await.unwrap();
@@ -2833,7 +2833,7 @@ mod tests {
         use crate::committed_authority::CommittedAuthority;
         use crate::enrollment::EnrollmentAuthority;
         use ed25519_dalek::SigningKey;
-        use tilo_peer_state::enrollment::{self, ChallengeRequest};
+        use tilo_room::enrollment::{self, ChallengeRequest};
         let temp = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
         let host = LocalHost::start(&owner).await.unwrap();
@@ -3065,9 +3065,9 @@ mod cadence_tests {
     use super::{outgoing_bytes, outgoing_kinds};
     use crate::{SessionOwner, owner::PublicationAdvance, publication::PublicationCursor};
     use std::time::{Duration, Instant, SystemTime};
-    use tilo_peer_state::desktop_command::*;
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-    use tilo_peer_state::transport::Retention;
+    use tilo_room::desktop_command::*;
+    use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_room::transport::Retention;
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     fn commit_small_changed_record(owner: &mut SessionOwner, value: u64) {
@@ -3488,7 +3488,7 @@ fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 #[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

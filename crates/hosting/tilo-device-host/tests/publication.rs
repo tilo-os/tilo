@@ -1,7 +1,7 @@
 //! Real owner publication; also the producer of tilo-relay's shell-selection fixture.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_workspace_host::SessionOwner;
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 use web_time::SystemTime;
@@ -31,7 +31,7 @@ async fn local_host_persists_exact_native_owner_authority_before_serving() {
         .join("shell-authority-v1.json");
     let stored: serde_json::Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
     assert_eq!(stored["version"], 1);
-    let authority: tilo_peer_state::retained_proof::RetentionAuthority =
+    let authority: tilo_room::retained_proof::RetentionAuthority =
         serde_json::from_value(stored["authority"].clone()).unwrap();
     assert_eq!(authority.room(), owner.peer().room());
     assert_eq!(authority.governor(), owner.peer().authority());
@@ -60,7 +60,7 @@ fn fixture_batch(
         let file = format!("{name}/{index:03}.postcard");
         std::fs::write(dir.join(&file), bytes).unwrap();
         let msg: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, actual) = tilo_peer_state::transport::retention(&msg, *kind == Retention::Checkpoint).unwrap();
+        let (channel, actual) = tilo_room::transport::retention(&msg, *kind == Retention::Checkpoint).unwrap();
         assert_eq!(actual, *kind);
         serde_json::json!({"file": file, "kind": format!("{kind:?}"), "channel": hex::encode(channel), "bytes":bytes.len(), "blake3":blake3::hash(bytes).to_hex().to_string()})
     }).collect::<Vec<_>>();
@@ -176,8 +176,7 @@ fn shell_receive_publication(export: Option<&std::path::Path>) {
     assert_eq!(outgoing_bytes(&owner), outgoing);
     assert_eq!(postcard::to_stdvec(&original).unwrap(), exact_original);
     let before_room = outgoing_bytes(&owner).len();
-    let receipts =
-        tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
+    let receipts = tilo_room::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let mut room = owner.peer().admitted_room().unwrap().clone();
     let heads = room.get_heads();
     room.put(ROOT, "name", "selectively renamed room").unwrap();
@@ -200,7 +199,7 @@ fn shell_receive_publication(export: Option<&std::path::Path>) {
     assert_eq!(outgoing_bytes(&owner).len(), before_room + 1);
     assert_eq!(outgoing_kinds(&owner).last(), Some(&Retention::Delta));
     assert_eq!(
-        tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
+        tilo_room::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
         receipts
     );
     let tail = outgoing_bytes(&owner)[baseline.len()..].to_vec();
@@ -393,7 +392,7 @@ fn outgoing_bytes(owner: &tilo_workspace_host::SessionOwner) -> Vec<Vec<u8>> {
 }
 fn outgoing_kinds(
     owner: &tilo_workspace_host::SessionOwner,
-) -> Vec<tilo_peer_state::transport::Retention> {
+) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

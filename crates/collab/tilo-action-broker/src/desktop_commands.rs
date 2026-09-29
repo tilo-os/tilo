@@ -3,7 +3,7 @@ use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface, enrolled_invocation,
 };
-use tilo_peer_state::desktop_command::{
+use tilo_room::desktop_command::{
     self as command, DesktopCommandError, DesktopCommandId, DesktopCommandIdOf as _,
     DesktopCommandReceipt, DesktopRefusal,
 };
@@ -238,9 +238,9 @@ impl CapnpBrokerState {
                 == Some(true);
             (command, direct_delivery)
         };
-        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        let request = tilo_room::owner_commit::OwnerCommitRequest {
             room: key.room.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::DesktopCommand {
+            operation: tilo_room::owner_commit::CommitOperation::DesktopCommand {
                 invocation: envelope.invocation.0,
                 caller,
                 command,

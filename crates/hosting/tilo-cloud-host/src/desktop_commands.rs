@@ -16,15 +16,15 @@ use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capabilit
 use tilo_action_broker::services::DesktopOpener;
 use tilo_desktop_model::apps::{AppCatalogue, OpenableApp};
 use tilo_desktop_model::commands::{self as session_commands, DesktopCommand};
-use tilo_peer_state::desktop_command::{
+use tilo_room::desktop_command::{
     DesktopCommandError, DesktopCommandId, DesktopCommandIdOf as _, DesktopCommandReceipt,
     DesktopRefusal, OpenedWindow,
 };
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use tilo_workspace_host::canonical_records::Installed;
 
 /// Receipt output kind of a committed desktop command.
-const DESKTOP_RECEIPT_KIND: &str = tilo_peer_state::desktop_command::RECEIPT_KIND;
+const DESKTOP_RECEIPT_KIND: &str = tilo_room::desktop_command::RECEIPT_KIND;
 
 fn rejected(reason: impl Into<String>) -> DesktopCommandError {
     DesktopCommandError::Rejected(reason.into())
@@ -91,7 +91,7 @@ impl Store {
                 Ok(tilo_actions::InvocationUpdate::Failed {
                     invocation,
                     error: tilo_actions::ActionFailure {
-                        code: tilo_peer_state::desktop_command::REJECTED_CODE.into(),
+                        code: tilo_room::desktop_command::REJECTED_CODE.into(),
                         details: Some(DesktopRefusal::classify(&message).details(&id)),
                         message,
                         retryable: false,
@@ -129,7 +129,7 @@ impl Store {
 
     fn desktop_receipt(
         &self,
-        binding: tilo_peer_state::owner_commit::CommitBinding,
+        binding: tilo_room::owner_commit::CommitBinding,
     ) -> Result<OwnerCommitReceipt> {
         Ok(OwnerCommitReceipt {
             binding,
@@ -573,7 +573,7 @@ impl Store {
 
 enum Prepared {
     Replay(OwnerCommitReceipt),
-    Commit(Box<State>, tilo_peer_state::owner_commit::CommitBinding),
+    Commit(Box<State>, tilo_room::owner_commit::CommitBinding),
 }
 
 /// The broker's desktop command service over the Cloud Store owner.
@@ -681,7 +681,7 @@ pub(crate) fn person_request(
     action: &str,
     argument: Option<&serde_json::Value>,
 ) -> Result<OwnerCommitRequest> {
-    use tilo_peer_state::desktop_command::{BoundCommand, CommandSource};
+    use tilo_room::desktop_command::{BoundCommand, CommandSource};
     let command = if let Some(app) = resource
         .strip_prefix(tilo_agent_control_protocol::OPEN_APP_RESOURCE_PREFIX)
         .filter(|_| action == tilo_agent_control_protocol::OPEN_APP_ACTION)

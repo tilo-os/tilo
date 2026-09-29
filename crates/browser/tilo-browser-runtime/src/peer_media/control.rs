@@ -94,7 +94,7 @@ fn policy(
     request: &GrantRequest,
 ) -> Result<(u64, u64, MediaDirections), String> {
     use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
-    use tilo_peer_state::room::media::{CallPhaseV1, parse_call_id};
+    use tilo_room::room::media::{CallPhaseV1, parse_call_id};
     if request.device != view.device.device_public_key || request.room != view.peer.room() {
         return Err("media intent custody mismatch".into());
     }

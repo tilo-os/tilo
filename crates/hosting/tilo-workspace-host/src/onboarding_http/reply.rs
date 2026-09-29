@@ -10,7 +10,7 @@ use tilo_delivery_protocol::delivery_v3::{
         OnboardingResponse, ReplyBodyKind,
     },
 };
-use tilo_peer_state::join::JoinTransportResponse;
+use tilo_room::join::JoinTransportResponse;
 const PIN_NS: u64 = 30_000_000_000;
 const INLINE_BYTES: usize = 1024 * 1024 - 8192;
 

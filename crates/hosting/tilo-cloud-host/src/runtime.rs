@@ -95,11 +95,8 @@ fn relay_config(root: &Path, bound: &Bound, room: &str, workspace: u64) -> Resul
             replication: tilo_relay::ReplicationIntent::FullWorkspace,
             admitted_users: vec![],
             shell_authority: Some(
-                tilo_peer_state::retained_proof::RetentionAuthority::new(
-                    room,
-                    bound.authority.clone(),
-                )
-                .map_err(anyhow::Error::msg)?,
+                tilo_room::retained_proof::RetentionAuthority::new(room, bound.authority.clone())
+                    .map_err(anyhow::Error::msg)?,
             ),
             checkpoint_prefix_recovery:
                 tilo_relay::CheckpointPrefixRecovery::NativeOwnerDurableBaseline,
@@ -488,14 +485,13 @@ fn publish(session: &RelayCoeditSession, publication: &StoredPublication) -> Res
     let body = postcard::to_stdvec(&publication.message)?;
     match publication.kind {
         PublicationKind::Checkpoint => {
-            let (channel, _) = tilo_peer_state::transport::retention(&publication.message, true)
+            let (channel, _) = tilo_room::transport::retention(&publication.message, true)
                 .ok_or_else(|| anyhow!("checkpoint publication has no retained channel"))?;
             session.publish_checkpoint(channel, body)?
         }
         PublicationKind::Delta => {
-            let (channel, _) =
-                tilo_peer_state::transport::retention(&publication.message, false)
-                    .ok_or_else(|| anyhow!("delta publication has no retained channel"))?;
+            let (channel, _) = tilo_room::transport::retention(&publication.message, false)
+                .ok_or_else(|| anyhow!("delta publication has no retained channel"))?;
             session.publish_retained_delta(channel, body)?
         }
         PublicationKind::Presence => session.publish_presence(body)?,
@@ -511,8 +507,7 @@ fn checkpoint_outbox(messages: &[StoredPublication]) -> Vec<StoredPublication> {
     let mut latest = std::collections::BTreeMap::new();
     for (index, publication) in messages.iter().enumerate() {
         if publication.kind == PublicationKind::Checkpoint
-            && let Some((channel, _)) =
-                tilo_peer_state::transport::retention(&publication.message, true)
+            && let Some((channel, _)) = tilo_room::transport::retention(&publication.message, true)
         {
             latest.insert(channel, index);
         }
@@ -522,7 +517,7 @@ fn checkpoint_outbox(messages: &[StoredPublication]) -> Vec<StoredPublication> {
         .enumerate()
         .filter(|(index, publication)| match publication.kind {
             PublicationKind::Checkpoint => {
-                tilo_peer_state::transport::retention(&publication.message, true)
+                tilo_room::transport::retention(&publication.message, true)
                     .is_none_or(|(channel, _)| latest.get(&channel) == Some(index))
             }
             PublicationKind::Delta | PublicationKind::Presence => true,
@@ -1013,26 +1008,25 @@ mod publication_tests {
         let batch = checkpoint_outbox(&store.state.outbox);
         let (room_message, snapshots) = batch.split_first().unwrap();
         let (room_channel, _) =
-            tilo_peer_state::transport::retention(&room_message.message, true).unwrap();
+            tilo_room::transport::retention(&room_message.message, true).unwrap();
         let room_bytes = postcard::to_stdvec(&room_message.message).unwrap();
-        let verified_room = tilo_peer_state::retained_proof::verify_room(
+        let verified_room = tilo_room::retained_proof::verify_room(
             authority,
             bound.authority.device_public_key,
             room_channel,
             &room_bytes,
-            tilo_peer_state::retained_proof::RoomInput::Checkpoint,
+            tilo_room::retained_proof::RoomInput::Checkpoint,
             None,
         )
         .expect("the actual Cloud batch must carry a durable room proof");
         assert_eq!(snapshots.len(), 2);
         for snapshot in snapshots {
-            let (channel, _) =
-                tilo_peer_state::transport::retention(&snapshot.message, true).unwrap();
+            let (channel, _) = tilo_room::transport::retention(&snapshot.message, true).unwrap();
             let bytes = postcard::to_stdvec(&snapshot.message).unwrap();
             let NeighbourMsg::AppDocument { envelope, .. } = &snapshot.message else {
                 panic!("Cloud bootstrap must retain only governed app snapshots after the room");
             };
-            tilo_peer_state::retained_proof::verify_snapshot(
+            tilo_room::retained_proof::verify_snapshot(
                 &verified_room,
                 *envelope.author.as_bytes(),
                 channel,

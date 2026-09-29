@@ -26,7 +26,7 @@ impl SessionOwner {
 mod tests;
 
 use crate::canonical_records::creation::*;
-use tilo_peer_state::{
+use tilo_room::{
     desktop_command::{DesktopCommand, DesktopCommandError},
     owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest},
 };
@@ -264,7 +264,7 @@ impl SessionOwner {
                 && envelope.author.as_bytes() == &receipt.coverage.author
                 && envelope.seq == receipt.coverage.sequence
                 && *blake3::hash(&envelope.payload).as_bytes() == receipt.coverage.payload_hash
-                && tilo_peer_state::outbox::fresh(&message, now)
+                && tilo_room::outbox::fresh(&message, now)
         })
     }
     pub(crate) fn commit_desktop_creation_candidate(

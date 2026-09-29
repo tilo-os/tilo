@@ -399,11 +399,8 @@ pub fn peer_live_author_listen(id: u32, listener: Option<js_sys::Function>) -> R
 /// Canonical bytes of a local publication, when a live listener wants them
 /// and the Peer holds a current publishing grant (otherwise `None`: the
 /// change reaches members through the host forward and durable replay).
-pub(super) fn author_canonical(
-    peer: &Peer,
-    message: &tilo_peer_state::NeighbourMsg,
-) -> Option<Vec<u8>> {
-    if !matches!(message, tilo_peer_state::NeighbourMsg::AppDocument { .. })
+pub(super) fn author_canonical(peer: &Peer, message: &tilo_room::NeighbourMsg) -> Option<Vec<u8>> {
+    if !matches!(message, tilo_room::NeighbourMsg::AppDocument { .. })
         || !AUTHOR_LISTENERS.with(|all| all.borrow().contains_key(&peer.id))
     {
         return None;
@@ -501,9 +498,9 @@ pub fn peer_live_admit(id: u32, frame: Vec<u8>, checked_base: String) -> Result<
     if !peer.delivery.borrow().live_admission_quiet() {
         return result("deferred");
     }
-    let held = tilo_peer_state::resources::BoundedPeerMessage::decode(
+    let held = tilo_room::resources::BoundedPeerMessage::decode(
         &canonical,
-        tilo_peer_state::resources::OuterLimits {
+        tilo_room::resources::OuterLimits {
             allocation_bytes: live_wire::MAX_STREAM_FRAME_BYTES * 64,
             collection_entries: 65536,
         },

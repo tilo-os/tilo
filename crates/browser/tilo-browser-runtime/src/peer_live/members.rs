@@ -38,7 +38,7 @@ pub fn peer_live_members(id: u32) -> Result<String, JsValue> {
     let owner = state.owner_user_public_key();
     let names = state
         .admitted_room()
-        .map(|doc| tilo_peer_state::room::governance_of(Some(doc)).2)
+        .map(|doc| tilo_room::room::governance_of(Some(doc)).2)
         .unwrap_or_default();
     let revoked = state
         .revocations()

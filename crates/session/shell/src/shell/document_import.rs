@@ -1,5 +1,5 @@
 //! Bringing a document into a governed workspace, as this desktop takes
-//! part in it ([`tilo_peer_state::document_import`]).
+//! part in it ([`tilo_room::document_import`]).
 //!
 //! As a member, this desktop reads a record out of a governed room through
 //! the bounded committed read, and proposes a document as a new record of
@@ -12,7 +12,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
 use tilo_actions::remote::Pending;
-use tilo_peer_state::document_import::{
+use tilo_room::document_import::{
     self as import, DocumentImportDecisionV1, DocumentImportProposalV1, DocumentImportTerms,
     ImportState, ProposeArgument,
 };

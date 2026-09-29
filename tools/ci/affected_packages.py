@@ -233,7 +233,7 @@ TEST_SHARD_APART = (
         "tilo-action-broker",
         "tilo-cloud-host",
         "tilo-device-host",
-        "tilo-peer-state",
+        "tilo-room",
         "tilo-relay",
         "tilo-workspace-host",
     }),

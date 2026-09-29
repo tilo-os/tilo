@@ -16,8 +16,8 @@ use tilo_action_broker::agent_control::{AgentControlProvider, AgentProviderState
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_agent_control_protocol::{AgentOperation, AgentOperationState, GrantOffer};
 use tilo_delivery_protocol::peer_actions::ActionMessage;
-use tilo_peer_state::{NeighbourMsg, owner_commit::VerifiedAgentCaller};
 use tilo_relay::client::CertifiedAction;
+use tilo_room::{NeighbourMsg, owner_commit::VerifiedAgentCaller};
 use tokio::sync::{mpsc, oneshot};
 use uuid::Uuid;
 #[cfg(target_os = "linux")]
@@ -984,7 +984,7 @@ pub(crate) fn publish_runtime_state(
         crate::agent_workers::WorkerPublications {
             room: store.state.room.clone(),
             host_device: peer.authority().device_public_key,
-            governance_revision: tilo_peer_state::owner_commit::governance_revision(&peer)?,
+            governance_revision: tilo_room::owner_commit::governance_revision(&peer)?,
             publication_revision: "unavailable".into(),
             grants: vec![],
             ready: false,

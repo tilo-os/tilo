@@ -325,7 +325,7 @@ async fn answer_inner(
     }
     let message = &evidence.action().message;
     let desktop = matches!(message, ActionMessage::InvokeBound { app_id, .. }
-        if app_id == tilo_peer_state::desktop_command::APP_ID);
+        if app_id == tilo_room::desktop_command::APP_ID);
     let began = std::time::Instant::now();
     match commands {
         // Priority lane: the agent owner answers agent controls, agent reads,
@@ -414,7 +414,7 @@ pub(crate) fn agent_rejection_code(error: &str) -> &'static str {
         "agent_descriptor_changed"
     } else if error.contains(&format!(
         "Capacity {{ limit: {} }}",
-        tilo_peer_state::owner_commit::MAX_LIVE_PRIVATE_AGENTS
+        tilo_room::owner_commit::MAX_LIVE_PRIVATE_AGENTS
     )) {
         "agent_capacity_reached"
     } else {
@@ -993,13 +993,13 @@ mod rejection_code_tests {
             "agent_control_unavailable"
         );
         // The Store's live-agent refusal, as the admission path renders it.
-        let full = tilo_peer_state::owner_commit::AgentCommitError::Capacity {
-            limit: tilo_peer_state::owner_commit::MAX_LIVE_PRIVATE_AGENTS,
+        let full = tilo_room::owner_commit::AgentCommitError::Capacity {
+            limit: tilo_room::owner_commit::MAX_LIVE_PRIVATE_AGENTS,
         };
         assert_eq!(code(&full.to_string()), "agent_capacity_reached");
         // The total admission ledger bound is not the live-agent limit.
-        let ledger = tilo_peer_state::owner_commit::AgentCommitError::Capacity {
-            limit: tilo_peer_state::owner_commit::MAX_PRIVATE_AGENT_ADMISSIONS,
+        let ledger = tilo_room::owner_commit::AgentCommitError::Capacity {
+            limit: tilo_room::owner_commit::MAX_PRIVATE_AGENT_ADMISSIONS,
         };
         assert_eq!(code(&ledger.to_string()), "agent_control_unavailable");
     }
@@ -1028,7 +1028,7 @@ mod priority_lane_tests {
                 app_peer: tilo_relay::room_workspace_id(&store.state.room)
                     .unwrap()
                     .to_string(),
-                app_id: tilo_peer_state::desktop_command::APP_ID.into(),
+                app_id: tilo_room::desktop_command::APP_ID.into(),
                 record_id: String::new(),
                 resource: format!(
                     "{}so.tilo.notes",

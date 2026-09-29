@@ -1,7 +1,7 @@
 use super::*;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{
+use tilo_room::{
     StatePeer,
     transport::{Retention, retention},
 };

@@ -9,8 +9,8 @@ use ed25519_dalek::{Signature, Signer, Verifier};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tilo_peer_state::transport::{Retention, retention};
-use tilo_peer_state::{DocumentRow, NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::transport::{Retention, retention};
+use tilo_room::{DocumentRow, NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCert, RevocationList, WorkspaceDirectory};
 use web_time::SystemTime;
 
@@ -39,7 +39,7 @@ enum CommitMode {
     PolicyFenced(OwnerPolicyFence),
     VerifiedSecurityMetadataOnly {
         stored_peer: [u8; 32],
-        proof: tilo_peer_state::VerifiedSecurityMetadataOnly,
+        proof: tilo_room::VerifiedSecurityMetadataOnly,
     },
 }
 mod checkpoint;
@@ -530,7 +530,7 @@ impl SessionOwner {
     pub(crate) fn sign_workspace_host_hint(
         &self,
         hint: &tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1,
-    ) -> Result<tilo_peer_state::join::TransportHint> {
+    ) -> Result<tilo_room::join::TransportHint> {
         hint.transport_hint(&self.identity.host)
             .map_err(anyhow::Error::msg)
     }
@@ -567,7 +567,7 @@ impl SessionOwner {
     }
     pub(crate) fn sign_invitation(
         &self,
-        grant: tilo_peer_state::join::InviteGrant,
+        grant: tilo_room::join::InviteGrant,
     ) -> Result<Vec<u8>, String> {
         self.require_owner_resource_scope()
             .map_err(|e| e.to_string())?;
@@ -587,9 +587,9 @@ impl SessionOwner {
     pub(crate) fn prepare_workspace_host_delegation(
         &self,
         now: SystemTime,
-    ) -> Result<(StatePeer, tilo_peer_state::join::WorkspaceDelegation)> {
+    ) -> Result<(StatePeer, tilo_room::join::WorkspaceDelegation)> {
         self.require_owner_resource_scope()?;
-        use tilo_peer_state::join::{WorkspaceDelegationPermissions, sign_workspace_delegation};
+        use tilo_room::join::{WorkspaceDelegationPermissions, sign_workspace_delegation};
 
         let mut candidate = self.peer.clone();
         let mut material = Vec::with_capacity(self.peer.room().len() + 8 + 32);
@@ -634,7 +634,7 @@ impl SessionOwner {
     }
     pub(crate) fn prepare_invited_member(
         &self,
-        redemption: &tilo_peer_state::join::VerifiedRedemption,
+        redemption: &tilo_room::join::VerifiedRedemption,
         now: SystemTime,
     ) -> Result<StatePeer> {
         self.require_owner_resource_scope()?;
@@ -655,7 +655,7 @@ impl SessionOwner {
     pub(crate) fn prepare_member_role(
         &self,
         user_public_key: [u8; 32],
-        role: tilo_peer_state::join::MemberRole,
+        role: tilo_room::join::MemberRole,
         now: SystemTime,
     ) -> Result<StatePeer> {
         self.require_owner_resource_scope()?;
@@ -699,11 +699,11 @@ impl SessionOwner {
     pub(crate) fn commit_join_redemption(
         &mut self,
         mut candidate: StatePeer,
-        redemption: &tilo_peer_state::join::VerifiedRedemption,
+        redemption: &tilo_room::join::VerifiedRedemption,
         remote_endpoint: [u8; 32],
         request_id: [u8; 32],
         proof_digest: [u8; 32],
-    ) -> Result<tilo_peer_state::join::JoinBootstrap> {
+    ) -> Result<tilo_room::join::JoinBootstrap> {
         let mut state = self.aggregate.collaboration.clone();
         let invite_id = redemption.join().invite_id();
         let device_cert = redemption.certificate().clone();
@@ -720,7 +720,7 @@ impl SessionOwner {
             .generation
             .checked_add(1)
             .context("session generation exhausted")?;
-        let bootstrap = tilo_peer_state::join::JoinBootstrap {
+        let bootstrap = tilo_room::join::JoinBootstrap {
             version: 1,
             invite_id,
             device_cert,
@@ -754,9 +754,9 @@ impl SessionOwner {
         &self,
         invite_id: [u8; 32],
         device_cert: DeviceCert,
-        role: tilo_peer_state::join::MemberRole,
-    ) -> tilo_peer_state::join::JoinBootstrap {
-        tilo_peer_state::join::JoinBootstrap {
+        role: tilo_room::join::MemberRole,
+    ) -> tilo_room::join::JoinBootstrap {
+        tilo_room::join::JoinBootstrap {
             version: 1,
             invite_id,
             device_cert,
@@ -893,7 +893,7 @@ impl SessionOwner {
     fn prepare_received_media_governance(
         &self,
         candidate: &mut StatePeer,
-    ) -> Result<Option<tilo_peer_state::VerifiedSecurityMetadataOnly>> {
+    ) -> Result<Option<tilo_room::VerifiedSecurityMetadataOnly>> {
         match self.prepare_media_governance_for_publication(candidate) {
             Ok(()) => Ok(None),
             Err(error) => self
@@ -906,7 +906,7 @@ impl SessionOwner {
     fn commit_verified_security_metadata_only(
         &mut self,
         candidate: StatePeer,
-        proof: tilo_peer_state::VerifiedSecurityMetadataOnly,
+        proof: tilo_room::VerifiedSecurityMetadataOnly,
     ) -> Result<CommitReceipt> {
         // First prove this receive turn changed only verified security metadata
         // in the live peer. Its pre-existing deferred queue remains volatile.
@@ -2011,7 +2011,7 @@ mod desktop_topology_tests {
         owner
             .peer
             .install_seed(
-                tilo_peer_state::SeedState {
+                tilo_room::SeedState {
                     room_changes: doc
                         .get_changes(&[])
                         .iter()
@@ -2042,6 +2042,6 @@ fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 #[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }

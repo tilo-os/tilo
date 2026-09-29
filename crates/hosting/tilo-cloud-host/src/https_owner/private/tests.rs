@@ -256,8 +256,8 @@ fn policy(dir: &std::path::Path, cap: collab_types::caps::CapOverride) {
     let room = store.state.room.clone();
     store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(host_key),
-            tilo_peer_state::NeighbourMsg::SyncResp {
+            tilo_room::TransportOrigin::RelayDelta(host_key),
+            tilo_room::NeighbourMsg::SyncResp {
                 room,
                 changes: doc
                     .get_changes(&[])
@@ -286,11 +286,11 @@ fn write_allowed(source: &CloudStoreSource) -> bool {
     turn(source, |turn| {
         use collab_types::caps::{Actor, CapDecision, ResourceRef, Verb, decide_capability};
         let (_, owner, caps) =
-            tilo_peer_state::room::extract_governed_fields(turn.peer().admitted_room().unwrap());
+            tilo_room::room::extract_governed_fields(turn.peer().admitted_room().unwrap());
         let principal = hex::encode(turn.peer().authority().user_public_key);
         let now = turn.fresh_now_ns().unwrap() / 1_000_000_000;
         let actor = Actor::person(
-            tilo_peer_state::room::role_of(owner.as_deref(), &caps, &principal, now),
+            tilo_room::room::role_of(owner.as_deref(), &caps, &principal, now),
             principal,
         )
         .in_room(turn.peer().room());

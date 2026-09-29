@@ -5,8 +5,8 @@ use super::{
     Arc, CapnpBrokerState, CrdtRoute, InvocationEnvelope, PublishedAction, PublishedInput,
     PublishedSurface,
 };
-use tilo_peer_state::desktop_command::DesktopCommandError;
-use tilo_peer_state::document_import::{
+use tilo_room::desktop_command::DesktopCommandError;
+use tilo_room::document_import::{
     self as import, ACCEPT, DECLINE, ImportAction, PROPOSE, RESOURCE,
 };
 
@@ -137,9 +137,9 @@ impl CapnpBrokerState {
         }
         let action =
             ImportAction::parse(&envelope.action, &argument(envelope)?).map_err(Rejected)?;
-        let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+        let request = tilo_room::owner_commit::OwnerCommitRequest {
             room: key.room.clone(),
-            operation: tilo_peer_state::owner_commit::CommitOperation::DocumentImport {
+            operation: tilo_room::owner_commit::CommitOperation::DocumentImport {
                 invocation: envelope.invocation.0,
                 caller,
                 action: action.clone(),

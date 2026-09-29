@@ -14,7 +14,7 @@
 use std::collections::HashSet;
 
 use tilo_actions::remote::{Pending, PendingPoll};
-use tilo_peer_state::document_import::{DocumentImportProposalV1, ImportState};
+use tilo_room::document_import::{DocumentImportProposalV1, ImportState};
 
 use super::*;
 use crate::shell::document_import::{PROPOSAL_LIFETIME, ProposalStatus};
@@ -128,7 +128,7 @@ pub(super) fn propose(
         }
     };
     if u64::try_from(bytes.len()).map_or(true, |len| {
-        len > tilo_peer_state::document_import::MAX_IMPORT_DOCUMENT_BYTES
+        len > tilo_room::document_import::MAX_IMPORT_DOCUMENT_BYTES
     }) {
         failed(
             st,
@@ -579,7 +579,7 @@ fn consent_sheet(
     DocumentImportRequest {
         handle: format!(
             "document-import:{}",
-            tilo_peer_state::document_import::key(&proposal.proposal_id)
+            tilo_room::document_import::key(&proposal.proposal_id)
         ),
         app_id: proposal.app.clone(),
         title: t_args(

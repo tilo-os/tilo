@@ -7,7 +7,7 @@ use crate::peer_delivery::{CompleteEvent, admission::CutAdmission};
 use automerge::{ReadDoc, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_delivery_protocol::delivery_v3::state::{EventKind, canonical_item_digest};
-use tilo_peer_state::TransportOrigin;
+use tilo_room::TransportOrigin;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -63,9 +63,9 @@ impl Room {
         doc.put(automerge::ROOT, "value", "v1").unwrap();
         doc.commit();
         host.install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &governor, &roster).unwrap(),
-                documents: vec![tilo_peer_state::SeedDocument {
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, &governor, &roster).unwrap(),
+                documents: vec![tilo_room::SeedDocument {
                     app_id: APP.into(),
                     record_id: RECORD.into(),
                     kind: "test".into(),

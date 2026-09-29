@@ -17,7 +17,7 @@ ignored = ["getrandom03"]
 [dependencies]
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-relay-client = { path = "../tilo-relay-client" }

@@ -25,9 +25,7 @@ use shell::shell::window_actions::{MoveOutcome, transfer_tab_to_workspace};
 use shell::shell::window_transfer::{
     HandoffLink, TransferLauncher, TransferMode, report_handoff, tick,
 };
-use tilo_peer_state::document_import::{
-    DocumentImportProposalV1, DocumentImportTerms, ImportState,
-};
+use tilo_room::document_import::{DocumentImportProposalV1, DocumentImportTerms, ImportState};
 use ui::application::NativeProfile;
 use ui::application_view::SavedInstanceView;
 use ui::collaboration::handoff::{HandoffReport, HandoffRequest};

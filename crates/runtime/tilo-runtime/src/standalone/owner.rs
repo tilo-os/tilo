@@ -24,7 +24,7 @@ use std::{
 };
 use tilo_action_broker::channel_encryption::ChannelKeyProvider;
 use tilo_desktop_model::RoomId;
-use tilo_peer_state::{
+use tilo_room::{
     SeedState, StatePeer,
     owner_commit::{
         CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
@@ -136,20 +136,20 @@ impl RoomOwner {
             return false;
         };
         let now = SystemTime::now();
-        tilo_peer_state::BoundedStatePeer::restore(
+        tilo_room::BoundedStatePeer::restore(
             &committed.durable,
             &self.room,
             &self.governor,
             std::slice::from_ref(&self.governor),
             &RevocationList::new(),
             now,
-            &tilo_peer_state::PeerLimits::default(),
+            &tilo_room::PeerLimits::default(),
         )
         .is_ok_and(|peer| {
             matches!(
                 peer.read()
                     .document_read(self.governor.device_public_key, app, record, now),
-                Err(tilo_peer_state::PeerDocumentReadError::Encrypted)
+                Err(tilo_room::PeerDocumentReadError::Encrypted)
             )
         })
     }
@@ -337,7 +337,7 @@ fn create(
     )?;
     peer.select_admission_v5().map_err(|e| e.to_string())?;
     let seed = SeedState {
-        room_changes: tilo_peer_state::seed_room(room, device, &roster)?,
+        room_changes: tilo_room::seed_room(room, device, &roster)?,
         documents: Vec::new(),
     };
     peer.install_seed(seed, key, now)?;

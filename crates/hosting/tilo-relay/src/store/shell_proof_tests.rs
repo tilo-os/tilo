@@ -2,7 +2,7 @@
 //! `shell_proof_fixture` and `tests/fixtures/shell-proof/README.md`).
 use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
-use tilo_peer_state::{NeighbourMsg, StatePeer, retained_proof::*};
+use tilo_room::{NeighbourMsg, StatePeer, retained_proof::*};
 
 pub(super) fn fixture() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/shell-proof")
@@ -172,11 +172,7 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
             proof = Some(next);
         }
         let outcome = peer
-            .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(source),
-                msg,
-                now,
-            )
+            .receive_from(tilo_room::TransportOrigin::RelayDelta(source), msg, now)
             .unwrap_or_else(|error| panic!("prefix {i}: {error}"));
         assert_eq!(outcome.rejected, 0, "prefix {i}");
         if i == superseded_frame {
@@ -203,7 +199,7 @@ fn captured_shell_sequence_four_is_unpaired_with_current_seven() {
     ));
     let coverage = room.coverages().unwrap();
     let expected = coverage
-        .get(&tilo_peer_state::coverage::route_key(&app, &record))
+        .get(&tilo_room::coverage::route_key(&app, &record))
         .unwrap();
     assert_eq!(expected.sequence, governed_sequence());
     assert!(expected.sequence > old.coverage().sequence);

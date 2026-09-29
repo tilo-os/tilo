@@ -21,7 +21,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     rc::Rc,
 };
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_room::{NeighbourMsg, StatePeer};
 use tilo_user_identity::{
     DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
 };
@@ -52,7 +52,7 @@ struct Bootstrap {
     directory_author: DeviceCert,
     certified_roster: Vec<DeviceCert>,
     #[serde(default)]
-    delivery_hint: Option<tilo_peer_state::join::TransportHint>,
+    delivery_hint: Option<tilo_room::join::TransportHint>,
 }
 use crate::peer_delivery_cursor::CursorIdentity;
 use crate::peer_journal::{Journal, JournalStorage};
@@ -370,8 +370,8 @@ impl GovernanceSource {
     fn messages(&self) -> impl Iterator<Item = &[u8]> {
         let invited = match self {
             Self::Invited(reply) => match reply.response() {
-                tilo_peer_state::join::JoinTransportResponse::Complete(bootstrap)
-                | tilo_peer_state::join::JoinTransportResponse::MembershipComplete(bootstrap) => {
+                tilo_room::join::JoinTransportResponse::Complete(bootstrap)
+                | tilo_room::join::JoinTransportResponse::MembershipComplete(bootstrap) => {
                     Some(bootstrap)
                 }
                 _ => None,
@@ -380,9 +380,9 @@ impl GovernanceSource {
         };
         let owner = match self {
             Self::Cloud(reply) => match reply.response() {
-                tilo_peer_state::join::JoinTransportResponse::OwnerMembershipComplete(
-                    bootstrap,
-                ) => Some(bootstrap),
+                tilo_room::join::JoinTransportResponse::OwnerMembershipComplete(bootstrap) => {
+                    Some(bootstrap)
+                }
                 _ => None,
             },
             _ => None,
@@ -420,7 +420,7 @@ struct ValidatedOwner {
     delivery_host: DeviceCert,
     workspace: u64,
     room: String,
-    delivery_hint: Option<tilo_peer_state::join::TransportHint>,
+    delivery_hint: Option<tilo_room::join::TransportHint>,
     alive: Option<Rc<std::cell::Cell<bool>>>,
     governance: GovernanceSource,
 }
@@ -1035,7 +1035,7 @@ fn encode_pending_batch<T>(
     encode: impl FnOnce(
         &str,
         &[PendingWrite],
-        &[tilo_peer_state::DocumentRow],
+        &[tilo_room::DocumentRow],
         Option<&str>,
     ) -> Result<T, JsValue>,
 ) -> Result<T, JsValue> {
@@ -1260,7 +1260,7 @@ fn health(
         let durable_basis=durable_heads.as_ref().map(|heads|serde_json::json!({"heads":heads}));
         let is_durable=durable_basis.is_some()&&durable_heads.as_ref()==Some(&row.heads);
         let failed=status.as_ref().is_some_and(|status|status.error.is_some())||journal_status.as_ref().is_some_and(|status|status.error.is_some());
-        let coverage=state.durable_coverage_with_current(&row.app_id,&row.record_id).ok().flatten().filter(|(receipt,_)|journal.as_ref().is_some_and(|journal|journal.receipts.get(&tilo_peer_state::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
+        let coverage=state.durable_coverage_with_current(&row.app_id,&row.record_id).ok().flatten().filter(|(receipt,_)|journal.as_ref().is_some_and(|journal|journal.receipts.get(&tilo_room::coverage::route_key(&row.app_id,&row.record_id))==Some(&receipt.receipt_id)));
         let covered=is_durable&&coverage.as_ref().is_some_and(|(_,current)|*current);
         let receipt=coverage.map(|(receipt,_)|receipt);
         let outgoing=peer.outbox.borrow().iter().filter(|message|matches!(message,NeighbourMsg::AppDocument{app_id,record_id,..} if app_id==&row.app_id&&record_id==&row.record_id)).count();

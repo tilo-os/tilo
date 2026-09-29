@@ -17,7 +17,7 @@ use tilo_action_broker::{
     host_documents::{HostDocuments, PendingHostDocument},
 };
 use tilo_agent_control_protocol::GrantAction;
-use tilo_peer_state::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
+use tilo_room::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
 use tilo_user_identity::DeviceCert;
 use tokio::sync::mpsc;
 use ui::{
@@ -339,7 +339,7 @@ impl AgentWorkers {
                 sender: outbound,
                 documents: documents.clone(),
                 owner: owner.clone(),
-                peer: tilo_peer_state::peer_handle(&certificate.device_public_key),
+                peer: tilo_room::peer_handle(&certificate.device_public_key),
             }),
             Arc::new(documents.clone()),
         );
@@ -1453,9 +1453,7 @@ impl AgentWorkers {
         let publication = WorkerPublications {
             room: self.room.clone(),
             host_device: self.certificate.device_public_key,
-            governance_revision: tilo_peer_state::owner_commit::governance_revision(
-                &snapshot.peer,
-            )?,
+            governance_revision: tilo_room::owner_commit::governance_revision(&snapshot.peer)?,
             publication_revision: blake3::hash(
                 &serde_json::to_vec(&revision).map_err(|e| e.to_string())?,
             )

@@ -1,6 +1,6 @@
 //! Process-local scheduling of the existing durable private admissions.
 use std::collections::{BTreeSet, VecDeque};
-use tilo_peer_state::owner_commit::MAX_PRIVATE_AGENT_ADMISSIONS;
+use tilo_room::owner_commit::MAX_PRIVATE_AGENT_ADMISSIONS;
 use uuid::Uuid;
 #[cfg(target_os = "linux")]
 pub(super) const RECOVERY_BATCH: usize = 8;

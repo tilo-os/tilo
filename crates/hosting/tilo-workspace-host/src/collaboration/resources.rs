@@ -114,7 +114,7 @@ impl Bytes {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tilo_peer_state::join::sign_join_proof;
+    use tilo_room::join::sign_join_proof;
 
     #[test]
     fn collaboration_resources_capacity_overflow_keeps_previous_total() {

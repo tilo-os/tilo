@@ -11,7 +11,7 @@ use std::{cell::RefCell, collections::BTreeMap, rc::Rc};
 use tilo_delivery_protocol::delivery_v3::descriptor::VerifiedDescriptor;
 use tilo_delivery_protocol::delivery_v3::{descriptor, media_wire};
 #[cfg(test)]
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 #[cfg(test)]
 use tilo_user_identity::{DeviceCert, RevocationList};
 

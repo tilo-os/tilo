@@ -14,11 +14,11 @@ use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
 };
-use tilo_peer_state::{NeighbourMsg, coverage, room};
 use tilo_relay::{
     coedit::CoeditPayload,
     transport::{self, Envelope},
 };
+use tilo_room::{NeighbourMsg, coverage, room};
 use tilo_user_identity::{
     DeviceCert, DirectoryUpdate, RevocationEntry, RevocationList, WorkspaceDirectory,
 };
@@ -30,7 +30,7 @@ struct Bootstrap {
     directory_author: DeviceCert,
     directory_update: DirectoryUpdate,
     certified_roster: Vec<DeviceCert>,
-    records: Vec<tilo_peer_state::DocumentRow>,
+    records: Vec<tilo_room::DocumentRow>,
 }
 #[derive(Clone, Deserialize)]
 struct PublicEnrollment {
@@ -94,7 +94,7 @@ struct Decoded {
     source: String,
     author: [u8; 32],
     at: u64,
-    kind: tilo_peer_state::transport::Retention,
+    kind: tilo_room::transport::Retention,
     message: NeighbourMsg,
 }
 fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
@@ -112,20 +112,18 @@ fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
     let (channel, body, kind) = match CoeditPayload::decode(&delta)
         .ok_or_else(|| anyhow::anyhow!("invalid coedit payload"))?
     {
-        CoeditPayload::Checkpoint { channel, body, .. } => (
-            channel,
-            body,
-            tilo_peer_state::transport::Retention::Checkpoint,
-        ),
+        CoeditPayload::Checkpoint { channel, body, .. } => {
+            (channel, body, tilo_room::transport::Retention::Checkpoint)
+        }
         CoeditPayload::RetainedDelta { channel, body, .. } => {
-            (channel, body, tilo_peer_state::transport::Retention::Delta)
+            (channel, body, tilo_room::transport::Retention::Delta)
         }
     };
     let message: NeighbourMsg = postcard::from_bytes(&body)?;
     ensure!(
-        tilo_peer_state::transport::retention(
+        tilo_room::transport::retention(
             &message,
-            kind == tilo_peer_state::transport::Retention::Checkpoint
+            kind == tilo_room::transport::Retention::Checkpoint
         ) == Some((channel, kind)),
         "retained channel or kind mismatch"
     );
@@ -133,13 +131,13 @@ fn decode(source: &Source, workspace: u64) -> Result<Decoded> {
     // labels are relative to retained/, and must agree with the actual codec.
     if source.name.starts_with("checkpoints/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Checkpoint
+            kind == tilo_room::transport::Retention::Checkpoint
                 && source.name == format!("checkpoints/{}", hex::encode(channel)),
             "checkpoint filename/channel mismatch"
         );
     } else if source.name.starts_with("tails/") {
         ensure!(
-            kind == tilo_peer_state::transport::Retention::Delta
+            kind == tilo_room::transport::Retention::Delta
                 && source.name.split('/').nth(1) == Some(hex::encode(channel).as_str()),
             "tail filename/channel mismatch"
         );
@@ -227,7 +225,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
         ArtifactKind, Ed25519PublicKey,
         caps::{Actor, CapDecision, Principal, ResourceRef, decide_capability, verb_for_opclass},
     };
-    use tilo_peer_state::transport::Retention;
+    use tilo_room::transport::Retention;
     let b = &auth.bootstrap;
     let room_id = uuid::Uuid::parse_str(&b.room)?;
     ensure!(
@@ -354,7 +352,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
         };
         ensure!(
             cluster_id == &b.room
-                && *peer == tilo_peer_state::peer_handle(&row.author)
+                && *peer == tilo_room::peer_handle(&row.author)
                 && envelope.author.as_bytes() == &row.author,
             "document source/room mismatch"
         );
@@ -509,7 +507,7 @@ fn inspect(auth: &PublicEnrollment, sources: &[Source]) -> Result<Recovered> {
                 seq > floor || probe.base_heads() == before,
                 "covered sequence contains changes absent from checkpoint"
             );
-            tilo_peer_state::document::merge_committed(doc, &mutation)
+            tilo_room::document::merge_committed(doc, &mutation)
                 .map_err(|_| anyhow::anyhow!("strict document merge failed"))?;
             complete(doc)?;
         }

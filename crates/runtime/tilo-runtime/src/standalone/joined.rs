@@ -19,15 +19,15 @@ use tilo_action_broker::{
 };
 use tilo_desktop_model::{RoomId, Workspace, WorkspaceId};
 use tilo_identity_host::custody::HostIdentity;
-use tilo_joined_room::{
-    NativeWorkspaceOwner,
-    session::{self, Connect, Input, Scope},
-};
-use tilo_peer_state::{
+use tilo_relay::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_room::{
     InputDisposition, NeighbourMsg,
     owner_commit::{CommitFuture, OwnerCommitRequest, OwnerCommitService},
 };
-use tilo_relay::{Inbound, RelayCoeditSession, workspace_join::WorkspaceJoinClient};
+use tilo_room_session::{
+    NativeWorkspaceOwner,
+    session::{self, Connect, Input, Scope},
+};
 use tokio::sync::Notify;
 
 /// The record of every joined room, in the profile.
@@ -68,7 +68,7 @@ impl Joined {
         broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
     ) -> io::Result<Arc<Self>> {
         let owner =
-            tilo_joined_room::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
+            tilo_room_session::open_file(&profile.join(JOINED_ROOMS)).map_err(io::Error::other)?;
         let joined = Arc::new(Self {
             owner,
             custody,
@@ -97,7 +97,7 @@ impl Joined {
             return Err("this device takes part in that room through the desktop session".into());
         }
         let topic = room_topic(room)?;
-        let enrollment = tilo_joined_room::enroll::prepare_and_complete(
+        let enrollment = tilo_room_session::enroll::prepare_and_complete(
             WorkspaceJoinClient::new(self.endpoint.clone()),
             self.custody.clone(),
             topic,
@@ -122,7 +122,7 @@ impl Joined {
                     .with_current(room, |view| {
                         let document = view.peer().admitted_room().ok_or("no admitted room")?;
                         let (name, owner, capabilities) =
-                            tilo_peer_state::room::extract_governed_fields(document);
+                            tilo_room::room::extract_governed_fields(document);
                         let mut workspace =
                             Workspace::new(WorkspaceId(view.workspace()), name.unwrap_or_default());
                         workspace.room = room;
@@ -151,7 +151,7 @@ impl Joined {
             .duration_since(SystemTime::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
-        let join = tilo_peer_state::join::decode_and_verify_invitation_text(
+        let join = tilo_room::join::decode_and_verify_invitation_text(
             invitation,
             Some(self.custody.device_cert.user_public_key),
             &tilo_user_identity::RevocationList::new(),
@@ -392,7 +392,7 @@ pub(super) fn desktop_enrolled(profile: &Path) -> io::Result<BTreeSet<RoomId>> {
     #[derive(serde::Deserialize)]
     struct DesktopFile {
         #[serde(default)]
-        native_authority: tilo_joined_room::NativeAuthorityStorage,
+        native_authority: tilo_room_session::NativeAuthorityStorage,
     }
     match std::fs::read(profile.join(super::workspace::DESKTOP_WORKSPACE)) {
         Ok(bytes) => {

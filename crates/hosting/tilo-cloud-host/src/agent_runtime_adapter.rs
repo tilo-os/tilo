@@ -20,7 +20,7 @@ use tilo_action_broker::{
     },
 };
 use tilo_agent_control_protocol::{AgentError, AgentErrorCode, AgentRequest, GrantAction};
-use tilo_peer_state::owner_commit::{
+use tilo_room::owner_commit::{
     AgentExecutionIds, AgentIntent, AgentRuntimeFact, MAX_PRIVATE_AGENT_ADMISSIONS,
     OwnerCommitReceipt, VerifiedAgentCaller,
 };

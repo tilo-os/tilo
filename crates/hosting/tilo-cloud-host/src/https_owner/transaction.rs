@@ -951,8 +951,8 @@ fn pin_digest(references: &[PublicationRef]) -> [u8; 32] {
     for reference in references {
         hash.update(&reference.payload);
         hash.update(&[match reference.kind {
-            tilo_peer_state::transport::Retention::Checkpoint => 0,
-            tilo_peer_state::transport::Retention::Delta => 1,
+            tilo_room::transport::Retention::Checkpoint => 0,
+            tilo_room::transport::Retention::Delta => 1,
         }]);
     }
     *hash.finalize().as_bytes()

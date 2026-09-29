@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use tilo_peer_state::join::{
+use tilo_room::join::{
     JoinBootstrap, JoinTransportRequest, JoinTransportResponse,
     TRANSPORT_IROH_WORKSPACE_HOST_ENDPOINT_ADDR_V1, TransportHint, sign_transport_hint,
     verify_transport_hint,
@@ -221,7 +221,7 @@ impl IrohWorkspaceHostHintV1 {
     )]
     pub fn validate_invitation(
         &self,
-        grant: &tilo_peer_state::join::InviteGrant,
+        grant: &tilo_room::join::InviteGrant,
     ) -> Result<WorkspaceHostTrust, WorkspaceJoinError> {
         if grant.room != self.room
             || grant.workspace_id != self.workspace_id

@@ -853,7 +853,7 @@ impl WorkspaceTree {
 /// Owner, capability blobs, peer-name and identity claims, coverage,
 /// invitation receipts and media policy read from a room document's
 /// governance keys. See [`WorkspaceTree::governance_of`].
-type RoomGovernance = tilo_peer_state::room::RoomGovernance;
+type RoomGovernance = tilo_room::room::RoomGovernance;
 
 /// Recording-delegate policy, triage-agent admission to direct rooms and
 /// delegated hosts read from a room document's governance keys. See
@@ -872,7 +872,7 @@ impl WorkspaceTree {
     }
 
     /// Presentation projection from the actual admitted owner, never a second admission.
-    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_peer_state::StatePeer) {
+    pub(crate) fn project_native_room(&mut self, room: RoomId, peer: &tilo_room::StatePeer) {
         let Some(document) = peer.admitted_room() else {
             return;
         };
@@ -1518,7 +1518,7 @@ impl WorkspaceTree {
     )]
     fn try_sync_room_doc(&mut self, room: RoomId) -> bool {
         use automerge::{ObjType, ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
-        use tilo_peer_state::room::media;
+        use tilo_room::room::media;
 
         if self.requires_native_owner(room) {
             return false;
@@ -2047,7 +2047,7 @@ impl WorkspaceTree {
     /// policy. The room's **name** is deliberately not governed. The
     /// **id** is stricter still: a mismatched payload is refused outright.
     fn governance_of(doc: Option<&AutoCommit>) -> RoomGovernance {
-        tilo_peer_state::room::governance_of(doc)
+        tilo_room::room::governance_of(doc)
     }
 
     /// The channel class a room document's governance states, if it states
@@ -2077,10 +2077,10 @@ impl WorkspaceTree {
     pub fn room_heads(&mut self, room: RoomId) -> Vec<ChangeHash> {
         match self.room_docs.get_mut(&room) {
             Some(doc)
-                if tilo_peer_state::room::media::validate_transition(
+                if tilo_room::room::media::validate_transition(
                     None,
                     doc,
-                    tilo_peer_state::room::media::TransitionMode::Restore,
+                    tilo_room::room::media::TransitionMode::Restore,
                 )
                 .is_ok() =>
             {
@@ -2103,10 +2103,10 @@ impl WorkspaceTree {
             return None;
         }
         let doc = self.room_docs.get_mut(&room)?;
-        tilo_peer_state::room::media::validate_transition(
+        tilo_room::room::media::validate_transition(
             None,
             doc,
-            tilo_peer_state::room::media::TransitionMode::Restore,
+            tilo_room::room::media::TransitionMode::Restore,
         )
         .ok()?;
         Some(
@@ -2223,7 +2223,7 @@ impl WorkspaceTree {
             // unchanged echo can preserve an already admitted local policy.
             return self.governs_room(room)
                 && self.room_docs.get(&room).is_some_and(|before| {
-                    tilo_peer_state::room::media::parse(before).is_ok_and(|policy| policy.is_some())
+                    tilo_room::room::media::parse(before).is_ok_and(|policy| policy.is_some())
                 });
         };
         let Some(endpoint) = pinned.as_str().strip_prefix("iroh:") else {
@@ -2740,8 +2740,8 @@ impl WorkspaceTree {
         // resource limits (and resets the patch log, see `sync_room_doc`);
         // it reports a refusal as text, so keep this API's error type and
         // the detail in the log.
-        let candidate = tilo_peer_state::room::candidate(self.room_docs.get(&room), changes)
-            .map_err(|error| {
+        let candidate =
+            tilo_room::room::candidate(self.room_docs.get(&room), changes).map_err(|error| {
                 tracing::warn!(%error, room = %room, "room changes refused");
                 automerge::AutomergeError::Fail
             })?;
@@ -2751,10 +2751,10 @@ impl WorkspaceTree {
         }
         // Parsing and consistency are independent of the writer check, including
         // equal-value echoes. Never let a bad first snapshot establish TOFU.
-        let media = match tilo_peer_state::room::media::validate_transition(
+        let media = match tilo_room::room::media::validate_transition(
             self.room_docs.get(&room),
             &candidate,
-            tilo_peer_state::room::media::TransitionMode::Admission,
+            tilo_room::room::media::TransitionMode::Admission,
         ) {
             Ok(media) => media,
             Err(error) => {
@@ -2765,9 +2765,9 @@ impl WorkspaceTree {
         if media.is_some() && !self.media_authority_admitted(room, &candidate, from) {
             return Ok(false);
         }
-        let media_changed = tilo_peer_state::room::media::governed_value(self.room_docs.get(&room))
-            != tilo_peer_state::room::media::governed_value(Some(&candidate));
-        if tilo_peer_state::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() {
+        let media_changed = tilo_room::room::media::governed_value(self.room_docs.get(&room))
+            != tilo_room::room::media::governed_value(Some(&candidate));
+        if tilo_room::coverage::monotonic(self.room_docs.get(&room), &candidate).is_err() {
             return Ok(false);
         }
         if self.governance_write_refused(room, &candidate, from) {

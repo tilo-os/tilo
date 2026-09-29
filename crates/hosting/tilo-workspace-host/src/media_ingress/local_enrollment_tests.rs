@@ -12,7 +12,7 @@ use tilo_delivery_protocol::delivery_v3::{
         HandoffRequest, MAX_HANDOFF_RANGE_BYTES, OnboardingScope,
     },
 };
-use tilo_peer_state::enrollment::{ChallengeRequest, decode, sign};
+use tilo_room::enrollment::{ChallengeRequest, decode, sign};
 use ui::automerge::transaction::Transactable;
 
 /// `count` small incremental publications, as a browser editing session makes.
@@ -209,7 +209,7 @@ async fn local_owner_reenrollment_with_small_history_stays_inline() {
 
 #[tokio::test]
 async fn local_owner_reenrollment_after_a_large_history_uses_chunked_handoff() {
-    use tilo_peer_state::{StatePeer, TransportOrigin};
+    use tilo_room::{StatePeer, TransportOrigin};
     let mut h = Harness::start().await;
     let host = crate::host::LocalHost::start(&h.f.owner).await.unwrap();
     h.ingress

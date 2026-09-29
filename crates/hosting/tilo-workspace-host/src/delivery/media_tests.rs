@@ -10,7 +10,7 @@ fn fixture() -> (
     let (temp, mut owner) = super::tests::hosted_owner();
     let (root, _, cert) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     crate::room_media_policy::tests::activate(&mut owner);
@@ -284,7 +284,7 @@ fn deferred_then_suspended_uses_stored_basis(delivery: bool) {
     let unknown = ed25519_dalek::SigningKey::from_bytes(&[47; 32]);
     let device = unknown.verifying_key().to_bytes();
     if let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut message {
-        *peer = tilo_peer_state::peer_handle(&device);
+        *peer = tilo_room::peer_handle(&device);
         envelope.author = collab_types::Ed25519PublicKey::from_bytes(device);
         collab_types::sign_op(envelope, &unknown).unwrap();
     } else {

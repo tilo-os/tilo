@@ -4,7 +4,7 @@ use crate::{
     SessionOwner, committed_authority::CommittedAuthority, owner::resources::OwnerOperation,
 };
 use tilo_delivery_protocol::delivery_v3::state::{TransferRecordHeader, VisibleOrder};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+use tilo_room::{NeighbourMsg, TransportOrigin};
 use ui::automerge::{ROOT, transaction::Transactable};
 
 fn real_pin(

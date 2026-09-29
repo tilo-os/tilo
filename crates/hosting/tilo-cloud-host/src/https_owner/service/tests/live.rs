@@ -66,7 +66,7 @@ async fn invite(
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         OnboardingOperation, OnboardingScope,
     };
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest as Join,
         JoinTransportResponse as Reply, decode_and_verify_invitation_text, sign_join_proof,
     };

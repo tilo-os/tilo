@@ -56,7 +56,7 @@ use tilo_moq::{
     live::{LiveAuthority, LiveRelay, LiveSession},
     relay::{Admission, AuthorizationStatus},
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 
@@ -271,7 +271,7 @@ impl<O: HostOwner> LiveService<O> {
             .context("live grant not permitted")?;
         ensure!(person == root, "live grant participant root mismatch");
         let revision =
-            tilo_peer_state::owner_commit::governance_revision(peer).map_err(anyhow::Error::msg)?;
+            tilo_room::owner_commit::governance_revision(peer).map_err(anyhow::Error::msg)?;
         let digest = blake3::hash(revision.as_bytes());
         let generation =
             u64::from_le_bytes(digest.as_bytes()[..8].try_into().expect("eight bytes"));
@@ -482,7 +482,7 @@ pub fn live_record(app_id: String, record_id: String) -> Option<LiveRecord> {
 /// Bytes of an admitted `AppDocument` item as a signed-change ops frame.
 /// Items whose frame would exceed `MAX_STREAM_FRAME_BYTES` are not forwarded.
 pub fn signed_change(canonical: &[u8]) -> Option<(LiveRecord, Vec<u8>)> {
-    let tilo_peer_state::NeighbourMsg::AppDocument {
+    let tilo_room::NeighbourMsg::AppDocument {
         app_id, record_id, ..
     } = postcard::from_bytes(canonical).ok()?
     else {

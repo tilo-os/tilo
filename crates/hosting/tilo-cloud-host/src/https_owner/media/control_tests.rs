@@ -192,7 +192,7 @@ impl Fixture {
                 tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
-        let result: tilo_peer_state::room::media::MediaCallResultV1 =
+        let result: tilo_room::room::media::MediaCallResultV1 =
             serde_json::from_value(receipt.output.unwrap()).unwrap();
         let host_key = store.key();
         let source = CloudStoreSource::bind(store).unwrap();

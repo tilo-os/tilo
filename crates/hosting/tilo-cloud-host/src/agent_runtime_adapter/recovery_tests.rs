@@ -12,13 +12,13 @@ fn agent_prelaunch_recovery_current_publication_keeps_exact_retained_grants() {
         action: "collapse".into(),
     };
     let input = AgentIntent {
-        scope: tilo_peer_state::owner_commit::AgentInvocationScope {
+        scope: tilo_room::owner_commit::AgentInvocationScope {
             machine: store.state.machine_id.clone(),
             room: room.to_string(),
             host: room.to_string(),
             caller: caller.certificate().clone(),
         },
-        route: tilo_peer_state::owner_commit::AgentProviderRoute {
+        route: tilo_room::owner_commit::AgentProviderRoute {
             app_id: "so.tilo.agent".into(),
             app_peer: "8".into(),
             cluster_id: room.to_string(),

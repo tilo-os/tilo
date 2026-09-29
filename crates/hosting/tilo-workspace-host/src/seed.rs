@@ -1,5 +1,5 @@
 //! Initialize canonical app records only during explicit creation of a new session.
-use tilo_peer_state::{SeedDocument, SeedState};
+use tilo_room::{SeedDocument, SeedState};
 use tilo_user_identity::DeviceCert;
 use ui::{
     portable_storage::PortableStorage,
@@ -19,7 +19,7 @@ pub(crate) fn empty_workspace(
     let mut doc = AutoCommit::new().with_actor(ui::automerge::ActorId::from(
         authority.device_public_key.to_vec(),
     ));
-    let changes = tilo_peer_state::seed_room(room, authority, roster)?
+    let changes = tilo_room::seed_room(room, authority, roster)?
         .into_iter()
         .map(Change::from_bytes)
         .collect::<Result<Vec<_>, _>>()
@@ -53,7 +53,7 @@ pub(crate) fn empty_workspace(
 
 /// Recordless sessions are complete only with initialized native custody and
 /// no app tabs that would require missing records. Empty named strips are valid.
-pub(crate) fn recordless_desktop_is_initialized(peer: &tilo_peer_state::StatePeer) -> bool {
+pub(crate) fn recordless_desktop_is_initialized(peer: &tilo_room::StatePeer) -> bool {
     use ui::automerge::{ObjType, ROOT, ReadDoc, Value};
 
     let Some(doc) = peer.admitted_room() else {
@@ -136,7 +136,7 @@ pub(crate) fn seed(
         });
     }
     Ok(SeedState {
-        room_changes: tilo_peer_state::seed_room(room, authority, roster)?,
+        room_changes: tilo_room::seed_room(room, authority, roster)?,
         documents,
     })
 }
@@ -146,7 +146,7 @@ pub(crate) fn seed(
 /// topology is left unchanged. Caller commits the candidate behind the same
 /// signed aggregate barrier before publishing it.
 pub(crate) fn bootstrap_desktop(
-    peer: &mut tilo_peer_state::StatePeer,
+    peer: &mut tilo_room::StatePeer,
     key: &ed25519_dalek::SigningKey,
 ) -> Result<bool, String> {
     use tilo_desktop_model::{AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};

@@ -435,7 +435,7 @@ impl CapnpBrokerState {
             .lock()
             .map_err(|_| "desktop command registry unavailable")?
             == Some(peer)
-            && surface.app_id == tilo_peer_state::desktop_command::APP_ID;
+            && surface.app_id == tilo_room::desktop_command::APP_ID;
         let (target, root, device) = if desktop {
             let target = blake3::derive_key(
                 "tilo enrolled child desktop target v1",

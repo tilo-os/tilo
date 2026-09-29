@@ -359,7 +359,7 @@ mod owner_commit_tests {
         app.close_components();
     }
 
-    struct OwnerAuthority(tilo_peer_state::StatePeer);
+    struct OwnerAuthority(tilo_room::StatePeer);
     impl crate::peer_actions::CertificateAuthority for OwnerAuthority {
         fn authorize(
             &self,
@@ -413,7 +413,7 @@ mod owner_commit_tests {
         fault: u8,
         required_room: Option<String>,
     }
-    impl tilo_peer_state::owner_commit::OwnerCommitService for AlteredReceipt {
+    impl tilo_room::owner_commit::OwnerCommitService for AlteredReceipt {
         fn requires_room(&self, room: &str) -> bool {
             self.required_room
                 .as_deref()
@@ -424,8 +424,8 @@ mod owner_commit_tests {
         }
         fn commit(
             &self,
-            request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-        ) -> tilo_peer_state::owner_commit::CommitFuture {
+            request: tilo_room::owner_commit::OwnerCommitRequest,
+        ) -> tilo_room::owner_commit::CommitFuture {
             let response = self.inner.commit(request);
             let fault = self.fault;
             Box::pin(async move {
@@ -433,11 +433,10 @@ mod owner_commit_tests {
                 match fault {
                     1 => receipt.binding.room = uuid::Uuid::new_v4().to_string(),
                     2 => {
-                        receipt.binding.target =
-                            tilo_peer_state::owner_commit::CommitTarget::Document {
-                                app: "other.app".into(),
-                                record: "other".into(),
-                            }
+                        receipt.binding.target = tilo_room::owner_commit::CommitTarget::Document {
+                            app: "other.app".into(),
+                            record: "other".into(),
+                        }
                     }
                     3 => receipt.binding.request_digest[0] ^= 1,
                     4 => receipt.binding.basis[0] ^= 1,
@@ -763,9 +762,8 @@ mod owner_commit_tests {
                     }
                     let receipt = pending.apply(&mut f.owner);
                     let response = response.await.unwrap();
-                    let receipts = tilo_peer_state::room::receipt_values(
-                        f.owner.peer().admitted_room().unwrap(),
-                    );
+                    let receipts =
+                        tilo_room::room::receipt_values(f.owner.peer().admitted_room().unwrap());
                     if failure == 0 {
                         assert!(receipt.is_ok());
                         assert!(response.is_ok());
@@ -853,7 +851,7 @@ mod owner_commit_tests {
         use ui::collaboration::{CertifiedEndpointIdentity, CollaborationManager};
         use ui::portable_storage::{PortableStorage, StorageKey};
         use ui::record::{RecordCheckout, RecordId, RecordOwners};
-        struct CurrentOwner(Arc<Mutex<Option<tilo_peer_state::StatePeer>>>);
+        struct CurrentOwner(Arc<Mutex<Option<tilo_room::StatePeer>>>);
         impl crate::peer_actions::CertificateAuthority for CurrentOwner {
             fn authorize(
                 &self,
@@ -876,7 +874,7 @@ mod owner_commit_tests {
                 let doc = peer
                     .admitted_room()
                     .ok_or("admitted owner governance unavailable")?;
-                let (name, owner, caps) = tilo_peer_state::room::extract_governed_fields(doc);
+                let (name, owner, caps) = tilo_room::room::extract_governed_fields(doc);
                 let mut workspace = tilo_desktop_model::Workspace::new(
                     tilo_desktop_model::WorkspaceId(72),
                     name.unwrap_or_else(|| "Owner room".into()),
@@ -1152,7 +1150,7 @@ mod owner_commit_tests {
             let bytes = publication.bytes;
             remote
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(cert.device_public_key),
+                    tilo_room::TransportOrigin::RelayDelta(cert.device_public_key),
                     postcard::from_bytes(bytes).unwrap(),
                     SystemTime::now(),
                 )
@@ -1601,9 +1599,9 @@ mod owner_commit_tests {
                 tilo_workspace_host::owner_commit::OwnerCommitMailbox::bounded(1);
             let publisher = PeerPublisher::with_optional_owner_commit(None, Arc::new(handle));
             assert!(publisher.requires_owner_for(&f.route.cluster_id));
-            let request = tilo_peer_state::owner_commit::OwnerCommitRequest {
+            let request = tilo_room::owner_commit::OwnerCommitRequest {
                 room: f.route.cluster_id.clone(),
-                operation: tilo_peer_state::owner_commit::CommitOperation::Document {
+                operation: tilo_room::owner_commit::CommitOperation::Document {
                     app: f.route.app_id.clone(),
                     record: f.route.record_id.clone(),
                     envelope: Box::new(owner_snapshot(&f)),

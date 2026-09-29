@@ -18,7 +18,7 @@ use tilo_action_broker::{
     policy::WorkspacePolicy,
     services::WorkspaceAuthority,
 };
-use tilo_peer_state::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
+use tilo_room::{NeighbourMsg, StatePeer, owner_commit::OwnerCommitService};
 use ui::{
     application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
     collaboration::{CertifiedEndpointIdentity, CollaborationManager, RouteSpec},
@@ -121,7 +121,7 @@ fn project(peer: &StatePeer) -> Result<tilo_desktop_model::DesktopTree, String> 
     let mut tree = tilo_desktop_model::DesktopTree::default();
     let room = uuid::Uuid::parse_str(peer.room()).map_err(|e| e.to_string())?;
     tilo_desktop_model::projection::apply_admitted_room(&mut tree, room.into(), doc)?;
-    let (_, owner, capabilities) = tilo_peer_state::room::extract_governed_fields(doc);
+    let (_, owner, capabilities) = tilo_room::room::extract_governed_fields(doc);
     let workspace = tree
         .workspaces
         .iter_mut()
@@ -192,12 +192,8 @@ struct WorkerPolicy {
 }
 impl WorkerPolicy {
     fn context_at(&self, principal: &str, now: u64) -> ui::permissions::PermissionContext {
-        let role = tilo_peer_state::room::role_of(
-            self.owner.as_deref(),
-            &self.capabilities,
-            principal,
-            now,
-        );
+        let role =
+            tilo_room::room::role_of(self.owner.as_deref(), &self.capabilities, principal, now);
         ui::permissions::PermissionContext::from_capabilities(
             collab_types::caps::Actor::person(role, principal).in_room(self.room.clone()),
             self.capabilities.clone(),
@@ -212,12 +208,8 @@ impl WorkerPolicy {
     ) -> Result<ui::permissions::PermissionContext, String> {
         let now = authority.current()?.view().check_policy_time(&time)? / 1_000_000_000;
         let context = self.context_at(principal, now);
-        let role = tilo_peer_state::room::role_of(
-            self.owner.as_deref(),
-            &self.capabilities,
-            principal,
-            now,
-        );
+        let role =
+            tilo_room::room::role_of(self.owner.as_deref(), &self.capabilities, principal, now);
         let principal = principal.to_owned();
         let room = self.room.clone();
         let owner = self.owner.clone();
@@ -230,11 +222,11 @@ impl WorkerPolicy {
                 .admitted_room()
                 .ok_or("worker governance missing")?;
             let (_, current_owner, current_caps) =
-                tilo_peer_state::room::extract_governed_fields(document);
+                tilo_room::room::extract_governed_fields(document);
             if current.peer().room() != room
                 || current_owner != owner
                 || current_caps != capabilities
-                || tilo_peer_state::room::role_of(
+                || tilo_room::room::role_of(
                     current_owner.as_deref(),
                     &current_caps,
                     &principal,
@@ -350,7 +342,7 @@ impl ActionHost {
             Arc::new(NetworkSink {
                 sender,
                 signing: signing.clone(),
-                peer: tilo_peer_state::peer_handle(&cert.device_public_key),
+                peer: tilo_room::peer_handle(&cert.device_public_key),
             }),
             Arc::new(signing.clone()),
         );
@@ -684,7 +676,7 @@ impl ActionHost {
         self.policy_time.clone()
     }
     pub fn ready(&self) -> bool {
-        use tilo_peer_state::desktop_command;
+        use tilo_room::desktop_command;
         let room = self
             .reconciled_policy
             .as_ref()
@@ -956,7 +948,7 @@ mod tests {
                 .broker
                 .published_action_surfaces()
                 .into_iter()
-                .find(|surface| surface.app_id == tilo_peer_state::desktop_command::APP_ID)
+                .find(|surface| surface.app_id == tilo_room::desktop_command::APP_ID)
             {
                 break surface;
             }
@@ -965,11 +957,11 @@ mod tests {
         };
         let room = desktop.route.cluster_id.clone();
         let published = runtime.broker.has_live_published_action(
-            tilo_peer_state::desktop_command::APP_ID,
+            tilo_room::desktop_command::APP_ID,
             &room,
             "",
-            tilo_peer_state::desktop_command::RESOURCE,
-            tilo_peer_state::desktop_command::ACTION,
+            tilo_room::desktop_command::RESOURCE,
+            tilo_room::desktop_command::ACTION,
         );
         assert!(
             desktop_service_ready(true, published),
@@ -1014,7 +1006,7 @@ mod tests {
     }
     #[tokio::test(flavor = "current_thread")]
     async fn changed_generation_admits_new_workers_and_failed_setup_is_not_cached() {
-        use tilo_peer_state::{
+        use tilo_room::{
             desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
             owner_commit::{CommitOperation, OwnerCommitRequest},
         };
@@ -1147,7 +1139,7 @@ mod tests {
         let mut candidate = owner.peer().clone();
         candidate
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(
+                tilo_room::TransportOrigin::RelayDelta(
                     owner.identity.native_cert.device_public_key,
                 ),
                 NeighbourMsg::SyncResp {

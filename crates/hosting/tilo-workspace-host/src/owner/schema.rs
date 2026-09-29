@@ -3,7 +3,7 @@ use crate::canonical_records::creation::CreationLedgerV1;
 use tilo_delivery_protocol::delivery_v3::commit::{
     DeliveryLedgerV1, MAX_REFERENCES, PublicationPool, PublicationRef,
 };
-use tilo_peer_state::join::TransportHint;
+use tilo_room::join::TransportHint;
 
 /// Bounds redundant publication tail, not canonical Automerge history or baseline size.
 #[derive(Clone, Serialize, Deserialize)]

@@ -8,7 +8,7 @@ description = "Native device side of media control: HTTP session proofs, grants,
 
 [dependencies]
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek.workspace = true

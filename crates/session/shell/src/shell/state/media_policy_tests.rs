@@ -2,7 +2,7 @@
 use super::*;
 use automerge::{ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use std::collections::BTreeMap;
-use tilo_peer_state::room::media;
+use tilo_room::room::media;
 
 fn fixture() -> (WorkspaceTree, WorkspaceTree, RoomId, PeerOrigin) {
     let mut host = WorkspaceTree::bootstrap_demo();

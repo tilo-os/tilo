@@ -5,7 +5,7 @@ use serde::{
     de::{DeserializeSeed, Error, IgnoredAny, MapAccess, SeqAccess, Visitor},
 };
 use std::{cell::Cell, fmt, ops::Range};
-use tilo_peer_state::{enrollment, transport::Retention};
+use tilo_room::{enrollment, transport::Retention};
 
 pub(crate) struct BoundLocal {
     material: Vec<u8>,
@@ -123,7 +123,7 @@ struct Metadata {
 struct Room {
     room: String,
     workspace_id: String,
-    delivery_hint: tilo_peer_state::join::TransportHint,
+    delivery_hint: tilo_room::join::TransportHint,
 }
 pub(crate) fn bind_local(
     material: &[u8],

@@ -21,7 +21,7 @@ impl CertifiedAction {
     )]
     pub fn from_http_request(
         request: VerifiedRequest<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
     ) -> Result<Self, WireError> {
         let session = request.session();
         let binding = session.binding();

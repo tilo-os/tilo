@@ -7,7 +7,7 @@ use tilo_delivery_protocol::delivery_v3::descriptor::{
     self, DescriptorAuthority, DescriptorSettings, GenerationExpectation, VerifiedDescriptor,
 };
 #[cfg(any(test, feature = "media"))]
-use tilo_peer_state::join::TransportHint;
+use tilo_room::join::TransportHint;
 
 impl SessionOwner {
     /// Sign an inert invitation locator only from this owner's current installed ingress.

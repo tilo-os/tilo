@@ -75,8 +75,8 @@ fn intern(
             kind: publication.kind,
         });
         let kind = match publication.kind {
-            PublicationKind::Checkpoint => tilo_peer_state::transport::Retention::Checkpoint,
-            PublicationKind::Delta => tilo_peer_state::transport::Retention::Delta,
+            PublicationKind::Checkpoint => tilo_room::transport::Retention::Checkpoint,
+            PublicationKind::Delta => tilo_room::transport::Retention::Delta,
             PublicationKind::Presence => continue,
         };
         retained.push(PublicationRef { payload, kind });

@@ -9,7 +9,7 @@ use collab_types::{
     ArtifactKind,
     caps::{Actor, CapDecision, Principal, ResourceRef, Verb, decide_capability},
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::DeviceCert;
 use ui::{application::ApplicationDefinition, automerge::AutoCommit, record::RecordCheckout};
 use web_time::SystemTime;

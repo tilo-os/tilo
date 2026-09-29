@@ -1,6 +1,6 @@
 use super::*;
 use collab_types::caps::{CapOverride, Expiry, Scope, Subject, Verb};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
 use ui::automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 mod oracle;
 fn category(error: anyhow::Error) -> PlanningFailure {

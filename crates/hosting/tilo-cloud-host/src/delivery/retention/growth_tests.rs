@@ -13,7 +13,7 @@ use super::*;
 use crate::ActionRequest;
 use ed25519_dalek::SigningKey;
 use tilo_delivery_protocol::delivery_v3::commit::MAX_REFERENCES;
-use tilo_peer_state::join::*;
+use tilo_room::join::*;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 struct Guest {
@@ -155,7 +155,7 @@ fn room_history(store: &Store, now: u64) -> (usize, usize, usize) {
         entry.1 += bytes;
     }
     if std::env::var("TILO_ROOM_HISTORY").is_ok() {
-        for (key, row) in tilo_peer_state::coverage::entries(&room).unwrap() {
+        for (key, row) in tilo_room::coverage::entries(&room).unwrap() {
             eprintln!(
                 "coverage {key:?}: {} bytes heads={} watermarks={}",
                 postcard::to_allocvec(&row).unwrap().len(),
@@ -163,7 +163,7 @@ fn room_history(store: &Store, now: u64) -> (usize, usize, usize) {
                 row.watermarks.len()
             );
         }
-        for (key, row) in tilo_peer_state::durability::entries(&room).unwrap() {
+        for (key, row) in tilo_room::durability::entries(&room).unwrap() {
             eprintln!(
                 "receipt {key:?}: {} bytes",
                 postcard::to_allocvec(&row).unwrap().len()
@@ -178,8 +178,8 @@ fn room_history(store: &Store, now: u64) -> (usize, usize, usize) {
             );
         }
         for (key, bytes) in [
-            ("coverage", tilo_peer_state::coverage::FIELD_V2),
-            ("receipts", tilo_peer_state::durability::FIELD_V2),
+            ("coverage", tilo_room::coverage::FIELD_V2),
+            ("receipts", tilo_room::durability::FIELD_V2),
         ] {
             if let Ok(Some((automerge::Value::Object(_), object))) =
                 automerge::ReadDoc::get(&room, automerge::ROOT, bytes)
@@ -349,7 +349,7 @@ fn lab_room_history() {
     eprintln!(
         "lab room: generation {} changes {changes} change bytes {bytes} saved {saved} coverage routes {} durable routes {}",
         store.state.generation,
-        tilo_peer_state::coverage::entries(room).unwrap().len(),
-        tilo_peer_state::durability::entries(room).unwrap().len(),
+        tilo_room::coverage::entries(room).unwrap().len(),
+        tilo_room::durability::entries(room).unwrap().len(),
     );
 }

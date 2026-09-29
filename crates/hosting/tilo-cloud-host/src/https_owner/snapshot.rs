@@ -77,8 +77,8 @@ fn reference_digest(custody: &PublicationCustody) -> Result<Digest> {
             .ok_or(CloudDeliveryError::Unavailable)?;
         hash.update(&reference.payload);
         hash.update(&[match reference.kind {
-            tilo_peer_state::transport::Retention::Checkpoint => 0,
-            tilo_peer_state::transport::Retention::Delta => 1,
+            tilo_room::transport::Retention::Checkpoint => 0,
+            tilo_room::transport::Retention::Delta => 1,
         }]);
     }
     Ok(*hash.finalize().as_bytes())

@@ -93,7 +93,7 @@ fn deferred_input(owner: &SessionOwner) -> ([u8; 32], NeighbourMsg, Vec<u8>) {
     let NeighbourMsg::AppDocument { peer, envelope, .. } = &mut message else {
         panic!("document fixture")
     };
-    *peer = tilo_peer_state::peer_handle(&device);
+    *peer = tilo_room::peer_handle(&device);
     envelope.author = collab_types::Ed25519PublicKey::from_bytes(device);
     collab_types::sign_op(envelope, &key).unwrap();
     let bytes = postcard::to_stdvec(&message).unwrap();

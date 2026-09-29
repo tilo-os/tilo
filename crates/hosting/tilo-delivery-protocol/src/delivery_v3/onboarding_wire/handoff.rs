@@ -68,7 +68,7 @@ pub struct HandoffChunk<'a> {
 pub struct GovernanceItem<'a> {
     #[serde(borrow, with = "serde_bytes")]
     pub bytes: &'a [u8],
-    pub retention: tilo_peer_state::transport::Retention,
+    pub retention: tilo_room::transport::Retention,
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GovernanceBundle<'a> {

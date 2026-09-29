@@ -11,7 +11,9 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
+pub(crate) use tilo_room_session::{
+    LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight,
+};
 
 /// Clones of the desktop share the writer, so stale UI snapshots cannot erase floors.
 #[derive(Clone, Default)]
@@ -42,7 +44,7 @@ pub(super) struct Writer {
     expected: Option<[u8; 32]>,
     /// The attached owner and the tree whose state file it publishes into.
     owner: Option<(
-        tilo_joined_room::WeakNativeWorkspaceOwner,
+        tilo_room_session::WeakNativeWorkspaceOwner,
         Weak<RwLock<WorkspaceTree>>,
     )>,
 }
@@ -58,7 +60,7 @@ impl Write for HashWriter {
     }
 }
 pub(super) fn digest(storage: &NativeAuthorityStorage) -> io::Result<[u8; 32]> {
-    tilo_joined_room::preflight_storage(storage).map_err(io::Error::other)?;
+    tilo_room_session::preflight_storage(storage).map_err(io::Error::other)?;
     let mut hash = HashWriter(blake3::Hasher::new());
     serde_json::to_writer(&mut hash, storage).map_err(io::Error::other)?;
     Ok(*hash.0.finalize().as_bytes())
@@ -193,7 +195,7 @@ impl Writer {
                     "unsupported native authority state-file layout",
                 ));
             }
-            tilo_joined_room::validate_file_layout(disk.schema_version, &disk.native_authority)
+            tilo_room_session::validate_file_layout(disk.schema_version, &disk.native_authority)
                 .map_err(io::Error::other)?;
             if digest(&disk.native_authority)? != expected {
                 return Err(io::Error::other(

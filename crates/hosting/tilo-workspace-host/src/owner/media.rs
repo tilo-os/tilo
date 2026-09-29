@@ -3,7 +3,7 @@ use super::*;
 use tilo_action_broker::collaboration_admin::{
     CollaborationAdminError as Error, CollaborationAdminOperation as Operation,
 };
-use tilo_peer_state::room::media::MediaCallResultV1;
+use tilo_room::room::media::MediaCallResultV1;
 
 pub(super) fn prepare_media_governance(
     candidate: &mut StatePeer,

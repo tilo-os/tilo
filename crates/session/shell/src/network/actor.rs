@@ -393,7 +393,7 @@ enum InternalEvent {
     NativeHostConnected {
         ws: u64,
         serial: u64,
-        hint: Box<tilo_peer_state::join::TransportHint>,
+        hint: Box<tilo_room::join::TransportHint>,
         certificate: DeviceCert,
         continuity: u64,
         result: Box<Result<RelayCoeditSession, String>>,

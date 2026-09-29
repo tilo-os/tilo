@@ -3,7 +3,7 @@ use crate::*;
 use collab_types::{DocumentMutation, SignedOp};
 use std::collections::BTreeSet;
 use tilo_action_broker::host_documents::HostDocumentTurnError;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ui::{collaboration::RouteSpec, invocation_scope::DocumentAuthorization};
 
 /// Bound on the change chunks one worker publication may contain.
@@ -394,7 +394,7 @@ impl ContributorCheck<'_> {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use tilo_peer_state::owner_commit::OwnerCommitService;
+    use tilo_room::owner_commit::OwnerCommitService;
 
     #[test]
     fn scoped_body_change_set_is_parsed_from_exact_bytes() {

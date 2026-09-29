@@ -3,7 +3,7 @@
 //! temporary pending_writes clone, journal decode, or JS encoder overlap.
 use crate::{peer_delivery_cursor::StoredDeliveryCursor, peer_journal::Journal};
 use std::collections::BTreeSet;
-use tilo_peer_state::DocumentRow;
+use tilo_room::DocumentRow;
 use ui::portable_storage::{PendingWrite, PortableStorage, ProfileNamespace, StorageKey};
 
 pub(crate) const MAX_PENDING_BATCHES: usize = 2;
@@ -497,7 +497,7 @@ mod tests {
         peer_journal::{Journal, JournalFormat, JournalStorage},
     };
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
-    use tilo_peer_state::{DocumentRow, NeighbourMsg};
+    use tilo_room::{DocumentRow, NeighbourMsg};
 
     fn record() -> StorageKey {
         StorageKey::Record {

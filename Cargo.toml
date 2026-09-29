@@ -37,7 +37,7 @@ members = [
     "crates/agent/control-service",
     "crates/collab/tilo-action-broker",
     "crates/session/desktop",
-    "crates/collab/tilo-peer-state",
+    "crates/collab/tilo-room",
     "crates/browser/tilo-browser-runtime",
     "crates/hosting/tilo-device-host",
     "crates/hosting/tilo-workspace-host",
@@ -137,7 +137,7 @@ members = [
     "crates/collab/session-trace",
     "crates/collab/threshold-identity",
     "crates/collab/tilo-callstream",
-    "crates/collab/tilo-joined-room",
+    "crates/collab/tilo-room-session",
     "crates/collab/tilo-user-identity",
 
     # Dev

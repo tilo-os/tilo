@@ -1,8 +1,8 @@
 use super::{HostedAttemptError as Error, Result, identity};
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::{self, JoinTransportRequest as Request};
-use tilo_peer_state::resources::dto_guard::{self as json_guard, GuardLimits};
+use tilo_room::join::{self, JoinTransportRequest as Request};
+use tilo_room::resources::dto_guard::{self as json_guard, GuardLimits};
 mod phase;
 use std::io::Write;
 

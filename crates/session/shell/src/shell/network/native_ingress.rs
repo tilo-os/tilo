@@ -95,8 +95,7 @@ impl ShellNetwork {
         // admitted app operation may now reach the existing broker fanout.
         if !matches!(
             report.primary(),
-            tilo_peer_state::InputDisposition::Accepted(_)
-                | tilo_peer_state::InputDisposition::Duplicate(_)
+            tilo_room::InputDisposition::Accepted(_) | tilo_room::InputDisposition::Duplicate(_)
         ) {
             return;
         }

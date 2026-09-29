@@ -2,9 +2,7 @@
 use super::*;
 use crate::peer_invitation::InvitedIdentity;
 use tilo_delivery_protocol::workspace_join::{IrohWorkspaceHostHintV1, WorkspaceHostTrust};
-use tilo_peer_state::join::{
-    self, JoinTransportRequest as Request, JoinTransportResponse as Response,
-};
+use tilo_room::join::{self, JoinTransportRequest as Request, JoinTransportResponse as Response};
 
 struct Attempt {
     identity: RefCell<InvitedIdentity>,

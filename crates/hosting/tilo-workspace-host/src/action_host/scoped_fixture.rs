@@ -103,7 +103,7 @@ impl ScopedAppFixture {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         if !owner.peer().rows().iter().any(|row| row.app_id == app) {
-            use tilo_peer_state::{
+            use tilo_room::{
                 desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
                 owner_commit::{CommitOperation, OwnerCommitRequest},
             };
@@ -555,7 +555,7 @@ impl ScopedAppFixture {
         let outcome = self
             .owner
             .receive_delivery(
-                tilo_peer_state::TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
+                tilo_room::TransportOrigin::RelayDelta(key.verifying_key().to_bytes()),
                 CompleteStateItem {
                     delivery_id: [delivery; 16],
                     canonical: &canonical,
@@ -592,9 +592,7 @@ fn admit_caller(
     now: u64,
 ) -> (tilo_user_identity::DeviceCert, ed25519_dalek::SigningKey) {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     let root = ed25519_dalek::SigningKey::from_bytes(&[103; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[104; 32]);
     let mut cert = tilo_user_identity::DeviceCert {

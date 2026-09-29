@@ -40,7 +40,7 @@ iroh.workspace = true
 iroh-base.workspace = true
 web-time = "1"
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-peer-state = {path="../../collab/tilo-peer-state"}
+tilo-room = {path="../../collab/tilo-room"}
 tilo-workspace-host = { path = "../tilo-workspace-host", features = ["media"] }
 tilo-moq = {path="../tilo-moq", features=["relay"]}
 tilo-action-broker = {path="../../collab/tilo-action-broker"}

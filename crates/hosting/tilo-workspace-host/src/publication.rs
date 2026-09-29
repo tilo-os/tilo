@@ -1,7 +1,7 @@
 //! Transient consumer progress only. Sending never retires durable publication evidence.
 use crate::SessionOwner;
 use anyhow::{Result, bail};
-use tilo_peer_state::transport::Retention;
+use tilo_room::transport::Retention;
 
 #[derive(Default)]
 pub(crate) struct PublicationCursor {
@@ -95,7 +95,7 @@ fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 #[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 
@@ -139,19 +139,19 @@ mod tests {
         key: &SigningKey,
         request_id: u8,
         now: u64,
-    ) -> tilo_peer_state::enrollment::CompleteRequest {
+    ) -> tilo_room::enrollment::CompleteRequest {
         let challenge = authority
             .challenge(
                 owner,
-                tilo_peer_state::enrollment::ChallengeRequest {
+                tilo_room::enrollment::ChallengeRequest {
                     device_public_key: hex::encode(key.verifying_key().to_bytes()),
                     request_id: hex::encode([request_id; 32]),
                 },
                 now,
             )
             .unwrap();
-        tilo_peer_state::enrollment::sign(
-            &tilo_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+        tilo_room::enrollment::sign(
+            &tilo_room::enrollment::decode(&challenge.challenge).unwrap(),
             key,
         )
         .unwrap()

@@ -155,7 +155,7 @@ impl PrivateService {
     pub fn submit(
         &mut self,
         request: VerifiedRequest<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         deadline: Instant,
     ) -> Result<PendingPrivate, PrivateError> {
         self.submit_inner(request, peer, deadline, None)
@@ -165,7 +165,7 @@ impl PrivateService {
     pub fn submit_with_policy_time(
         &mut self,
         request: VerifiedRequest<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         deadline: Instant,
         time: PolicyTime,
     ) -> Result<PendingPrivate, PrivateError> {
@@ -174,7 +174,7 @@ impl PrivateService {
     fn submit_inner(
         &mut self,
         request: VerifiedRequest<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         deadline: Instant,
         time: Option<PolicyTime>,
     ) -> Result<PendingPrivate, PrivateError> {

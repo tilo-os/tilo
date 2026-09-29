@@ -8,7 +8,7 @@ use tilo_action_broker::host_documents::{
     HostDocumentTurnError, HostDocuments, PendingHostDocument,
 };
 use tilo_action_broker::peer_actions::PolicyTime;
-use tilo_peer_state::{
+use tilo_room::{
     NeighbourMsg,
     owner_commit::{
         CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
@@ -347,7 +347,7 @@ fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
     owner.outgoing().iter().map(|p| p.bytes.to_vec()).collect()
 }
 #[cfg(test)]
-fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_peer_state::transport::Retention> {
+fn outgoing_kinds(owner: &crate::SessionOwner) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 
@@ -703,8 +703,8 @@ mod tests {
         assert_eq!(
             &outgoing_kinds(&owner)[baseline.len()..],
             &[
-                tilo_peer_state::transport::Retention::Delta,
-                tilo_peer_state::transport::Retention::Checkpoint
+                tilo_room::transport::Retention::Delta,
+                tilo_room::transport::Retention::Checkpoint
             ]
         );
         let request_writer = request(

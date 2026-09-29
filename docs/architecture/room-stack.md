@@ -92,8 +92,9 @@ model. The plan below does exactly that: **the room core is StatePeer's
 admission machine, moved and renamed, with the shell's governance model
 (the desktop-model `Workspace` vocabulary, channel classes, delegated
 admissions, seals) as its governance.** Nothing survives beside it: the
-shell's `room_docs` engine, `tilo-peer-state` and `tilo-joined-room` as
-separate crates, and the shell's network-level admission code are removed.
+shell's `room_docs` engine and the shell's network-level admission code are
+removed, and `tilo-peer-state` and `tilo-joined-room` become the core and its
+carrier.
 
 What each costs, honestly:
 
@@ -110,9 +111,14 @@ lost), which is the union of (a)'s low churn and (b)'s single model.
 
 ## The room core: `tilo-room`
 
-One crate, `crates/collab/tilo-room`, formed by moving
-`crates/collab/tilo-peer-state` and `crates/collab/tilo-joined-room` into it.
-Its parts:
+`crates/collab/tilo-room`, formed from `crates/collab/tilo-peer-state`, with
+its carrier `crates/collab/tilo-room-session`, formed from
+`crates/collab/tilo-joined-room`. They stay two crates for one reason: the
+room core builds for the browser and is what the relay itself links for
+retention proofs, while carrying a room over relay sessions needs the relay
+client, Iroh and Tokio. One crate would make the relay depend on itself.
+Everything that decides what a room is lives in `tilo-room`; `tilo-room-session`
+only carries it. Their parts:
 
 - **`room`**: the per-room state machine (today's `StatePeer`), transport
   agnostic, admission transactional, deferral on missing prerequisites.
@@ -135,10 +141,12 @@ Its parts:
 - **`keys`**: who may hold a channel's key (today `shell/channel_policy.rs`).
   MLS itself stays in `channel-crypto` through the action broker; the room
   decides membership, the broker keeps the group. Public rooms keep no key.
-- **`session`**: carrying a room: relay sessions (today
+- **`tilo-room-session`**: carrying a room: relay sessions (today
   `tilo-joined-room::session` and the shell actor's `HostRouteScheduler`),
-  redemption at hosts, retention classification (one classifier, today split
-  between `tilo_peer_state::transport` and `neighbour_wire::retention`).
+  redemption at hosts, enrollment, and the durable owner of a device's room
+  replicas (`NativeWorkspaceOwner`).
+- **Retention**: one classifier in `tilo-room`, today split between
+  `tilo_peer_state::transport` and `neighbour_wire::retention`.
 
 Kinds of room, one model: a private room (governed, encrypted channels), a
 public room (governed, plaintext, delegated host admission, standing
@@ -168,8 +176,9 @@ stored state is not migrated.
 
 1. **`tilo-community`**: the community configuration and the join, retry,
    refusal and leave rules, shared; the shell's `keep_community` calls it.
-2. **`tilo-room` by move**: `tilo-peer-state` and `tilo-joined-room` become
-   `tilo-room`; every user is updated; no behaviour change.
+2. **`tilo-room` by move**: `tilo-peer-state` becomes `tilo-room` and
+   `tilo-joined-room` becomes `tilo-room-session`; every user is updated; no
+   behaviour change.
 3. **The core learns the shell's model**: channel classes, delegated host
    admission, direct rooms, comment signing, recording delegations, identity
    announcements, record seals, one retention classifier, one

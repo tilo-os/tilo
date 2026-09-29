@@ -99,7 +99,7 @@ impl Registry {
                     .ok_or("native call policy missing")?;
                 let mut calls = policy.calls.iter().filter(|(_, call)| {
                     call.binding == binding
-                        && call.phase == tilo_peer_state::room::media::CallPhaseV1::Active
+                        && call.phase == tilo_room::room::media::CallPhaseV1::Active
                 });
                 let (id, _) = calls.next().ok_or("native governed call unavailable")?;
                 if calls.next().is_some() {
@@ -293,7 +293,7 @@ fn advance(
             if body.is_empty() || body.len() > descriptor::MAX_HINT_BYTES {
                 return Err("native descriptor response bounds".into());
             }
-            let hint: tilo_peer_state::join::TransportHint =
+            let hint: tilo_room::join::TransportHint =
                 postcard::from_bytes(body).map_err(|error| error.to_string())?;
             let mut canonical = vec![0_u8; descriptor::MAX_HINT_BYTES];
             if postcard::to_slice(&hint, &mut canonical).map_err(|error| error.to_string())? != body

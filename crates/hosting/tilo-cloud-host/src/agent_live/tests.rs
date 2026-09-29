@@ -322,7 +322,7 @@ fn worker_commit_capture_keeps_exact_canonical_bytes_and_the_writer_caret() {
     drop(store);
     let canonical =
         crate::delivery::admission::tests::browser_delta(dir.path(), "agent-admission", "Hi ");
-    let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
+    let message: tilo_room::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
     let mut store = crate::Store::open(dir.path(), "agent-admission").unwrap();
     let before = store.peer_at(store.policy_now_ns().unwrap()).unwrap();
     store

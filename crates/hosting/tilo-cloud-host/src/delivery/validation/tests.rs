@@ -1,6 +1,6 @@
 use crate::{State, Store, delivery, now_time};
 use tilo_delivery_protocol::delivery_v3::commit::{CommitError, PublicationRef};
-use tilo_peer_state::transport::Retention;
+use tilo_room::transport::Retention;
 
 fn fixture() -> (tempfile::TempDir, Store, Vec<u8>, u64) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();

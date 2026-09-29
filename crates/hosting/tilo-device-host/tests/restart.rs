@@ -472,7 +472,7 @@ fn revoked_identity_and_replay_floors_survive_restart() {
     sign_revocation_entry(&mut revoked, &root).unwrap();
     let mut list = RevocationList::new();
     list.insert(revoked).unwrap();
-    let peer = tilo_peer_state::StatePeer::restore(
+    let peer = tilo_room::StatePeer::restore(
         &owner.peer().durable().unwrap(),
         owner.peer().room(),
         owner.peer().authority().clone(),
@@ -519,7 +519,7 @@ async fn actual_loopback_subscription_reconnect_keeps_same_owner() {
 
 #[test]
 fn authenticated_encryption_obligation_is_committed_even_without_plaintext_checkpoint() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     use tilo_user_identity::persist::{self, IdentityPaths};
     let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = dir.path().join("owner");
@@ -741,8 +741,8 @@ async fn admit_until_ready(
     owner: &mut SessionOwner,
     session: &mut tilo_workspace_host::host::NativeSubscription,
 ) {
-    use tilo_peer_state::TransportOrigin;
     use tilo_relay::Inbound;
+    use tilo_room::TransportOrigin;
     while !session.is_ready() {
         match session
             .recv()
@@ -776,7 +776,7 @@ async fn admit_until_ready(
 
 #[test]
 fn deferred_snapshot_stays_reachable_until_governed_coverage_then_commits() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     use tilo_user_identity::persist::{self, IdentityPaths};
     let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
     let path = dir.path().join("owner");
@@ -881,7 +881,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
         .unwrap();
     let chat = owner.peer().document("so.tilo.chat", "").unwrap();
     let message = owner.peer().room_message();
-    let tilo_peer_state::NeighbourMsg::SyncResp { changes, .. } = message else {
+    let tilo_room::NeighbourMsg::SyncResp { changes, .. } = message else {
         panic!("room state")
     };
     let mut doc = AutoCommit::new();
@@ -911,8 +911,7 @@ fn desktop_bootstrap_is_durable_and_preserves_existing_record_routes() {
             writer
         );
         assert_eq!(owner.peer().document("so.tilo.chat", "").unwrap(), chat);
-        let tilo_peer_state::NeighbourMsg::SyncResp { changes, .. } = owner.peer().room_message()
-        else {
+        let tilo_room::NeighbourMsg::SyncResp { changes, .. } = owner.peer().room_message() else {
             panic!("room state")
         };
         let mut doc = AutoCommit::new();

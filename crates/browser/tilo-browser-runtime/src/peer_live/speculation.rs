@@ -29,7 +29,7 @@
 //! persisted before the host confirms it; a failed host barrier then leaves
 //! it only in this Peer's state, as for a local publication.
 use tilo_delivery_protocol::delivery_v3::live_wire::MAX_STREAM_FRAME_BYTES;
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_room::{NeighbourMsg, StatePeer};
 
 /// A forwarded change not covered by durable state within this window is
 /// withdrawn. Host commits take milliseconds; a failed barrier is retried by

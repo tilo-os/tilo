@@ -1,7 +1,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::enrollment::{self, ChallengeRequest};
+use tilo_room::enrollment::{self, ChallengeRequest};
 use tilo_workspace_host::{
     SessionOwner,
     enrollment::{EnrollmentAuthority, public_bootstrap},
@@ -350,7 +350,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     sign_revocation_entry(&mut revoked, &root).unwrap();
     let mut list = RevocationList::new();
     list.insert(revoked).unwrap();
-    let candidate = tilo_peer_state::StatePeer::restore(
+    let candidate = tilo_room::StatePeer::restore(
         &owner.peer().durable().unwrap(),
         owner.peer().room(),
         owner.peer().authority().clone(),
@@ -410,7 +410,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
     {
         revoked.insert(entry).unwrap();
     }
-    let fresh = tilo_peer_state::StatePeer::new(
+    let fresh = tilo_room::StatePeer::new(
         owner.peer().room(),
         owner.peer().authority().clone(),
         roster.clone(),
@@ -422,7 +422,7 @@ fn revoked_viewer_is_rejected_without_blocking_other_viewers() {
         "an unrelated revoked viewer must not block browser startup: {:?}",
         fresh.err()
     );
-    let restored = tilo_peer_state::StatePeer::restore(
+    let restored = tilo_room::StatePeer::restore(
         &owner.peer().durable().unwrap(),
         owner.peer().room(),
         owner.peer().authority().clone(),
@@ -453,7 +453,7 @@ fn outgoing_bytes(owner: &tilo_workspace_host::SessionOwner) -> Vec<Vec<u8>> {
 
 #[test]
 fn local_bootstrap_admits_real_governance_without_transport_sync() {
-    use tilo_peer_state::{StatePeer, TransportOrigin, transport::Retention};
+    use tilo_room::{StatePeer, TransportOrigin, transport::Retention};
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let now = tilo_delivery_protocol::clock::now_ns();
@@ -511,6 +511,6 @@ fn local_bootstrap_admits_real_governance_without_transport_sync() {
 }
 fn outgoing_kinds(
     owner: &tilo_workspace_host::SessionOwner,
-) -> Vec<tilo_peer_state::transport::Retention> {
+) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }

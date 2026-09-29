@@ -11,7 +11,7 @@ use super::CompleteEvent;
 use crate::peer_delivery_cursor::StoredDeliveryCursor;
 use crate::peer_journal::{JournalFormat, JournalStorage};
 use tilo_delivery_protocol::delivery_v3::{cursor::CursorToken, state::EventKind};
-use tilo_peer_state::{NativePublicationCut, NeighbourMsg, StatePeer};
+use tilo_room::{NativePublicationCut, NeighbourMsg, StatePeer};
 use web_time::SystemTime;
 
 /// Largest outer allocation one decoded publication may make.
@@ -57,9 +57,9 @@ impl CutAdmission {
         now: SystemTime,
     ) -> Result<(), String> {
         let cut = self.cut.take().ok_or("native cut already failed")?;
-        let held = tilo_peer_state::resources::BoundedPeerMessage::decode(
+        let held = tilo_room::resources::BoundedPeerMessage::decode(
             bytes,
-            tilo_peer_state::resources::OuterLimits {
+            tilo_room::resources::OuterLimits {
                 allocation_bytes: MAX_PUBLICATION_ALLOCATION,
                 collection_entries: 65536,
             },

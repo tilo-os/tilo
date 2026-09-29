@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::JoinTransportRequest as Request;
+use tilo_room::join::JoinTransportRequest as Request;
 
 pub(in crate::peer_cloud) const NOW: u64 = 1_000_000_000_000;
 const ROOM: &str = "6d3c0042-a32d-4c3d-9616-03e621da0f47";
@@ -111,7 +111,7 @@ pub(in crate::peer_cloud) fn enrolled_owner_for(
 /// Host-side governance after Store.apply admitted the browser certificate.
 fn owner_bootstrap(scope: &EnrolledOwner, admit: bool, now: u64) -> join::OwnerBootstrapV1 {
     let host = scope.host().clone();
-    let mut native = tilo_peer_state::StatePeer::new(
+    let mut native = tilo_room::StatePeer::new(
         ROOM,
         host.clone(),
         vec![host.clone()],
@@ -121,8 +121,8 @@ fn owner_bootstrap(scope: &EnrolledOwner, admit: bool, now: u64) -> join::OwnerB
     .unwrap();
     native
         .install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &host, std::slice::from_ref(&host))
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, &host, std::slice::from_ref(&host))
                     .unwrap(),
                 documents: vec![],
             },

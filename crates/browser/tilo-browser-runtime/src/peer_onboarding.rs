@@ -3,7 +3,7 @@ use crate::peer_invitation::InvitedIdentity;
 use ed25519_dalek::{Signer, SigningKey};
 use serde::Serialize;
 use tilo_delivery_protocol::delivery_v3::{onboarding_wire as wire, state::canonical_item_digest};
-use tilo_peer_state::join::JoinTransportRequest;
+use tilo_room::join::JoinTransportRequest;
 mod handoff;
 mod local;
 mod preflight;
@@ -17,19 +17,19 @@ pub(crate) use local::local_governance;
 pub(crate) use wasm::exchange_invited;
 
 pub(crate) struct OnboardingReply {
-    held: tilo_peer_state::resources::BoundedJoinResponse,
+    held: tilo_room::resources::BoundedJoinResponse,
 }
 impl OnboardingReply {
-    pub(crate) fn response(&self) -> &tilo_peer_state::join::JoinTransportResponse {
+    pub(crate) fn response(&self) -> &tilo_room::join::JoinTransportResponse {
         self.held.response()
     }
     fn decode(bytes: &[u8]) -> Result<Self, String> {
         if bytes.len() > wire::MAX_RESPONSE_BYTES {
             return Err("onboarding nested reply exceeds bound".into());
         }
-        let held = tilo_peer_state::resources::BoundedJoinResponse::decode(
+        let held = tilo_room::resources::BoundedJoinResponse::decode(
             bytes,
-            tilo_peer_state::resources::OuterLimits {
+            tilo_room::resources::OuterLimits {
                 allocation_bytes: 32 * 1024 * 1024,
                 // Legacy Vec<u8> is a Serde sequence too. The separate
                 // allocation guard limits concrete backing before growth.

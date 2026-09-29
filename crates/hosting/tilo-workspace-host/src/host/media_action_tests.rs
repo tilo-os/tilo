@@ -14,8 +14,8 @@ use tilo_delivery_protocol::{
     peer_actions::{ActionMessage, DirectedAction},
     transport_v2::EnvelopeV2,
 };
-use tilo_peer_state::room::media;
 use tilo_relay::Envelope;
+use tilo_room::room::media;
 use tilo_user_identity::{DeviceCert, sign_device_cert};
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 use uuid::Uuid;
@@ -28,7 +28,7 @@ struct Harness {
     admin: tokio::sync::mpsc::Receiver<CollaborationAdminCommand>,
     commits: OwnerCommitMailbox,
     signatures: SignatureMailbox,
-    network: tokio::sync::mpsc::Receiver<tilo_peer_state::NeighbourMsg>,
+    network: tokio::sync::mpsc::Receiver<tilo_room::NeighbourMsg>,
     service: CollaborationService,
     dispatched: usize,
 }

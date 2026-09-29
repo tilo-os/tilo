@@ -305,7 +305,7 @@ impl InstalledIngress {
     pub(crate) fn discovery_hint(
         &self,
         owner: &SessionOwner,
-    ) -> Result<tilo_peer_state::join::TransportHint> {
+    ) -> Result<tilo_room::join::TransportHint> {
         self.discovery_hint_clock(owner, IngressClock::current(&self.current)?)
     }
     #[cfg(test)]
@@ -313,14 +313,14 @@ impl InstalledIngress {
         &self,
         owner: &SessionOwner,
         now: u64,
-    ) -> Result<tilo_peer_state::join::TransportHint> {
+    ) -> Result<tilo_room::join::TransportHint> {
         self.discovery_hint_clock(owner, IngressClock::Fixed(now))
     }
     fn discovery_hint_clock(
         &self,
         owner: &SessionOwner,
         clock: IngressClock,
-    ) -> Result<tilo_peer_state::join::TransportHint> {
+    ) -> Result<tilo_room::join::TransportHint> {
         let guard = self.current.read().map_err(anyhow::Error::msg)?;
         let now = clock.sample(guard.view())?;
         self.validate_installation(owner, guard.view(), &self.origin)?;
@@ -545,11 +545,7 @@ impl InstalledIngress {
         self.data.sync_private(actions);
     }
     /// Legacy-window video the session device `author` published as presence.
-    pub(crate) fn legacy_window(
-        &mut self,
-        author: [u8; 32],
-        message: &tilo_peer_state::NeighbourMsg,
-    ) {
+    pub(crate) fn legacy_window(&mut self, author: [u8; 32], message: &tilo_room::NeighbourMsg) {
         if let Some(live) = &self.live {
             self.legacy.observe(&live.relay, author, message);
         }

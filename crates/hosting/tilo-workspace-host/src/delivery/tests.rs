@@ -910,7 +910,7 @@ fn delivery_restore_fault_preserves_a_complete_old_or_new_incarnation() {
 #[test]
 fn delivery_enrollment_and_governance_transactions_enter_replay_while_receipt_only_gaps_do_not() {
     use crate::{collaboration::*, enrollment::EnrollmentAuthority};
-    use tilo_peer_state::{enrollment, join::*};
+    use tilo_room::{enrollment, join::*};
     let (_temp, mut owner) = owner();
     owner.activate_delivery().unwrap();
     let now = now_ns();

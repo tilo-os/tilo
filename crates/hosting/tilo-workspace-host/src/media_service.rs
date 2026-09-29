@@ -15,7 +15,7 @@ use std::{
 use tilo_moq::relay::{
     Admission, AuthorizationStatus, Denied, Direction, RelayAuthority, SessionAuthorization,
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
 use web_time::SystemTime;
 

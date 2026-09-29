@@ -67,7 +67,7 @@ pub(super) fn retained_unknown(
     device: [u8; 32],
     invocation: uuid::Uuid,
     task: &str,
-) -> tilo_peer_state::owner_commit::AgentExecutionIds {
+) -> tilo_room::owner_commit::AgentExecutionIds {
     use crate::agent_runtime_owner::{AgentAdmissionResult, AgentControlId};
     use tilo_agent_control_protocol::{AgentRequest, canonical_request, decode_request};
     let caller = store.agent_caller(device).unwrap();

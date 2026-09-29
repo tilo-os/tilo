@@ -8,7 +8,7 @@ use tilo_delivery_protocol::delivery_v3::{
     descriptor::{self, VerifiedDescriptor},
     http_proof, media_wire,
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
@@ -45,7 +45,7 @@ impl OwnerView<'_> {
         governor: &DeviceCert,
         host: &DeviceCert,
         device: &DeviceCert,
-        hint: &tilo_peer_state::join::TransportHint,
+        hint: &tilo_room::join::TransportHint,
     ) -> Result<(), String> {
         if workspace != self.workspace
             || room != self.peer.room()
@@ -151,7 +151,7 @@ pub(crate) struct VerifiedBootstrap {
 impl Bootstrap {
     pub fn start(
         view: &OwnerView<'_>,
-        hint: &tilo_peer_state::join::TransportHint,
+        hint: &tilo_room::join::TransportHint,
     ) -> Result<(Self, PreparedRequest), String> {
         if view.lease_epoch.is_empty()
             || view.lease_epoch.len() > 128

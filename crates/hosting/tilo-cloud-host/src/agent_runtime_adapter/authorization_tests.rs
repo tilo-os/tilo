@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use tilo_action_broker::collab_broker::CrdtRoute;
 use tilo_action_broker::peer_actions::CertificateAuthority;
 use tilo_desktop_model::commands::DesktopCommand;
-use tilo_peer_state::desktop_command::{BoundCommand, CommandSource};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_room::desktop_command::{BoundCommand, CommandSource};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 thread_local! {
     /// Store opens through `RuntimeOwner::store_for` on this test thread.
@@ -185,8 +185,8 @@ fn revoke(w: &Workspace, device: [u8; 32], at_ns: u64) {
         .store()
         .unwrap()
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(w.person.device_public_key),
-            tilo_peer_state::NeighbourMsg::IdentityHello {
+            tilo_room::TransportOrigin::RelayDelta(w.person.device_public_key),
+            tilo_room::NeighbourMsg::IdentityHello {
                 cert: Box::new(w.person.clone()),
                 revocations: vec![entry],
             },

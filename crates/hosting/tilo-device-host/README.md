@@ -109,7 +109,7 @@ losslessly to v2; failures never create replacement identities.
 A complete signed directory snapshot includes dependency closure for an empty
 peer after any previous publication cursor. Bootstrapv2 is public-only Rust JSON;
 timestamp-bearing fields must reach browser Rust without JavaScript number
-re-serialization. Challenge proof bytes are defined once by tilo-peer-state.
+re-serialization. Challenge proof bytes are defined once by tilo-room.
 
 For an explicitly reviewed content migration, run before starting/enrolling:
 

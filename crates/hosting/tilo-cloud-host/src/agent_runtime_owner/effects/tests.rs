@@ -153,7 +153,7 @@ fn remaining_history(store: &Store, custody: &AgentAttemptCustody) -> Vec<AgentR
     };
     let literal = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../collab/tilo-peer-state/src/owner_commit/fixtures/agent-ledger-completed.json"
+        "/../../collab/tilo-room/src/owner_commit/fixtures/agent-ledger-completed.json"
     ));
     let mut json = literal.to_string();
     for (n, value) in [
@@ -471,7 +471,7 @@ fn change_governance(store: &mut Store) {
     )
     .unwrap();
     doc.commit();
-    let message = tilo_peer_state::NeighbourMsg::SyncResp {
+    let message = tilo_room::NeighbourMsg::SyncResp {
         room: store.state.room.clone(),
         changes: doc
             .get_changes(&[])
@@ -482,7 +482,7 @@ fn change_governance(store: &mut Store) {
     let now = store.policy_now_ns().unwrap();
     store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+            tilo_room::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
             message,
             now,
         )
@@ -566,7 +566,7 @@ fn change_governance_again(store: &mut Store) {
     )
     .unwrap();
     doc.commit();
-    let message = tilo_peer_state::NeighbourMsg::SyncResp {
+    let message = tilo_room::NeighbourMsg::SyncResp {
         room: store.state.room.clone(),
         changes: doc
             .get_changes(&[])
@@ -576,7 +576,7 @@ fn change_governance_again(store: &mut Store) {
     };
     let now = store.policy_now_ns().unwrap();
     let _ = store.receive(
-        tilo_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+        tilo_room::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
         message,
         now,
     );
@@ -647,7 +647,7 @@ fn narrow_owner_writer(store: &mut Store) {
     )
     .unwrap();
     doc.commit();
-    let message = tilo_peer_state::NeighbourMsg::SyncResp {
+    let message = tilo_room::NeighbourMsg::SyncResp {
         room: store.state.room.clone(),
         changes: doc
             .get_changes(&[])
@@ -658,7 +658,7 @@ fn narrow_owner_writer(store: &mut Store) {
     let now = store.policy_now_ns().unwrap();
     store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
+            tilo_room::TransportOrigin::RelayDelta(store.key().verifying_key().to_bytes()),
             message,
             now,
         )

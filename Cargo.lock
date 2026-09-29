@@ -13246,19 +13246,19 @@ dependencies = [
  "tilo-feedback-review",
  "tilo-identity-host",
  "tilo-installed-apps",
- "tilo-joined-room",
  "tilo-lockdown-policy",
  "tilo-model-gateway",
  "tilo-moq",
  "tilo-native-media-control",
  "tilo-net",
- "tilo-peer-state",
  "tilo-power-mgmt",
  "tilo-projector",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-protocol",
  "tilo-resource",
+ "tilo-room",
+ "tilo-room-session",
  "tilo-rt",
  "tilo-runtime",
  "tilo-seal",
@@ -14605,8 +14605,8 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-identity-host",
- "tilo-peer-state",
  "tilo-relay",
+ "tilo-room",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -14837,8 +14837,8 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop",
  "tilo-desktop-model",
- "tilo-peer-state",
  "tilo-relay-protocol",
+ "tilo-room",
  "tilo-ui",
  "tilo-user-identity",
  "uuid",
@@ -14899,8 +14899,8 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-delivery-protocol",
- "tilo-peer-state",
  "tilo-relay-protocol",
+ "tilo-room",
  "tilo-user-identity",
  "uuid",
  "workspace-hack",
@@ -14953,8 +14953,8 @@ dependencies = [
  "tilo-model-gateway",
  "tilo-moq",
  "tilo-net",
- "tilo-peer-state",
  "tilo-relay",
+ "tilo-room",
  "tilo-seal",
  "tilo-test-env",
  "tilo-ui",
@@ -15084,9 +15084,9 @@ dependencies = [
  "tilo-agent-control-protocol",
  "tilo-automerge-isolate",
  "tilo-clock",
- "tilo-peer-state",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-room",
  "tilo-test-env",
  "tilo-user-identity",
  "tokio",
@@ -15188,8 +15188,8 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-moq",
- "tilo-peer-state",
  "tilo-relay",
+ "tilo-room",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -15315,38 +15315,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-joined-room"
-version = "0.1.0"
-dependencies = [
- "atomic-file",
- "automerge",
- "blake3",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "getrandom 0.4.3",
- "iroh",
- "iroh-base",
- "parking_lot",
- "postcard",
- "rand_core 0.10.0",
- "serde",
- "serde_json",
- "tempfile",
- "tilo-automerge-isolate",
- "tilo-delivery-protocol",
- "tilo-desktop-model",
- "tilo-identity-host",
- "tilo-peer-state",
- "tilo-relay",
- "tilo-relay-protocol",
- "tilo-user-identity",
- "tokio",
- "tracing",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-lockdown-policy"
 version = "0.1.0"
 dependencies = [
@@ -15415,8 +15383,8 @@ dependencies = [
  "postcard",
  "tilo-automerge-isolate",
  "tilo-delivery-protocol",
- "tilo-peer-state",
  "tilo-relay-protocol",
+ "tilo-room",
  "tilo-user-identity",
  "uuid",
  "workspace-hack",
@@ -15525,32 +15493,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-peer-state"
-version = "0.1.0"
-dependencies = [
- "automerge",
- "base64",
- "blake3",
- "collab-types",
- "ed25519-dalek 3.0.0",
- "flate2",
- "fnv",
- "hex",
- "neighbour-wire",
- "postcard",
- "serde",
- "serde_json",
- "tilo-agent-control-protocol",
- "tilo-automerge",
- "tilo-automerge-isolate",
- "tilo-desktop-model",
- "tilo-user-identity",
- "uuid",
- "web-time",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-power-mgmt"
 version = "0.1.0"
 dependencies = [
@@ -15648,10 +15590,10 @@ dependencies = [
  "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
- "tilo-peer-state",
  "tilo-reference",
  "tilo-relay-client",
  "tilo-relay-protocol",
+ "tilo-room",
  "tilo-rt",
  "tilo-seal",
  "tilo-test-env",
@@ -15696,7 +15638,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "thiserror 2.0.18",
- "tilo-peer-state",
+ "tilo-room",
  "tilo-user-identity",
  "toml 1.0.6+spec-1.1.0",
  "uuid",
@@ -15763,6 +15705,64 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-room"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "base64",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "flate2",
+ "fnv",
+ "hex",
+ "neighbour-wire",
+ "postcard",
+ "serde",
+ "serde_json",
+ "tilo-agent-control-protocol",
+ "tilo-automerge",
+ "tilo-automerge-isolate",
+ "tilo-desktop-model",
+ "tilo-user-identity",
+ "uuid",
+ "web-time",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-room-session"
+version = "0.1.0"
+dependencies = [
+ "atomic-file",
+ "automerge",
+ "blake3",
+ "collab-types",
+ "ed25519-dalek 3.0.0",
+ "getrandom 0.4.3",
+ "iroh",
+ "iroh-base",
+ "parking_lot",
+ "postcard",
+ "rand_core 0.10.0",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tilo-automerge-isolate",
+ "tilo-delivery-protocol",
+ "tilo-desktop-model",
+ "tilo-identity-host",
+ "tilo-relay",
+ "tilo-relay-protocol",
+ "tilo-room",
+ "tilo-user-identity",
+ "tokio",
+ "tracing",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rt"
 version = "0.1.0"
 dependencies = [
@@ -15815,12 +15815,12 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-identity-host",
  "tilo-installed-apps",
- "tilo-joined-room",
- "tilo-peer-state",
  "tilo-reference",
  "tilo-relay",
  "tilo-relay-protocol",
  "tilo-resource",
+ "tilo-room",
+ "tilo-room-session",
  "tilo-rt",
  "tilo-test-env",
  "tilo-ui",
@@ -16163,8 +16163,8 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-moq",
  "tilo-native-media-control",
- "tilo-peer-state",
  "tilo-relay",
+ "tilo-room",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",

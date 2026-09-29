@@ -3,9 +3,7 @@
 //! next remote operation.
 use ed25519_dalek::{Signature, SigningKey, Verifier, VerifyingKey};
 use serde::Deserialize;
-use tilo_peer_state::join::{
-    self, JoinTransportRequest as Request, JoinTransportResponse as Response,
-};
+use tilo_room::join::{self, JoinTransportRequest as Request, JoinTransportResponse as Response};
 use tilo_user_identity as identity;
 mod material;
 use material::{
@@ -41,7 +39,7 @@ pub struct ApplyRequest<'a> {
 }
 /// Unqualified DTO custody only. No StatePeer/admitted/ready conversion exists.
 pub struct PendingHostedBootstrap {
-    _held: tilo_peer_state::resources::BoundedJoinResponse,
+    _held: tilo_room::resources::BoundedJoinResponse,
 }
 struct Saved {
     material: MaterialV4,
@@ -543,14 +541,14 @@ impl HostedAttempt {
     }
 }
 
-fn bounded_reply(bytes: &[u8]) -> Result<tilo_peer_state::resources::BoundedJoinResponse> {
+fn bounded_reply(bytes: &[u8]) -> Result<tilo_room::resources::BoundedJoinResponse> {
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::MAX_RESPONSE_BYTES;
     if bytes.is_empty() || bytes.len() > MAX_RESPONSE_BYTES {
         return Err(HostedAttemptError::Response);
     }
-    tilo_peer_state::resources::BoundedJoinResponse::decode(
+    tilo_room::resources::BoundedJoinResponse::decode(
         bytes,
-        tilo_peer_state::resources::OuterLimits {
+        tilo_room::resources::OuterLimits {
             allocation_bytes: 32 * 1024 * 1024,
             collection_entries: MAX_RESPONSE_BYTES,
         },

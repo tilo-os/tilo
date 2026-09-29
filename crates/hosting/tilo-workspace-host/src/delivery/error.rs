@@ -96,8 +96,8 @@ pub(in crate::owner) fn require(
     }
 }
 #[cfg(any(test, feature = "media"))]
-pub(in crate::owner) fn admission(error: tilo_peer_state::AdmissionError) -> anyhow::Error {
-    use tilo_peer_state::AdmissionError;
+pub(in crate::owner) fn admission(error: tilo_room::AdmissionError) -> anyhow::Error {
+    use tilo_room::AdmissionError;
     let kind = match &error {
         AdmissionError::WriterSelectionRequired => OwnerDataFailureKind::WriterNotSelected,
         AdmissionError::ConflictingSequence => OwnerDataFailureKind::NativeSequenceConflict,

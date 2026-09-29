@@ -1,6 +1,6 @@
 tilo_automerge_isolate::test_worker!();
 
-use tilo_peer_state::{desktop_command::*, owner_commit::*};
+use tilo_room::{desktop_command::*, owner_commit::*};
 use tilo_workspace_host::SessionOwner;
 
 fn request(owner: &SessionOwner, command: DesktopCommand) -> OwnerCommitRequest {
@@ -53,8 +53,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
         },
     );
     let baseline = outgoing_bytes(&owner).to_vec();
-    let receipts =
-        tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
+    let receipts = tilo_room::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let receipt = owner.commit_desktop_command(&opening).unwrap();
     receipt.validate_for(&opening).unwrap();
     assert!(outgoing_bytes(&owner).starts_with(&baseline));
@@ -66,13 +65,13 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     assert_eq!(
         &outgoing_kinds(&owner)[baseline.len()..],
         &[
-            tilo_peer_state::transport::Retention::Delta,
-            tilo_peer_state::transport::Retention::Checkpoint
+            tilo_room::transport::Retention::Delta,
+            tilo_room::transport::Retention::Checkpoint
         ]
     );
     for (route, receipt) in receipts {
         assert_eq!(
-            tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap())
+            tilo_room::durability::entries(owner.peer().admitted_room().unwrap())
                 .unwrap()
                 .get(&route),
             Some(&receipt)
@@ -102,7 +101,7 @@ fn owner_commands_create_checked_record_before_topology_and_retain_closed_data_o
     );
     assert_eq!(
         outgoing_kinds(&owner).last(),
-        Some(&tilo_peer_state::transport::Retention::Delta)
+        Some(&tilo_room::transport::Retention::Delta)
     );
     assert_eq!(
         owner.peer().document("so.tilo.notes", &record).unwrap(),
@@ -290,8 +289,8 @@ fn changed_nested_desktop_contents_are_rejected_even_without_an_allocator_change
     let mut candidate = owner.peer().clone();
     candidate
         .receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(author),
-            tilo_peer_state::NeighbourMsg::SyncResp {
+            tilo_room::TransportOrigin::RelayDelta(author),
+            tilo_room::NeighbourMsg::SyncResp {
                 room: owner.peer().room().into(),
                 changes: doc
                     .get_changes(&[])
@@ -637,15 +636,15 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     let challenge = enrollment
         .challenge(
             &owner,
-            tilo_peer_state::enrollment::ChallengeRequest {
+            tilo_room::enrollment::ChallengeRequest {
                 device_public_key: hex::encode(key.verifying_key().to_bytes()),
                 request_id: hex::encode([34; 32]),
             },
             now,
         )
         .unwrap();
-    let proof = tilo_peer_state::enrollment::sign(
-        &tilo_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+    let proof = tilo_room::enrollment::sign(
+        &tilo_room::enrollment::decode(&challenge.challenge).unwrap(),
         &key,
     )
     .unwrap();
@@ -678,7 +677,7 @@ fn caller_revoked_after_request_capture_is_refused_at_execution() {
     sign_revocation_entry(&mut entry, &root_key).unwrap();
     let mut revocations = RevocationList::new();
     revocations.insert(entry).unwrap();
-    let candidate = tilo_peer_state::StatePeer::restore(
+    let candidate = tilo_room::StatePeer::restore(
         &owner.peer().durable().unwrap(),
         owner.peer().room(),
         owner.peer().authority().clone(),
@@ -750,7 +749,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
         action: delivery.clone(),
         source_user,
     };
-    let admit = |state: &tilo_peer_state::StatePeer, event: &EnvelopeV2| {
+    let admit = |state: &tilo_room::StatePeer, event: &EnvelopeV2| {
         tilo_browser_runtime::committed_desktop::admit(
             state,
             event,
@@ -758,14 +757,12 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
             web_time::SystemTime::now(),
         )
     };
-    let admitted =
-        |state: &tilo_peer_state::StatePeer, event: &EnvelopeV2| match admit(state, event).unwrap()
-        {
-            tilo_browser_runtime::committed_desktop::Admission::Ready { candidate, .. } => {
-                candidate
-            }
-            _ => panic!("committed desktop is ready"),
-        };
+    let admitted = |state: &tilo_room::StatePeer, event: &EnvelopeV2| match admit(state, event)
+        .unwrap()
+    {
+        tilo_browser_runtime::committed_desktop::Admission::Ready { candidate, .. } => candidate,
+        _ => panic!("committed desktop is ready"),
+    };
     let opened = admitted(&browser, &event);
     let new_row = owner
         .peer()
@@ -814,10 +811,9 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
                     panic!()
                 };
                 let last = packets.last_mut().unwrap();
-                let mut bytes =
-                    tilo_peer_state::desktop_delivery::decode(std::slice::from_ref(last))
-                        .unwrap()
-                        .remove(0);
+                let mut bytes = tilo_room::desktop_delivery::decode(std::slice::from_ref(last))
+                    .unwrap()
+                    .remove(0);
                 let end = bytes.len() - 1;
                 bytes[end] ^= 1;
                 *last = hex::encode(bytes);
@@ -885,7 +881,7 @@ fn committed_desktop_opens_without_relay_retention_and_rejects_forged_delivery()
 #[test]
 fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delivery() {
     use tilo_delivery_protocol::transport_v2::EnvelopeV2;
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
 
     let root = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&root.path().join("deferred-direct")).unwrap();
@@ -948,8 +944,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
         packets
             .iter()
             .flat_map(
-                |packet| tilo_peer_state::desktop_delivery::decode(std::slice::from_ref(packet))
-                    .unwrap()
+                |packet| tilo_room::desktop_delivery::decode(std::slice::from_ref(packet)).unwrap()
             )
             .any(|packet| packet == withheld),
         "the direct delivery includes the exact already-persisted prerequisite that the browser missed"
@@ -1014,7 +1009,7 @@ fn committed_desktop_catches_up_a_missing_visible_record_without_retained_delive
 #[test]
 fn committed_desktop_emits_exact_launch_notice_when_retained_state_arrives_first() {
     use tilo_delivery_protocol::transport_v2::EnvelopeV2;
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
 
     let root = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&root.path().join("retained-first")).unwrap();
@@ -1084,7 +1079,7 @@ fn outgoing_bytes(owner: &tilo_workspace_host::SessionOwner) -> Vec<Vec<u8>> {
 }
 fn outgoing_kinds(
     owner: &tilo_workspace_host::SessionOwner,
-) -> Vec<tilo_peer_state::transport::Retention> {
+) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

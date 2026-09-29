@@ -22,7 +22,7 @@
 //! (`Store::peer`): callers that mutate own their copy exactly as with a
 //! fresh restore. Nothing here grants authority.
 use std::sync::{Arc, Mutex};
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 
 /// Longest interval one restore is reused even when no input and no identity
 /// time boundary changes.
@@ -174,7 +174,7 @@ struct CallerEntry {
     peers: std::sync::Weak<(StatePeer, StatePeer)>,
     key: ([u8; 32], u64, String, [u8; 32], String),
     at_ns: u64,
-    caller: tilo_peer_state::owner_commit::VerifiedAgentCaller,
+    caller: tilo_room::owner_commit::VerifiedAgentCaller,
 }
 #[cfg(not(test))]
 static CALLER_MEMO: Mutex<Vec<CallerEntry>> = Mutex::new(Vec::new());
@@ -192,8 +192,8 @@ pub(crate) fn caller(
     device: [u8; 32],
     origin: String,
     now_ns: u64,
-    derive: impl FnOnce() -> Result<tilo_peer_state::owner_commit::VerifiedAgentCaller, String>,
-) -> Result<tilo_peer_state::owner_commit::VerifiedAgentCaller, String> {
+    derive: impl FnOnce() -> Result<tilo_room::owner_commit::VerifiedAgentCaller, String>,
+) -> Result<tilo_room::owner_commit::VerifiedAgentCaller, String> {
     let key = (scope, generation, room.to_owned(), device, origin);
     if !disabled() {
         let found = with_callers(|memo| {

@@ -106,7 +106,7 @@ impl ShellNetwork {
         if owner
             .with_current(room, |view| {
                 Ok(view.device() == &certificate
-                    && tilo_peer_state::join::encode_invitation_text(view.enrollment_invitation())
+                    && tilo_room::join::encode_invitation_text(view.enrollment_invitation())
                         == token)
             })
             .unwrap_or(false)

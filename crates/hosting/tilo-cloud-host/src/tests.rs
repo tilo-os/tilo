@@ -55,10 +55,7 @@ fn apply_live_publications(receiver: &mut StatePeer, publications: &[StoredPubli
             .unwrap();
     }
 }
-fn receiver_from_join_bootstrap(
-    bootstrap: &tilo_peer_state::join::JoinBootstrap,
-    now: u64,
-) -> StatePeer {
+fn receiver_from_join_bootstrap(bootstrap: &tilo_room::join::JoinBootstrap, now: u64) -> StatePeer {
     let mut receiver = StatePeer::new(
         &bootstrap.room,
         bootstrap.authority.clone(),
@@ -86,8 +83,8 @@ pub(crate) fn invite_and_admit(
     invocation: &str,
     request_id: [u8; 32],
     now: u64,
-) -> (DeviceCert, tilo_peer_state::join::JoinBootstrap) {
-    use tilo_peer_state::join::{
+) -> (DeviceCert, tilo_room::join::JoinBootstrap) {
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, decode_and_verify_invitation_text,
         sign_join_proof,
     };
@@ -402,7 +399,7 @@ fn addressed_actions_honor_native_artifact_restrictions() {
     let NeighbourMsg::SyncResp { changes, .. } = peer.room_message() else {
         unreachable!()
     };
-    let mut governance = tilo_peer_state::room::candidate(None, &changes).unwrap();
+    let mut governance = tilo_room::room::candidate(None, &changes).unwrap();
     let caps = governance
         .get(automerge::ROOT, "capabilities")
         .unwrap()
@@ -1176,7 +1173,7 @@ fn reordered_browser_writer_deltas_survive_restart_and_late_predecessor() {
 
 #[tokio::test]
 async fn owner_action_invites_independent_root_and_role_changes_survive_restart() {
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, MembershipChallengeRequest,
         MembershipCompleteRequest, decode_and_verify_invitation_text, sign_join_proof,
         sign_membership_proof,
@@ -1433,7 +1430,7 @@ async fn owner_action_invites_independent_root_and_role_changes_survive_restart(
 
 #[test]
 fn refresh_then_third_member_reaches_existing_live_receivers_without_checkpoint_replay() {
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
     };
 
@@ -1550,7 +1547,7 @@ fn refresh_then_third_member_reaches_existing_live_receivers_without_checkpoint_
 #[tokio::test]
 async fn accepted_guest_document_logs_exact_durable_route_transition() {
     use tilo_actions::Action;
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, decode_and_verify_invitation_text,
         sign_join_proof,
     };
@@ -1729,7 +1726,7 @@ async fn accepted_guest_document_logs_exact_durable_route_transition() {
 
 #[test]
 fn cancelled_invitation_cannot_complete_a_saved_challenge_after_restart() {
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, decode_and_verify_invitation_text,
         sign_join_proof,
     };
@@ -1827,7 +1824,7 @@ fn cancelled_invitation_cannot_complete_a_saved_challenge_after_restart() {
 
 #[test]
 fn rival_valid_challenges_report_the_invitation_as_consumed() {
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, decode_and_verify_invitation_text,
         sign_join_proof,
     };
@@ -1937,7 +1934,7 @@ fn rival_valid_challenges_report_the_invitation_as_consumed() {
 
 #[tokio::test]
 async fn guest_authenticated_action_rejects_forced_owner_operation() {
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, MemberRole, decode_and_verify_invitation_text,
         sign_join_proof,
     };
@@ -2045,7 +2042,7 @@ async fn guest_authenticated_action_rejects_forced_owner_operation() {
 #[test]
 fn idle_membership_refreshes_make_no_store_commits() {
     use crate::collaboration::MembershipRefresh;
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         MemberRole, MembershipChallengeRequest, MembershipCompleteRequest, sign_membership_proof,
     };
     let dir = tempfile::tempdir().unwrap();

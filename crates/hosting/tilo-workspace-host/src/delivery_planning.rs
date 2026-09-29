@@ -7,7 +7,7 @@ use tilo_delivery_protocol::delivery_v3::{
     cursor::{CursorIssue, SignedCursorClaims},
     state::ResetReason,
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 

@@ -84,15 +84,15 @@ impl Fixture {
         let challenge = enrollment
             .challenge(
                 &owner,
-                tilo_peer_state::enrollment::ChallengeRequest {
+                tilo_room::enrollment::ChallengeRequest {
                     device_public_key: hex::encode(subscriber_key.verifying_key().to_bytes()),
                     request_id: hex::encode([96; 32]),
                 },
                 now,
             )
             .unwrap();
-        let proof = tilo_peer_state::enrollment::sign(
-            &tilo_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+        let proof = tilo_room::enrollment::sign(
+            &tilo_room::enrollment::decode(&challenge.challenge).unwrap(),
             &subscriber_key,
         )
         .unwrap();
@@ -102,15 +102,15 @@ impl Fixture {
             let challenge = enrollment
                 .challenge(
                     &owner,
-                    tilo_peer_state::enrollment::ChallengeRequest {
+                    tilo_room::enrollment::ChallengeRequest {
                         device_public_key: hex::encode(key.verifying_key().to_bytes()),
                         request_id: hex::encode([94; 32]),
                     },
                     now,
                 )
                 .unwrap();
-            let proof = tilo_peer_state::enrollment::sign(
-                &tilo_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+            let proof = tilo_room::enrollment::sign(
+                &tilo_room::enrollment::decode(&challenge.challenge).unwrap(),
                 key,
             )
             .unwrap();

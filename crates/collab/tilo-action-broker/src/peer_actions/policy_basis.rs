@@ -1,5 +1,5 @@
 //! Pure policy data, never owner provenance, authorization, or a readiness witness.
-pub use tilo_peer_state::owner_commit::PrivatePolicyBasis;
+pub use tilo_room::owner_commit::PrivatePolicyBasis;
 #[cfg(test)]
 mod tests {
     #![allow(
@@ -13,7 +13,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use tilo_automerge::ApplyIncoming;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
-    fn peer(blobs: &[Vec<u8>], title: &str) -> tilo_peer_state::StatePeer {
+    fn peer(blobs: &[Vec<u8>], title: &str) -> tilo_room::StatePeer {
         let root = SigningKey::from_bytes(&[21; 32]);
         let key = SigningKey::from_bytes(&[22; 32]);
         let mut cert = DeviceCert {
@@ -28,7 +28,7 @@ mod tests {
         sign_device_cert(&mut cert, &root).unwrap();
         let room = uuid::Uuid::from_u128(33).to_string();
         let roster = vec![cert.clone()];
-        let changes = tilo_peer_state::seed_room(&room, &cert, &roster).unwrap();
+        let changes = tilo_room::seed_room(&room, &cert, &roster).unwrap();
         let mut doc = AutoCommit::new();
         for bytes in changes {
             doc.apply_incoming([automerge::Change::from_bytes(bytes).unwrap()])
@@ -41,7 +41,7 @@ mod tests {
         }
         doc.put(ROOT, "name", title).unwrap();
         doc.commit();
-        let mut peer = tilo_peer_state::StatePeer::new(
+        let mut peer = tilo_room::StatePeer::new(
             &room,
             cert,
             roster,
@@ -50,7 +50,7 @@ mod tests {
         )
         .unwrap();
         peer.install_seed(
-            tilo_peer_state::SeedState {
+            tilo_room::SeedState {
                 room_changes: doc
                     .get_changes(&[])
                     .into_iter()
@@ -89,7 +89,7 @@ mod tests {
         let basis = PrivatePolicyBasis::from_peer(&a).unwrap();
         assert_eq!(
             basis.revision(),
-            tilo_peer_state::owner_commit::governance_revision(&a).unwrap()
+            tilo_room::owner_commit::governance_revision(&a).unwrap()
         );
         assert_eq!(basis, PrivatePolicyBasis::from_peer(&b).unwrap());
         assert_eq!(basis.next_expiry_after(0), Some(3));
@@ -118,12 +118,12 @@ mod tests {
             PrivatePolicyBasis::from_peer(&source).unwrap_err(),
             "nonpersistent governed private policy capability"
         );
-        assert!(tilo_peer_state::owner_commit::canonical_owner(&source).is_ok());
+        assert!(tilo_room::owner_commit::canonical_owner(&source).is_ok());
         assert!(
-            tilo_peer_state::owner_commit::governance_revision(&source).is_ok(),
+            tilo_room::owner_commit::governance_revision(&source).is_ok(),
             "general revision is not the strict private persistence gate"
         );
-        let empty = tilo_peer_state::StatePeer::new(
+        let empty = tilo_room::StatePeer::new(
             source.room(),
             source.authority().clone(),
             source.certificates(),
@@ -136,11 +136,11 @@ mod tests {
             "private policy room unavailable"
         );
         assert_eq!(
-            tilo_peer_state::owner_commit::canonical_owner(&empty).unwrap_err(),
+            tilo_room::owner_commit::canonical_owner(&empty).unwrap_err(),
             "admitted room missing"
         );
         assert_eq!(
-            tilo_peer_state::owner_commit::governance_revision(&empty).unwrap_err(),
+            tilo_room::owner_commit::governance_revision(&empty).unwrap_err(),
             "admitted room missing"
         );
     }

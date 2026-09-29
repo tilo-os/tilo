@@ -1,7 +1,7 @@
 use super::*;
 use crate::action_host::scoped_fixture::ReopenedAppFixture;
 use std::time::{Duration, Instant};
-use tilo_peer_state::{
+use tilo_room::{
     NeighbourMsg,
     desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
     owner_commit::{CommitOperation, OwnerCommitRequest},
@@ -103,7 +103,7 @@ async fn aged_restart_refreshes_before_notes_and_writer_mount() {
     assert!(
         expired
             .iter()
-            .all(|message| !tilo_peer_state::outbox::fresh(message, now))
+            .all(|message| !tilo_room::outbox::fresh(message, now))
     );
     let committed = CommittedAuthority::new(&owner);
     before_action_mount(&mut owner, &committed, None).unwrap();

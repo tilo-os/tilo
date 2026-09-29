@@ -35,7 +35,7 @@ fn with_admitted<R>(
     current: &CommittedAuthority,
     action: &DirectedAction,
     op: PrivateOperation,
-    run: impl FnOnce(VerifiedRequest<'_>, &tilo_peer_state::StatePeer) -> R,
+    run: impl FnOnce(VerifiedRequest<'_>, &tilo_room::StatePeer) -> R,
 ) -> R {
     with_exact_admitted(owner, current, action, op, false, run)
 }
@@ -45,7 +45,7 @@ fn with_exact_admitted<R>(
     action: &DirectedAction,
     op: PrivateOperation,
     events: bool,
-    run: impl FnOnce(VerifiedRequest<'_>, &tilo_peer_state::StatePeer) -> R,
+    run: impl FnOnce(VerifiedRequest<'_>, &tilo_room::StatePeer) -> R,
 ) -> R {
     with_signed_session(owner, current, |admission, context, peer, id, digest| {
         let bytes = private_wire::encode_request(
@@ -82,7 +82,7 @@ fn with_signed_session<R>(
     run: impl FnOnce(
         &mut http_proof::HttpSessionAdmission,
         &auth::VerificationContext<'_>,
-        &tilo_peer_state::StatePeer,
+        &tilo_room::StatePeer,
         [u8; 16],
         [u8; 32],
     ) -> R,

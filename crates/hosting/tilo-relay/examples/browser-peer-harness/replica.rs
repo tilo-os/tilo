@@ -1,7 +1,7 @@
 //! Application state owner used by the native test peer.
 use anyhow::{Result, anyhow};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
 
@@ -49,7 +49,7 @@ pub fn publish(
     session: &tilo_relay::RelayCoeditSession,
     messages: Vec<NeighbourMsg>,
 ) -> Result<()> {
-    use tilo_peer_state::transport::{Retention, retention};
+    use tilo_room::transport::{Retention, retention};
     for message in messages {
         let body = postcard::to_stdvec(&message)?;
         match retention(&message, true) {

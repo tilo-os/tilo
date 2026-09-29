@@ -3,7 +3,7 @@ use crate::enrollment::EnrollmentError;
 use anyhow::{Context, Result, bail};
 use rand::Rng as _;
 use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
-use tilo_peer_state::enrollment::{ChallengeRequest, CompleteRequest};
+use tilo_room::enrollment::{ChallengeRequest, CompleteRequest};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::TcpStream,

@@ -105,7 +105,7 @@ fn committed_authority_abandoned_turn_denies_and_wrong_owner_cannot_replace_view
 
 #[test]
 fn committed_authority_incomplete_commit_preserves_evidence_and_keeps_owner_turns_alive() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     let dir = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
     let committed = CommittedAuthority::new(&owner);
@@ -424,7 +424,7 @@ fn committed_owner_view_borrows_prior_generation_and_publishes_real_mutation() {
 
 #[test]
 fn committed_owner_view_rejection_preserves_current_and_storage_failure_denies() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("owner");
     let mut owner = SessionOwner::initialize(&root).unwrap();
@@ -523,10 +523,10 @@ fn publish_private_cap(owner: &mut SessionOwner, committed: &CommittedAuthority,
             doc.commit();
             candidate
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         owner.identity.native.verifying_key().to_bytes(),
                     ),
-                    tilo_peer_state::NeighbourMsg::SyncResp {
+                    tilo_room::NeighbourMsg::SyncResp {
                         room: owner.peer().room().into(),
                         changes: doc
                             .get_changes(&[])

@@ -64,7 +64,7 @@ xdg-paths = { path = "../../system/xdg-paths" }
 tilo-clock = { path = "../../system/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-automerge-isolate.workspace = true
 # Remote-action vocabulary: the relay routes these frames between devices and,
 # only when an app-serving plane is supplied, answers them through ActionHost.
@@ -154,7 +154,7 @@ neighbour-wire = { path = "../../collab/neighbour-wire" }
 # Direct rooms with a hosted room's owner are identified the way both ends
 # derive them.
 tilo-reference = { path = "../../collab/reference" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 runtime-identity = { path = "../../runtime/runtime-identity" }
 socket2 = "0.6"
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
@@ -170,7 +170,7 @@ chat = { path = "../../../apps/chat", default-features = false }
 word-processor = { path = "../../../apps/word-processor" }
 qdoc = { path = "../../doc/qdoc" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-browser-runtime = { path = "../../browser/tilo-browser-runtime" }
 iroh-relay = { version = "1.0.3", features = ["server"] }
 tempfile.workspace = true

@@ -12,7 +12,7 @@
 //!   generation. Current owner membership is always rechecked; any other
 //!   reuse of a request ID is refused.
 use super::*;
-use tilo_peer_state::join::OwnerBootstrapV1;
+use tilo_room::join::OwnerBootstrapV1;
 mod receipt;
 use receipt::{OwnerReceipt, ReceiptPurpose};
 
@@ -231,7 +231,7 @@ impl Store {
         &self,
         device_cert: &DeviceCert,
         workspace_id: u64,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         governance_messages: Vec<Vec<u8>>,
         generation: u64,
     ) -> OwnerBootstrapV1 {
@@ -433,7 +433,7 @@ impl Store {
 
     fn verify_owner_scope(
         &self,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         cert: &DeviceCert,
         authority: &DeviceCert,
         room: &str,

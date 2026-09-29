@@ -1,7 +1,7 @@
 use super::*;
 use automerge::ReadDoc as _;
 use automerge::transaction::Transactable;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 #[allow(
     clippy::too_many_lines,
     reason = "one owner-service scenario run with and without an injected state-file failure; \
@@ -35,7 +35,7 @@ async fn native_owner_service_offline_receipt_follows_actual_state_file_barrier(
                 std::time::SystemTime::now(),
             )
             .unwrap();
-        let tilo_peer_state::NeighbourMsg::AppDocument {
+        let tilo_room::NeighbourMsg::AppDocument {
             app_id,
             record_id,
             envelope,

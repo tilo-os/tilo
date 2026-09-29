@@ -14,7 +14,7 @@ fn fixture() -> Fixture {
     f
 }
 fn enroll(f: &mut Fixture, key: &SigningKey, request_id: u8) {
-    use tilo_peer_state::enrollment::{self, ChallengeRequest};
+    use tilo_room::enrollment::{self, ChallengeRequest};
     let mut issuer = crate::enrollment::EnrollmentAuthority::default();
     let challenge = issuer
         .challenge(

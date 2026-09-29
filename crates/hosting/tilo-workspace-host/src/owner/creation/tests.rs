@@ -66,8 +66,8 @@ fn creation_activation_fault_cannot_expose_selected_memory_or_acknowledgment() {
     assert_eq!(version(&owner), 5);
 }
 
-fn opening(owner: &SessionOwner, app: &str) -> tilo_peer_state::owner_commit::OwnerCommitRequest {
-    use tilo_peer_state::{desktop_command::*, owner_commit::*};
+fn opening(owner: &SessionOwner, app: &str) -> tilo_room::owner_commit::OwnerCommitRequest {
+    use tilo_room::{desktop_command::*, owner_commit::*};
     OwnerCommitRequest {
         room: owner.peer.room().into(),
         operation: CommitOperation::DesktopCommand {
@@ -129,10 +129,10 @@ fn creation_open_tab_exact_retry_and_restart_retain_one_original_result() {
         Some(&row)
     );
     let mut substitution = request.clone();
-    if let tilo_peer_state::owner_commit::CommitOperation::DesktopCommand { command, .. } =
+    if let tilo_room::owner_commit::CommitOperation::DesktopCommand { command, .. } =
         &mut substitution.operation
     {
-        command.command = tilo_peer_state::desktop_command::DesktopCommand::RenameWorkspace {
+        command.command = tilo_room::desktop_command::DesktopCommand::RenameWorkspace {
             name: "substitution".into(),
         };
     }
@@ -154,7 +154,9 @@ fn creation_terminal_barrier_failure_leaves_document_topology_and_result_unpubli
     );
     assert!(matches!(
         result,
-        Err(tilo_peer_state::desktop_command::DesktopCommandError::Uncertain(_))
+        Err(tilo_room::desktop_command::DesktopCommandError::Uncertain(
+            _
+        ))
     ));
     assert_eq!(owner.status(), before);
     assert!(owner.aggregate.creation.as_ref().unwrap().is_empty());
@@ -278,7 +280,7 @@ fn creation_restore_rejects_desktop_source_bytes_not_bound_to_original_intent() 
 
 #[test]
 fn creation_duplicate_tab_uses_same_result_ledger_and_exact_retry() {
-    use tilo_peer_state::{desktop_command::*, owner_commit::*};
+    use tilo_room::{desktop_command::*, owner_commit::*};
     let (_dir, mut owner) = selected_owner();
     owner.activate_creation().unwrap();
     owner
@@ -306,9 +308,7 @@ fn creation_duplicate_tab_uses_same_result_ledger_and_exact_retry() {
 
 fn admitted_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
@@ -370,7 +370,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
     owner.activate_creation().unwrap();
     let caller = admitted_guest(&mut owner);
     let mut request = opening(&owner, "so.tilo.notes");
-    let tilo_peer_state::owner_commit::CommitOperation::DesktopCommand { caller: actual, .. } =
+    let tilo_room::owner_commit::CommitOperation::DesktopCommand { caller: actual, .. } =
         &mut request.operation
     else {
         unreachable!()
@@ -395,7 +395,7 @@ fn creation_retained_result_follows_current_original_membership_not_governor_rig
             SetMemberRoleRequest {
                 request_id: [93; 32],
                 user_public_key: caller.user_public_key,
-                role: tilo_peer_state::join::MemberRole::Viewer,
+                role: tilo_room::join::MemberRole::Viewer,
             },
             tilo_delivery_protocol::clock::now_ns(),
         )
@@ -445,7 +445,9 @@ fn creation_uncertain_after_atomic_write_reopens_exact_whole_result_without_repe
     );
     assert!(matches!(
         result,
-        Err(tilo_peer_state::desktop_command::DesktopCommandError::Uncertain(_))
+        Err(tilo_room::desktop_command::DesktopCommandError::Uncertain(
+            _
+        ))
     ));
     assert_eq!(owner.status(), before);
     assert!(owner.store.is_poisoned());

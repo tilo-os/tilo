@@ -3,7 +3,7 @@ use crate::SessionOwner;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
-use tilo_peer_state::enrollment::{
+use tilo_room::enrollment::{
     self, ChallengeRequest, ChallengeResponse, CompleteRequest, EnrollmentChallenge,
 };
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, WorkspaceDirectory, sign_device_cert};
@@ -239,12 +239,12 @@ impl EnrollmentAuthority {
     )
 )]
 pub(crate) struct LocalOnboardingProof {
-    challenge: tilo_peer_state::enrollment::EnrollmentChallenge,
+    challenge: tilo_room::enrollment::EnrollmentChallenge,
     request_digest: [u8; 32],
 }
 #[cfg(feature = "media")]
 impl LocalOnboardingProof {
-    pub(crate) fn challenge(&self) -> &tilo_peer_state::enrollment::EnrollmentChallenge {
+    pub(crate) fn challenge(&self) -> &tilo_room::enrollment::EnrollmentChallenge {
         &self.challenge
     }
     pub(crate) fn request_digest(&self) -> [u8; 32] {
@@ -261,7 +261,7 @@ impl EnrollmentAuthority {
         if request.challenge.len() > 2048 || request.signature.len() != 128 {
             return Err(EnrollmentError::new(403, "local proof exceeds bound"));
         }
-        let challenge = tilo_peer_state::enrollment::decode(&request.challenge)
+        let challenge = tilo_room::enrollment::decode(&request.challenge)
             .map_err(|error| EnrollmentError::new(403, error))?;
         let bytes = postcard::to_stdvec(&request).map_err(EnrollmentError::unavailable)?;
         let request_digest = *blake3::hash(&bytes).as_bytes();
@@ -370,7 +370,7 @@ pub(crate) fn append_delivery_hint_at(
 #[cfg(feature = "media")]
 fn append_delivery_hint_value(
     value: &mut serde_json::Value,
-    hint: tilo_peer_state::join::TransportHint,
+    hint: tilo_room::join::TransportHint,
 ) -> Result<(), EnrollmentError> {
     let bytes = postcard::to_stdvec(&hint).map_err(EnrollmentError::unavailable)?;
     if bytes.len() > tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES {

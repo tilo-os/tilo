@@ -87,7 +87,7 @@ impl WorkspacePolicy for Workspace {
         self.role_of_at(user, tilo_clock::unix_now())
     }
     fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole> {
-        tilo_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now)
+        tilo_room::room::role_of(self.owner.as_deref(), &self.capabilities, user, now)
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
         self.actor_for_person_at(user, tilo_clock::unix_now())

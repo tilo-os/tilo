@@ -20,13 +20,13 @@ use iroh::endpoint::presets;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, WorkspaceHostMode, WorkspaceHostTrust,
 };
-use tilo_peer_state::GovernedAccess;
-use tilo_peer_state::join::{InviteGrant, MemberRole};
-use tilo_peer_state::retained_proof::RetentionAuthority;
 use tilo_relay::{
     CheckpointPrefixRecovery, Envelope, Relay, RelayClient, RelayConfig, ReplicationIntent,
     WorkspaceBinding,
 };
+use tilo_room::GovernedAccess;
+use tilo_room::join::{InviteGrant, MemberRole};
+use tilo_room::retained_proof::RetentionAuthority;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};

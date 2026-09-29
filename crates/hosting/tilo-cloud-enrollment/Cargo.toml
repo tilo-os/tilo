@@ -11,7 +11,7 @@ description = "Hosted-enrollment protocol a browser owner speaks to a Tilo Cloud
 # dependencies.
 [dependencies]
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-delivery-protocol = { path = "../tilo-delivery-protocol" }
 tilo-relay-protocol = { path = "../tilo-relay-protocol" }
 ed25519-dalek.workspace = true

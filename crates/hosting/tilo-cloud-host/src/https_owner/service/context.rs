@@ -9,7 +9,7 @@ use tilo_delivery_protocol::delivery_v3::{
         self, DescriptorAuthority, DescriptorSettings, GenerationExpectation, VerifiedDescriptor,
     },
 };
-use tilo_peer_state::join::TransportHint;
+use tilo_room::join::TransportHint;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// Signed descriptors live at most 15 minutes; renew with this margin left.
@@ -339,7 +339,7 @@ struct Cached {
     until: u64,
 }
 static CONTEXTS: std::sync::Mutex<Vec<(CacheKey, Cached)>> = std::sync::Mutex::new(Vec::new());
-fn cached_context(key: &CacheKey, peer: &tilo_peer_state::StatePeer, now: u64) -> Option<Cached> {
+fn cached_context(key: &CacheKey, peer: &tilo_room::StatePeer, now: u64) -> Option<Cached> {
     let cached = CONTEXTS
         .lock()
         .ok()?

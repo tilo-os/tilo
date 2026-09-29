@@ -25,7 +25,7 @@ impl Fixture {
             .iter()
             .any(|row| row.app_id == "so.tilo.notes")
         {
-            use tilo_peer_state::{
+            use tilo_room::{
                 desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
                 owner_commit::{CommitOperation, OwnerCommitRequest},
             };

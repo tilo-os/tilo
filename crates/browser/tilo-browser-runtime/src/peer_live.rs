@@ -493,7 +493,7 @@ pub(crate) fn author_signed_change(canonical: &[u8]) -> Option<([u8; 32], LiveRe
     if canonical.is_empty() || canonical.len() >= live_wire::MAX_STREAM_FRAME_BYTES {
         return None;
     }
-    let tilo_peer_state::NeighbourMsg::AppDocument {
+    let tilo_room::NeighbourMsg::AppDocument {
         app_id, record_id, ..
     } = postcard::from_bytes(canonical).ok()?
     else {
@@ -538,10 +538,10 @@ pub(crate) struct AutomergeInput {
 }
 
 pub(crate) fn automerge_input(
-    state: &tilo_peer_state::StatePeer,
+    state: &tilo_room::StatePeer,
     canonical: &[u8],
 ) -> Result<AutomergeInput, String> {
-    let tilo_peer_state::NeighbourMsg::AppDocument {
+    let tilo_room::NeighbourMsg::AppDocument {
         app_id,
         record_id,
         envelope,
@@ -550,11 +550,10 @@ pub(crate) fn automerge_input(
     else {
         return Err("forwarded change is not a document publication".into());
     };
-    let incoming =
-        match tilo_peer_state::DocumentMutation::decode(&envelope.payload).map_err(fail)? {
-            tilo_peer_state::DocumentMutation::Snapshot(bytes)
-            | tilo_peer_state::DocumentMutation::Incremental(bytes) => bytes,
-        };
+    let incoming = match tilo_room::DocumentMutation::decode(&envelope.payload).map_err(fail)? {
+        tilo_room::DocumentMutation::Snapshot(bytes)
+        | tilo_room::DocumentMutation::Incremental(bytes) => bytes,
+    };
     Ok(AutomergeInput {
         base: state.document(&app_id, &record_id).unwrap_or_default(),
         incoming,
@@ -564,19 +563,16 @@ pub(crate) fn automerge_input(
 
 /// The current heads of the document a forwarded change applies to, as text;
 /// empty when that document does not exist yet.
-pub(crate) fn base_heads(
-    state: &tilo_peer_state::StatePeer,
-    canonical: &[u8],
-) -> Result<String, String> {
+pub(crate) fn base_heads(state: &tilo_room::StatePeer, canonical: &[u8]) -> Result<String, String> {
     match postcard::from_bytes(canonical).map_err(fail)? {
-        tilo_peer_state::NeighbourMsg::AppDocument {
+        tilo_room::NeighbourMsg::AppDocument {
             app_id, record_id, ..
         } => Ok(heads_text(state, &app_id, &record_id)),
         _ => Err("forwarded change is not a document publication".into()),
     }
 }
 
-fn heads_text(state: &tilo_peer_state::StatePeer, app: &str, record: &str) -> String {
+fn heads_text(state: &tilo_room::StatePeer, app: &str, record: &str) -> String {
     let mut heads = state.document_heads(app, record).unwrap_or_default();
     heads.sort_unstable();
     heads

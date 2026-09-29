@@ -8,7 +8,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, Instant};
 use tilo_delivery_protocol::delivery_v3::live_wire::{legacy_window as wire, room_digest};
 use tilo_moq::live::LiveRelay;
-use tilo_peer_state::NeighbourMsg;
+use tilo_room::NeighbourMsg;
 
 /// While any stream is live its index is re-sent this often, so a viewer that
 /// subscribes later learns it.

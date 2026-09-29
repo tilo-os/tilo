@@ -8,7 +8,7 @@ use tilo_action_broker::collaboration_admin::{
     CollaborationAdminError as Error, CollaborationAdminOperation as Operation,
     CollaborationAdminRequest,
 };
-use tilo_peer_state::room::media::MediaCallResultV1;
+use tilo_room::room::media::MediaCallResultV1;
 
 impl CollaborationService {
     pub(crate) fn media_from_action(
@@ -45,7 +45,7 @@ impl CollaborationService {
             .peer()
             .permissions(request.caller.device_public_key, now)
             .map_err(Error::Rejected)?;
-        let structural = tilo_peer_state::room::governance_of(owner.peer().admitted_room()).0;
+        let structural = tilo_room::room::governance_of(owner.peer().admitted_room()).0;
         let actor = Actor::person(Some(role), &person).in_room(request.room.clone());
         if role != Role::Owner
             || structural.as_deref() != Some(&hex::encode(request.caller.user_public_key))

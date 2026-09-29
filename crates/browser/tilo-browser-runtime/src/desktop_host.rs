@@ -324,7 +324,7 @@ impl DesktopHandle {
     #[cfg(target_arch = "wasm32")]
     pub fn admit(
         &self,
-        state: &tilo_peer_state::StatePeer,
+        state: &tilo_room::StatePeer,
         permissions: ui::permissions::PermissionContext,
     ) -> Result<(), String> {
         let admission = desktop::admission(state)?;

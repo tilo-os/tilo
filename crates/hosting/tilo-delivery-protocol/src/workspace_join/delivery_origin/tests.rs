@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::{TransportHint, sign_transport_hint};
+use tilo_room::join::{TransportHint, sign_transport_hint};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 fn fixture() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[41; 32]);

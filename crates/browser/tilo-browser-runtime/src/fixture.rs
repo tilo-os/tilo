@@ -2,7 +2,7 @@
 //! canonical document once; peers only receive those resulting signed bytes.
 use ed25519_dalek::SigningKey;
 use tilo_actions::Action;
-use tilo_peer_state::{NeighbourMsg, SeedDocument, SeedState, StatePeer};
+use tilo_room::{NeighbourMsg, SeedDocument, SeedState, StatePeer};
 use tilo_user_identity::DeviceCert;
 use ui::{
     portable_storage::PortableStorage,
@@ -61,7 +61,7 @@ pub fn fixture_seed(
         });
     }
     Ok(SeedState {
-        room_changes: tilo_peer_state::seed_room(room, authority, roster)?,
+        room_changes: tilo_room::seed_room(room, authority, roster)?,
         documents,
     })
 }

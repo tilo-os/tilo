@@ -1,8 +1,8 @@
 use super::*;
 use crate::delivery_v3::auth;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::TransportHint;
-use tilo_peer_state::{SeedState, StatePeer, join, seed_room};
+use tilo_room::join::TransportHint;
+use tilo_room::{SeedState, StatePeer, join, seed_room};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, sign_device_cert, sign_revocation_entry,
 };

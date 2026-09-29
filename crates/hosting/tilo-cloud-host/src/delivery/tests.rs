@@ -198,7 +198,7 @@ fn delivery_v6_later_private_admission_keeps_outer_version_and_public_lineage() 
 }
 
 fn admit_guest(store: &mut Store, source: [u8; 32], now: u64) -> [u8; 32] {
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let root = SigningKey::from_bytes(&[61; 32]);
     let key = SigningKey::from_bytes(&[62; 32]);
@@ -264,7 +264,7 @@ fn admit_guest(store: &mut Store, source: [u8; 32], now: u64) -> [u8; 32] {
 
 #[test]
 fn delivery_v6_policy_lineage_fences_cross_writer_aba_but_not_documents() {
-    use tilo_peer_state::join::MemberRole;
+    use tilo_room::join::MemberRole;
     let (dir, mut store, source) = crate::agent_owner_tests::enrolled();
     let now = tilo_delivery_protocol::clock::now_ns();
     let guest = admit_guest(&mut store, source, now);

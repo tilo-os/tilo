@@ -5,7 +5,7 @@ use tilo_delivery_protocol::{
     peer_actions::{ActionMessage, OpenedDesktopTab},
     transport_v2::EnvelopeV2,
 };
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
 use web_time::SystemTime;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -103,7 +103,7 @@ pub fn admit(
     state.permissions(recipient, now)?;
     state.permissions(action.source, now)?;
     let mut candidate = state.clone();
-    for bytes in tilo_peer_state::desktop_delivery::decode(packets)? {
+    for bytes in tilo_room::desktop_delivery::decode(packets)? {
         let message: NeighbourMsg = postcard::from_bytes(&bytes).map_err(|e| e.to_string())?;
         if !matches!(
             message,

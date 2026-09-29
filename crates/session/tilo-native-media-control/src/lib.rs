@@ -12,7 +12,7 @@ use tilo_delivery_protocol::delivery_v3::{
     descriptor::{self, VerifiedDescriptor},
     http_proof, media_wire,
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::{DeviceCert, RevocationList};
 
 /// Borrowed only from the live Peer and its acknowledged descriptor floor.
@@ -37,7 +37,7 @@ impl OwnerView<'_> {
         governor: &DeviceCert,
         host: &DeviceCert,
         device: &DeviceCert,
-        hint: &tilo_peer_state::join::TransportHint,
+        hint: &tilo_room::join::TransportHint,
     ) -> Result<(), String> {
         if workspace != self.workspace
             || room != self.peer.room()
@@ -221,7 +221,7 @@ pub struct NativeControl {
 impl NativeControl {
     pub fn new(
         view: &OwnerView<'_>,
-        hint: &tilo_peer_state::join::TransportHint,
+        hint: &tilo_room::join::TransportHint,
     ) -> Result<Self, String> {
         if view.key.verifying_key().to_bytes() != view.device.device_public_key
             || !matches!(

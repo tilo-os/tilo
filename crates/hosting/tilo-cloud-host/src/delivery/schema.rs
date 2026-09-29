@@ -23,7 +23,7 @@ pub(crate) struct DeliveryState {
     pub(super) queue: Vec<QueuedPublication>,
     pub(super) policy_lineage: u64,
     pub(super) policy_revision: String,
-    pub(super) transport_hint: Option<tilo_peer_state::join::TransportHint>,
+    pub(super) transport_hint: Option<tilo_room::join::TransportHint>,
 }
 impl Clone for DeliveryState {
     fn clone(&self) -> Self {
@@ -54,7 +54,7 @@ struct Wire {
     queue: Vec<QueuedPublication>,
     policy_lineage: u64,
     policy_revision: String,
-    transport_hint: Option<tilo_peer_state::join::TransportHint>,
+    transport_hint: Option<tilo_room::join::TransportHint>,
 }
 impl Serialize for DeliveryState {
     fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
@@ -121,11 +121,11 @@ impl DeliveryState {
         self.policy_lineage
     }
     /// Owner-persisted signed descriptor; historical until verified against Current.
-    pub(crate) fn transport_hint(&self) -> Option<&tilo_peer_state::join::TransportHint> {
+    pub(crate) fn transport_hint(&self) -> Option<&tilo_room::join::TransportHint> {
         self.transport_hint.as_ref()
     }
     /// Candidate-only replacement; the enclosing Store commit is the barrier.
-    pub(crate) fn set_transport_hint(&mut self, hint: tilo_peer_state::join::TransportHint) {
+    pub(crate) fn set_transport_hint(&mut self, hint: tilo_room::join::TransportHint) {
         self.transport_hint = Some(hint);
     }
     pub(super) fn validate(&self) -> Result<()> {

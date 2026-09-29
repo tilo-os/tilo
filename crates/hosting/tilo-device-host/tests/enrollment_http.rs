@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
-use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
+use tilo_room::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 struct Host(std::process::Child);
@@ -304,7 +304,7 @@ async fn loopback_operator_administers_invitations_as_the_governing_authority() 
     let (code, issued) = operator(origin, issue, &cap).await;
     assert_eq!(code, 200, "{issued}");
     let text = issued["invite"].as_str().unwrap();
-    let join = tilo_peer_state::join::decode_and_verify_invitation_text(
+    let join = tilo_room::join::decode_and_verify_invitation_text(
         text,
         None,
         &tilo_user_identity::RevocationList::default(),
@@ -317,7 +317,7 @@ async fn loopback_operator_administers_invitations_as_the_governing_authority() 
     )
     .unwrap();
     assert_eq!(join.grant().room, metadata["room"].as_str().unwrap());
-    assert_eq!(join.grant().role, tilo_peer_state::join::MemberRole::Viewer);
+    assert_eq!(join.grant().role, tilo_room::join::MemberRole::Viewer);
     let id = issued["invite_id"].as_str().unwrap();
     let (code, listed) = operator(origin, r#"{"action":"invitation.list"}"#, &cap).await;
     assert_eq!(code, 200, "{listed}");

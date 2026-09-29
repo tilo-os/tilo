@@ -1311,7 +1311,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
         fixture.address.port()
     );
     let key = ed25519_dalek::SigningKey::from_bytes(&[67; 32]);
-    let body = serde_json::to_vec(&tilo_peer_state::enrollment::ChallengeRequest {
+    let body = serde_json::to_vec(&tilo_room::enrollment::ChallengeRequest {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         request_id: hex::encode([68; 32]),
     })
@@ -1343,10 +1343,10 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
             .to_ascii_lowercase()
             .contains("cache-control: no-store")
     );
-    let challenge: tilo_peer_state::enrollment::ChallengeResponse =
+    let challenge: tilo_room::enrollment::ChallengeResponse =
         serde_json::from_str(response.split_once("\r\n\r\n").unwrap().1).unwrap();
-    let signed = tilo_peer_state::enrollment::sign(
-        &tilo_peer_state::enrollment::decode(&challenge.challenge).unwrap(),
+    let signed = tilo_room::enrollment::sign(
+        &tilo_room::enrollment::decode(&challenge.challenge).unwrap(),
         &key,
     )
     .unwrap();
@@ -1391,7 +1391,7 @@ async fn local_https_enrollment_reuses_private_native_issuer_and_committed_owner
         .await;
     assert!(denied.starts_with("HTTP/1.1 403"));
     assert!(requests.try_recv().is_err());
-    let valid = serde_json::to_vec(&tilo_peer_state::enrollment::ChallengeRequest {
+    let valid = serde_json::to_vec(&tilo_room::enrollment::ChallengeRequest {
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
         request_id: hex::encode([69; 32]),
     })
@@ -1447,7 +1447,7 @@ async fn local_enrollment_owner_wait_deadline_cancels_unconsumed_private_command
     let credential = std::fs::read_to_string(temp.path().join("enrollment-capability")).unwrap();
     let (commands, mut requests) = mpsc::channel(64);
     let (fixture, receiver) = Fixture::start_with_enrollment(Some((authorization, commands))).await;
-    let body = serde_json::to_vec(&tilo_peer_state::enrollment::ChallengeRequest {
+    let body = serde_json::to_vec(&tilo_room::enrollment::ChallengeRequest {
         device_public_key: hex::encode(
             ed25519_dalek::SigningKey::from_bytes(&[72; 32])
                 .verifying_key()
@@ -1491,7 +1491,7 @@ fn queued_local_enrollment_rejects_elapsed_deadline_with_open_reply() {
         .unwrap();
     let (reply, completed) = oneshot::channel();
     let command = EnrollmentCommand::from_https(
-        EnrollmentRequest::Challenge(tilo_peer_state::enrollment::ChallengeRequest {
+        EnrollmentRequest::Challenge(tilo_room::enrollment::ChallengeRequest {
             device_public_key: "01".repeat(32),
             request_id: "02".repeat(32),
         }),
@@ -1521,7 +1521,7 @@ fn cancelled_local_enrollment_queue_retains_charge_and_control_slot_until_drop()
         .unwrap();
     let (reply, completed) = oneshot::channel();
     let command = EnrollmentCommand::from_https(
-        EnrollmentRequest::Challenge(tilo_peer_state::enrollment::ChallengeRequest {
+        EnrollmentRequest::Challenge(tilo_room::enrollment::ChallengeRequest {
             device_public_key: "03".repeat(32),
             request_id: "04".repeat(32),
         }),
@@ -1701,7 +1701,7 @@ async fn local_https_enrollment_renewal_may_only_request_governance_omission() {
         "Origin: https://localhost:{}\r\nContent-Type: application/json\r\nCookie: __Host-tilo-local-owner={credential}\r\n",
         fixture.address.port()
     );
-    let complete = serde_json::to_vec(&tilo_peer_state::enrollment::CompleteRequest {
+    let complete = serde_json::to_vec(&tilo_room::enrollment::CompleteRequest {
         version: 2,
         challenge: "00".into(),
         signature: "00".repeat(64),

@@ -57,7 +57,7 @@ fn native_media_offered_scopes_share_one_current_turn_and_remote_leave_lapses_on
     let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
     let (_, guest, certificate) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     activate(&mut owner);
@@ -412,15 +412,15 @@ async fn real_webtransport_uses_native_signed_proof_and_current_owner_revocation
     let enrolled = enrollment
         .challenge(
             &f.owner,
-            tilo_peer_state::enrollment::ChallengeRequest {
+            tilo_room::enrollment::ChallengeRequest {
                 device_public_key: hex::encode(subscriber_key.verifying_key().to_bytes()),
                 request_id: hex::encode([96; 32]),
             },
             now,
         )
         .unwrap();
-    let proof = tilo_peer_state::enrollment::sign(
-        &tilo_peer_state::enrollment::decode(&enrolled.challenge).unwrap(),
+    let proof = tilo_room::enrollment::sign(
+        &tilo_room::enrollment::decode(&enrolled.challenge).unwrap(),
         &subscriber_key,
     )
     .unwrap();
@@ -563,7 +563,7 @@ fn monotonic_grant_deadline_does_not_gain_time_spent_validating() {
 
 #[test]
 fn committed_authority_rejected_signed_input_preserves_media_but_failed_barrier_denies() {
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
     let mut f = Fixture::new();
     let grant = f.grant(GrantOperation::Join);
@@ -642,7 +642,7 @@ fn room_media_policy_reader_can_subscribe_but_cannot_publish_or_downgrade() {
     use crate::room_media_policy::tests::member;
     let dir = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
-    let (_, key, cert) = member(&mut owner, tilo_peer_state::join::MemberRole::Viewer, None);
+    let (_, key, cert) = member(&mut owner, tilo_room::join::MemberRole::Viewer, None);
     activate(&mut owner);
     let service =
         MediaService::for_owner(&owner, CommittedAuthority::new(&owner), "relay-test").unwrap();
@@ -700,7 +700,7 @@ fn room_media_policy_reader_can_subscribe_but_cannot_publish_or_downgrade() {
 
 #[test]
 fn room_media_policy_committed_end_and_restart_never_revive_old_sessions() {
-    use tilo_peer_state::room::media::CallPhaseV1;
+    use tilo_room::room::media::CallPhaseV1;
     let mut f = Fixture::new();
     let old = f.grant(GrantOperation::Join);
     let (_, proof) = f.proof(&old);
@@ -770,7 +770,7 @@ fn room_media_policy_committed_end_and_restart_never_revive_old_sessions() {
 
 #[test]
 fn room_media_policy_denial_intersects_directions_and_lifting_keeps_epoch_fence() {
-    use tilo_peer_state::room::media::DirectionsV1;
+    use tilo_room::room::media::DirectionsV1;
     let mut f = Fixture::new();
     let grant = f.grant(GrantOperation::Join);
     let (_, proof) = f.proof(&grant);
@@ -988,10 +988,10 @@ fn room_media_policy_room_call_host_and_member_bindings_are_exact() {
 #[test]
 fn room_media_policy_verified_revocation_reconciles_and_invalidates_old_grant() {
     use crate::room_media_policy::tests::member;
-    use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+    use tilo_room::{NeighbourMsg, TransportOrigin};
     let dir = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
-    let (root, _, cert) = member(&mut owner, tilo_peer_state::join::MemberRole::Editor, None);
+    let (root, _, cert) = member(&mut owner, tilo_room::join::MemberRole::Editor, None);
     activate(&mut owner);
     let service =
         MediaService::for_owner(&owner, CommittedAuthority::new(&owner), "relay-test").unwrap();
@@ -1052,7 +1052,7 @@ fn room_media_policy_removed_or_revoked_member_cannot_renew_or_forward() {
     for revoke in [false, true] {
         let dir = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
-        let (root, key, cert) = member(&mut owner, tilo_peer_state::join::MemberRole::Editor, None);
+        let (root, key, cert) = member(&mut owner, tilo_room::join::MemberRole::Editor, None);
         activate(&mut owner);
         let service =
             MediaService::for_owner(&owner, CommittedAuthority::new(&owner), "relay-test").unwrap();
@@ -1119,8 +1119,7 @@ fn room_media_policy_removed_or_revoked_member_cannot_renew_or_forward() {
                         ScalarValue::Bytes(serde_json::to_vec(&row).unwrap()),
                     )
                     .unwrap();
-                    tilo_peer_state::room::media::refresh_authorization(&before, &mut room)
-                        .unwrap();
+                    tilo_room::room::media::refresh_authorization(&before, &mut room).unwrap();
                     crate::room_media_policy::tests::commit_room(owner, room);
                     Ok(())
                 } else {
@@ -1188,7 +1187,7 @@ fn room_media_policy_cached_membership_still_checks_current_certificate_expiry()
     .unwrap();
     let (_, _, cert) = member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Viewer,
+        tilo_room::join::MemberRole::Viewer,
         Some(expiry),
     );
     activate(&mut owner);

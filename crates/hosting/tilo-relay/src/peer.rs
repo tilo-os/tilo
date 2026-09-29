@@ -2152,17 +2152,16 @@ fn gated_checkpoint_channel(
     // Unknown wrapper suffixes retain the generic checkpoint gate.
     if outer_trailing.is_empty()
         && let Some(source) = source
-        && let Ok((msg, trailing)) =
-            postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body)
+        && let Ok((msg, trailing)) = postcard::take_from_bytes::<tilo_room::NeighbourMsg>(&body)
         && trailing.is_empty()
         && matches!(
             &msg,
-            tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+            tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key, ..
             } if *user_public_key == source.peer.user_public_key
         )
-        && tilo_peer_state::transport::retention(&msg, false)
-            == Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
+        && tilo_room::transport::retention(&msg, false)
+            == Some((channel, tilo_room::transport::Retention::Checkpoint))
     {
         return None;
     }
@@ -5966,11 +5965,8 @@ mod private_transport_tests {
         runtime
             .store
             .bind_shell_authority(
-                tilo_peer_state::retained_proof::RetentionAuthority::new(
-                    &room,
-                    governor.cert.clone(),
-                )
-                .unwrap(),
+                tilo_room::retained_proof::RetentionAuthority::new(&room, governor.cert.clone())
+                    .unwrap(),
             )
             .unwrap();
         runtime.admit_device(governor.device_public_key).unwrap();
@@ -6070,7 +6066,7 @@ mod private_transport_tests {
             shell_selection::{self, Selection},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -6236,15 +6232,13 @@ mod private_transport_tests {
         use automerge::transaction::Transactable;
 
         fn frame(
-            authority: &tilo_peer_state::retained_proof::RetentionAuthority,
-            message: &tilo_peer_state::NeighbourMsg,
+            authority: &tilo_room::retained_proof::RetentionAuthority,
+            message: &tilo_room::NeighbourMsg,
         ) -> Vec<u8> {
-            let channel = tilo_peer_state::transport::retention(message, true)
-                .unwrap()
-                .0;
+            let channel = tilo_room::transport::retention(message, true).unwrap().0;
             let body = postcard::to_allocvec(message).unwrap();
             let source = match message {
-                tilo_peer_state::NeighbourMsg::AppDocument { envelope, .. } => {
+                tilo_room::NeighbourMsg::AppDocument { envelope, .. } => {
                     *envelope.author.as_bytes()
                 }
                 _ => authority.governor().device_public_key,
@@ -6287,7 +6281,7 @@ mod private_transport_tests {
             .checked_add(web_time::Duration::from_secs(4000))
             .unwrap();
         let room = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
-        let mut publisher = tilo_peer_state::StatePeer::new(
+        let mut publisher = tilo_room::StatePeer::new(
             room,
             cert.clone(),
             vec![],
@@ -6301,7 +6295,7 @@ mod private_transport_tests {
                 document
                     .put(automerge::ROOT, "index", u64::try_from(index).unwrap())
                     .unwrap();
-                tilo_peer_state::SeedDocument {
+                tilo_room::SeedDocument {
                     app_id: "threshold.app".into(),
                     record_id: format!("record-{index:02}"),
                     kind: "test".into(),
@@ -6311,8 +6305,8 @@ mod private_transport_tests {
             .collect();
         publisher
             .install_seed(
-                tilo_peer_state::SeedState {
-                    room_changes: tilo_peer_state::seed_room(
+                tilo_room::SeedState {
+                    room_changes: tilo_room::seed_room(
                         room,
                         &cert,
                         &[
@@ -6329,7 +6323,7 @@ mod private_transport_tests {
             )
             .unwrap();
         let authority =
-            tilo_peer_state::retained_proof::RetentionAuthority::new(room, cert.clone()).unwrap();
+            tilo_room::retained_proof::RetentionAuthority::new(room, cert.clone()).unwrap();
         let baseline = publisher
             .durable_bootstrap_messages(&key, now, 1)
             .unwrap()
@@ -6766,7 +6760,7 @@ mod private_transport_tests {
     async fn checkpoint_stage_allocation_error_registers_candidate_for_owner_cleanup() {
         use crate::store::shell_selection::tests::{producer_frame, producer_metadata};
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -6857,7 +6851,7 @@ mod private_transport_tests {
             shell_selection::{self, Selection},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -7046,7 +7040,7 @@ mod private_transport_tests {
             shell_selection::tests::{producer_frame, producer_metadata},
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -7367,7 +7361,7 @@ mod private_transport_tests {
             admit_frames, producer_fixture, producer_frame, producer_metadata, replay_frames,
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )
@@ -7579,7 +7573,7 @@ mod private_transport_tests {
             admit_frames, producer_fixture, producer_frame, producer_metadata,
         };
         let meta = producer_metadata();
-        let authority = tilo_peer_state::retained_proof::RetentionAuthority::new(
+        let authority = tilo_room::retained_proof::RetentionAuthority::new(
             meta["room"].as_str().unwrap(),
             serde_json::from_value(meta["authority"].clone()).unwrap(),
         )

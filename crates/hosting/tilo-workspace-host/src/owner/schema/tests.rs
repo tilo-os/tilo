@@ -159,8 +159,8 @@ fn session_v4_literal_abi_is_byte_exact() {
     assert_eq!(receipt.generation, 10);
     assert!(receipt.media_result.is_none());
 }
-fn media_result() -> tilo_peer_state::room::media::MediaCallResultV1 {
-    use tilo_peer_state::room::media::*;
+fn media_result() -> tilo_room::room::media::MediaCallResultV1 {
+    use tilo_room::room::media::*;
     MediaCallResultV1 {
         version: 1,
         call_id: [42; 32],
@@ -484,11 +484,11 @@ fn completed_join_with_membership_challenge() -> (
     SessionOwner,
     crate::collaboration::CollaborationService,
     [u8; 32],
-    tilo_peer_state::join::JoinCompleteRequest,
-    tilo_peer_state::join::MembershipCompleteRequest,
+    tilo_room::join::JoinCompleteRequest,
+    tilo_room::join::MembershipCompleteRequest,
     u64,
 ) {
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
@@ -631,11 +631,11 @@ fn enrolled_fixture() -> (
     SessionOwner,
     crate::enrollment::EnrollmentAuthority,
     DeviceCert,
-    tilo_peer_state::enrollment::CompleteRequest,
-    tilo_peer_state::enrollment::ChallengeRequest,
+    tilo_room::enrollment::CompleteRequest,
+    tilo_room::enrollment::ChallengeRequest,
     u64,
 ) {
-    use tilo_peer_state::enrollment::*;
+    use tilo_room::enrollment::*;
     let temp = tempfile::tempdir().unwrap();
     let mut owner = SessionOwner::initialize(&temp.path().join("owner")).unwrap();
     let key = ed25519_dalek::SigningKey::from_bytes(&[60; 32]);

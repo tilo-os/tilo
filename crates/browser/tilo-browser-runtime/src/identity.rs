@@ -1,7 +1,7 @@
 //! Client-owned enrollment identity. Opaque persistence bytes never leave the browser.
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
+use tilo_room::enrollment::{self, ChallengeRequest, ChallengeResponse};
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct Scope {
     root: [u8; 32],

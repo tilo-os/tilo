@@ -9,8 +9,8 @@ use std::{
     path::Path,
     time::Instant,
 };
-use tilo_peer_state::{StatePeer, TransportOrigin};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
+use tilo_room::{StatePeer, TransportOrigin};
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationList,
     persist::{self, IdentityPaths},
@@ -127,9 +127,9 @@ struct Output {
 }
 impl Output {
     fn observe(&mut self, data: &[u8]) {
-        let route = match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(data).unwrap() {
-            tilo_peer_state::NeighbourMsg::SyncResp { room, .. } => Route::Room(room),
-            tilo_peer_state::NeighbourMsg::AppDocument {
+        let route = match postcard::from_bytes::<tilo_room::NeighbourMsg>(data).unwrap() {
+            tilo_room::NeighbourMsg::SyncResp { room, .. } => Route::Room(room),
+            tilo_room::NeighbourMsg::AppDocument {
                 cluster_id: room,
                 app_id,
                 record_id,

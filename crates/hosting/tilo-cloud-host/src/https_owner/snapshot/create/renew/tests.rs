@@ -208,7 +208,7 @@ fn admit_large_original(f: &crate::https_owner::data::tests::Fixture) {
     let host_key = store.key().verifying_key().to_bytes();
     store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(host_key),
+            tilo_room::TransportOrigin::RelayDelta(host_key),
             message,
             now,
         )

@@ -6,7 +6,7 @@ impl Store {
     pub(crate) fn commit_verified_security_metadata_only(
         &mut self,
         observed: StatePeer,
-        proof: tilo_peer_state::VerifiedSecurityMetadataOnly,
+        proof: tilo_room::VerifiedSecurityMetadataOnly,
         now: u64,
     ) -> Result<()> {
         self.ensure_reconciled()?;

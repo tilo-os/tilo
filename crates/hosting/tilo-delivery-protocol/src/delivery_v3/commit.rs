@@ -6,7 +6,7 @@ use std::{
     marker::PhantomData,
     sync::Arc,
 };
-use tilo_peer_state::transport::Retention;
+use tilo_room::transport::Retention;
 
 /// Maximum canonical encoded ledger size under provisional qualification policy.
 pub const MAX_LEDGER_BYTES: usize = 4 * 1024 * 1024;

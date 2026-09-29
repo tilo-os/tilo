@@ -1,7 +1,7 @@
 //! Real owner retry behavior; no serialized data is treated as a live witness.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_peer_state::{desktop_command::*, owner_commit::*};
+use tilo_room::{desktop_command::*, owner_commit::*};
 use tilo_workspace_host::SessionOwner;
 
 fn opening(owner: &SessionOwner) -> OwnerCommitRequest {

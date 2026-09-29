@@ -11,7 +11,7 @@ use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES,
     WORKSPACE_JOIN_ALPN, WorkspaceJoinAdmission, WorkspaceJoinError,
 };
-use tilo_peer_state::join::{
+use tilo_room::join::{
     JoinBootstrap, JoinChallengeRequest, JoinTransportRequest, JoinTransportResponse,
     MembershipChallengeRequest, MembershipCompleteRequest, TransportHint, sign_join_proof,
     sign_membership_proof,
@@ -166,7 +166,7 @@ impl WorkspaceJoinClient {
         &self,
         address: iroh::EndpointAddr,
         signed_invitation: Vec<u8>,
-    ) -> Result<tilo_peer_state::join::JoinInspection, WorkspaceJoinError> {
+    ) -> Result<tilo_room::join::JoinInspection, WorkspaceJoinError> {
         match self
             .request(address, JoinTransportRequest::Inspect { signed_invitation })
             .await?
@@ -214,9 +214,7 @@ impl WorkspaceJoinClient {
         match self
             .request(
                 address,
-                JoinTransportRequest::Complete(tilo_peer_state::join::JoinCompleteRequest {
-                    proof,
-                }),
+                JoinTransportRequest::Complete(tilo_room::join::JoinCompleteRequest { proof }),
             )
             .await?
         {
@@ -359,7 +357,7 @@ fn response_error(response: JoinTransportResponse) -> WorkspaceJoinError {
 mod tests {
     use super::*;
     use std::sync::{Arc, Mutex};
-    use tilo_peer_state::join::{JoinTransportRequest, JoinTransportResponse};
+    use tilo_room::join::{JoinTransportRequest, JoinTransportResponse};
 
     type CapturedRequest = ([u8; 32], JoinTransportRequest);
 

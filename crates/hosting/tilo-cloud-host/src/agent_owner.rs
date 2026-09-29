@@ -6,7 +6,7 @@ use std::{
     sync::Arc,
 };
 use tilo_action_broker::peer_actions::OwnerPolicyClock;
-use tilo_peer_state::owner_commit::*;
+use tilo_room::owner_commit::*;
 
 mod policy_time;
 pub(crate) use policy_time::RuntimePolicyClock;
@@ -96,10 +96,7 @@ impl CloudAgentAuthority {
     }
 }
 impl Store {
-    pub(super) fn agent_scope(
-        &self,
-        peer: &tilo_peer_state::StatePeer,
-    ) -> Result<[u8; 32], String> {
+    pub(super) fn agent_scope(&self, peer: &tilo_room::StatePeer) -> Result<[u8; 32], String> {
         self.ensure_reconciled().map_err(|e| e.to_string())?;
         Ok(owner_scope(
             &self.root.canonicalize().map_err(|e| e.to_string())?,
@@ -159,7 +156,7 @@ impl OwnerCommitService for CloudAgentAuthority {
         // open-application action) are the only generic commits served here.
         if matches!(
             request.operation,
-            tilo_peer_state::owner_commit::CommitOperation::EffectReceipt { .. }
+            tilo_room::owner_commit::CommitOperation::EffectReceipt { .. }
         ) {
             let this = self.clone();
             return Box::pin(async move { this.store()?.commit_effect_receipt(&request) });
@@ -190,7 +187,7 @@ impl OwnerCommitService for CloudAgentAuthority {
 /// The public room projection of one committed peer: workspace, owner and
 /// governed capabilities. Never projects private admissions or tasks.
 pub(crate) fn workspace_tree(
-    peer: &tilo_peer_state::StatePeer,
+    peer: &tilo_room::StatePeer,
 ) -> Result<tilo_desktop_model::DesktopTree, String> {
     let owner = canonical_owner(peer)?;
     let doc = peer.admitted_room().ok_or("admitted room missing")?;
@@ -202,7 +199,7 @@ pub(crate) fn workspace_tree(
     )?;
     let workspace = tree.workspaces.first_mut().ok_or("workspace missing")?;
     workspace.owner = Some(owner);
-    workspace.capabilities = tilo_peer_state::room::extract_governed_fields(doc).2;
+    workspace.capabilities = tilo_room::room::extract_governed_fields(doc).2;
     Ok(tree)
 }
 impl tilo_action_broker::services::WorkspaceAuthority for CloudAgentAuthority {

@@ -406,9 +406,9 @@ fn replay_group(
         if raw > PAGE_BYTES {
             return Err(oversized("complete replay group exceeds page byte budget"));
         }
-        let kind = match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(publication.bytes)? {
-            tilo_peer_state::NeighbourMsg::SyncResp { .. } => EventKind::Governance,
-            tilo_peer_state::NeighbourMsg::AppDocument { .. } => EventKind::State,
+        let kind = match postcard::from_bytes::<tilo_room::NeighbourMsg>(publication.bytes)? {
+            tilo_room::NeighbourMsg::SyncResp { .. } => EventKind::Governance,
+            tilo_room::NeighbourMsg::AppDocument { .. } => EventKind::State,
             _ => bail!("unsupported public replay family"),
         };
         events.push(Event {

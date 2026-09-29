@@ -2,7 +2,7 @@
 //! Persisted material is custody, not evidence of current workspace membership.
 use ed25519_dalek::SigningKey;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::{self, JoinChallenge, JoinCompleteRequest, VerifiedJoin};
+use tilo_room::join::{self, JoinChallenge, JoinCompleteRequest, VerifiedJoin};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 
 const MAX_INVITATION: usize = 65_536;
@@ -234,7 +234,7 @@ impl InvitedIdentity {
 
     pub(crate) fn delivery_pin(
         &self,
-        state: &tilo_peer_state::StatePeer,
+        state: &tilo_room::StatePeer,
         now: u64,
     ) -> Result<Option<(DeviceCert, String)>, String> {
         let Some((host, origin)) = self.selected_delivery_pin()? else {
@@ -300,7 +300,7 @@ impl InvitedIdentity {
         &mut self,
         bootstrap: &join::JoinBootstrap,
         now: u64,
-    ) -> Result<tilo_peer_state::StatePeer, String> {
+    ) -> Result<tilo_room::StatePeer, String> {
         let pinned = self.retained_invitation()?;
         if self.completion().is_none()
             || bootstrap.version != 1
@@ -320,7 +320,7 @@ impl InvitedIdentity {
             return Err("Workspace bootstrap does not match retained invitation custody".into());
         }
         let time = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now);
-        let initial = tilo_peer_state::StatePeer::new(
+        let initial = tilo_room::StatePeer::new(
             &bootstrap.room,
             bootstrap.authority.clone(),
             vec![bootstrap.authority.clone()],

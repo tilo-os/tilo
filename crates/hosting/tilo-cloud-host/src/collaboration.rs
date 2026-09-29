@@ -6,7 +6,7 @@ use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
-use tilo_peer_state::join::{
+use tilo_room::join::{
     JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinChallengeResponse, JoinCompleteRequest,
     JoinInspection, JoinTransportRequest, JoinTransportResponse, MembershipChallenge,
     MembershipChallengeRequest, MembershipChallengeResponse, MembershipCompleteRequest,
@@ -82,7 +82,7 @@ pub(crate) struct StoredJoinResponse {
 pub(crate) struct MemberReceipt {
     pub(crate) device: [u8; 32],
     pub(crate) invite_id: [u8; 32],
-    pub(crate) role: tilo_peer_state::join::MemberRole,
+    pub(crate) role: tilo_room::join::MemberRole,
     pub(crate) generation: u64,
     pub(crate) completed_at_ns: u64,
 }
@@ -207,7 +207,7 @@ pub(crate) enum InvitationStatus {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub(crate) struct StoredInvitation {
     pub signed_invitation: Vec<u8>,
-    pub role: tilo_peer_state::join::MemberRole,
+    pub role: tilo_room::join::MemberRole,
     pub invitee_name: Option<String>,
     pub expires_at_ns: u64,
     pub status: InvitationStatus,

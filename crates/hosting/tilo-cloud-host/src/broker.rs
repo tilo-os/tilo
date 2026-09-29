@@ -8,7 +8,7 @@ use std::sync::Arc;
 use tilo_action_broker::collaboration_admin as shared;
 use tilo_actions::{ActionFailure, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, ExactActionRoute};
-use tilo_peer_state::join::MemberRole;
+use tilo_room::join::MemberRole;
 use tilo_user_identity::DeviceCert;
 type RetainedPolicy = (
     Arc<RuntimePolicyClock>,
@@ -130,7 +130,7 @@ fn catalogue(
                 && descriptor["action"] == scope.action
         };
         actions.retain(|descriptor| keep(shared::APP_ID, descriptor));
-        desktop.retain(|descriptor| keep(tilo_peer_state::desktop_command::APP_ID, descriptor));
+        desktop.retain(|descriptor| keep(tilo_room::desktop_command::APP_ID, descriptor));
     }
     let peer_id = tilo_relay::room_workspace_id(&store.state.room)?;
     let mut surfaces = vec![];
@@ -147,7 +147,7 @@ fn catalogue(
     if !desktop.is_empty() {
         surfaces.push(serde_json::json!({
             "peer_id": peer_id,
-            "app_id": tilo_peer_state::desktop_command::APP_ID,
+            "app_id": tilo_room::desktop_command::APP_ID,
             "cluster_id": store.state.room,
             "record_id": "",
             "live": true,
@@ -579,7 +579,7 @@ async fn handle_inner(
                 action: action_name,
                 argument,
                 ..
-            } if app_id == tilo_peer_state::desktop_command::APP_ID => {
+            } if app_id == tilo_room::desktop_command::APP_ID => {
                 if *requested_host != host || !record_id.is_empty() {
                     bail!("desktop action route mismatch")
                 }

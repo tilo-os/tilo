@@ -8,7 +8,7 @@ use crate::agent_runtime_owner::{
 use crate::https_owner::{CloudStoreSource, Current};
 use atomic_file::test_support::Checkpoint;
 use std::io::Read;
-use tilo_peer_state::owner_commit::RetainedRuntimeFacts;
+use tilo_room::owner_commit::RetainedRuntimeFacts;
 
 struct Fixture {
     dir: tempfile::TempDir,

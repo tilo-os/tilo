@@ -1,7 +1,7 @@
 //! Actual SessionOwner barriers, behind the bounded standalone broker handoff.
 tilo_automerge_isolate::test_worker!();
 
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use tilo_workspace_host::{SessionOwner, owner_commit::OwnerCommitMailbox};
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
@@ -215,7 +215,7 @@ async fn owner_commit_effect_receipt_is_canonical_immutable_and_restart_durable(
     drop(owner);
     let owner = SessionOwner::open(&root).unwrap();
     assert_eq!(owner.status(), before);
-    let values = tilo_peer_state::room::receipt_values(owner.peer().admitted_room().unwrap());
+    let values = tilo_room::room::receipt_values(owner.peer().admitted_room().unwrap());
     assert_eq!(
         values.get(&invocation.to_string()),
         Some(&serde_json::to_value(receipt).unwrap())
@@ -237,8 +237,8 @@ async fn owner_commit_local_sdk_snapshot_does_not_weaken_network_checkpoint_rule
     };
     let source = *envelope.author.as_bytes();
     let mut remote = owner.peer().clone();
-    let network = tilo_peer_state::NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(&source),
+    let network = tilo_room::NeighbourMsg::AppDocument {
+        peer: tilo_room::peer_handle(&source),
         app_id: app.clone(),
         cluster_id: request.room.clone(),
         record_id: record.clone(),
@@ -246,7 +246,7 @@ async fn owner_commit_local_sdk_snapshot_does_not_weaken_network_checkpoint_rule
     };
     let outcome = remote
         .receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(source),
+            tilo_room::TransportOrigin::RelayDelta(source),
             network,
             web_time::SystemTime::now(),
         )
@@ -268,7 +268,7 @@ async fn owner_commit_local_sdk_snapshot_does_not_weaken_network_checkpoint_rule
         let message = postcard::from_bytes(bytes).unwrap();
         remote
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(source),
+                tilo_room::TransportOrigin::RelayDelta(source),
                 message,
                 web_time::SystemTime::now(),
             )
@@ -320,16 +320,16 @@ async fn small_commit_retains_baseline_and_publishes_only_touched_route() {
     assert_eq!(
         &outgoing_kinds(&owner)[baseline.len()..],
         &[
-            tilo_peer_state::transport::Retention::Delta,
-            tilo_peer_state::transport::Retention::Checkpoint
+            tilo_room::transport::Retention::Delta,
+            tilo_room::transport::Retention::Checkpoint
         ]
     );
     assert!(matches!(
-        postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&tail[0]).unwrap(),
-        tilo_peer_state::NeighbourMsg::SyncResp { .. }
+        postcard::from_bytes::<tilo_room::NeighbourMsg>(&tail[0]).unwrap(),
+        tilo_room::NeighbourMsg::SyncResp { .. }
     ));
     assert!(
-        matches!(postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&tail[1]).unwrap(), tilo_peer_state::NeighbourMsg::AppDocument { app_id, record_id, .. } if app_id == "so.tilo.word-processor" && record_id == "tab:0000000000000001")
+        matches!(postcard::from_bytes::<tilo_room::NeighbourMsg>(&tail[1]).unwrap(), tilo_room::NeighbourMsg::AppDocument { app_id, record_id, .. } if app_id == "so.tilo.word-processor" && record_id == "tab:0000000000000001")
     );
     assert_eq!(
         owner
@@ -348,8 +348,7 @@ async fn room_effect_receipt_publishes_no_application_snapshot() {
     let mut owner = SessionOwner::initialize(&directory.path().join("owner")).unwrap();
     let baseline = outgoing_bytes(&owner).to_vec();
     let floors = owner.peer().replay_floors();
-    let receipts =
-        tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
+    let receipts = tilo_room::durability::entries(owner.peer().admitted_room().unwrap()).unwrap();
     let invocation = uuid::Uuid::new_v4();
     let receipt = tilo_desktop_model::WorkspaceEffectReceipt {
         invocation: serde_json::from_value(serde_json::json!(invocation)).unwrap(),
@@ -380,12 +379,12 @@ async fn room_effect_receipt_publishes_no_application_snapshot() {
         "room-only effects have no application publication"
     );
     assert!(matches!(
-        postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&tail[0]).unwrap(),
-        tilo_peer_state::NeighbourMsg::SyncResp { .. }
+        postcard::from_bytes::<tilo_room::NeighbourMsg>(&tail[0]).unwrap(),
+        tilo_room::NeighbourMsg::SyncResp { .. }
     ));
     assert_eq!(owner.peer().replay_floors(), floors);
     assert_eq!(
-        tilo_peer_state::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
+        tilo_room::durability::entries(owner.peer().admitted_room().unwrap()).unwrap(),
         receipts
     );
 }
@@ -411,7 +410,7 @@ async fn committed_publication_compacts_to_bounded_recoverable_history() {
     drop(owner);
     let owner = SessionOwner::open(&root).unwrap();
     assert_eq!(outgoing_bytes(&owner), bytes);
-    let mut fresh = tilo_peer_state::StatePeer::new(
+    let mut fresh = tilo_room::StatePeer::new(
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
@@ -422,9 +421,7 @@ async fn committed_publication_compacts_to_bounded_recoverable_history() {
     for bytes in &outgoing_bytes(&owner) {
         fresh
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(
-                    owner.peer().authority().device_public_key,
-                ),
+                tilo_room::TransportOrigin::RelayDelta(owner.peer().authority().device_public_key),
                 postcard::from_bytes(bytes).unwrap(),
                 web_time::SystemTime::now(),
             )
@@ -521,7 +518,7 @@ fn outgoing_bytes(owner: &tilo_workspace_host::SessionOwner) -> Vec<Vec<u8>> {
 }
 fn outgoing_kinds(
     owner: &tilo_workspace_host::SessionOwner,
-) -> Vec<tilo_peer_state::transport::Retention> {
+) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }
 

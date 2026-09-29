@@ -14,7 +14,7 @@ use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use uuid::Uuid;
 struct Fixture {
-    peer: tilo_peer_state::StatePeer,
+    peer: tilo_room::StatePeer,
     binding: Binding,
     device: DeviceCert,
     host: DeviceCert,
@@ -69,7 +69,7 @@ impl Fixture {
         let now = web_time::SystemTime::UNIX_EPOCH
             .checked_add(web_time::Duration::from_nanos(100))
             .unwrap();
-        let mut peer = tilo_peer_state::StatePeer::new(
+        let mut peer = tilo_room::StatePeer::new(
             &room,
             governor.clone(),
             roster.clone(),
@@ -78,8 +78,8 @@ impl Fixture {
         )
         .unwrap();
         peer.install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(&room, &governor, &roster).unwrap(),
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(&room, &governor, &roster).unwrap(),
                 documents: vec![],
             },
             &governor_key,

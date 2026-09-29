@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 #[cfg(any(target_arch = "wasm32", test))]
 use tilo_desktop_model::apps::{AppCatalogue, OpenableApp};
 use tilo_desktop_model::{DesktopTree, RoomId};
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use ui::application::ApplicationDefinition;
 use ui::record::{RecordCheckout, RecordId};
 
@@ -176,7 +176,7 @@ mod tests {
     use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::*;
-    use tilo_peer_state::{SeedState, StatePeer};
+    use tilo_room::{SeedState, StatePeer};
     fn state() -> (StatePeer, SigningKey) {
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,

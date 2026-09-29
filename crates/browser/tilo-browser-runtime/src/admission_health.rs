@@ -1,4 +1,4 @@
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_room::{NeighbourMsg, StatePeer};
 use web_time::SystemTime;
 
 pub(crate) const OUTGOING_CHECKPOINT_MESSAGE: &str =
@@ -21,7 +21,7 @@ pub(crate) fn outgoing_projection(
     let expiry_at_ms = outbox
         .iter()
         .filter(|message| {
-            !state.outbox_message_retired(message) && tilo_peer_state::outbox::fresh(message, now)
+            !state.outbox_message_retired(message) && tilo_room::outbox::fresh(message, now)
         })
         .filter_map(|message| {
             let NeighbourMsg::AppDocument { envelope, .. } = message else {
@@ -275,7 +275,7 @@ mod tests {
     use ed25519_dalek::SigningKey;
     use serde::{Deserialize, Serialize};
     use std::collections::BTreeMap;
-    use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_room};
+    use tilo_room::{SeedDocument, SeedState, StatePeer, seed_room};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, sign_device_cert,
     };
@@ -451,13 +451,13 @@ mod tests {
         }
     }
 
-    /// Mirrors tilo-peer-state's frozen v4 envelope that `durable()` writes
+    /// Mirrors tilo-room's frozen v4 envelope that `durable()` writes
     /// around the v3 base (without selected exact admission evidence).
     #[derive(Serialize, Deserialize)]
     struct DurableV4Fixture {
         version: u32,
         base: DurableFixture,
-        pending: std::collections::VecDeque<([u8; 32], tilo_peer_state::NeighbourMsg, bool)>,
+        pending: std::collections::VecDeque<([u8; 32], tilo_room::NeighbourMsg, bool)>,
         pending_bytes: usize,
     }
 
@@ -516,7 +516,7 @@ mod tests {
 
     #[test]
     fn fresh_empty_workspace_waits_for_enrollment_governance_within_initial_replay() {
-        use tilo_peer_state::{NeighbourMsg, TransportOrigin};
+        use tilo_room::{NeighbourMsg, TransportOrigin};
         let root = SigningKey::from_bytes(&[31; 32]);
         let authority_key = SigningKey::from_bytes(&[32; 32]);
         let member_key = SigningKey::from_bytes(&[33; 32]);
@@ -1001,7 +1001,7 @@ mod tests {
         let mut covering_governor = governor.clone();
         covering_governor
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(member_key.verifying_key().to_bytes()),
+                tilo_room::TransportOrigin::RelayDelta(member_key.verifying_key().to_bytes()),
                 original.clone(),
                 now,
             )
@@ -1013,7 +1013,7 @@ mod tests {
         {
             covered_state
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         authority_key.verifying_key().to_bytes(),
                     ),
                     message,
@@ -1052,7 +1052,7 @@ mod tests {
         {
             covered_state
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         authority_key.verifying_key().to_bytes(),
                     ),
                     message,
@@ -1122,7 +1122,7 @@ mod tests {
         for message in governor.bootstrap_messages(&authority_key, later).unwrap() {
             restored
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         authority_key.verifying_key().to_bytes(),
                     ),
                     message,

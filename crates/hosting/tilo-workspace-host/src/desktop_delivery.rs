@@ -3,7 +3,7 @@
 use crate::SessionOwner;
 use std::collections::{BTreeMap, BTreeSet};
 use tilo_delivery_protocol::peer_actions::{ActionMessage, DirectedAction, MAX_PRIVATE_BYTES};
-use tilo_peer_state::{
+use tilo_room::{
     NeighbourMsg,
     desktop_command::DesktopCommandError,
     owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest},
@@ -39,7 +39,7 @@ fn with_test_delivery_time<T>(time: web_time::SystemTime, operation: impl FnOnce
     })
 }
 
-fn visible_requirements(state: &tilo_peer_state::StatePeer) -> Vec<Route> {
+fn visible_requirements(state: &tilo_room::StatePeer) -> Vec<Route> {
     let Some(room) = tilo_desktop_model::RoomId::parse(state.room()) else {
         return vec![];
     };
@@ -95,7 +95,7 @@ fn visible_requirements(state: &tilo_peer_state::StatePeer) -> Vec<Route> {
 }
 
 fn is_current_snapshot(
-    state: &tilo_peer_state::StatePeer,
+    state: &tilo_room::StatePeer,
     route: &Route,
     message: &NeighbourMsg,
     now: web_time::SystemTime,
@@ -112,9 +112,9 @@ fn is_current_snapshot(
     };
     if (app_id, record_id) != (&route.0, &route.1)
         || cluster_id != state.room()
-        || *peer != tilo_peer_state::peer_handle(&state.authority().device_public_key)
+        || *peer != tilo_room::peer_handle(&state.authority().device_public_key)
         || envelope.author.as_bytes() != &state.authority().device_public_key
-        || !tilo_peer_state::outbox::fresh(message, now)
+        || !tilo_room::outbox::fresh(message, now)
         || !state
             .durable_covers_current(app_id, record_id)
             .is_ok_and(|current| current)
@@ -172,12 +172,12 @@ fn action_packet_budget(
 }
 
 fn push_packet(
-    encoder: &mut tilo_peer_state::desktop_delivery::Encoder,
+    encoder: &mut tilo_room::desktop_delivery::Encoder,
     remaining_action_bytes: &mut usize,
     bytes: &[u8],
 ) -> Result<(), String> {
     encoder.preflight_raw(bytes)?;
-    let packet = tilo_peer_state::desktop_delivery::encode_packet(bytes)?;
+    let packet = tilo_room::desktop_delivery::encode_packet(bytes)?;
     let action_bytes = packet.wire_bytes() + if encoder.packet_count() == 0 { 2 } else { 3 };
     if action_bytes > *remaining_action_bytes {
         return Err("committed desktop exceeds private action budget".into());
@@ -246,14 +246,14 @@ impl SessionOwner {
                 .collect::<Vec<_>>();
             let opened = matches!(
                 command.command,
-                tilo_peer_state::desktop_command::DesktopCommand::OpenTab { .. }
-                    | tilo_peer_state::desktop_command::DesktopCommand::OpenApp { .. }
+                tilo_room::desktop_command::DesktopCommand::OpenTab { .. }
+                    | tilo_room::desktop_command::DesktopCommand::OpenApp { .. }
             )
             .then(|| added.first().filter(|_| added.len() == 1).cloned())
             .flatten();
             let mut remaining_action_bytes =
                 action_packet_budget(tilo_actions::InvocationId(*invocation), opened.clone())?;
-            let mut packets = tilo_peer_state::desktop_delivery::Encoder::new();
+            let mut packets = tilo_room::desktop_delivery::Encoder::new();
             let room_packet = postcard::to_stdvec(&NeighbourMsg::SyncResp {
                 room: request.room.clone(),
                 changes,
@@ -347,7 +347,7 @@ impl SessionOwner {
 }
 
 fn tab_locations(
-    state: &tilo_peer_state::StatePeer,
+    state: &tilo_room::StatePeer,
 ) -> Vec<tilo_delivery_protocol::peer_actions::OpenedDesktopTab> {
     let mut tree = tilo_desktop_model::DesktopTree::default();
     let Some(room) = tilo_desktop_model::RoomId::parse(state.room()) else {
@@ -385,7 +385,7 @@ fn outgoing_bytes(owner: &crate::SessionOwner) -> Vec<Vec<u8>> {
 mod tests {
     use super::*;
     use tilo_delivery_protocol::transport_v2::EnvelopeV2;
-    use tilo_peer_state::{
+    use tilo_room::{
         TransportOrigin,
         desktop_command::{BoundCommand, CommandSource, DesktopCommand, TabPlacement},
         owner_commit::{CommitOperation, OwnerCommitRequest},
@@ -429,7 +429,7 @@ mod tests {
 
     fn apply_first_publication(
         owner: &SessionOwner,
-        browser: &mut tilo_peer_state::StatePeer,
+        browser: &mut tilo_room::StatePeer,
         start: usize,
         include_documents: bool,
     ) {
@@ -502,7 +502,7 @@ mod tests {
         let ActionMessage::CommittedDesktop { packets, .. } = &delivery.message else {
             panic!("desktop command emits a committed desktop action")
         };
-        let messages = tilo_peer_state::desktop_delivery::decode(packets)
+        let messages = tilo_room::desktop_delivery::decode(packets)
             .unwrap()
             .into_iter()
             .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())
@@ -589,7 +589,7 @@ mod tests {
             panic!("desktop command emits a committed desktop action")
         };
         assert!(
-            tilo_peer_state::desktop_delivery::decode(packets)
+            tilo_room::desktop_delivery::decode(packets)
                 .unwrap()
                 .iter()
                 .any(|bytes| bytes == &notes_checkpoint),
@@ -679,10 +679,10 @@ mod tests {
             })
             .expect("the mutation publishes its current Notes snapshot");
         assert!(
-            tilo_peer_state::desktop_delivery::encode_packet(oversized_checkpoint)
+            tilo_room::desktop_delivery::encode_packet(oversized_checkpoint)
                 .unwrap()
                 .wire_bytes()
-                > tilo_peer_state::desktop_delivery::MAX_WIRE_BYTES,
+                > tilo_room::desktop_delivery::MAX_WIRE_BYTES,
             "the optional persisted snapshot exceeds the low-latency wire budget"
         );
         apply_first_publication(&owner, &mut healthy, mutation_start, true);
@@ -705,7 +705,7 @@ mod tests {
         let ActionMessage::CommittedDesktop { packets, .. } = &delivery.message else {
             panic!("desktop command emits a committed desktop action")
         };
-        let messages = tilo_peer_state::desktop_delivery::decode(packets)
+        let messages = tilo_room::desktop_delivery::decode(packets)
             .unwrap()
             .into_iter()
             .map(|bytes| postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap())

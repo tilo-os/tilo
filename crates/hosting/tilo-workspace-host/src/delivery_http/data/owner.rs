@@ -346,9 +346,9 @@ fn replay_group(
     let mut events = Vec::new();
     for (ordinal, publication) in publications.iter().enumerate() {
         let publication = publication?;
-        let kind = match postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(publication.bytes)? {
-            tilo_peer_state::NeighbourMsg::SyncResp { .. } => EventKind::Governance,
-            tilo_peer_state::NeighbourMsg::AppDocument { .. } => EventKind::State,
+        let kind = match postcard::from_bytes::<tilo_room::NeighbourMsg>(publication.bytes)? {
+            tilo_room::NeighbourMsg::SyncResp { .. } => EventKind::Governance,
+            tilo_room::NeighbourMsg::AppDocument { .. } => EventKind::State,
             _ => anyhow::bail!("unsupported public replay family"),
         };
         events.push(ReplayEvent {

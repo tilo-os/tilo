@@ -12,7 +12,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 
 /// Readers observe with `try_lock`, so a long hold is contention for every
 /// relay session. Holds at least this long are logged (content-free: kind,

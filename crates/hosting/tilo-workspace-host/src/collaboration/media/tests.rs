@@ -1,6 +1,6 @@
 use super::*;
 use tilo_action_broker::collaboration_admin::*;
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, room::media};
+use tilo_room::{NeighbourMsg, TransportOrigin, room::media};
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 
 fn fixture() -> (tempfile::TempDir, SessionOwner) {
@@ -74,7 +74,7 @@ fn room_media_owner_reconciles_independent_verified_revocation_before_publicatio
     let (_dir, mut owner) = fixture();
     let (root, _, cert) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     let r = create(&owner);
@@ -211,7 +211,7 @@ fn room_media_owner_requires_operational_v5_and_exact_current_owner_certificate(
     assert!(matches!(run(&mut owner, &r), Err(Error::Rejected(_))));
     let (_, _, member) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     r = create(&owner);
@@ -387,7 +387,7 @@ fn room_media_owner_max_revision_suspends_durably_without_new_replay_or_receipt(
     let (dir, mut owner) = fixture();
     let (root, _, cert) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     let r = create(&owner);
@@ -511,7 +511,7 @@ fn room_media_owner_suspended_metadata_barrier_failure_poison_denies_old_view() 
     let (_dir, mut owner) = fixture();
     let (root, _, cert) = crate::room_media_policy::tests::member(
         &mut owner,
-        tilo_peer_state::join::MemberRole::Editor,
+        tilo_room::join::MemberRole::Editor,
         None,
     );
     let r = create(&owner);
@@ -650,7 +650,7 @@ fn room_media_owner_current_room_admin_restriction_blocks_even_exact_retry() {
 }
 
 fn enroll_owner_browser(owner: &mut SessionOwner, seed: u8) -> tilo_user_identity::DeviceCert {
-    use tilo_peer_state::enrollment;
+    use tilo_room::enrollment;
     let now_ns = current_time_ns();
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let mut authority = crate::enrollment::EnrollmentAuthority::default();

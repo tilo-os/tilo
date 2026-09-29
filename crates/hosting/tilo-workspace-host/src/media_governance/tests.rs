@@ -4,7 +4,7 @@ use tilo_action_broker::collaboration_admin::{
     MediaCallInput, MediaCreateInput, MediaDenialInput, MediaDirectionsChangeInput,
     MediaDirectionsInput, MediaRejectionCode,
 };
-use tilo_peer_state::room::media::{self, CallPhaseV1};
+use tilo_room::room::media::{self, CallPhaseV1};
 use ui::automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
 
 fn fixture() -> (tempfile::TempDir, SessionOwner) {

@@ -200,8 +200,8 @@ async fn items_that_fail_admission_or_are_duplicates_are_never_forwarded() {
 
     // Forged: signature no longer covers the (changed) cluster.
     let valid = native_edit(&h.f.owner, "forged", vec![4; 16]);
-    let mut message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(&valid).unwrap();
-    if let tilo_peer_state::NeighbourMsg::AppDocument { cluster_id, .. } = &mut message {
+    let mut message: tilo_room::NeighbourMsg = postcard::from_bytes(&valid).unwrap();
+    if let tilo_room::NeighbourMsg::AppDocument { cluster_id, .. } = &mut message {
         *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
     }
     let forged = postcard::to_stdvec(&message).unwrap();
@@ -293,7 +293,7 @@ async fn a_forwarded_item_whose_barrier_fails_is_not_durable_until_the_retry_com
     let seen = record(&mut h);
     let root = h.f.owner.root().to_owned();
     let canonical = native_edit(&h.f.owner, "fails", vec![5; 32]);
-    let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
+    let message: tilo_room::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
     let before = durable_digest(&root);
     let groups = replayed_groups(&mut h).await;
 

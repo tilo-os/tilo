@@ -5,9 +5,9 @@ use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use std::{sync::Arc, time::SystemTime};
 use tilo_delivery_protocol::delivery_v3::descriptor::GenerationExpectation;
-use tilo_joined_room::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
-use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, join};
+use tilo_room::{NeighbourMsg, TransportOrigin, join};
+use tilo_room_session::testing::{APP, ROOM, raw_fixture, raw_fixture_at};
+use tilo_room_session::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 struct Fixture {
     enrollment: VerifiedNativeEnrollment,
@@ -17,7 +17,7 @@ struct Fixture {
 }
 /// The state tree the owner publishes into.
 pub(super) fn tree_of(owner: &NativeWorkspaceOwner) -> WorkspaceTreeHandle {
-    let store: Arc<dyn std::any::Any + Send + Sync> = tilo_joined_room::testing::store(owner);
+    let store: Arc<dyn std::any::Any + Send + Sync> = tilo_room_session::testing::store(owner);
     store
         .downcast::<TreeStore>()
         .expect("a desktop owner publishes into its state tree")
@@ -43,7 +43,7 @@ pub(super) fn prepare_enrollment(
 fn fixture(owner: &NativeWorkspaceOwner) -> Fixture {
     let (intent, bootstrap, messages, governor, now) = raw_fixture();
     let pending = prepare_enrollment(owner, &intent, now).unwrap();
-    let enrollment = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrollment = tilo_room_session::testing::finalize(intent, pending, bootstrap).unwrap();
     Fixture {
         enrollment,
         messages,
@@ -155,7 +155,7 @@ fn native_pending_complete_survives_restart_and_cancellation_preserves_exact_pro
     let cancelled = owner.pending_enrollment(id.room()).unwrap().unwrap();
     assert_eq!(cancelled.intent_bytes(), durable.intent_bytes());
     assert_eq!(cancelled.status(), PendingEnrollmentStatus::Cancelled);
-    let late = tilo_joined_room::testing::finalize(intent, id.clone(), bootstrap).unwrap();
+    let late = tilo_room_session::testing::finalize(intent, id.clone(), bootstrap).unwrap();
     assert!(owner.install(&late, now).is_err());
     assert!(owner.with_current(id.room(), |_| Ok(())).is_err());
     assert!(
@@ -354,7 +354,7 @@ fn bootstrap_candidate(
                 allowed_delivery_capabilities: 3,
                 now,
             };
-            let ns = tilo_joined_room::testing::ns(now)?;
+            let ns = tilo_room_session::testing::ns(now)?;
             descriptor::issue_transport_hint(
                 &descriptor::DescriptorSettings {
                     origin: "https://native.example".into(),
@@ -385,8 +385,8 @@ fn bootstrap_response(
         hint: postcard::to_stdvec(hint).unwrap(),
         generation: metadata.generation,
         descriptor_digest: metadata.descriptor_digest,
-        issued_at_ns: tilo_joined_room::testing::ns(now).unwrap(),
-        expires_at_ns: tilo_joined_room::testing::ns(now)
+        issued_at_ns: tilo_room_session::testing::ns(now).unwrap(),
+        expires_at_ns: tilo_room_session::testing::ns(now)
             .unwrap()
             .checked_add(10_000_000_000)
             .unwrap(),
@@ -534,7 +534,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
     drop(oversized);
     let mut oversized_authority = tree.read().clone();
     // Malformed oversized bytes must be refused before any generic tree clone or publication.
-    tilo_joined_room::testing::set_stored_peer(
+    tilo_room_session::testing::set_stored_peer(
         &mut oversized_authority.native_authority,
         RoomId::parse(ROOM).unwrap(),
         vec![0; store::MAX_AUTHORITY_BYTES / 2],
@@ -546,7 +546,7 @@ fn native_file_writer_excludes_competing_owner_and_encoded_overflow_preserves_di
 
 #[test]
 fn native_local_document_commit_receipt_and_exact_retry_use_actual_selected_device() {
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("state.json");
     let owner = open(tree_at(&path)).unwrap();
@@ -702,7 +702,7 @@ fn native_enrollment_target_slot_publishes_new_room_only_with_actual_owner_barri
         Some(previous),
         "preparation must not join or expose the new room"
     );
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let enrolled = tilo_room_session::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&enrolled, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     assert_eq!(tree.read().room_of(local), Some(room));
@@ -726,7 +726,8 @@ fn native_enrollment_target_slot_reassignment_rejects_late_complete_and_keeps_pr
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled =
+        tilo_room_session::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let replaced = RoomId::new();
     assert!(tree.write().set_room(local, replaced));
     assert!(owner.install(&enrolled, now).is_err());
@@ -752,7 +753,8 @@ fn native_enrollment_target_slot_failed_barrier_preserves_previous_binding() {
     let pending = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let enrolled = tilo_joined_room::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
+    let enrolled =
+        tilo_room_session::testing::finalize(intent, pending.clone(), bootstrap).unwrap();
     let before = std::fs::read(&path).unwrap();
     assert!(with_failure(Checkpoint::BeforePublish, || owner.install(&enrolled, now)).is_err());
     assert_eq!(tree.read().room_of(local), Some(previous));
@@ -781,7 +783,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
         .iter()
         .map(|message| postcard::to_stdvec(message).unwrap())
         .collect();
-    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_room_session::testing::finalize(intent, pending, bootstrap).unwrap();
     owner.install(&complete, now).unwrap();
     let room = RoomId::parse(ROOM).unwrap();
     owner
@@ -794,7 +796,7 @@ fn native_authenticated_bootstrap_admits_historical_signed_coverage_but_ongoing_
     let (intent, bootstrap, _, _, _) = raw_fixture_at(historical);
     let separate = open(tree_at(&directory.path().join("ongoing.json"))).unwrap();
     let pending = prepare_enrollment(&separate, &intent, historical).unwrap();
-    let complete = tilo_joined_room::testing::finalize(intent, pending, bootstrap).unwrap();
+    let complete = tilo_room_session::testing::finalize(intent, pending, bootstrap).unwrap();
     separate.install(&complete, now).unwrap();
     assert!(
         separate
@@ -938,7 +940,7 @@ fn native_slot_barrier_and_stale_flush_preserve_actual_acl_and_publisher() {
     let id = owner
         .prepare_enrollment_into(&intent, Some(local), now)
         .unwrap();
-    let complete = tilo_joined_room::testing::finalize(intent, id, bootstrap).unwrap();
+    let complete = tilo_room_session::testing::finalize(intent, id, bootstrap).unwrap();
     let stale = tree.read().clone();
     let before = std::fs::read(&path).unwrap();
     std::fs::remove_file(&observed_acl).unwrap();

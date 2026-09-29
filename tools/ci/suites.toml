@@ -634,8 +634,8 @@ readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
 package = "tilo-cloud-host"
-# Owner-commit fixtures are a shared contract with tilo-peer-state.
-inputs = ["crates/collab/tilo-peer-state/src/owner_commit/fixtures/"]
+# Owner-commit fixtures are a shared contract with tilo-room.
+inputs = ["crates/collab/tilo-room/src/owner_commit/fixtures/"]
 readers = [
   "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
   "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",

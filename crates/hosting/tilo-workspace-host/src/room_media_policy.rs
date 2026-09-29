@@ -4,7 +4,7 @@
 use crate::media_authority::{
     CallPolicy, GrantRequest, MediaCallPolicy, MediaDirections, MediaError,
 };
-use tilo_peer_state::{
+use tilo_room::{
     StatePeer,
     room::media::{self, CallPhaseV1, RoomMediaV1},
 };
@@ -108,7 +108,7 @@ pub(crate) mod tests {
         let mut candidate = owner.peer().clone();
         candidate
             .install_seed(
-                tilo_peer_state::SeedState {
+                tilo_room::SeedState {
                     room_changes: room
                         .get_changes(&[])
                         .iter()
@@ -201,7 +201,7 @@ pub(crate) mod tests {
     }
     pub(crate) fn member(
         owner: &mut SessionOwner,
-        role: tilo_peer_state::join::MemberRole,
+        role: tilo_room::join::MemberRole,
         expires_at_ns: Option<u64>,
     ) -> (
         ed25519_dalek::SigningKey,
@@ -209,7 +209,7 @@ pub(crate) mod tests {
         DeviceCert,
     ) {
         use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-        use tilo_peer_state::join::{JoinChallengeRequest, JoinCompleteRequest, sign_join_proof};
+        use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, sign_join_proof};
         use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
         let now: u64 = SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)

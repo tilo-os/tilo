@@ -5,7 +5,7 @@
 //! exactly as an empty creation would ([`crate::canonical_records::authorize_creation`]),
 //! validates the document ([`ui::record::transfer::validate_import`]), and
 //! records the proposal in the room's governed state
-//! ([`tilo_peer_state::document_import::ROOM_KEY`]). Nothing is created then.
+//! ([`tilo_room::document_import::ROOM_KEY`]). Nothing is created then.
 //! Only the room owner's signed acceptance, before the proposal expires and
 //! while the proposer still has those rights, makes the owner publish the
 //! document as the new record; a declined, expired or unanswered proposal
@@ -16,12 +16,12 @@
 use crate::SessionOwner;
 use std::collections::BTreeMap;
 use tilo_action_broker::peer_actions::PolicyTime;
-use tilo_peer_state::desktop_command::DesktopCommandError;
-use tilo_peer_state::document_import::{
+use tilo_room::desktop_command::DesktopCommandError;
+use tilo_room::document_import::{
     self as import, ImportAction, ImportEntry, ImportState, MAX_IMPORT_DOCUMENT_BYTES,
 };
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
 use tilo_user_identity::DeviceCert;
 use web_time::SystemTime;
 

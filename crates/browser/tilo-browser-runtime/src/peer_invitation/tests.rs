@@ -1,7 +1,7 @@
 use super::*;
 use automerge::transaction::Transactable;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::{self, InviteGrant, MemberRole};
+use tilo_room::join::{self, InviteGrant, MemberRole};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 const NOW: u64 = 1_000_000_000_000;
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -164,11 +164,7 @@ fn admitted_fixture_with_document(
     locators: usize,
     appointed: bool,
     document: bool,
-) -> (
-    InvitedIdentity,
-    join::JoinBootstrap,
-    tilo_peer_state::StatePeer,
-) {
+) -> (InvitedIdentity, join::JoinBootstrap, tilo_room::StatePeer) {
     let f = Fixture::new();
     let original = join::decode_and_verify_invitation_text(
         &f.invitation(None),
@@ -216,7 +212,7 @@ fn admitted_fixture_with_document(
     if appointed {
         roster.push(f.host.clone());
     }
-    let mut native = tilo_peer_state::StatePeer::new(
+    let mut native = tilo_room::StatePeer::new(
         ROOM,
         f.governor.clone(),
         roster.clone(),
@@ -226,14 +222,14 @@ fn admitted_fixture_with_document(
     .unwrap();
     native
         .install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &f.governor, &roster).unwrap(),
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, &f.governor, &roster).unwrap(),
                 documents: if document {
                     let mut doc = automerge::AutoCommit::new();
                     doc.put(automerge::ROOT, "value", "retained native document")
                         .unwrap();
                     doc.commit();
-                    vec![tilo_peer_state::SeedDocument {
+                    vec![tilo_room::SeedDocument {
                         app_id: "test.app".into(),
                         record_id: "tab:1".into(),
                         kind: "test".into(),
@@ -281,7 +277,7 @@ fn historical_authenticated_bootstrap_accepts_old_signed_documents_but_live_rela
     // document's inner timestamp is older than the live relay's five-minute limit.
     identity.invitation(later).unwrap();
     tilo_user_identity::verify_device_cert_at(identity.certificate(), later).unwrap();
-    let mut live = tilo_peer_state::StatePeer::new(
+    let mut live = tilo_room::StatePeer::new(
         ROOM,
         bootstrap.authority.clone(),
         vec![bootstrap.authority.clone()],
@@ -291,10 +287,10 @@ fn historical_authenticated_bootstrap_accepts_old_signed_documents_but_live_rela
     .unwrap();
     let mut old_document = false;
     for bytes in &bootstrap.governance_messages {
-        let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let document = matches!(&message, tilo_peer_state::NeighbourMsg::AppDocument { .. });
+        let message: tilo_room::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        let document = matches!(&message, tilo_room::NeighbourMsg::AppDocument { .. });
         let result = live.receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(bootstrap.authority.device_public_key),
+            tilo_room::TransportOrigin::RelayDelta(bootstrap.authority.device_public_key),
             message,
             time,
         );
@@ -504,7 +500,7 @@ fn authenticated_bootstrap_requires_one_complete_cut_of_original_member_publicat
         )
         .unwrap();
     for message in [&parent, &child] {
-        let tilo_peer_state::NeighbourMsg::AppDocument { envelope, .. } = message else {
+        let tilo_room::NeighbourMsg::AppDocument { envelope, .. } = message else {
             panic!("member fixture must publish an actual signed document")
         };
         assert_eq!(

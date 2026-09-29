@@ -14,7 +14,7 @@ use super::*;
 use crate::{coedit::CoeditPayload, transport::Envelope};
 use automerge::{AutoCommit, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin, transport::Retention};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList};
 use web_time::{Duration, SystemTime};
 
@@ -113,11 +113,9 @@ struct Publication {
 
 impl Publication {
     fn payload(&self) -> CoeditPayload {
-        let (channel, kind) = tilo_peer_state::transport::retention(
-            &self.message,
-            self.kind == Retention::Checkpoint,
-        )
-        .unwrap();
+        let (channel, kind) =
+            tilo_room::transport::retention(&self.message, self.kind == Retention::Checkpoint)
+                .unwrap();
         assert_eq!(kind, self.kind);
         let body = postcard::to_allocvec(&self.message).unwrap();
         match kind {
@@ -202,17 +200,16 @@ pub(crate) fn generate() -> ShellProofFixture {
         at(0),
     )
     .unwrap();
-    let seed =
-        |route: (&str, &str), actor: u8, fields: &[(&str, &str)]| tilo_peer_state::SeedDocument {
-            app_id: route.0.into(),
-            record_id: route.1.into(),
-            kind: "fixture".into(),
-            bytes: document(actor, fields),
-        };
+    let seed = |route: (&str, &str), actor: u8, fields: &[(&str, &str)]| tilo_room::SeedDocument {
+        app_id: route.0.into(),
+        record_id: route.1.into(),
+        kind: "fixture".into(),
+        bytes: document(actor, fields),
+    };
     owner
         .install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &governor, &certificates).unwrap(),
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, &governor, &certificates).unwrap(),
                 documents: vec![
                     seed(NOTES, 1, &[("title", "Notes"), ("body", "unchanged")]),
                     seed(WORD_PROCESSOR, 2, &[("title", "Draft")]),

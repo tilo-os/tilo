@@ -37,7 +37,7 @@ iroh-base.workspace = true
 iroh-relay = { version = "1.0.3", features = ["server"] }
 web-time = { version = "1", features = ["serde"] }
 atomic-file = { path = "../../system/atomic-file" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-automerge-isolate.workspace = true
 tilo-automerge.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

@@ -41,7 +41,7 @@ tilo-actions = { path = "../actions" }
 tilo-automation = { path = "../automation" }
 # The device keymap a shortcut's keyboard trigger is checked against.
 settings-store = { path = "../../system/settings-store" }
-tilo-peer-state = { path = "../tilo-peer-state" }
+tilo-room = { path = "../tilo-room" }
 tilo-user-identity = { path = "../tilo-user-identity" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }

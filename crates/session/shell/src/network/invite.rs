@@ -9,7 +9,7 @@ pub(crate) mod enrollment_driver;
 #[cfg(test)]
 #[path = "invite/native_exchange_tests.rs"]
 mod exchange_tests;
-pub(crate) use tilo_joined_room::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
+pub(crate) use tilo_room_session::{VerifiedNativeEnrollment, VerifiedNativeEnrollmentIntent};
 
 use tilo_user_identity::DeviceCert;
 

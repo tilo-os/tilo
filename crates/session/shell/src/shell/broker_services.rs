@@ -43,7 +43,7 @@ impl NativeOwnerCommitService {
         }
     }
 }
-impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitService {
+impl tilo_room::owner_commit::OwnerCommitService for NativeOwnerCommitService {
     fn requires_room(&self, room: &str) -> bool {
         super::state::RoomId::parse(room)
             .is_some_and(|room| self.tree.read().requires_native_owner(room))
@@ -56,8 +56,8 @@ impl tilo_peer_state::owner_commit::OwnerCommitService for NativeOwnerCommitServ
     }
     fn commit(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> tilo_peer_state::owner_commit::CommitFuture {
+        request: tilo_room::owner_commit::OwnerCommitRequest,
+    ) -> tilo_room::owner_commit::CommitFuture {
         let owner = self.owner.clone();
         let network = self.network.clone();
         Box::pin(async move {

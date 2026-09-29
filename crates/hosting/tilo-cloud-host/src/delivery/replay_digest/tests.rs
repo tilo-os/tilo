@@ -1,6 +1,6 @@
 use super::*;
 use tilo_delivery_protocol::delivery_v3::commit::{CommitRef, PublicationRef};
-use tilo_peer_state::transport::Retention;
+use tilo_room::transport::Retention;
 fn reference(state: &State, store: StoreGeneration, replay: &ReplayCommit) -> Digest {
     let bytes = postcard::to_stdvec(&(
         store,

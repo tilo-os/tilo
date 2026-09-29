@@ -150,7 +150,7 @@ pub struct WorkspaceStore {
     root: PathBuf,
     workspace_id: u64,
     pinned: bool,
-    shell_authority: Option<tilo_peer_state::retained_proof::RetentionAuthority>,
+    shell_authority: Option<tilo_room::retained_proof::RetentionAuthority>,
     /// Entry and byte totals of the bounded directories written through this
     /// store (and its clones), keyed by directory. Filled from disk on first
     /// use and re-read from disk before it may report an overflow, since a
@@ -389,13 +389,13 @@ impl WorkspaceStore {
     /// Returns `StoreError` if the inputs violate this operation's bounds or invariants.
     pub fn bind_shell_authority(
         &mut self,
-        authority: tilo_peer_state::retained_proof::RetentionAuthority,
+        authority: tilo_room::retained_proof::RetentionAuthority,
     ) -> Result<(), StoreError> {
         #[derive(Serialize, Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Binding {
             version: u32,
-            authority: tilo_peer_state::retained_proof::RetentionAuthority,
+            authority: tilo_room::retained_proof::RetentionAuthority,
         }
         let invalid = |message| StoreError::Io(io::Error::new(io::ErrorKind::InvalidData, message));
         if !crate::room_workspace_id_matches(authority.room(), self.workspace_id) {
@@ -436,7 +436,7 @@ impl WorkspaceStore {
     }
 
     /// Exact locally supplied authority, absent for generic workspace stores.
-    pub fn shell_authority(&self) -> Option<&tilo_peer_state::retained_proof::RetentionAuthority> {
+    pub fn shell_authority(&self) -> Option<&tilo_room::retained_proof::RetentionAuthority> {
         self.shell_authority.as_ref()
     }
 

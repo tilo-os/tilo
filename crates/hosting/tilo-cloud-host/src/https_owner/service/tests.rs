@@ -102,14 +102,14 @@ impl Client {
     }
 }
 
-fn peer(root: &Path) -> tilo_peer_state::StatePeer {
+fn peer(root: &Path) -> tilo_room::StatePeer {
     crate::Store::open(root, MACHINE)
         .unwrap()
         .peer_at(tilo_delivery_protocol::clock::now_ns())
         .unwrap()
 }
 fn authority<'a>(
-    peer: &'a tilo_peer_state::StatePeer,
+    peer: &'a tilo_room::StatePeer,
     generation: GenerationExpectation,
 ) -> DescriptorAuthority<'a> {
     DescriptorAuthority {
@@ -122,7 +122,7 @@ fn authority<'a>(
         now: web_time::SystemTime::now(),
     }
 }
-fn device_cert(peer: &tilo_peer_state::StatePeer, key: &SigningKey) -> DeviceCert {
+fn device_cert(peer: &tilo_room::StatePeer, key: &SigningKey) -> DeviceCert {
     peer.certificates()
         .into_iter()
         .find(|cert| cert.device_public_key == key.verifying_key().to_bytes())
@@ -223,7 +223,7 @@ async fn handshake_negotiating(
 ) -> VerifiedDescriptor {
     let (status, hint) = client.get("/peer/v3/descriptor").await;
     assert_eq!(status, reqwest::StatusCode::OK);
-    let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&hint).unwrap();
+    let hint: tilo_room::join::TransportHint = postcard::from_bytes(&hint).unwrap();
     let peer = peer(root);
     let first = authority(
         &peer,
@@ -860,8 +860,8 @@ async fn onboard(
     scope: tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingScope<'_>,
     certificate: &DeviceCert,
     operation: tilo_delivery_protocol::delivery_v3::onboarding_wire::OnboardingOperation,
-    join: &tilo_peer_state::join::JoinTransportRequest,
-) -> tilo_peer_state::join::JoinTransportResponse {
+    join: &tilo_room::join::JoinTransportRequest,
+) -> tilo_room::join::JoinTransportResponse {
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         OnboardingRequest, OnboardingResponse, ReplyBodyKind,
     };
@@ -908,7 +908,7 @@ async fn cloud_https_invited_device_onboards_then_authenticates_for_product_data
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         OnboardingOperation, OnboardingScope,
     };
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest as Join,
         JoinTransportResponse as Reply, decode_and_verify_invitation_text, sign_join_proof,
     };
@@ -1057,7 +1057,7 @@ async fn cloud_https_structural_owner_membership_refresh_returns_owner_bootstrap
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         OnboardingOperation, OnboardingScope,
     };
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinTransportRequest as Join, JoinTransportResponse as Reply, MembershipChallengeRequest,
         MembershipCompleteRequest, sign_membership_proof,
     };
@@ -1224,13 +1224,13 @@ async fn descriptor_digest(client: &Client) -> [u8; 32] {
     };
     let (status, hint) = anonymous.get("/peer/v3/descriptor").await;
     assert_eq!(status, reqwest::StatusCode::OK);
-    let hint: tilo_peer_state::join::TransportHint = postcard::from_bytes(&hint).unwrap();
+    let hint: tilo_room::join::TransportHint = postcard::from_bytes(&hint).unwrap();
     let peer = client_peer_host(&hint);
     descriptor::inspect_persisted_hint(&hint, &peer)
         .unwrap()
         .descriptor_digest
 }
-fn client_peer_host(hint: &tilo_peer_state::join::TransportHint) -> DeviceCert {
+fn client_peer_host(hint: &tilo_room::join::TransportHint) -> DeviceCert {
     hint.host.clone()
 }
 async fn renewed(client: &Client, before: [u8; 32]) -> [u8; 32] {
@@ -2088,7 +2088,7 @@ async fn cloud_https_media_control_route_grants_over_installed_listener() {
                 tilo_delivery_protocol::clock::now_ns(),
             )
             .unwrap();
-        let result: tilo_peer_state::room::media::MediaCallResultV1 =
+        let result: tilo_room::room::media::MediaCallResultV1 =
             serde_json::from_value(receipt.output.unwrap()).unwrap();
         hex::encode(result.call_id)
     };

@@ -13,7 +13,7 @@ use hyper_util::rt::TokioIo;
 use rustls::pki_types::{PrivatePkcs8KeyDer, ServerName};
 use std::sync::Arc;
 use tilo_delivery_protocol::delivery_v3::onboarding_wire::{OnboardingResponse, ReplyBodyKind};
-use tilo_peer_state::join::*;
+use tilo_room::join::*;
 
 struct Client {
     address: std::net::SocketAddr,

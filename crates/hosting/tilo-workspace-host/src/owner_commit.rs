@@ -3,7 +3,7 @@
 use crate::{SessionOwner, action_timing::Timing};
 use std::sync::{Arc, Mutex, OnceLock};
 use tilo_action_broker::peer_actions::PolicyTime;
-use tilo_peer_state::owner_commit::{
+use tilo_room::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -128,7 +128,7 @@ pub struct PendingOwnerCommit {
     reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, String>>>,
     desktop_reply: Option<
         oneshot::Sender<
-            Result<OwnerCommitReceipt, tilo_peer_state::desktop_command::DesktopCommandError>,
+            Result<OwnerCommitReceipt, tilo_room::desktop_command::DesktopCommandError>,
         >,
     >,
     health: Arc<Health>,
@@ -247,7 +247,7 @@ impl PendingOwnerCommit {
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Err(reason));
         } else if let Some(reply) = self.desktop_reply.take() {
-            use tilo_peer_state::desktop_command::DesktopCommandError;
+            use tilo_room::desktop_command::DesktopCommandError;
             let error = if health.is_ok() {
                 DesktopCommandError::Rejected(reason)
             } else {
@@ -280,7 +280,7 @@ impl PendingOwnerCommit {
     ) -> impl FnOnce()
         -> Result<Option<tilo_delivery_protocol::peer_actions::DirectedAction>, String>
     + use<> {
-        use tilo_peer_state::desktop_command::DesktopCommandError;
+        use tilo_room::desktop_command::DesktopCommandError;
         let timing = Timing::new("owner_commit_desktop");
         self.start_execution();
         timing.mark("semantic_apply_start");
@@ -464,7 +464,7 @@ impl OwnerCommitHandle {
     ) -> tilo_action_broker::services::DesktopCommandFuture {
         let this = self.clone();
         Box::pin(async move {
-            use tilo_peer_state::desktop_command::DesktopCommandError::{Rejected, Uncertain};
+            use tilo_room::desktop_command::DesktopCommandError::{Rejected, Uncertain};
             let policy_time = this.admission_time().map_err(Rejected)?;
             this.health().map_err(Uncertain)?;
             if !matches!(
@@ -604,7 +604,7 @@ impl SessionOwner {
                         .ok_or("local record absent")?,
                 )
                 .map_err(|e| e.to_string())?;
-                if tilo_peer_state::document::merge_committed(&mut proof, &mutation)
+                if tilo_room::document::merge_committed(&mut proof, &mutation)
                     .map_err(|e| format!("{e:?}"))?
                     || !proof.get_missing_deps(&[]).is_empty()
                 {
@@ -654,10 +654,10 @@ impl SessionOwner {
                     .map(|c| c.raw_bytes().to_vec())
                     .collect();
                 candidate.receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         self.identity.native.verifying_key().to_bytes(),
                     ),
-                    tilo_peer_state::NeighbourMsg::SyncResp {
+                    tilo_room::NeighbourMsg::SyncResp {
                         room: request.room.clone(),
                         changes,
                     },
@@ -727,7 +727,7 @@ impl SessionOwner {
 #[cfg(test)]
 mod desktop_mailbox_tests {
     use super::*;
-    use tilo_peer_state::desktop_command::*;
+    use tilo_room::desktop_command::*;
     fn command(owner: &SessionOwner, name: &str) -> OwnerCommitRequest {
         OwnerCommitRequest {
             room: owner.peer().room().into(),

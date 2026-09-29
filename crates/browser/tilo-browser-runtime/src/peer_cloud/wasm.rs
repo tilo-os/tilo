@@ -2,9 +2,7 @@
 //! enrollment JSON; it cannot install admission or choose the delivery origin.
 use super::*;
 use crate::peer_cloud::{CloudOwner, CloudStep, EnrolledOwner};
-use tilo_peer_state::join::{
-    self, JoinTransportRequest as Request, JoinTransportResponse as Response,
-};
+use tilo_room::join::{self, JoinTransportRequest as Request, JoinTransportResponse as Response};
 
 const MAX_ENROLLMENT_JSON: usize = 20 * 1024;
 /// A Store that is busy or (re)establishing its native subscription answers

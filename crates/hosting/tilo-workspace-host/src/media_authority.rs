@@ -6,7 +6,7 @@ use ed25519_dalek::{Signature, VerifyingKey};
 use rand::TryRng as _;
 use serde::Serialize;
 use std::collections::BTreeMap;
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes, signing_digest};
 use web_time::SystemTime;
 
@@ -1172,7 +1172,7 @@ mod tests {
         caps::{CapOverride, Effect, Principal, Scope, Subject, Verb},
     };
     use ed25519_dalek::{Signer, SigningKey};
-    use tilo_peer_state::SeedState;
+    use tilo_room::SeedState;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
     use ui::automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
     use web_time::Duration;
@@ -1255,8 +1255,8 @@ mod tests {
                 at(100),
             )
             .unwrap();
-            let seed = tilo_peer_state::seed_room(ROOM, &host_cert, &roster).unwrap();
-            let mut doc = tilo_peer_state::room::candidate(None, &seed).unwrap();
+            let seed = tilo_room::seed_room(ROOM, &host_cert, &roster).unwrap();
+            let mut doc = tilo_room::room::candidate(None, &seed).unwrap();
             doc.set_actor(ui::automerge::ActorId::from(
                 host.verifying_key().to_bytes().to_vec(),
             ));

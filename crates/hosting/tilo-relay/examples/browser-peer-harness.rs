@@ -321,8 +321,8 @@ async fn main() -> Result<()> {
                     Some(inbound @ (Inbound::Delta { .. } | Inbound::Presence { .. })) => {
                         received.fetch_add(1, Ordering::Relaxed);
                         let (origin, bytes) = match inbound {
-                            Inbound::Delta { author, data } => (tilo_peer_state::TransportOrigin::RelayDelta(author), data),
-                            Inbound::Presence { author, payload } => (tilo_peer_state::TransportOrigin::UntrustedPresence(author), payload),
+                            Inbound::Delta { author, data } => (tilo_room::TransportOrigin::RelayDelta(author), data),
+                            Inbound::Presence { author, payload } => (tilo_room::TransportOrigin::UntrustedPresence(author), payload),
                             Inbound::Ready { .. }
                             | Inbound::RemoteAction { .. }
                             | Inbound::Replayed { .. }

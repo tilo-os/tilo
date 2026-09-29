@@ -381,7 +381,7 @@ impl Store {
     /// A retained ID cannot replace the live fresh-admission handoff.
     /// ```compile_fail
     /// fn restored(s: &mut tilo_cloud_host::Store,
-    /// caller: &tilo_peer_state::owner_commit::VerifiedAgentCaller,
+    /// caller: &tilo_room::owner_commit::VerifiedAgentCaller,
     /// id: &tilo_cloud_host::agent_runtime_owner::AgentControlId,
     /// runtime: &launcher::managed::VerifiedManagedRuntime) {
     ///     let _ = s.claim_agent_launch(caller, id, runtime);
@@ -459,7 +459,7 @@ impl Store {
     /// A deserialized process record cannot bind a live process.
     /// ```compile_fail
     /// fn data(s: &mut tilo_cloud_host::Store, id: &tilo_cloud_host::agent_runtime_owner::AgentControlId,
-    /// p: &tilo_peer_state::owner_commit::RetainedChannelProcessFacts) { let _ = s.bind_agent_process(id, p); }
+    /// p: &tilo_room::owner_commit::RetainedChannelProcessFacts) { let _ = s.bind_agent_process(id, p); }
     /// ```
     pub fn bind_agent_process(
         &mut self,
@@ -611,7 +611,7 @@ impl Store {
     }
     /// Only the actual recipient RPC witness can qualify control completion.
     /// ```compile_fail
-    /// fn data(s: &mut tilo_cloud_host::Store, a: &tilo_peer_state::owner_commit::RecipientAcceptance) { let _ = s.complete_agent_control(a); }
+    /// fn data(s: &mut tilo_cloud_host::Store, a: &tilo_room::owner_commit::RecipientAcceptance) { let _ = s.complete_agent_control(a); }
     /// ```
     pub fn complete_agent_control(
         &mut self,

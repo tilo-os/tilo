@@ -87,8 +87,8 @@ mod tests {
         let (dir, device) = prepared();
         let canonical =
             crate::delivery::admission::tests::browser_delta(dir.path(), "agent-admission", "x");
-        let mut message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
-        if let tilo_peer_state::NeighbourMsg::AppDocument { cluster_id, .. } = &mut message {
+        let mut message: tilo_room::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
+        if let tilo_room::NeighbourMsg::AppDocument { cluster_id, .. } = &mut message {
             *cluster_id = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into();
         }
         let forged = postcard::to_stdvec(&message).unwrap();
@@ -124,7 +124,7 @@ mod tests {
             "agent-admission",
             "fails",
         );
-        let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
+        let message: tilo_room::NeighbourMsg = postcard::from_bytes(&canonical).unwrap();
         let mut store = crate::Store::open(dir.path(), "agent-admission").unwrap();
         let (sink, seen) = recorder(dir.path());
         let before = store.state.generation;

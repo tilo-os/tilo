@@ -4,7 +4,7 @@ mod policy;
 pub(crate) use policy::DesktopPolicyFence;
 use tilo_action_broker::peer_actions::PolicyTime;
 use tilo_desktop_model::{commands::*, *};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ui::automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
 
 pub(crate) fn checked_application(
@@ -220,10 +220,8 @@ impl SessionOwner {
         }
         candidate
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(
-                    self.identity.native_cert.device_public_key,
-                ),
-                tilo_peer_state::NeighbourMsg::SyncResp {
+                tilo_room::TransportOrigin::RelayDelta(self.identity.native_cert.device_public_key),
+                tilo_room::NeighbourMsg::SyncResp {
                     room: request.room.clone(),
                     changes: doc
                         .get_changes(&base_heads)

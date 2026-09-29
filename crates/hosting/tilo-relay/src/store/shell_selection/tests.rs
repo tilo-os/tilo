@@ -15,7 +15,7 @@ use crate::store::{
 };
 use crate::transport::Envelope;
 use automerge::transaction::Transactable;
-use tilo_peer_state::{StatePeer, TransportOrigin};
+use tilo_room::{StatePeer, TransportOrigin};
 
 // ---- shared drivers -------------------------------------------------------
 
@@ -176,7 +176,7 @@ fn receive(
     frame: Envelope,
     retained: bool,
     now: web_time::SystemTime,
-) -> Result<tilo_peer_state::ReceiveOutcome, String> {
+) -> Result<tilo_room::ReceiveOutcome, String> {
     let Envelope::Delta {
         author_device_public_key,
         delta,
@@ -364,7 +364,7 @@ fn seeded_owner(
     room: &str,
     cert: &tilo_user_identity::DeviceCert,
     key: &ed25519_dalek::SigningKey,
-    documents: Vec<tilo_peer_state::SeedDocument>,
+    documents: Vec<tilo_room::SeedDocument>,
     now: web_time::SystemTime,
 ) -> StatePeer {
     let mut peer = StatePeer::new(
@@ -376,9 +376,8 @@ fn seeded_owner(
     )
     .unwrap();
     peer.install_seed(
-        tilo_peer_state::SeedState {
-            room_changes: tilo_peer_state::seed_room(room, cert, std::slice::from_ref(cert))
-                .unwrap(),
+        tilo_room::SeedState {
+            room_changes: tilo_room::seed_room(room, cert, std::slice::from_ref(cert)).unwrap(),
             documents,
         },
         key,
@@ -400,7 +399,7 @@ fn synthetic_owner() -> (
         .unwrap();
     let mut doc = automerge::AutoCommit::new();
     doc.put(automerge::ROOT, "value", "baseline").unwrap();
-    let document = tilo_peer_state::SeedDocument {
+    let document = tilo_room::SeedDocument {
         app_id: "selector.app".into(),
         record_id: "one".into(),
         kind: "test".into(),
@@ -437,7 +436,7 @@ fn synthetic_signed(
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(&source),
+        peer: tilo_room::peer_handle(&source),
         app_id: "selector.app".into(),
         cluster_id: room.into(),
         record_id: "one".into(),
@@ -449,9 +448,7 @@ fn synthetic_frame(
     msg: &NeighbourMsg,
     checkpoint: bool,
 ) -> Vec<u8> {
-    let channel = tilo_peer_state::transport::retention(msg, checkpoint)
-        .unwrap()
-        .0;
+    let channel = tilo_room::transport::retention(msg, checkpoint).unwrap().0;
     let body = postcard::to_allocvec(msg).unwrap();
     let payload = if checkpoint {
         CoeditPayload::checkpoint_of(channel, body)
@@ -1409,7 +1406,7 @@ fn projected_checkpoint_prefix_exposes_the_route_count_cutoff() {
                 document
                     .put(automerge::ROOT, "index", index as u64)
                     .unwrap();
-                tilo_peer_state::SeedDocument {
+                tilo_room::SeedDocument {
                     app_id: "threshold.app".into(),
                     record_id: format!("record-{index:02}"),
                     kind: "test".into(),

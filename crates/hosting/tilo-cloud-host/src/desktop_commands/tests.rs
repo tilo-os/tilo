@@ -1,7 +1,7 @@
 //! The Cloud Store owner opens applications for people and agent tasks.
 use super::*;
 use tilo_desktop_model::commands::TabLocation;
-use tilo_peer_state::desktop_command::{BoundCommand, CommandSource};
+use tilo_room::desktop_command::{BoundCommand, CommandSource};
 
 fn request(store: &Store, caller: &DeviceCert, command: DesktopCommand) -> OwnerCommitRequest {
     OwnerCommitRequest {
@@ -289,7 +289,7 @@ fn refused(update: tilo_actions::InvocationUpdate) -> (String, serde_json::Value
     let tilo_actions::InvocationUpdate::Failed { error, .. } = update else {
         panic!("{update:?}")
     };
-    assert_eq!(error.code, tilo_peer_state::desktop_command::REJECTED_CODE);
+    assert_eq!(error.code, tilo_room::desktop_command::REJECTED_CODE);
     assert!(!error.retryable);
     (error.message, error.details.unwrap())
 }
@@ -320,7 +320,7 @@ fn a_receipt_carries_the_command_id_and_the_committed_window() {
     let id = DesktopCommandId::of(&open).unwrap();
     let before = tabs(&store);
     let receipt = succeeded(store.desktop_command_update(&open, None).unwrap());
-    assert_eq!(receipt.kind, tilo_peer_state::desktop_command::RECEIPT_KIND);
+    assert_eq!(receipt.kind, tilo_room::desktop_command::RECEIPT_KIND);
     assert_eq!(receipt.command, id.to_string());
     assert_eq!(receipt.command.parse::<DesktopCommandId>().unwrap(), id);
     assert_eq!(receipt.generation, store.state.generation);

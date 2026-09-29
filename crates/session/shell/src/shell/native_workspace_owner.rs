@@ -1,6 +1,6 @@
 //! Actual native semantic owner, committed through the existing state.json writer.
 //!
-//! The owner itself is `tilo_joined_room`'s; this host keeps its record
+//! The owner itself is `tilo_room_session`'s; this host keeps its record
 //! inside the state file ([`TreeStore`]), so every owner publication also
 //! binds an enrolled slot, projects the room into the tree and exports the
 //! resulting file-system capabilities under the same writer lock.
@@ -18,14 +18,14 @@ use super::{
     state::{RoomId, WorkspaceId, WorkspaceTreeHandle},
 };
 pub use store::NativeStateRuntime;
-pub use tilo_joined_room::NativeAuthorityStorage;
-use tilo_joined_room::{Change, Store};
-pub(crate) use tilo_joined_room::{
+pub use tilo_room_session::NativeAuthorityStorage;
+use tilo_room_session::{Change, Store};
+pub(crate) use tilo_room_session::{
     DocumentRead, NativeBootstrap, NativeCommittedView, NativeFenceSubscription,
     NativeWorkspaceOwner,
 };
 #[cfg(test)]
-pub(crate) use tilo_joined_room::{PendingEnrollmentId, PendingEnrollmentStatus};
+pub(crate) use tilo_room_session::{PendingEnrollmentId, PendingEnrollmentStatus};
 
 /// The owner's record as one field of the state file, written through the
 /// state file's single writer.

@@ -11,13 +11,13 @@ use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
 use tilo_delivery_protocol::workspace_join::{
     WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
 };
-use tilo_joined_room::enroll::prepare_and_complete;
-use tilo_joined_room::testing::ns as now_ns;
-use tilo_peer_state::NeighbourMsg;
-use tilo_peer_state::join::{self, JoinTransportRequest};
-use tilo_peer_state::join::{JoinTransportResponse, MemberRole};
 use tilo_relay::workspace_join::WorkspaceJoinClient;
 use tilo_relay::workspace_join::WorkspaceJoinProtocol;
+use tilo_room::NeighbourMsg;
+use tilo_room::join::{self, JoinTransportRequest};
+use tilo_room::join::{JoinTransportResponse, MemberRole};
+use tilo_room_session::enroll::prepare_and_complete;
+use tilo_room_session::testing::ns as now_ns;
 use tilo_user_identity::RevocationList;
 use tilo_workspace_host::{
     SessionOwner,
@@ -230,7 +230,7 @@ async fn actual_exchange(restart: bool) {
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_room::retained_proof::RetentionAuthority::new(
                         &room.to_string(),
                         governor.clone(),
                     )
@@ -376,16 +376,16 @@ async fn actual_exchange(restart: bool) {
     .await;
     for (bytes, kind) in &publications {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
+        let (channel, _) = tilo_room::transport::retention(
             &message,
-            *kind == tilo_peer_state::transport::Retention::Checkpoint,
+            *kind == tilo_room::transport::Retention::Checkpoint,
         )
         .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            tilo_room::transport::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, bytes.clone())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            tilo_room::transport::Retention::Delta => {
                 publisher.publish_retained_delta(channel, bytes.clone())
             }
         }

@@ -4,7 +4,7 @@ use crate::agent_runtime_owner::FailedLaunchAppend;
 #[cfg(any(target_os = "linux", test))]
 use std::os::unix::net::UnixStream;
 use std::sync::Weak;
-use tilo_peer_state::owner_commit::AgentCommitError;
+use tilo_room::owner_commit::AgentCommitError;
 
 #[expect(
     clippy::large_enum_variant,

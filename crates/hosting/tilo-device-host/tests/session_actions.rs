@@ -7,7 +7,7 @@ use std::{
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
-use tilo_peer_state::enrollment::{self, ChallengeRequest, ChallengeResponse};
+use tilo_room::enrollment::{self, ChallengeRequest, ChallengeResponse};
 use tilo_workspace_host::SessionOwner;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -105,7 +105,7 @@ async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn retained_session_with_more_than_thirty_two_records_reaches_stable_actions_ready() {
     use std::{collections::BTreeMap, io::Write};
-    use tilo_peer_state::{desktop_command::*, owner_commit::*};
+    use tilo_room::{desktop_command::*, owner_commit::*};
 
     const CALCULATOR_RECORDS: usize = 35;
 
@@ -564,7 +564,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
     use tilo_relay::peer::CheckpointPrefixPromotionFaultState;
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, persist};
 
-    fn revocations(peer: &tilo_peer_state::StatePeer) -> RevocationList {
+    fn revocations(peer: &tilo_room::StatePeer) -> RevocationList {
         let mut list = RevocationList::new();
         for entry in peer.revocations() {
             list.insert(entry).unwrap();
@@ -572,7 +572,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         list
     }
 
-    fn exact(actual: &tilo_peer_state::StatePeer, expected: &tilo_peer_state::StatePeer) -> bool {
+    fn exact(actual: &tilo_room::StatePeer, expected: &tilo_room::StatePeer) -> bool {
         actual.room() == expected.room()
             && actual.authority() == expected.authority()
             && actual.certificates() == expected.certificates()
@@ -593,8 +593,8 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
     }
 
     fn receipt_covers(
-        next: &tilo_peer_state::durability::DurableReceipt,
-        prior: &tilo_peer_state::durability::DurableReceipt,
+        next: &tilo_room::durability::DurableReceipt,
+        prior: &tilo_room::durability::DurableReceipt,
     ) -> bool {
         next.generation >= prior.generation
             && next.coverage.room == prior.coverage.room
@@ -608,10 +608,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
             && (next.generation != prior.generation || next == prior)
     }
 
-    fn covers_prior(
-        actual: &tilo_peer_state::StatePeer,
-        prior: &tilo_peer_state::StatePeer,
-    ) -> bool {
+    fn covers_prior(actual: &tilo_room::StatePeer, prior: &tilo_room::StatePeer) -> bool {
         use ui::automerge::ReadDoc;
 
         let room_covered = prior.admitted_room().is_some_and(|prior_room| {
@@ -661,10 +658,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
             })
     }
 
-    fn coverage_summary(
-        actual: &tilo_peer_state::StatePeer,
-        prior: &tilo_peer_state::StatePeer,
-    ) -> String {
+    fn coverage_summary(actual: &tilo_room::StatePeer, prior: &tilo_room::StatePeer) -> String {
         let actual_rows = actual
             .rows()
             .into_iter()
@@ -753,7 +747,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         tilo_relay::store::WorkspaceStore::open(&state.join("relay"), workspace, true).unwrap();
     relay
         .bind_shell_authority(
-            tilo_peer_state::retained_proof::RetentionAuthority::new(
+            tilo_room::retained_proof::RetentionAuthority::new(
                 initial.room(),
                 initial.authority().clone(),
             )
@@ -766,19 +760,19 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         .zip(&outgoing_kinds(&owner))
         .enumerate()
     {
-        let message: tilo_peer_state::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let (channel, actual) = tilo_peer_state::transport::retention(
+        let message: tilo_room::NeighbourMsg = postcard::from_bytes(bytes).unwrap();
+        let (channel, actual) = tilo_room::transport::retention(
             &message,
-            *kind == tilo_peer_state::transport::Retention::Checkpoint,
+            *kind == tilo_room::transport::Retention::Checkpoint,
         )
         .unwrap();
         assert_eq!(&actual, kind);
         let payload = match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            tilo_room::transport::Retention::Checkpoint => {
                 checkpoints += 1;
                 tilo_relay::coedit::CoeditPayload::checkpoint_of(channel, bytes.clone())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            tilo_room::transport::Retention::Delta => {
                 tilo_relay::coedit::CoeditPayload::retained_of(channel, bytes.clone())
             }
         };
@@ -791,10 +785,10 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         })
         .unwrap();
         match kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            tilo_room::transport::Retention::Checkpoint => {
                 relay.retain_checkpoint(&channel, &raw).unwrap()
             }
-            tilo_peer_state::transport::Retention::Delta => relay
+            tilo_room::transport::Retention::Delta => relay
                 .retain_delta(&channel, u64::try_from(index + 1).unwrap(), &raw)
                 .unwrap(),
         }
@@ -829,7 +823,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
             (author_device_public_key, body)
         })
         .collect::<Vec<_>>();
-    let mut seed_remote = tilo_peer_state::StatePeer::new(
+    let mut seed_remote = tilo_room::StatePeer::new(
         initial.room(),
         initial.authority().clone(),
         initial.certificates(),
@@ -845,7 +839,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
         let (author, body) = retained.swap_remove(index);
         seed_remote
             .receive_from(
-                tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
+                tilo_room::TransportOrigin::RetainedRelayDelta(author),
                 postcard::from_bytes(&body).unwrap(),
                 web_time::SystemTime::now(),
             )
@@ -928,7 +922,7 @@ async fn native_durable_baseline_republishes_suffix_after_partial_batch_promotio
     // only if the replacement native Ready callback republished the durable
     // basis containing the unpromoted suffix.
     let recovered_binding = binding(&metadata, observer_cert, observer_key, host_device).await;
-    let mut recovered = tilo_peer_state::StatePeer::new(
+    let mut recovered = tilo_room::StatePeer::new(
         expected.room(),
         expected.authority().clone(),
         expected.certificates(),
@@ -1021,11 +1015,11 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
         peer_actions::{ActionMessage, DirectedAction},
         transport_v2::EnvelopeV2,
     };
-    use tilo_peer_state::document_import::{
+    use tilo_relay::{RelayClient, transport::Envelope};
+    use tilo_room::document_import::{
         self as import, DecideArgument, DocumentImportDecisionV1, DocumentImportProposalV1,
         DocumentImportTerms, ImportState, ProposeArgument,
     };
-    use tilo_relay::{RelayClient, transport::Envelope};
     use ui::automerge::transaction::Transactable as _;
     const APP: &str = "so.tilo.notes";
     let temp = tempfile::tempdir().unwrap();
@@ -1168,8 +1162,8 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
                 revision: None,
             }
         };
-    let label = |remote: &tilo_peer_state::StatePeer, invocation: &tilo_actions::InvocationId| {
-        tilo_peer_state::room::receipt_values(remote.admitted_room().unwrap())
+    let label = |remote: &tilo_room::StatePeer, invocation: &tilo_actions::InvocationId| {
+        tilo_room::room::receipt_values(remote.admitted_room().unwrap())
             .get(&invocation.0.to_string())
             .and_then(|receipt| {
                 receipt["context"]["action_label"]
@@ -1226,7 +1220,7 @@ async fn a_document_proposed_over_the_relay_is_created_only_once_the_owner_accep
         import::PROPOSE,
         serde_json::to_string(&ProposeArgument::new(proposal.clone(), &bytes)).unwrap(),
     );
-    let pending = |remote: &tilo_peer_state::StatePeer| {
+    let pending = |remote: &tilo_room::StatePeer| {
         import::entries(remote.admitted_room().unwrap())
             .get(&import::key(&[7; 32]))
             .is_some_and(|entry| entry.decision.is_none())
@@ -1329,7 +1323,7 @@ async fn checked_application_catalogue(
     let ready = temp.path().join("ready.json");
     let mut owner = SessionOwner::initialize(&state).unwrap();
     if multiple_writers {
-        use tilo_peer_state::{desktop_command::*, owner_commit::*};
+        use tilo_room::{desktop_command::*, owner_commit::*};
         let mut tree = tilo_desktop_model::DesktopTree::default();
         tilo_desktop_model::projection::apply_admitted_room(
             &mut tree,
@@ -2050,7 +2044,7 @@ async fn checked_application_catalogue(
         "failed commit replaced prior durable Writer state"
     );
 }
-fn apply_state(peer: &mut tilo_peer_state::StatePeer, event: tilo_relay::transport::Envelope) {
+fn apply_state(peer: &mut tilo_room::StatePeer, event: tilo_relay::transport::Envelope) {
     use tilo_relay::{coedit::CoeditPayload, transport::Envelope};
     if let Envelope::Delta {
         author_device_public_key,
@@ -2063,14 +2057,14 @@ fn apply_state(peer: &mut tilo_peer_state::StatePeer, event: tilo_relay::transpo
     {
         let message = postcard::from_bytes(&body).unwrap();
         peer.receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(author_device_public_key),
+            tilo_room::TransportOrigin::RelayDelta(author_device_public_key),
             message,
             web_time::SystemTime::now(),
         )
         .unwrap();
     }
 }
-fn table_cells(peer: &tilo_peer_state::StatePeer) -> usize {
+fn table_cells(peer: &tilo_room::StatePeer) -> usize {
     let doc = ui::automerge::AutoCommit::load(
         &peer
             .document("so.tilo.word-processor", "tab:0000000000000001")
@@ -2102,7 +2096,7 @@ struct Session<'a> {
 
 async fn invoke_and_expect_closed_publication(
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
@@ -2202,7 +2196,7 @@ async fn invoke_and_expect_closed_publication(
 
 async fn invoke_and_observe(
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
@@ -2215,11 +2209,11 @@ async fn invoke_and_observe(
 
 async fn invoke_and_observe_until(
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
-    complete: impl Fn(&tilo_peer_state::StatePeer) -> bool,
+    complete: impl Fn(&tilo_room::StatePeer) -> bool,
 ) {
     let Session {
         room,
@@ -2273,10 +2267,10 @@ async fn invoke_and_observe_until(
 }
 
 #[cfg(feature = "test-support")]
-fn active_replacement_state_delta(signed: &tilo_peer_state::NeighbourMsg) -> Vec<u8> {
-    let (channel, kind) = tilo_peer_state::transport::retention(signed, false)
+fn active_replacement_state_delta(signed: &tilo_room::NeighbourMsg) -> Vec<u8> {
+    let (channel, kind) = tilo_room::transport::retention(signed, false)
         .expect("active replacement requires retained application state");
-    assert_eq!(kind, tilo_peer_state::transport::Retention::Delta);
+    assert_eq!(kind, tilo_room::transport::Retention::Delta);
     tilo_relay::coedit::CoeditPayload::retained_of(channel, postcard::to_stdvec(signed).unwrap())
         .encode()
         .unwrap()
@@ -2285,12 +2279,12 @@ fn active_replacement_state_delta(signed: &tilo_peer_state::NeighbourMsg) -> Vec
 #[cfg(feature = "test-support")]
 #[test]
 fn active_replacement_state_delta_is_a_provable_retained_tail() {
-    use tilo_peer_state::{
+    use tilo_relay::coedit::CoeditPayload;
+    use tilo_room::{
         NeighbourMsg,
         retained_proof::{RetentionAuthority, RoomInput, verify_room, verify_snapshot},
         transport::retention,
     };
-    use tilo_relay::coedit::CoeditPayload;
     use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
     let temp = tempfile::tempdir().unwrap();
@@ -2396,7 +2390,7 @@ async fn observer_event(client: &tilo_relay::RelayClient) -> ObserverEvent {
 async fn connect_observer(
     binding: &ObserverBinding,
     room: uuid::Uuid,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     deadline: Instant,
 ) -> Result<(tilo_relay::RelayClient, usize), String> {
     use tilo_delivery_protocol::transport_v2::EnvelopeV2;
@@ -2451,7 +2445,7 @@ async fn replace_observer_after_eof(
     ended: tilo_relay::RelayClient,
     binding: &ObserverBinding,
     room: uuid::Uuid,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     replacements: &mut u8,
     deadline: Instant,
 ) -> Result<(tilo_relay::RelayClient, usize), String> {
@@ -2527,7 +2521,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
             if let tilo_relay::Inbound::Delta { author, data } = native.recv().await.unwrap() {
                 owner
                     .receive(
-                        tilo_peer_state::TransportOrigin::RelayDelta(author),
+                        tilo_room::TransportOrigin::RelayDelta(author),
                         postcard::from_bytes(&data).unwrap(),
                     )
                     .unwrap();
@@ -2556,7 +2550,7 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
         cert,
         key,
     };
-    let mut remote = tilo_peer_state::StatePeer::new(
+    let mut remote = tilo_room::StatePeer::new(
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
@@ -2578,11 +2572,13 @@ async fn observer_eof_replays_once_on_the_same_endpoint_and_peer() {
                 panic!("expected the owner's retained publication");
             };
             let tilo_relay::coedit::CoeditPayload::Checkpoint { body, .. } =
-                tilo_relay::coedit::CoeditPayload::decode(delta).unwrap() else {
-                    panic!("expected the initial checkpoint basis");
-                };
-            if matches!(postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&body).unwrap(),
-                tilo_peer_state::NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat") {
+                tilo_relay::coedit::CoeditPayload::decode(delta).unwrap()
+            else {
+                panic!("expected the initial checkpoint basis");
+            };
+            if matches!(postcard::from_bytes::<tilo_room::NeighbourMsg>(&body).unwrap(),
+                tilo_room::NeighbourMsg::AppDocument { app_id, .. } if app_id == "so.tilo.chat")
+            {
                 omitted_chat = true;
             } else {
                 apply_state(&mut remote, event);
@@ -2699,7 +2695,7 @@ async fn active_replacement(
     host: &mut Host,
     client: tilo_relay::RelayClient,
     binding: &ObserverBinding,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     invocation: tilo_actions::InvocationId,
     operation: tilo_delivery_protocol::peer_actions::ActionMessage,
@@ -3099,7 +3095,7 @@ async fn owner_and_room_isolation(
 async fn observe_native_publication(
     origin: &str,
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
 ) {
     let started = Instant::now();
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
@@ -3157,7 +3153,7 @@ async fn observe_native_publication(
 async fn selective_publication_failure_after_commit(
     host: &mut Host,
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     catalogue: &serde_json::Value,
     failure: PublicationFailureFixture,
@@ -3304,7 +3300,7 @@ async fn selective_publication_failure_after_commit(
 /// A native desktop open-tab command bound to the observer's current room
 /// heads, as an invocation of the installed desktop service.
 fn desktop_open_operation(
-    remote: &tilo_peer_state::StatePeer,
+    remote: &tilo_room::StatePeer,
     room: uuid::Uuid,
     host: uuid::Uuid,
     catalogue: &serde_json::Value,
@@ -3314,7 +3310,7 @@ fn desktop_open_operation(
     tilo_delivery_protocol::peer_actions::ActionMessage,
 ) {
     use tilo_delivery_protocol::peer_actions::ActionMessage;
-    use tilo_peer_state::desktop_command::*;
+    use tilo_room::desktop_command::*;
     let mut tree = tilo_desktop_model::DesktopTree::default();
     tilo_desktop_model::projection::apply_admitted_room(
         &mut tree,
@@ -3364,7 +3360,7 @@ fn desktop_open_operation(
 
 async fn desktop_open_through_broker(
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     catalogue: &serde_json::Value,
 ) -> (
@@ -3439,14 +3435,14 @@ async fn desktop_open_through_broker(
 
 async fn desktop_close_through_broker(
     client: &tilo_relay::RelayClient,
-    remote: &mut tilo_peer_state::StatePeer,
+    remote: &mut tilo_room::StatePeer,
     session: Session<'_>,
     catalogue: &serde_json::Value,
 ) {
     let (room, host) = (session.room, session.broker_host);
     use tilo_delivery_protocol::peer_actions::ActionMessage;
-    use tilo_peer_state::desktop_command::*;
-    let project = |remote: &tilo_peer_state::StatePeer| {
+    use tilo_room::desktop_command::*;
+    let project = |remote: &tilo_room::StatePeer| {
         let mut tree = tilo_desktop_model::DesktopTree::default();
         tilo_desktop_model::projection::apply_admitted_room(
             &mut tree,
@@ -3499,7 +3495,7 @@ async fn desktop_close_through_broker(
         confirmation: None,
         revision: None,
     };
-    let present = |remote: &tilo_peer_state::StatePeer| {
+    let present = |remote: &tilo_room::StatePeer| {
         project(remote)
             .workspaces
             .iter()
@@ -3539,6 +3535,6 @@ fn outgoing_bytes(owner: &tilo_workspace_host::SessionOwner) -> Vec<Vec<u8>> {
 #[cfg(feature = "test-support")]
 fn outgoing_kinds(
     owner: &tilo_workspace_host::SessionOwner,
-) -> Vec<tilo_peer_state::transport::Retention> {
+) -> Vec<tilo_room::transport::Retention> {
     owner.outgoing().iter().map(|p| p.kind).collect()
 }

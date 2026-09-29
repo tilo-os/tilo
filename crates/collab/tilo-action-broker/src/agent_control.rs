@@ -3,8 +3,8 @@ use launcher::managed::{ManagedRuntimeFacts, VerifiedManagedProcess, VerifiedMan
 use std::sync::Arc;
 use tilo_agent_control_protocol::{AgentBinding, AgentRequest, GrantAction, GrantOffer};
 use tilo_delivery_protocol::peer_actions::ActionMessage;
-use tilo_peer_state::owner_commit::{AgentIntent, AgentInvocationScope, AgentProviderRoute};
 use tilo_relay::client::CertifiedAction;
+use tilo_room::owner_commit::{AgentIntent, AgentInvocationScope, AgentProviderRoute};
 use tilo_user_identity::DeviceCert;
 use uuid::Uuid;
 

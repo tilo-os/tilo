@@ -20,8 +20,8 @@
 
 use std::time::Duration;
 
-use tilo_peer_state::GovernedAccess;
 use tilo_relay::{Envelope, Relay, RelayClient, RelayConfig, WorkspaceBinding};
+use tilo_room::GovernedAccess;
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 
 use crate::common::{TestUser, client_endpoint};

@@ -2,7 +2,7 @@
 //! The legacy discriminants, field order and exact signed bytes remain unchanged.
 use anyhow::{Result, ensure};
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::join::*;
+use tilo_room::join::*;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 #[derive(Serialize, Deserialize)]

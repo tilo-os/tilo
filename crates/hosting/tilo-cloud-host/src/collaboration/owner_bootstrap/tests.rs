@@ -1,6 +1,6 @@
 use super::*;
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::join::sign_membership_proof;
+use tilo_room::join::sign_membership_proof;
 use tilo_user_identity::{RevocationEntry, RevocationReason, sign_revocation_entry};
 
 struct Fixture {
@@ -76,7 +76,7 @@ fn cloud_owner_bootstrap_actual_signed_governance_and_restart_retry_are_exact() 
         .unwrap();
     assert_eq!(result.generation, before + 1);
     assert_eq!(result.device_cert, f.cert);
-    let mut peer = tilo_peer_state::StatePeer::new(
+    let mut peer = tilo_room::StatePeer::new(
         &result.room,
         result.authority.clone(),
         vec![result.authority.clone()],
@@ -86,7 +86,7 @@ fn cloud_owner_bootstrap_actual_signed_governance_and_restart_retry_are_exact() 
     .unwrap();
     for message in &result.governance_messages {
         peer.receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(result.authority.device_public_key),
+            tilo_room::TransportOrigin::RelayDelta(result.authority.device_public_key),
             postcard::from_bytes(message).unwrap(),
             now_time(32),
         )
@@ -183,8 +183,8 @@ fn cloud_owner_bootstrap_cached_receipt_never_overrides_current_revocation() {
     sign_revocation_entry(&mut entry, &f.root).unwrap();
     f.store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(f.first.verifying_key().to_bytes()),
-            tilo_peer_state::NeighbourMsg::IdentityHello {
+            tilo_room::TransportOrigin::RelayDelta(f.first.verifying_key().to_bytes()),
+            tilo_room::NeighbourMsg::IdentityHello {
                 cert: Box::new(f.first_cert.clone()),
                 revocations: vec![entry],
             },
@@ -292,7 +292,7 @@ fn cloud_owner_bootstrap_scope_expiry_and_current_device_expiry_refuse_without_c
 
 #[test]
 fn cloud_owner_bootstrap_collaborator_refresh_roles_and_cached_results_stay_separate() {
-    use tilo_peer_state::join::MemberRole;
+    use tilo_room::join::MemberRole;
     let mut f = Fixture::new();
     let root = SigningKey::from_bytes(&[71; 32]);
     let device = SigningKey::from_bytes(&[72; 32]);
@@ -663,8 +663,8 @@ fn cloud_owner_bootstrap_cached_reply_cannot_survive_root_signed_host_revocation
     sign_revocation_entry(&mut entry, &f.root).unwrap();
     f.store
         .receive(
-            tilo_peer_state::TransportOrigin::RelayDelta(f.first.verifying_key().to_bytes()),
-            tilo_peer_state::NeighbourMsg::IdentityHello {
+            tilo_room::TransportOrigin::RelayDelta(f.first.verifying_key().to_bytes()),
+            tilo_room::NeighbourMsg::IdentityHello {
                 cert: Box::new(f.first_cert.clone()),
                 revocations: vec![entry],
             },
@@ -686,7 +686,7 @@ fn cloud_owner_bootstrap_cached_reply_cannot_survive_root_signed_host_revocation
 }
 
 fn admitted_owner_role(result: &OwnerBootstrapV1, device: [u8; 32]) -> collab_types::Role {
-    let mut peer = tilo_peer_state::StatePeer::new(
+    let mut peer = tilo_room::StatePeer::new(
         &result.room,
         result.authority.clone(),
         vec![result.authority.clone()],
@@ -696,7 +696,7 @@ fn admitted_owner_role(result: &OwnerBootstrapV1, device: [u8; 32]) -> collab_ty
     .unwrap();
     for message in &result.governance_messages {
         peer.receive_from(
-            tilo_peer_state::TransportOrigin::RelayDelta(result.authority.device_public_key),
+            tilo_room::TransportOrigin::RelayDelta(result.authority.device_public_key),
             postcard::from_bytes(message).unwrap(),
             now_time(32),
         )
@@ -822,7 +822,7 @@ fn cloud_owner_bootstrap_refresh_refuses_wrong_device_changed_proof_and_unissued
 
 #[test]
 fn cloud_owner_bootstrap_refresh_keeps_collaborators_on_member_reply() {
-    use tilo_peer_state::join::MemberRole;
+    use tilo_room::join::MemberRole;
     let mut f = Fixture::new();
     let root = SigningKey::from_bytes(&[81; 32]);
     let device = SigningKey::from_bytes(&[82; 32]);

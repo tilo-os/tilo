@@ -6,7 +6,7 @@ use tilo_action_broker::collaboration_admin::{
     CollaborationAdminError as Error, CollaborationAdminOperation as Operation,
     MediaDirectionsInput, MediaRejectionCode as Code,
 };
-use tilo_peer_state::{
+use tilo_room::{
     StatePeer,
     room::media::{self, CallPhaseV1, DirectionsV1, MediaCallResultV1},
 };

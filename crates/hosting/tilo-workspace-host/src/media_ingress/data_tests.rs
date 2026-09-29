@@ -950,9 +950,9 @@ impl Harness {
         &mut self,
         host: &crate::host::LocalHost,
         joiner: &Joiner,
-        inner: tilo_peer_state::join::JoinTransportRequest,
+        inner: tilo_room::join::JoinTransportRequest,
         nonce: u8,
-    ) -> tilo_peer_state::join::JoinTransportResponse {
+    ) -> tilo_room::join::JoinTransportResponse {
         use ed25519_dalek::Signer;
         use tilo_delivery_protocol::delivery_v3::{
             media_wire::split_signature,
@@ -961,7 +961,7 @@ impl Harness {
                 ReplyBodyKind,
             },
         };
-        use tilo_peer_state::join::JoinTransportRequest as J;
+        use tilo_room::join::JoinTransportRequest as J;
         let now = tilo_delivery_protocol::clock::now_ns();
         let origin = self.ingress.origin().to_owned();
         let body = postcard::to_stdvec(&inner).unwrap();
@@ -1125,7 +1125,7 @@ impl Harness {
 #[tokio::test]
 async fn installed_https_onboarding_invited_and_open_invitation_join() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     let mut h = Harness::start().await;
     let host = crate::host::LocalHost::start(&h.f.owner).await.unwrap();
     let now = tilo_delivery_protocol::clock::now_ns();
@@ -1362,7 +1362,7 @@ async fn installed_https_private_status_cancel_invoke_and_read_over_actual_actio
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn installed_https_large_join_reply_hydrates_through_the_chunk_route() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     // A multi-megabyte workspace: whole-checkpoint test commits would add a
     // full rewrite and file barrier per request that production never pays.
     let mut h = Harness::start().await;

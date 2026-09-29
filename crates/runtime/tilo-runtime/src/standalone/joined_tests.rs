@@ -12,11 +12,11 @@ use std::sync::Arc;
 use tilo_delivery_protocol::workspace_join::{
     IrohWorkspaceHostHintV1, WORKSPACE_JOIN_ALPN, WorkspaceHostMode, WorkspaceJoinService,
 };
-use tilo_peer_state::{
+use tilo_relay::workspace_join::WorkspaceJoinProtocol;
+use tilo_room::{
     join::{self, JoinTransportRequest, JoinTransportResponse, MemberRole},
     owner_commit::CommitOperation,
 };
-use tilo_relay::workspace_join::WorkspaceJoinProtocol;
 use tilo_user_identity::{
     DeviceCapabilities, DeviceCert, RevocationList, persist::IdentityPaths,
     persist::read_device_key, sign_device_cert,
@@ -186,7 +186,7 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
                 replication: tilo_relay::ReplicationIntent::FullWorkspace,
                 admitted_users: vec![],
                 shell_authority: Some(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_room::retained_proof::RetentionAuthority::new(
                         &room.to_string(),
                         governor.clone(),
                     )
@@ -304,8 +304,8 @@ async fn a_foreign_runtime_joins_a_hosted_room_as_an_editor_and_syncs_both_ways(
     .await;
     for (bytes, kind) in &publications {
         let message: NeighbourMsg = postcard::from_bytes(bytes).unwrap();
-        let checkpoint = *kind == tilo_peer_state::transport::Retention::Checkpoint;
-        let (channel, _) = tilo_peer_state::transport::retention(&message, checkpoint).unwrap();
+        let checkpoint = *kind == tilo_room::transport::Retention::Checkpoint;
+        let (channel, _) = tilo_room::transport::retention(&message, checkpoint).unwrap();
         if checkpoint {
             publisher.publish_checkpoint(channel, bytes.clone())
         } else {

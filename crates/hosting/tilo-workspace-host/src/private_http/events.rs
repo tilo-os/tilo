@@ -186,7 +186,7 @@ impl PrivateService {
     pub fn poll_events(
         &mut self,
         request: VerifiedRequest<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
     ) -> Result<Option<(PendingPrivate, DirectedAction)>, PrivateError> {
         self.poll_events_for(request.session(), request.request(), peer)
     }
@@ -196,7 +196,7 @@ impl PrivateService {
         &mut self,
         session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
         original: &crate::https::BufferedRequest,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
     ) -> Result<Option<(PendingPrivate, DirectedAction)>, PrivateError> {
         let exact = tilo_delivery_protocol::delivery_v3::http_proof::Request::new(
             original.method().as_str(),
@@ -210,7 +210,7 @@ impl PrivateService {
         &mut self,
         session: &tilo_delivery_protocol::delivery_v3::auth::VerifiedSession,
         exact: &tilo_delivery_protocol::delivery_v3::http_proof::Request<'_>,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
     ) -> Result<Option<(PendingPrivate, DirectedAction)>, PrivateError> {
         if self.is_closed() {
             return Err(PrivateError::Unavailable);

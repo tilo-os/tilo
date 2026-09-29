@@ -24,7 +24,7 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 use tilo_agent_control_protocol::{AgentRequest, decode_request};
-use tilo_peer_state::owner_commit::{AgentRuntimeFact, TaskOutcome};
+use tilo_room::owner_commit::{AgentRuntimeFact, TaskOutcome};
 
 /// Hard cap of the JSON history in one envelope.
 pub(crate) const MAX_HISTORY_BYTES: usize = runtime_collab::MAX_ENROLLED_HISTORY_BYTES;
@@ -433,7 +433,7 @@ pub(crate) fn for_dispatch(
         {
             row.outcome = Some("unknown".into());
         }
-        for step in 0..tilo_peer_state::owner_commit::MAX_AGENT_TASK_STEPS {
+        for step in 0..tilo_room::owner_commit::MAX_AGENT_TASK_STEPS {
             let Some(committed) = ledger
                 .facts
                 .get(&format!("{invocation}:task_step_committed:{step}"))

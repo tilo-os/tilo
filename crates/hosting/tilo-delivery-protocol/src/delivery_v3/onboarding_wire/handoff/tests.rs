@@ -16,11 +16,11 @@ fn handoff_signed_pinned_range_and_exact_governance_retention() {
         items: vec![
             GovernanceItem {
                 bytes: b"old exact message",
-                retention: tilo_peer_state::transport::Retention::Checkpoint,
+                retention: tilo_room::transport::Retention::Checkpoint,
             },
             GovernanceItem {
                 bytes: b"next exact message",
-                retention: tilo_peer_state::transport::Retention::Delta,
+                retention: tilo_room::transport::Retention::Delta,
             },
         ],
     };
@@ -162,7 +162,7 @@ fn handoff_preflight_rejects_huge_counts_and_invalid_segments() {
         items: vec![
             GovernanceItem {
                 bytes: b"x",
-                retention: tilo_peer_state::transport::Retention::Delta
+                retention: tilo_room::transport::Retention::Delta
             };
             MAX_GOVERNANCE_ITEMS + 1
         ],
@@ -173,7 +173,7 @@ fn handoff_preflight_rejects_huge_counts_and_invalid_segments() {
         items: vec![
             GovernanceItem {
                 bytes: b"x",
-                retention: tilo_peer_state::transport::Retention::Delta
+                retention: tilo_room::transport::Retention::Delta
             };
             MAX_GOVERNANCE_ITEMS
         ],

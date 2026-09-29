@@ -35,7 +35,7 @@ postcard = { workspace = true, features = ["alloc", "use-std"] }
 web-time = { version = "1", features = ["serde"] }
 ed25519-dalek.workspace = true
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 # The hosted-enrollment protocol the Cloud owner facade drives.
 tilo-cloud-enrollment = { path = "../../hosting/tilo-cloud-enrollment" }
 collab-types = { path = "../../collab/collab-types" }

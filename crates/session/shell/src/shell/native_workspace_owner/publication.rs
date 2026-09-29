@@ -1,14 +1,14 @@
 //! The state file's share of the owner's encoded publication bounds.
 use super::store;
 use crate::shell::state::WorkspaceTree;
-pub(crate) use tilo_joined_room::validate_file_layout;
+pub(crate) use tilo_room_session::validate_file_layout;
 
 /// Refuse a state file that leaves no room for the recovery its enrolled
 /// rooms reserved.
 pub(crate) fn preflight_tree(tree: &WorkspaceTree) -> Result<(), String> {
-    tilo_joined_room::preflight_storage(&tree.native_authority)?;
+    tilo_room_session::preflight_storage(&tree.native_authority)?;
     let limit = store::MAX_STATE_BYTES
-        .checked_sub(tilo_joined_room::reserved_file_bytes(
+        .checked_sub(tilo_room_session::reserved_file_bytes(
             &tree.native_authority,
         )?)
         .ok_or("native state recovery reserve exceeds capacity")?;
@@ -23,7 +23,7 @@ pub(super) fn required_tree_bytes(tree: &WorkspaceTree) -> Result<usize, String>
     }
     encoded
         .len()
-        .checked_add(tilo_joined_room::reserved_file_bytes(
+        .checked_add(tilo_room_session::reserved_file_bytes(
             &tree.native_authority,
         )?)
         .ok_or_else(|| "native test encoded reserve overflow".into())

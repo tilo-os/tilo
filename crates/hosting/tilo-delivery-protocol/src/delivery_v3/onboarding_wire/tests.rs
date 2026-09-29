@@ -27,7 +27,7 @@ fn onboarding_signed_original_request_and_reply_fence_exact_scope_nonce_and_body
     let host = SigningKey::from_bytes(&[3; 32]);
     let cert = certificate(&device);
     let cert_bytes = postcard::to_stdvec(&cert).unwrap();
-    let inner = tilo_peer_state::join::JoinTransportRequest::Inspect {
+    let inner = tilo_room::join::JoinTransportRequest::Inspect {
         signed_invitation: vec![1, 2, 3],
     };
     let body = postcard::to_stdvec(&inner).unwrap();
@@ -120,7 +120,7 @@ fn onboarding_signed_original_request_and_reply_fence_exact_scope_nonce_and_body
         }
         assert!(parsed.verify_device_signature(wrong, &cert, 100).is_err());
     }
-    let response_body = postcard::to_stdvec(&tilo_peer_state::join::JoinTransportResponse::Error {
+    let response_body = postcard::to_stdvec(&tilo_room::join::JoinTransportResponse::Error {
         code: 403,
         message: "denied".into(),
     })

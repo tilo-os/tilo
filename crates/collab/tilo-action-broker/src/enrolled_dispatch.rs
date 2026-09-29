@@ -11,7 +11,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
-use tilo_peer_state::owner_commit::OwnerCommitReceipt;
+use tilo_room::owner_commit::OwnerCommitReceipt;
 use tilo_user_identity::DeviceCert;
 use tokio::sync::mpsc;
 pub use ui::host_worker::managed_sender::{
@@ -1249,7 +1249,7 @@ fn validate_enrolled_receipt(
     if receipt.binding.room != room
         || receipt.generation == 0
         || receipt.binding.target
-            != (tilo_peer_state::owner_commit::CommitTarget::AgentRuntime {
+            != (tilo_room::owner_commit::CommitTarget::AgentRuntime {
                 mutation: format!("{invocation}:{kind}"),
             })
     {
@@ -1533,7 +1533,7 @@ mod tests {
 
     #[test]
     fn enrolled_receipt_cannot_acknowledge_another_fact_or_invocation() {
-        use tilo_peer_state::owner_commit::{CommitBinding, CommitTarget};
+        use tilo_room::owner_commit::{CommitBinding, CommitTarget};
         let invocation = Uuid::parse_str("11111111-1111-4111-8111-111111111111").unwrap();
         let room = Uuid::parse_str("22222222-2222-4222-8222-222222222222")
             .unwrap()

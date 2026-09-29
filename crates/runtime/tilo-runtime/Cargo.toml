@@ -64,8 +64,8 @@ tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room-session = { path = "../../collab/tilo-room-session" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-rt.workspace = true

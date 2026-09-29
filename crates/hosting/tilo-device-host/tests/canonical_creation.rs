@@ -2,7 +2,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use collab_types::caps::{CapOverride, Effect, Scope, Subject, Verb};
-use tilo_peer_state::{NeighbourMsg, TransportOrigin, desktop_command::*, owner_commit::*};
+use tilo_room::{NeighbourMsg, TransportOrigin, desktop_command::*, owner_commit::*};
 use tilo_workspace_host::SessionOwner;
 use ui::automerge::{ActorId, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 
@@ -190,9 +190,7 @@ fn canonical_creation_existing_primary_opens_with_read_after_create_and_write_re
 }
 
 fn admitted_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     use tilo_workspace_host::collaboration::{CollaborationService, IssueInvitationRequest};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);

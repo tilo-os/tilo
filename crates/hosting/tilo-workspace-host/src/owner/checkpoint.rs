@@ -41,7 +41,7 @@ impl CheckpointPolicyFence {
             {
                 if cluster_id != &self.room
                     || envelope.author.as_bytes() != &self.certificate.device_public_key
-                    || !tilo_peer_state::outbox::fresh(message, now)
+                    || !tilo_room::outbox::fresh(message, now)
                 {
                     return Err("checkpoint signed publication is no longer current".into());
                 }

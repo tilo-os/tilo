@@ -1,5 +1,5 @@
 //! Project admitted canonical documents into the existing checked record owners.
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use ui::{
     portable_storage::{PortableStorage, StorageKey},
     record::{RecordCheckout, RecordId, RecordOwners},
@@ -76,10 +76,7 @@ pub(crate) fn install(
     for (key, checkout, bytes, owner) in plans {
         if let Some(owner) = owner {
             if owner
-                .merge_admitted(
-                    &checkout,
-                    &tilo_peer_state::DocumentMutation::Snapshot(bytes),
-                )?
+                .merge_admitted(&checkout, &tilo_room::DocumentMutation::Snapshot(bytes))?
                 .is_none()
             {
                 return Err("record owner changed during synchronous admission".into());
@@ -119,7 +116,7 @@ pub(crate) fn install_initial(
 pub(crate) fn repair_record_basis(
     cache: &PortableStorage,
     state: &mut StatePeer,
-    outbox: &mut Vec<tilo_peer_state::NeighbourMsg>,
+    outbox: &mut Vec<tilo_room::NeighbourMsg>,
     signer: &ed25519_dalek::SigningKey,
     include: impl Fn(&str) -> bool,
     now: web_time::SystemTime,
@@ -301,7 +298,7 @@ mod tests {
                     store
                         .merge_admitted(
                             &checkout,
-                            &tilo_peer_state::DocumentMutation::Snapshot(bytes.clone())
+                            &tilo_room::DocumentMutation::Snapshot(bytes.clone())
                         )
                         .unwrap()
                         .is_some()
@@ -489,7 +486,7 @@ mod capture_tests {
             records
                 .merge_admitted(
                     &checkout,
-                    &tilo_peer_state::DocumentMutation::Snapshot(remote.save())
+                    &tilo_room::DocumentMutation::Snapshot(remote.save())
                 )
                 .unwrap(),
             Some(true)

@@ -1,4 +1,4 @@
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 use web_time::SystemTime;
 
 #[derive(Default)]
@@ -61,7 +61,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
     use tilo_desktop_model::{AppKind, Strip, StripId, Tab, TileContent, WindowGroup, WindowWidth};
-    use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+    use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
     use tilo_user_identity::{
         DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
         sign_device_cert, sign_revocation_entry,
@@ -162,7 +162,7 @@ mod tests {
             .unwrap();
             native
                 .install_seed(
-                    tilo_peer_state::SeedState {
+                    tilo_room::SeedState {
                         room_changes: room
                             .get_changes(&[])
                             .iter()
@@ -394,7 +394,7 @@ mod tests {
         fixture
             .native
             .install_seed(
-                tilo_peer_state::SeedState {
+                tilo_room::SeedState {
                     room_changes: room
                         .get_changes(&[])
                         .iter()

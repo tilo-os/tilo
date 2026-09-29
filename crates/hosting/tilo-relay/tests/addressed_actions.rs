@@ -379,7 +379,7 @@ async fn exact_relay_device_can_register_its_durable_broker() {
         .replace_governed_workspace_access(
             workspace_id,
             true,
-            tilo_peer_state::GovernedAccess {
+            tilo_room::GovernedAccess {
                 member_devices: vec![relay_key],
                 member_user_roots: vec![user.user_pk],
             },
@@ -452,7 +452,7 @@ async fn local_broker_exception_rejects_every_non_exact_host_and_unlisted_guest(
         .replace_governed_workspace_access(
             workspace_id,
             true,
-            tilo_peer_state::GovernedAccess {
+            tilo_room::GovernedAccess {
                 member_devices: vec![relay_key, other_host_key],
                 member_user_roots: vec![user.user_pk],
             },

@@ -375,8 +375,8 @@ fn pinned_transfer_checks_scope_every_chunk_final_order_generation_and_actual_de
 
 #[test]
 fn bounded_publication_decode_refuses_past_its_outer_allocation_limit() {
-    use tilo_peer_state::resources::{BoundedPeerMessage, OuterLimits};
-    let bytes = postcard::to_allocvec(&tilo_peer_state::NeighbourMsg::SyncResp {
+    use tilo_room::resources::{BoundedPeerMessage, OuterLimits};
+    let bytes = postcard::to_allocvec(&tilo_room::NeighbourMsg::SyncResp {
         changes: vec![vec![1; 32]],
         room: "room".into(),
     })

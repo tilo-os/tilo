@@ -78,9 +78,7 @@ fn desktop_policy_origin_retired_after_actual_encoding_refuses_before_store_writ
 #[cfg(feature = "test-support")]
 fn expiring_guest(owner: &mut SessionOwner) -> tilo_user_identity::DeviceCert {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let root = ed25519_dalek::SigningKey::from_bytes(&[91; 32]);
     let device = ed25519_dalek::SigningKey::from_bytes(&[92; 32]);
@@ -227,7 +225,7 @@ fn desktop_policy_retained_retry_refresh_uses_original_clock_without_another_fac
         "the checkpoint receipt uses the same original clock as its signed publication"
     );
     let now = crate::owner::policy_fence::sample(Some(&time)).unwrap();
-    let mut replica = tilo_peer_state::StatePeer::new(
+    let mut replica = tilo_room::StatePeer::new(
         owner.peer().room(),
         owner.peer().authority().clone(),
         owner.peer().certificates(),
@@ -239,9 +237,7 @@ fn desktop_policy_retained_retry_refresh_uses_original_clock_without_another_fac
     for publication in owner.outgoing().iter() {
         replica
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(
-                    owner.peer().authority().device_public_key,
-                ),
+                tilo_room::TransportOrigin::RelayDelta(owner.peer().authority().device_public_key),
                 postcard::from_bytes(publication.bytes).unwrap(),
                 now,
             )

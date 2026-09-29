@@ -354,7 +354,7 @@ impl CreationRowV1 {
             } => {
                 scope(owner_scope, &intent.key)?;
                 let (request, trailing) = postcard::take_from_bytes::<
-                    tilo_peer_state::owner_commit::OwnerCommitRequest,
+                    tilo_room::owner_commit::OwnerCommitRequest,
                 >(&self.original_request)
                 .map_err(|e| e.to_string())?;
                 if !trailing.is_empty()
@@ -365,7 +365,7 @@ impl CreationRowV1 {
                 {
                     return Err("invalid original desktop intent".into());
                 }
-                let tilo_peer_state::owner_commit::CommitOperation::DesktopCommand {
+                let tilo_room::owner_commit::CommitOperation::DesktopCommand {
                     invocation,
                     caller,
                     command,
@@ -379,10 +379,10 @@ impl CreationRowV1 {
                     return Err("invalid original desktop caller".into());
                 }
                 match &command.command {
-                    tilo_peer_state::desktop_command::DesktopCommand::OpenTab { app, .. }
-                    | tilo_peer_state::desktop_command::DesktopCommand::OpenApp { app }
+                    tilo_room::desktop_command::DesktopCommand::OpenTab { app, .. }
+                    | tilo_room::desktop_command::DesktopCommand::OpenApp { app }
                         if app == &intent.app => {}
-                    tilo_peer_state::desktop_command::DesktopCommand::DuplicateTab { .. } => (),
+                    tilo_room::desktop_command::DesktopCommand::DuplicateTab { .. } => (),
                     _ => return Err("original desktop command has no checked creation".into()),
                 }
             }

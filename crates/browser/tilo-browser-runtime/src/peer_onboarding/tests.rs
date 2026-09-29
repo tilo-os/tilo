@@ -3,7 +3,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
     OnboardingOperation, OnboardingRequest,
 };
-use tilo_peer_state::join::{self, InviteGrant, JoinCompleteRequest, MemberRole};
+use tilo_room::join::{self, InviteGrant, JoinCompleteRequest, MemberRole};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 
 const NOW: u64 = 1_000_000_000_000;
@@ -185,7 +185,7 @@ fn bootstrap(
     .unwrap();
     let time = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(NOW);
     let roster = vec![governor.clone(), host.clone()];
-    let mut native = tilo_peer_state::StatePeer::new(
+    let mut native = tilo_room::StatePeer::new(
         ROOM,
         governor.clone(),
         roster.clone(),
@@ -211,9 +211,9 @@ fn bootstrap(
     .unwrap();
     native
         .install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, governor, &roster).unwrap(),
-                documents: vec![tilo_peer_state::SeedDocument {
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, governor, &roster).unwrap(),
+                documents: vec![tilo_room::SeedDocument {
                     app_id: "test.app".into(),
                     record_id: "tab:1".into(),
                     kind: "test".into(),
@@ -337,10 +337,8 @@ fn handoff_reassembles_exact_signed_native_bootstrap() {
 }
 
 fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) {
-    use tilo_peer_state::enrollment::{
-        self, ChallengeRequest, ChallengeResponse, EnrollmentChallenge,
-    };
-    use tilo_peer_state::transport::Retention;
+    use tilo_room::enrollment::{self, ChallengeRequest, ChallengeResponse, EnrollmentChallenge};
+    use tilo_room::transport::Retention;
     let material = crate::identity::create();
     let request: ChallengeRequest =
         serde_json::from_str(&crate::identity::request(&material).unwrap()).unwrap();
@@ -379,7 +377,7 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
     );
     let time = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(NOW);
     let roster = vec![governor.clone(), host.clone(), cert.clone()];
-    let mut owner = tilo_peer_state::StatePeer::new(
+    let mut owner = tilo_room::StatePeer::new(
         ROOM,
         governor.clone(),
         roster.clone(),
@@ -389,8 +387,8 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
     .unwrap();
     owner
         .install_seed(
-            tilo_peer_state::SeedState {
-                room_changes: tilo_peer_state::seed_room(ROOM, &governor, &roster).unwrap(),
+            tilo_room::SeedState {
+                room_changes: tilo_room::seed_room(ROOM, &governor, &roster).unwrap(),
                 documents: vec![],
             },
             &SigningKey::from_bytes(&[2; 32]),
@@ -440,7 +438,7 @@ fn local_fixture(descriptor_expires: u64) -> (Vec<u8>, String, String, Vec<u8>) 
 
 #[test]
 fn local_governance_requires_exact_durable_binding() {
-    use tilo_peer_state::transport::Retention;
+    use tilo_room::transport::Retention;
     let (material, challenge, raw, small) = local_fixture(NOW + 60_000_000_000);
     let bound = bind_local(&material, &challenge, &raw, NOW).unwrap();
     assert_eq!(
@@ -480,7 +478,7 @@ fn decoded_reply_round_trips_the_nested_bootstrap() {
 
 #[test]
 fn governance_bundle_lends_exact_paired_messages() {
-    use tilo_peer_state::transport::Retention;
+    use tilo_room::transport::Retention;
     let (identity, governor, host) = invited();
     let data = bootstrap(&identity, &governor, &host).governance_messages;
     let bundle = wire::GovernanceBundle {

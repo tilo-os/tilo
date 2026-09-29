@@ -3,7 +3,7 @@ use crate::peer_delivery_cursor::{CursorIdentity, StoredDeliveryCursor};
 #[cfg(test)]
 use automerge::transaction::Transactable;
 use serde::{Deserialize, Serialize};
-use tilo_peer_state::{DocumentRow, NeighbourMsg, StatePeer};
+use tilo_room::{DocumentRow, NeighbourMsg, StatePeer};
 const MAGIC: &[u8] = b"TILJ";
 // Frozen v2 wire layout. Never append optional fields to this postcard struct.
 #[derive(Serialize, Deserialize)]
@@ -152,7 +152,7 @@ impl Journal {
                         .flatten()
                         .map(|receipt| {
                             (
-                                tilo_peer_state::coverage::route_key(&row.app_id, &row.record_id),
+                                tilo_room::coverage::route_key(&row.app_id, &row.record_id),
                                 receipt.receipt_id,
                             )
                         })
@@ -820,7 +820,7 @@ mod tests {
     fn restored_journal_retires_only_exact_durable_receipts_and_normalizes_roundtrip() {
         use automerge::{AutoCommit, ROOT};
         use ed25519_dalek::SigningKey;
-        use tilo_peer_state::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
+        use tilo_room::{SeedDocument, SeedState, StatePeer, TransportOrigin, seed_room};
         use tilo_user_identity::{
             DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert,
         };

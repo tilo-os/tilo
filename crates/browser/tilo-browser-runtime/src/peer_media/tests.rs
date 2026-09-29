@@ -1,6 +1,6 @@
 use super::*;
 use tilo_delivery_protocol::delivery_v3::{auth, descriptor, http_proof};
-use tilo_peer_state::{SeedState, seed_room};
+use tilo_room::{SeedState, seed_room};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -122,7 +122,7 @@ impl Fixture {
     }
     fn activate_call(&mut self) {
         use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
-        use tilo_peer_state::{SeedDocument, room::media};
+        use tilo_room::{SeedDocument, room::media};
         let mut chat = AutoCommit::new();
         let channels = chat.put_object(ROOT, "channels", ObjType::Map).unwrap();
         let channel = chat.put_object(&channels, "voice", ObjType::Map).unwrap();
@@ -241,7 +241,7 @@ impl Fixture {
         ));
         client
     }
-    fn hint(&self) -> tilo_peer_state::join::TransportHint {
+    fn hint(&self) -> tilo_room::join::TransportHint {
         descriptor::issue_transport_hint(
             &descriptor::DescriptorSettings {
                 origin: "https://media.test".into(),

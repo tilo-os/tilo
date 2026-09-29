@@ -340,7 +340,7 @@ fn relay_bounds_match_the_frozen_wire_contract() {
 #[test]
 fn only_record_scoped_app_documents_become_signed_change_frames() {
     assert!(crate::live_service::signed_change(b"not a message").is_none());
-    let message = tilo_peer_state::NeighbourMsg::SyncReq {
+    let message = tilo_room::NeighbourMsg::SyncReq {
         since: vec![],
         room: "room".into(),
         invite_id: None,
@@ -450,9 +450,7 @@ async fn sustained_commits_never_revoke_the_author_and_forwarding_continues() {
 #[tokio::test]
 async fn rolled_back_state_issues_no_grant_before_retained_governance_is_merged() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest, RemoveMemberRequest};
-    use tilo_peer_state::join::{
-        JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof,
-    };
+    use tilo_room::join::{JoinChallengeRequest, JoinCompleteRequest, MemberRole, sign_join_proof};
     use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
     let mut h = Harness::start().await;
     let root_key = ed25519_dalek::SigningKey::from_bytes(&[71; 32]);
@@ -585,7 +583,7 @@ async fn rolled_back_state_issues_no_grant_before_retained_governance_is_merged(
         h.f.current
             .with_owner(&mut h.f.owner, |owner| {
                 owner.receive(
-                    tilo_peer_state::TransportOrigin::RetainedRelayDelta(authority),
+                    tilo_room::TransportOrigin::RetainedRelayDelta(authority),
                     message,
                 )
             })

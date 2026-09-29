@@ -602,7 +602,7 @@ pub fn peer_delivery_next(id: u32) -> Result<String, JsValue> {
         // the oldest unsubmitted item exceeds the inline bound.
         if peer.delivery.borrow().upload.is_none() && peer.delivery.borrow().window.is_empty() {
             let outbox = peer.outbox.borrow();
-            for message in tilo_peer_state::outbox::publication_batch(&outbox, SystemTime::now()) {
+            for message in tilo_room::outbox::publication_batch(&outbox, SystemTime::now()) {
                 let bytes = postcard::to_allocvec(message).map_err(error)?;
                 let digest = state::canonical_item_digest(&bytes);
                 if peer.published.borrow().contains(&digest) {
@@ -1135,7 +1135,7 @@ fn next_inline_batch(peer: &Rc<Peer>) -> Result<Option<String>, JsValue> {
     {
         let outbox = peer.outbox.borrow();
         let published = peer.published.borrow();
-        for message in tilo_peer_state::outbox::publication_batch(&outbox, SystemTime::now()) {
+        for message in tilo_room::outbox::publication_batch(&outbox, SystemTime::now()) {
             let bytes = postcard::to_allocvec(message).map_err(error)?;
             let digest = state::canonical_item_digest(&bytes);
             // In-flight items stay candidates: the window may repeat them as

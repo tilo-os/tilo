@@ -37,19 +37,18 @@ impl Evidence {
         else {
             return None;
         };
-        let (msg, trailing) =
-            postcard::take_from_bytes::<tilo_peer_state::NeighbourMsg>(&body).ok()?;
+        let (msg, trailing) = postcard::take_from_bytes::<tilo_room::NeighbourMsg>(&body).ok()?;
         if !trailing.is_empty() {
             return None;
         }
-        let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+        let tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key, ..
         } = &msg
         else {
             return None;
         };
-        if tilo_peer_state::transport::retention(&msg, false)
-            != Some((channel, tilo_peer_state::transport::Retention::Checkpoint))
+        if tilo_room::transport::retention(&msg, false)
+            != Some((channel, tilo_room::transport::Retention::Checkpoint))
         {
             return None;
         }
@@ -216,7 +215,7 @@ fn association(
 pub(super) fn account_validation(stats: &mut super::bounded::WorkStats, len: usize) {
     let overhead = std::mem::size_of::<Envelope>()
         .saturating_add(std::mem::size_of::<crate::coedit::CoeditPayload>())
-        .saturating_add(std::mem::size_of::<tilo_peer_state::NeighbourMsg>());
+        .saturating_add(std::mem::size_of::<tilo_room::NeighbourMsg>());
     stats.peak_frame_bytes = stats
         .peak_frame_bytes
         .max(len.saturating_mul(5).saturating_add(overhead));
@@ -435,12 +434,12 @@ mod tests {
             Self { tmp, store, peer }
         }
         fn frame(&self, snapshot: Vec<u8>, time: u64) -> ([u8; 32], Envelope, Vec<u8>, Receipt) {
-            let message = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+            let message = tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key: self.peer.user_public_key,
                 publisher: 7,
                 snapshot,
             };
-            let (channel, _) = tilo_peer_state::transport::retention(&message, false).unwrap();
+            let (channel, _) = tilo_room::transport::retention(&message, false).unwrap();
             let envelope = Envelope::Delta {
                 workspace_id: 7,
                 author_device_public_key: self.peer.device_public_key,
@@ -553,9 +552,8 @@ mod tests {
                 "body-suffix" => body.push(0),
                 "channel" => channel[0] ^= 1,
                 "root" => {
-                    let mut message: tilo_peer_state::NeighbourMsg =
-                        postcard::from_bytes(body).unwrap();
-                    let tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    let mut message: tilo_room::NeighbourMsg = postcard::from_bytes(body).unwrap();
+                    let tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
                         user_public_key,
                         ..
                     } = &mut message
@@ -563,9 +561,7 @@ mod tests {
                         unreachable!()
                     };
                     user_public_key[0] ^= 1;
-                    *channel = tilo_peer_state::transport::retention(&message, false)
-                        .unwrap()
-                        .0;
+                    *channel = tilo_room::transport::retention(&message, false).unwrap().0;
                     *body = postcard::to_stdvec(&message).unwrap();
                 }
                 "author" => author_device_public_key[0] ^= 1,

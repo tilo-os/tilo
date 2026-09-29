@@ -9,7 +9,7 @@ use tilo_delivery_protocol::{
     agent_reads::{AgentReadBinding, MAX_RESULT_BYTES},
     peer_actions::ActionMessage,
 };
-use tilo_peer_state::owner_commit::{AgentRuntimeFact, TaskOutcome, VerifiedAgentCaller};
+use tilo_room::owner_commit::{AgentRuntimeFact, TaskOutcome, VerifiedAgentCaller};
 use uuid::Uuid;
 
 #[cfg(test)]

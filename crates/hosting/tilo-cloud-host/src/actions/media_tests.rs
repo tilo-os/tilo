@@ -81,7 +81,7 @@ async fn cloud_media_governance_uses_actual_caller_receipt_and_reopen_barrier() 
     let store = Store::open(dir.path(), "agent-admission").unwrap();
     let generation = store.state.generation;
     let peer = store.peer().unwrap();
-    let policy = tilo_peer_state::room::media::parse(peer.admitted_room().unwrap())
+    let policy = tilo_room::room::media::parse(peer.admitted_room().unwrap())
         .unwrap()
         .unwrap();
     assert_eq!(policy.calls.len(), 1);
@@ -116,7 +116,7 @@ async fn cloud_media_governance_uses_actual_caller_receipt_and_reopen_barrier() 
 
 #[tokio::test]
 async fn cloud_media_governance_all_operations_preserve_counters_and_semantic_errors() {
-    use tilo_peer_state::room::media::{CallPhaseV1, MediaCallResultV1};
+    use tilo_room::room::media::{CallPhaseV1, MediaCallResultV1};
     let (dir, store, caller) = voice_store();
     let room = store.state.room.clone();
     let service = crate::broker::CloudCollaborationAdmin::new(dir.path(), "agent-admission", &room);
@@ -249,7 +249,7 @@ fn cloud_media_governance_failed_barrier_never_returns_success_or_replays_effect
     assert_eq!(reopened.state.generation, generation);
     let peer = reopened.peer().unwrap();
     assert_eq!(
-        tilo_peer_state::room::media::parse(peer.admitted_room().unwrap())
+        tilo_room::room::media::parse(peer.admitted_room().unwrap())
             .unwrap()
             .unwrap()
             .calls

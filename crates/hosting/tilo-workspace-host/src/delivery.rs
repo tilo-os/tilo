@@ -6,7 +6,7 @@ use error::OwnerCapacityKind as DataCapacity;
 use error::OwnerDataFailureKind as DataFailure;
 use tilo_delivery_protocol::delivery_v3::commit::*;
 #[cfg(any(test, feature = "media"))]
-use tilo_peer_state::{InputDisposition, MissingPrerequisite};
+use tilo_room::{InputDisposition, MissingPrerequisite};
 
 /// Largest complete item the local owner accepts; it has no chunk staging owner.
 #[cfg(any(test, feature = "media"))]

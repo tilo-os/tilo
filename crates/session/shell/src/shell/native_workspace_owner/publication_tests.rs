@@ -9,9 +9,9 @@ use ed25519_dalek::SigningKey;
 use parking_lot::RwLock;
 use std::{sync::Arc, time::SystemTime};
 use tilo_automerge::ApplyIncoming as _;
-use tilo_joined_room::testing as internals;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
-use tilo_peer_state::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_room::{NeighbourMsg, StatePeer, TransportOrigin};
+use tilo_room_session::testing as internals;
 
 fn edit(
     owner: &NativeWorkspaceOwner,
@@ -177,7 +177,7 @@ fn snapshot_request(
         .unwrap();
     collab_types::sign_op(envelope, key).unwrap();
     let original = NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(envelope.author.as_bytes()),
+        peer: tilo_room::peer_handle(envelope.author.as_bytes()),
         app_id: app.clone(),
         cluster_id: room.to_string(),
         record_id: record.clone(),
@@ -618,7 +618,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
         } else {
             assert!(matches!(
                 result.unwrap().primary(),
-                tilo_peer_state::InputDisposition::RetryLater(_)
+                tilo_room::InputDisposition::RetryLater(_)
             ));
         }
         assert_eq!(
@@ -646,7 +646,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
             if bytes == &old {
                 assert_eq!(
                     result.unwrap_err(),
-                    tilo_peer_state::AdmissionError::from(
+                    tilo_room::AdmissionError::from(
                         "op timestamp is outside attestation validity window"
                     )
                 );
@@ -876,7 +876,7 @@ fn native_outgoing_encoded_recovery_reserve_refuses_before_original_success() {
     internals::insert_room(&mut prospective.native_authority, room, candidate);
     store::preflight(&prospective.native_authority, store::MAX_AUTHORITY_BYTES).unwrap();
     assert!(
-        tilo_joined_room::preflight_storage(&prospective.native_authority).is_err(),
+        tilo_room_session::preflight_storage(&prospective.native_authority).is_err(),
         "the refusal must come from the required recovery reserve"
     );
     let path = directory.path().join("state.json");

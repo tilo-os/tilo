@@ -80,4 +80,4 @@ endpoint. Invocation arguments and receipts never travel through broadcast state
 presence messages. The committed application document changes are shared normally.
 
 Validation: `cargo test -p tilo-user-identity cloud_enrollment --lib`,
-`cargo test -p tilo-peer-state`, `cargo test -p tilo-cloud-host`.
+`cargo test -p tilo-room`, `cargo test -p tilo-cloud-host`.

@@ -5,7 +5,7 @@ use super::super::*;
 use super::*;
 use automerge::{AutoCommit, ObjType, ROOT, transaction::Transactable};
 use ed25519_dalek::SigningKey;
-use tilo_peer_state::{SeedDocument, SeedState, room::media, seed_room};
+use tilo_room::{SeedDocument, SeedState, room::media, seed_room};
 use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -144,7 +144,7 @@ impl Fixture {
             now_ns: NOW,
         }
     }
-    fn hint(&self) -> tilo_peer_state::join::TransportHint {
+    fn hint(&self) -> tilo_room::join::TransportHint {
         descriptor::issue_transport_hint_with_media(
             &descriptor::DescriptorSettings {
                 origin: "https://media.test".into(),

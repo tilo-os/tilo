@@ -1,7 +1,7 @@
 //! Shared-workspace invitation service backed by the serialized native owner.
 //!
 //! The cryptographic and governed-document contract lives in
-//! `tilo_peer_state::join`; this module only owns native-host request
+//! `tilo_room::join`; this module only owns native-host request
 //! idempotency and the `SessionOwner` durability barrier.
 
 mod media;
@@ -11,8 +11,8 @@ use crate::SessionOwner;
 use rand::Rng as _;
 use serde::{Deserialize, Serialize};
 use std::{fmt, time::Duration};
-use tilo_peer_state::GovernedAccess;
-use tilo_peer_state::join::{
+use tilo_room::GovernedAccess;
+use tilo_room::join::{
     InviteGrant, JoinBootstrap, JoinChallenge, JoinChallengeRequest, JoinChallengeResponse,
     JoinCompleteRequest, MemberRole, MembershipChallenge, MembershipChallengeRequest,
     MembershipChallengeResponse, MembershipCompleteRequest, TransportHint, VerifiedJoin,
@@ -23,8 +23,8 @@ use web_time::SystemTime;
 
 pub(crate) struct CollaborationCommand {
     pub(crate) remote_endpoint: [u8; 32],
-    pub(crate) request: tilo_peer_state::join::JoinTransportRequest,
-    pub(crate) reply: tokio::sync::oneshot::Sender<tilo_peer_state::join::JoinTransportResponse>,
+    pub(crate) request: tilo_room::join::JoinTransportRequest,
+    pub(crate) reply: tokio::sync::oneshot::Sender<tilo_room::join::JoinTransportResponse>,
 }
 
 /// Cloneable owner-neutral bridge from the Iroh handler into the serialized owner loop.
@@ -111,8 +111,8 @@ impl tilo_delivery_protocol::workspace_join::WorkspaceJoinService for Collaborat
     async fn handle(
         &self,
         remote_endpoint: [u8; 32],
-        request: tilo_peer_state::join::JoinTransportRequest,
-    ) -> tilo_peer_state::join::JoinTransportResponse {
+        request: tilo_room::join::JoinTransportRequest,
+    ) -> tilo_room::join::JoinTransportResponse {
         let (reply, response) = tokio::sync::oneshot::channel();
         if self
             .sender
@@ -124,14 +124,14 @@ impl tilo_delivery_protocol::workspace_join::WorkspaceJoinService for Collaborat
             .await
             .is_err()
         {
-            return tilo_peer_state::join::JoinTransportResponse::Error {
+            return tilo_room::join::JoinTransportResponse::Error {
                 code: 503,
                 message: "workspace authority is unavailable".into(),
             };
         }
         response
             .await
-            .unwrap_or(tilo_peer_state::join::JoinTransportResponse::Error {
+            .unwrap_or(tilo_room::join::JoinTransportResponse::Error {
                 code: 503,
                 message: "workspace authority stopped before completing the request".into(),
             })
@@ -370,7 +370,7 @@ pub(crate) struct AdministrationRecord {
     pub(crate) request_id: [u8; 32],
     pub(crate) request_digest: [u8; 32],
     pub(crate) generation: u64,
-    pub(crate) media_result: Option<tilo_peer_state::room::media::MediaCallResultV1>,
+    pub(crate) media_result: Option<tilo_room::room::media::MediaCallResultV1>,
 }
 
 #[derive(Clone, Debug)]
@@ -1038,7 +1038,7 @@ impl CollaborationService {
         owner: &mut SessionOwner,
         request_id: [u8; 32],
         digest: [u8; 32],
-        candidate: tilo_peer_state::StatePeer,
+        candidate: tilo_room::StatePeer,
         now_ns: u64,
     ) -> Result<GovernanceCompletion, CollaborationError> {
         if let Some(prior) = owner
@@ -1308,7 +1308,7 @@ mod tests {
     }
 
     fn enroll_owner_device(owner: &mut SessionOwner, seed: u8, now_ns: u64) -> DeviceCert {
-        use tilo_peer_state::enrollment;
+        use tilo_room::enrollment;
         let key = SigningKey::from_bytes(&[seed; 32]);
         let mut authority = crate::enrollment::EnrollmentAuthority::default();
         let challenge = authority
@@ -1420,7 +1420,7 @@ mod tests {
                 &mut owner,
                 guest.device_public_key,
                 JoinCompleteRequest {
-                    proof: tilo_peer_state::join::sign_join_proof(challenge, &guest_key).unwrap(),
+                    proof: tilo_room::join::sign_join_proof(challenge, &guest_key).unwrap(),
                 },
                 now_ns + 1,
             )
@@ -1512,7 +1512,7 @@ mod tests {
             .unwrap()
             .challenge;
         let complete = JoinCompleteRequest {
-            proof: tilo_peer_state::join::sign_join_proof(challenge, &guest_key).unwrap(),
+            proof: tilo_room::join::sign_join_proof(challenge, &guest_key).unwrap(),
         };
         let joined = service
             .complete(

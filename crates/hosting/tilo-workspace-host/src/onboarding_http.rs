@@ -10,7 +10,7 @@ use tilo_delivery_protocol::delivery_v3::{
     capabilities::PRODUCT_DATA_V1,
     onboarding_wire::{OnboardingOperation, OnboardingRequest, OnboardingScope},
 };
-use tilo_peer_state::join::JoinTransportRequest;
+use tilo_room::join::JoinTransportRequest;
 use tilo_user_identity::DeviceCert;
 pub mod input;
 mod local;
@@ -70,7 +70,7 @@ pub(crate) struct OnboardingExchange {
     request: crate::https::BufferedRequest,
 }
 pub(crate) struct OnboardingOutcome {
-    pub(crate) response: tilo_peer_state::join::JoinTransportResponse,
+    pub(crate) response: tilo_room::join::JoinTransportResponse,
     pub(crate) reconcile: bool,
 }
 impl OnboardingExchange {
@@ -85,7 +85,7 @@ impl OnboardingExchange {
         service: &crate::collaboration::CollaborationService,
         now: u64,
     ) -> Result<OnboardingOutcome> {
-        use tilo_peer_state::join::{JoinInspection, JoinTransportResponse as Response};
+        use tilo_room::join::{JoinInspection, JoinTransportResponse as Response};
         ensure!(!self.is_cancelled(), "onboarding exchange cancelled");
         ensure!(
             now < self.admission.expires,

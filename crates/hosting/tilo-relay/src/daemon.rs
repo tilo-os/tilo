@@ -902,7 +902,7 @@ impl Relay {
         &self,
         workspace_id: u64,
         pinned: bool,
-        access: tilo_peer_state::GovernedAccess,
+        access: tilo_room::GovernedAccess,
         state_root: PathBuf,
     ) -> Result<(), RelayError> {
         if self.handshake_trust.allow_any {

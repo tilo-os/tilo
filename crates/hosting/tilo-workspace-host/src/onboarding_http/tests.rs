@@ -112,7 +112,7 @@ impl Fixture {
         service: &crate::collaboration::CollaborationService,
         inner: JoinTransportRequest,
         nonce: u8,
-    ) -> tilo_peer_state::join::JoinTransportResponse {
+    ) -> tilo_room::join::JoinTransportResponse {
         use crate::https::onboarding_tests::request;
         use tilo_delivery_protocol::delivery_v3::onboarding_wire::*;
         let wire = self.wire_for(&inner, [nonce; 32]);
@@ -435,7 +435,7 @@ fn onboarding_borrowed_input_rejects_inflated_nested_lengths_before_owned_decode
 #[tokio::test]
 async fn onboarding_charged_request_and_reply_keep_custody_on_cancel_and_completion() {
     use crate::https::onboarding_tests::request;
-    use tilo_peer_state::join::JoinTransportResponse;
+    use tilo_room::join::JoinTransportResponse;
     let mut f = Fixture::new();
     let before = f.ingress.host_bytes().available_bytes();
     let (buffered, probe) = request(
@@ -506,7 +506,7 @@ async fn onboarding_charged_request_and_reply_keep_custody_on_cancel_and_complet
 #[tokio::test]
 async fn onboarding_five_operations_use_real_distinct_person_join_and_current_bootstrap() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     let mut f = Fixture::new();
     let service = CollaborationService::new(vec![]);
     let administrator = f.owner.peer().authority().device_public_key;
@@ -658,7 +658,7 @@ async fn onboarding_large_local_handoff_uses_actual_scoped_pin_and_exact_governa
     use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
         GovernanceBundle, HandoffManifest, HandoffPurpose,
     };
-    use tilo_peer_state::enrollment::{ChallengeRequest, decode, sign};
+    use tilo_room::enrollment::{ChallengeRequest, decode, sign};
     let mut f = Fixture::new();
     large_publication(&mut f);
     let pool = f.ingress.host_bytes();
@@ -831,7 +831,7 @@ async fn onboarding_invocation_refuses_owner_change_after_possession() {
                 administrator,
                 IssueInvitationRequest {
                     request_id: [73; 32],
-                    role: tilo_peer_state::join::MemberRole::Viewer,
+                    role: tilo_room::join::MemberRole::Viewer,
                     recipient_user_public_key: None,
                     invitee_name: None,
                     expires_at_ns: f.now + 60_000_000_000,
@@ -849,7 +849,7 @@ async fn onboarding_invocation_refuses_owner_change_after_possession() {
 #[tokio::test]
 async fn onboarding_large_join_reply_preserves_frozen_response_bytes_through_chunks() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     let mut f = Fixture::new();
     large_publication(&mut f);
     let service = CollaborationService::new(vec![]);
@@ -1005,7 +1005,7 @@ async fn onboarding_large_join_reply_preserves_frozen_response_bytes_through_chu
 async fn onboarding_mid_size_inline_join_reply_fits_response_capacity() {
     use crate::collaboration::{CollaborationService, IssueInvitationRequest};
     use rand::{Rng as _, SeedableRng};
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     use ui::automerge::transaction::Transactable;
     let mut f = Fixture::new();
     let mut input = vec![0u8; 700_000];

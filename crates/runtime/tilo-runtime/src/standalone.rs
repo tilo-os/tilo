@@ -49,7 +49,7 @@ use tilo_identity_host::{
     broker::{IdentityBrokerHandle, WorkspaceMembership},
     provisioning::IdentityStorage,
 };
-use tilo_peer_state::owner_commit::OwnerCommitService;
+use tilo_room::owner_commit::OwnerCommitService;
 use workspace::{ProfileGrants, ProfileWorkspace};
 
 /// Durable collaboration history, where the desktop session keeps it under

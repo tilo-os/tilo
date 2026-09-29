@@ -2,7 +2,7 @@
 use super::*;
 use collab_types::{DocumentMutation, SignedOp};
 use tilo_action_broker::peer_actions::PolicyTime;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitReceipt, OwnerCommitRequest};
 use ui::{collaboration::RouteSpec, invocation_scope::DocumentAuthorization};
 
 impl SessionOwner {
@@ -60,7 +60,7 @@ impl SessionOwner {
             .iter()
             .find_map(|publication| {
                 let message: NeighbourMsg = postcard::from_bytes(publication.bytes).ok()?;
-                if !tilo_peer_state::outbox::fresh(&message, now) {
+                if !tilo_room::outbox::fresh(&message, now) {
                     return None;
                 }
                 let NeighbourMsg::AppDocument {

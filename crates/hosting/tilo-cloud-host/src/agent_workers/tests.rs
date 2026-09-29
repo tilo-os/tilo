@@ -394,7 +394,7 @@ async fn cloud_worker_merges_committed_bytes_after_outbox_drain_without_acknowle
             .unwrap();
         store
             .receive(
-                tilo_peer_state::TransportOrigin::RelayDelta(device.verifying_key().to_bytes()),
+                tilo_room::TransportOrigin::RelayDelta(device.verifying_key().to_bytes()),
                 message,
                 now,
             )
@@ -736,7 +736,7 @@ async fn cloud_worker_committed_host_revocation_withdraws_publications_and_retai
             .clone();
         store
             .receive(
-                tilo_peer_state::TransportOrigin::RelayDelta(device.verifying_key().to_bytes()),
+                tilo_room::TransportOrigin::RelayDelta(device.verifying_key().to_bytes()),
                 NeighbourMsg::IdentityHello {
                     cert: Box::new(certificate),
                     revocations: vec![entry],
@@ -891,7 +891,7 @@ async fn cloud_worker_real_primary_chat_grants_validate_as_offer_and_retained_in
         AgentBinding, AgentCapabilities, AgentRequest, AgentResponse, AgentResponseKind,
         AgentUnavailableReason, ExpectedResponse, GrantOffer,
     };
-    use tilo_peer_state::owner_commit::{AgentIntent, AgentInvocationScope, AgentProviderRoute};
+    use tilo_room::owner_commit::{AgentIntent, AgentInvocationScope, AgentProviderRoute};
     let (_directory, mut workers, mut documents, mut network) = live_workers().await;
     let publications = workers.publications().unwrap();
     assert!(
@@ -1178,7 +1178,7 @@ fn cloud_policy_clock_worker_sampler_checks_current_governance_before_next_pump(
         )
         .unwrap();
         doc.commit();
-        let message = tilo_peer_state::NeighbourMsg::SyncResp {
+        let message = tilo_room::NeighbourMsg::SyncResp {
             room: store.state.room.clone(),
             changes: doc
                 .get_changes(&[])
@@ -1190,7 +1190,7 @@ fn cloud_policy_clock_worker_sampler_checks_current_governance_before_next_pump(
         let host_key = store.key().verifying_key().to_bytes();
         store
             .receive(
-                tilo_peer_state::TransportOrigin::RelayDelta(host_key),
+                tilo_room::TransportOrigin::RelayDelta(host_key),
                 message,
                 now,
             )
@@ -1628,8 +1628,8 @@ const NOTES: &str = "so.tilo.notes";
 /// One desktop command of the enrolled person through the Cloud Store owner
 /// (the same commit the broker's desktop action makes).
 fn desktop(owner: &RuntimeOwner, command: tilo_desktop_model::commands::DesktopCommand) {
-    use tilo_peer_state::desktop_command::{BoundCommand, CommandSource};
-    use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+    use tilo_room::desktop_command::{BoundCommand, CommandSource};
+    use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
     let mut store = owner.store().unwrap();
     let peer = store.peer().unwrap();
     let caller = peer

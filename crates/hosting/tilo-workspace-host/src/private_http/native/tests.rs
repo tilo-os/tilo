@@ -165,10 +165,10 @@ fn policy(
             doc.commit();
             candidate
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         owner.identity.native.verifying_key().to_bytes(),
                     ),
-                    tilo_peer_state::NeighbourMsg::SyncResp {
+                    tilo_room::NeighbourMsg::SyncResp {
                         room: owner.peer().room().into(),
                         changes: doc
                             .get_changes(&[])

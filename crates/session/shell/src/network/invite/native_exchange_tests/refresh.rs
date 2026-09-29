@@ -5,7 +5,7 @@
 )]
 use super::*;
 use automerge::{AutoCommit, ROOT, ReadDoc, transaction::Transactable};
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest};
 
 /// The parent exchange test's state directory, device identity, endpoint,
 /// relay and publishing session, still live when its restart phase begins.
@@ -218,10 +218,7 @@ pub(super) async fn restart_after_offline_snapshot(
                     }
                     let message: NeighbourMsg = postcard::from_bytes(&data).unwrap();
                     governor
-                        .receive(
-                            tilo_peer_state::TransportOrigin::RelayDelta(author),
-                            message,
-                        )
+                        .receive(tilo_room::TransportOrigin::RelayDelta(author), message)
                         .unwrap();
                     let doc =
                         AutoCommit::load(&governor.peer().document("so.tilo.chat", "").unwrap())
@@ -263,16 +260,16 @@ fn publish_committed(
     let mut sent = Vec::new();
     for entry in owner.outgoing().iter() {
         let message: NeighbourMsg = postcard::from_bytes(entry.bytes).unwrap();
-        let (channel, _) = tilo_peer_state::transport::retention(
+        let (channel, _) = tilo_room::transport::retention(
             &message,
-            entry.kind == tilo_peer_state::transport::Retention::Checkpoint,
+            entry.kind == tilo_room::transport::Retention::Checkpoint,
         )
         .unwrap();
         match entry.kind {
-            tilo_peer_state::transport::Retention::Checkpoint => {
+            tilo_room::transport::Retention::Checkpoint => {
                 publisher.publish_checkpoint(channel, entry.bytes.to_vec())
             }
-            tilo_peer_state::transport::Retention::Delta => {
+            tilo_room::transport::Retention::Delta => {
                 publisher.publish_retained_delta(channel, entry.bytes.to_vec())
             }
         }

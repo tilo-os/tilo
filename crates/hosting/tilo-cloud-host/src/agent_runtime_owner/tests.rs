@@ -251,7 +251,7 @@ fn agent_owner_corrupt_selected_input_is_never_rewritten() {
 pub(super) fn retained_completed_state(store: &Store, caller: &VerifiedAgentCaller) -> State {
     let literal = include_str!(concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../collab/tilo-peer-state/src/owner_commit/fixtures/agent-ledger-completed.json"
+        "/../../collab/tilo-room/src/owner_commit/fixtures/agent-ledger-completed.json"
     ));
     let bytes = literal.replace("00000000-0000-0000-0000-000000000001", &store.state.room);
     let mut ledger: PrivateAgentLedger = serde_json::from_str(&bytes).unwrap();

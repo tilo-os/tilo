@@ -145,7 +145,7 @@ fn durability_cached_mesh_challenge_and_catalogue_require_reconciliation() {
 #[test]
 fn durability_cached_membership_challenge_requires_reconciliation() {
     let (dir, mut store, device, enrollment) = enrolled();
-    let request = tilo_peer_state::join::MembershipChallengeRequest {
+    let request = tilo_room::join::MembershipChallengeRequest {
         room: store.state.room.clone(),
         workspace_id: tilo_relay::room_workspace_id(&store.state.room).unwrap(),
         device_cert: enrollment.browser_certificate,
@@ -196,7 +196,7 @@ fn durability_collaboration_trait_preserves_uncertain_commit_category() {
 #[test]
 fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     use tilo_delivery_protocol::workspace_join::WorkspaceJoinService;
-    use tilo_peer_state::join::{
+    use tilo_room::join::{
         JoinTransportRequest, JoinTransportResponse, MembershipChallengeRequest,
     };
     let (dir, store, device, enrollment) = enrolled();
@@ -233,13 +233,13 @@ fn durability_join_transport_distinguishes_owner_unavailable_from_rejection() {
     let JoinTransportResponse::MembershipChallenge(challenge) = challenge else {
         panic!("challenge issuance must not need a Store commit: {challenge:?}")
     };
-    let proof = tilo_peer_state::join::sign_membership_proof(challenge.challenge, &device).unwrap();
+    let proof = tilo_room::join::sign_membership_proof(challenge.challenge, &device).unwrap();
     let result = with_failure(Checkpoint::BeforeCommit, || {
         runtime.block_on(service.handle(
             device.verifying_key().to_bytes(),
-            JoinTransportRequest::MembershipComplete(
-                tilo_peer_state::join::MembershipCompleteRequest { proof },
-            ),
+            JoinTransportRequest::MembershipComplete(tilo_room::join::MembershipCompleteRequest {
+                proof,
+            }),
         ))
     });
     assert!(
@@ -580,7 +580,7 @@ fn durability_receive_owner_failure_never_audits_committed_document() {
 #[test]
 fn durability_populated_current_state_and_typed_publications_survive_uncertain_reopen() {
     use tilo_action_broker::collaboration_admin::*;
-    use tilo_peer_state::join::*;
+    use tilo_room::join::*;
     let (dir, store, device, enrollment) = enrolled();
     let room = store.state.room.clone();
     drop(store);

@@ -9,7 +9,7 @@
 )]
 use super::*;
 use automerge::transaction::Transactable;
-use tilo_peer_state::{NeighbourMsg, StatePeer};
+use tilo_room::{NeighbourMsg, StatePeer};
 
 struct Recovery {
     fixture: Fixture,
@@ -20,7 +20,7 @@ struct Recovery {
     now: web_time::SystemTime,
 }
 fn envelope(author: [u8; 32], room: &str, message: &NeighbourMsg, checkpoint: bool) -> Envelope {
-    let channel = tilo_peer_state::transport::retention(message, checkpoint)
+    let channel = tilo_room::transport::retention(message, checkpoint)
         .unwrap()
         .0;
     let body = postcard::to_allocvec(message).unwrap();
@@ -62,7 +62,7 @@ fn signed(
     );
     collab_types::sign_op(&mut envelope, key).unwrap();
     NeighbourMsg::AppDocument {
-        peer: tilo_peer_state::peer_handle(&source),
+        peer: tilo_room::peer_handle(&source),
         app_id: "selector.app".into(),
         cluster_id: room.into(),
         record_id: "one".into(),
@@ -89,17 +89,13 @@ impl Recovery {
         document.put(automerge::ROOT, "value", "baseline").unwrap();
         owner
             .install_seed(
-                tilo_peer_state::SeedState {
-                    room_changes: tilo_peer_state::seed_room(
-                        room,
-                        &cert,
-                        std::slice::from_ref(&cert),
-                    )
-                    .unwrap(),
+                tilo_room::SeedState {
+                    room_changes: tilo_room::seed_room(room, &cert, std::slice::from_ref(&cert))
+                        .unwrap(),
                     documents: ["one", "two"]
                         .into_iter()
                         .take(document_count)
-                        .map(|record| tilo_peer_state::SeedDocument {
+                        .map(|record| tilo_room::SeedDocument {
                             app_id: "selector.app".into(),
                             record_id: record.into(),
                             kind: "test".into(),
@@ -157,7 +153,7 @@ impl Recovery {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(room, cert).unwrap(),
+                    tilo_room::retained_proof::RetentionAuthority::new(room, cert).unwrap(),
                 )
                 .unwrap();
             runtime.checkpoint_prefix_recovery =
@@ -272,7 +268,7 @@ impl Recovery {
             let message: NeighbourMsg = postcard::from_bytes(&body).unwrap();
             self.observer
                 .receive_from(
-                    tilo_peer_state::TransportOrigin::RelayDelta(
+                    tilo_room::TransportOrigin::RelayDelta(
                         self.fixture.source.peer.device_public_key,
                     ),
                     message,
@@ -652,7 +648,7 @@ async fn active_recovery(count: usize) {
         };
         case.observer
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(*author_device_public_key),
+                tilo_room::TransportOrigin::RelayDelta(*author_device_public_key),
                 postcard::from_bytes(&body).unwrap(),
                 case.now,
             )
@@ -759,7 +755,7 @@ async fn recovery_serial_room_then_rejected_two_app_prefix_keeps_originals_and_c
         };
         case.observer
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(*author_device_public_key),
+                tilo_room::TransportOrigin::RelayDelta(*author_device_public_key),
                 postcard::from_bytes(&body).unwrap(),
                 case.now,
             )
@@ -789,7 +785,7 @@ async fn recovery_serial_room_then_rejected_two_app_prefix_keeps_originals_and_c
         };
         case.observer
             .receive_from(
-                tilo_peer_state::TransportOrigin::RelayDelta(*author_device_public_key),
+                tilo_room::TransportOrigin::RelayDelta(*author_device_public_key),
                 postcard::from_bytes(&body).unwrap(),
                 case.now,
             )

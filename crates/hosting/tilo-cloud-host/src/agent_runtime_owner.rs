@@ -2,7 +2,7 @@
 use crate::Store;
 use tilo_action_broker::agent_control::VerifiedAgentAdmission;
 use tilo_agent_control_protocol::{AgentError, AgentErrorCode, AgentRequest};
-use tilo_peer_state::owner_commit::*;
+use tilo_room::owner_commit::*;
 mod effects;
 mod recovery;
 pub(crate) use effects::FailedLaunchAppend;
@@ -77,8 +77,8 @@ impl Store {
     ///
     /// ```compile_fail
     /// fn plain(store: &mut tilo_cloud_host::Store,
-    ///          caller: &tilo_peer_state::owner_commit::VerifiedAgentCaller,
-    ///          intent: &tilo_peer_state::owner_commit::AgentIntent) {
+    ///          caller: &tilo_room::owner_commit::VerifiedAgentCaller,
+    ///          intent: &tilo_room::owner_commit::AgentIntent) {
     ///     let _ = store.admit_agent_runtime(caller, intent);
     /// }
     /// ```
@@ -549,7 +549,7 @@ impl Store {
     fn inherited_grants_admissible(
         &self,
         current: &VerifiedAgentCaller,
-        peer: &tilo_peer_state::StatePeer,
+        peer: &tilo_room::StatePeer,
         grants: &[tilo_agent_control_protocol::GrantAction],
     ) -> Result<(), AgentCommitError> {
         let refused = || rejected("grants no longer permitted; spawn again");

@@ -1,6 +1,6 @@
 //! Closed relay provenance for rooms installed by the native durable owner.
 //!
-//! The session itself is `tilo_joined_room::session`'s; this actor keeps one
+//! The session itself is `tilo_room_session::session`'s; this actor keeps one
 //! route per enrolled room, dials it again when its pin changes and runs
 //! the connected session's pump beside every other host session.
 use super::{
@@ -8,8 +8,8 @@ use super::{
     spawn_host_pump,
 };
 use tilo_delivery_protocol::workspace_join::IrohWorkspaceHostHintV1;
-pub use tilo_joined_room::session::{Connect, Input, Scope};
-use tilo_peer_state::join::TransportHint;
+use tilo_room::join::TransportHint;
+pub use tilo_room_session::session::{Connect, Input, Scope};
 
 struct Route {
     connect: Connect,
@@ -165,7 +165,7 @@ impl ActorState {
             let serial = route.serial;
             route.pending = Some(tokio::spawn(async move {
                 let result =
-                    tilo_joined_room::session::dial(endpoint, ws, &hint, cert, key, revocations)
+                    tilo_room_session::session::dial(endpoint, ws, &hint, cert, key, revocations)
                         .await;
                 let _ = tx
                     .send(InternalEvent::NativeHostConnected {

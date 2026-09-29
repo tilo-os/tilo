@@ -4,7 +4,7 @@ use super::OperatorConfig;
 
 use ed25519_dalek::SigningKey;
 use tilo_cloud_enrollment::*;
-use tilo_peer_state::join::{JoinTransportRequest as Request, JoinTransportResponse as Response};
+use tilo_room::join::{JoinTransportRequest as Request, JoinTransportResponse as Response};
 use tilo_user_identity as identity;
 
 #[test]
@@ -168,7 +168,7 @@ impl Fixture {
     ) -> (
         HostedAttempt,
         Vec<u8>,
-        tilo_peer_state::join::MembershipCompleteRequest,
+        tilo_room::join::MembershipCompleteRequest,
     ) {
         let (mut attempt, _, result) = self.enrollment();
         let checkpoint = attempt
@@ -216,11 +216,11 @@ fn hosted_attempt_refuses_collaborator_dto_even_when_owner_fields_match() {
         .unwrap();
     // Deliberately forged negative input, never an authority fixture: even
     // matching owner bindings cannot turn this collaborator DTO into Owner.
-    let old = tilo_peer_state::join::JoinBootstrap {
+    let old = tilo_room::join::JoinBootstrap {
         version: 1,
         invite_id: [0; 32],
         device_cert: certificate,
-        role: tilo_peer_state::join::MemberRole::Editor,
+        role: tilo_room::join::MemberRole::Editor,
         room: f.store.state.room.clone(),
         workspace_id: tilo_relay::room_workspace_id(&f.store.state.room).unwrap(),
         authority: peer.authority().clone(),

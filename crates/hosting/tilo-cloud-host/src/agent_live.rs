@@ -739,7 +739,7 @@ pub(crate) fn resolve_name(
 
 /// The retained Spawn name of `agent_id` in the private ledger.
 pub(crate) fn spawn_name(store: &crate::Store, agent_id: &str) -> Option<String> {
-    use tilo_peer_state::owner_commit::AgentRuntimeFact;
+    use tilo_room::owner_commit::AgentRuntimeFact;
     let ledger = store.state.private_agent_ledger.as_ref()?;
     ledger
         .facts
@@ -824,9 +824,9 @@ pub(crate) fn enrolled_invocation(
 pub(crate) fn capture_worker_commit(
     route: &ui::collaboration::RouteSpec,
     record: &str,
-    message: &tilo_peer_state::NeighbourMsg,
-    before: &tilo_peer_state::StatePeer,
-    candidate: &tilo_peer_state::StatePeer,
+    message: &tilo_room::NeighbourMsg,
+    before: &tilo_room::StatePeer,
+    candidate: &tilo_room::StatePeer,
 ) {
     capture(|| {
         let writer = route.app_id == WRITER_APP;

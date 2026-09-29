@@ -58,9 +58,9 @@ impl Native {
         doc.commit();
         state
             .install_seed(
-                tilo_peer_state::SeedState {
-                    room_changes: tilo_peer_state::seed_room(ROOM, &governor, &roster).unwrap(),
-                    documents: vec![tilo_peer_state::SeedDocument {
+                tilo_room::SeedState {
+                    room_changes: tilo_room::seed_room(ROOM, &governor, &roster).unwrap(),
+                    documents: vec![tilo_room::SeedDocument {
                         app_id: APP.into(),
                         record_id: RECORD.into(),
                         kind: "test".into(),

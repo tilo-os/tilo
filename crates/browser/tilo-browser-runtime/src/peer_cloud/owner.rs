@@ -5,7 +5,7 @@ use super::identity;
 use tilo_cloud_enrollment::{
     EnrolledScope, HostedAttempt, HostedAttemptError, HostedStep, Selection,
 };
-use tilo_peer_state::join::{self, JoinTransportRequest};
+use tilo_room::join::{self, JoinTransportRequest};
 
 // Same bounded bootstrap envelope as invited admission.
 const MAX_GOVERNANCE_ITEMS: usize = 4096;
@@ -224,7 +224,7 @@ impl CloudOwner {
         scope: &EnrolledOwner,
         bootstrap: &join::OwnerBootstrapV1,
         now: u64,
-    ) -> Result<tilo_peer_state::StatePeer, String> {
+    ) -> Result<tilo_room::StatePeer, String> {
         self.attempt
             .check_owner_bootstrap(bootstrap, now)
             .map_err(refused)?;
@@ -244,7 +244,7 @@ impl CloudOwner {
             return Err("Cloud owner bootstrap does not match enrolled custody".into());
         }
         let time = web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now);
-        let initial = tilo_peer_state::StatePeer::new(
+        let initial = tilo_room::StatePeer::new(
             &bootstrap.room,
             bootstrap.authority.clone(),
             vec![bootstrap.authority.clone()],

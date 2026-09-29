@@ -1,5 +1,5 @@
 use super::*;
-use tilo_peer_state::transport::Retention;
+use tilo_room::transport::Retention;
 fn reference(pool: &mut PublicationPool, bytes: &[u8]) -> PublicationRef {
     PublicationRef {
         payload: pool.intern(bytes).unwrap(),

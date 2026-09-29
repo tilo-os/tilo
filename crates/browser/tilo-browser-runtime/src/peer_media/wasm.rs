@@ -9,7 +9,7 @@ pub(super) struct MediaEnrollment {
     pub governor: DeviceCert,
     pub host: DeviceCert,
     pub device: DeviceCert,
-    pub hint: RefCell<Option<tilo_peer_state::join::TransportHint>>,
+    pub hint: RefCell<Option<tilo_room::join::TransportHint>>,
 }
 #[derive(Default)]
 pub(super) struct MediaState {

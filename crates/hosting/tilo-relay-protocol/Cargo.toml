@@ -17,7 +17,7 @@ atomic-file = { path = "../../system/atomic-file" }
 # trust policy.
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 # A binding's optional shell retention authority (room + governor cert).
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 # `EndpointAddr` in mesh profiles and home-peer registrations.
 iroh-base = { workspace = true, features = ["key"] }
 serde.workspace = true

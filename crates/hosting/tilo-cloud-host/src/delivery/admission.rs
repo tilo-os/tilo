@@ -10,7 +10,7 @@ use tilo_delivery_protocol::delivery_v3::commit::{
     AdmissionRecord, CommitRef, DeliveryId, Digest, DurableAdmissionKind, MAX_ADMISSIONS,
     ReceiptKey,
 };
-use tilo_peer_state::{InputDisposition, NeighbourMsg, TransportOrigin};
+use tilo_room::{InputDisposition, NeighbourMsg, TransportOrigin};
 
 /// Transient commit instruction; never serialized with the Store aggregate.
 /// One item, or every item of one multi-item group (one shared replay group).

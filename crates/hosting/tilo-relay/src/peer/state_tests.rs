@@ -276,7 +276,7 @@ impl Fixture {
             runtime
                 .store
                 .bind_shell_authority(
-                    tilo_peer_state::retained_proof::RetentionAuthority::new(
+                    tilo_room::retained_proof::RetentionAuthority::new(
                         &room,
                         fixture.source.peer.cert.clone(),
                     )
@@ -296,12 +296,12 @@ impl Fixture {
     }
 
     fn continuity_checkpoint(&self, snapshot: Vec<u8>) -> ([u8; 32], Vec<u8>) {
-        let msg = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+        let msg = tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
             user_public_key: self.source.peer.user_public_key,
             publisher: 7,
             snapshot,
         };
-        let (channel, _) = tilo_peer_state::transport::retention(&msg, false).unwrap();
+        let (channel, _) = tilo_room::transport::retention(&msg, false).unwrap();
         (channel, postcard::to_stdvec(&msg).unwrap())
     }
 
@@ -961,8 +961,8 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
         panic!("signed checkpoint fixture was not a checkpoint")
     };
     assert!(matches!(
-        postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&signed_body).unwrap(),
-        tilo_peer_state::NeighbourMsg::AppDocument { .. }
+        postcard::from_bytes::<tilo_room::NeighbourMsg>(&signed_body).unwrap(),
+        tilo_room::NeighbourMsg::AppDocument { .. }
     ));
     for prefix in [false, true] {
         for case in [
@@ -992,25 +992,22 @@ async fn personal_continuity_nonmatching_checkpoints_keep_once_and_rearm_gates()
                 }
                 "trailing" => body.push(0),
                 "foreign_root" => {
-                    let msg = tilo_peer_state::NeighbourMsg::PersonalContinuityCheckpoint {
+                    let msg = tilo_room::NeighbourMsg::PersonalContinuityCheckpoint {
                         user_public_key: [77; 32],
                         publisher: 7,
                         snapshot: vec![1],
                     };
-                    channel = tilo_peer_state::transport::retention(&msg, false)
-                        .unwrap()
-                        .0;
+                    channel = tilo_room::transport::retention(&msg, false).unwrap().0;
                     body = postcard::to_stdvec(&msg).unwrap();
                 }
                 "channel_mismatch" => channel[0] ^= 1,
                 "other_variant" => {
-                    body = postcard::to_stdvec(
-                        &tilo_peer_state::NeighbourMsg::PersonalContinuityRequest {
+                    body =
+                        postcard::to_stdvec(&tilo_room::NeighbourMsg::PersonalContinuityRequest {
                             user_public_key: fixture.source.peer.user_public_key,
                             requester: 7,
-                        },
-                    )
-                    .unwrap();
+                        })
+                        .unwrap();
                 }
                 "signed_shell" => {
                     channel = signed_channel;

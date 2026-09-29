@@ -70,8 +70,8 @@ pub type DesktopCommandFuture = std::pin::Pin<
     Box<
         dyn std::future::Future<
                 Output = Result<
-                    tilo_peer_state::owner_commit::OwnerCommitReceipt,
-                    tilo_peer_state::desktop_command::DesktopCommandError,
+                    tilo_room::owner_commit::OwnerCommitReceipt,
+                    tilo_room::desktop_command::DesktopCommandError,
                 >,
             > + Send,
     >,
@@ -82,7 +82,7 @@ pub trait DesktopCommands: Send + Sync {
     fn room(&self) -> &str;
     fn execute(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_room::owner_commit::OwnerCommitRequest,
         direct_delivery: bool,
     ) -> DesktopCommandFuture;
     /// Applications this owner can open. Each is published as an ordinary
@@ -97,7 +97,7 @@ pub trait DesktopCommands: Send + Sync {
     /// opened. The default ignores it.
     fn execute_for_agent(
         &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
+        request: tilo_room::owner_commit::OwnerCommitRequest,
         opener: DesktopOpener,
     ) -> DesktopCommandFuture {
         let _ = opener;
@@ -108,23 +108,21 @@ pub trait DesktopCommands: Send + Sync {
     /// a successful execute; the default keeps none.
     fn receipt(
         &self,
-        request: &tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> Option<tilo_peer_state::desktop_command::DesktopCommandReceipt> {
+        request: &tilo_room::owner_commit::OwnerCommitRequest,
+    ) -> Option<tilo_room::desktop_command::DesktopCommandReceipt> {
         let _ = request;
         None
     }
 }
 
 /// The room's owner for documents proposed into the room
-/// ([`tilo_peer_state::document_import`]). The broker constructs each
+/// ([`tilo_room::document_import`]). The broker constructs each
 /// request from an authenticated durable invocation; the owner decides it
 /// in its serialized turn.
 pub trait DocumentImports: Send + Sync {
     fn room(&self) -> &str;
-    fn execute(
-        &self,
-        request: tilo_peer_state::owner_commit::OwnerCommitRequest,
-    ) -> DesktopCommandFuture;
+    fn execute(&self, request: tilo_room::owner_commit::OwnerCommitRequest)
+    -> DesktopCommandFuture;
 }
 
 /// The enrolled agent task an open-application command runs for.

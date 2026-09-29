@@ -30,7 +30,7 @@ pub enum NativeOperation {
     },
     /// Issue one room-scoped invitation through the authenticated Owner path.
     CollaborationInvite {
-        role: tilo_peer_state::join::MemberRole,
+        role: tilo_room::join::MemberRole,
         recipient_user_public_key: Option<[u8; 32]>,
         invitee_name: Option<String>,
         expires_at_ns: u64,
@@ -44,7 +44,7 @@ pub enum NativeOperation {
     /// Change an admitted independent-root member's room role.
     CollaborationSetRole {
         user_public_key: [u8; 32],
-        role: tilo_peer_state::join::MemberRole,
+        role: tilo_room::join::MemberRole,
     },
     /// Remove an admitted independent-root member from live governed access.
     CollaborationRemove {
@@ -252,8 +252,8 @@ impl Store {
                     }
                     let mut nonce = [0; 16];
                     rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut nonce);
-                    let signed = tilo_peer_state::join::issue_invitation(
-                        tilo_peer_state::join::InviteGrant {
+                    let signed = tilo_room::join::issue_invitation(
+                        tilo_room::join::InviteGrant {
                             workspace_id: tilo_relay::room_workspace_id(&self.state.room)?,
                             room: self.state.room.clone(),
                             authority: peer.authority().clone(),
@@ -294,7 +294,7 @@ impl Store {
                         }),
                     );
                     Some(serde_json::json!({
-                        "signed_invitation": tilo_peer_state::join::encode_invitation_text(&signed),
+                        "signed_invitation": tilo_room::join::encode_invitation_text(&signed),
                         "invite_id": hex::encode(invite_id),
                     }))
                 }
@@ -318,9 +318,9 @@ impl Store {
                     "invitations": state.invitations.iter().map(|(id, invitation)| serde_json::json!({
                         "id": id,
                         "role": match invitation.role {
-                            tilo_peer_state::join::MemberRole::Viewer => "viewer",
-                            tilo_peer_state::join::MemberRole::Commenter => "commenter",
-                            tilo_peer_state::join::MemberRole::Editor => "editor",
+                            tilo_room::join::MemberRole::Viewer => "viewer",
+                            tilo_room::join::MemberRole::Commenter => "commenter",
+                            tilo_room::join::MemberRole::Editor => "editor",
                         },
                         "expires_at_ms": invitation.expires_at_ns / 1_000_000,
                         "status": invitation.status,

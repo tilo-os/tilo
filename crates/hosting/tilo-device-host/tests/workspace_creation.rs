@@ -1,7 +1,7 @@
 tilo_automerge_isolate::test_worker!();
 
 use std::{path::Path, process::Command};
-use tilo_peer_state::{desktop_command::*, owner_commit::*};
+use tilo_room::{desktop_command::*, owner_commit::*};
 use tilo_workspace_host::SessionOwner;
 use ui::automerge::{ROOT, ReadDoc};
 

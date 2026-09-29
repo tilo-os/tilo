@@ -10,7 +10,7 @@ use crate::{
     committed_authority::{CommittedAuthority, Current, Observation},
     room_media_policy::RoomMediaPolicy,
 };
-use tilo_peer_state::StatePeer;
+use tilo_room::StatePeer;
 
 /// Outcome of asking an owner for a current turn.
 pub enum Observed<T> {

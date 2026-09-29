@@ -618,8 +618,8 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
             );
             assert!(!ledger.facts.values().any(|row| matches!(
                 row.change.fact,
-                tilo_peer_state::owner_commit::AgentRuntimeFact::ProcessBound { .. }
-                    | tilo_peer_state::owner_commit::AgentRuntimeFact::ProcessExited { .. }
+                tilo_room::owner_commit::AgentRuntimeFact::ProcessBound { .. }
+                    | tilo_room::owner_commit::AgentRuntimeFact::ProcessExited { .. }
             )));
             eprintln!(
                 "actual stage {:?}: published launch fact, joined+closed+parked, no authorize/launch/process",
@@ -708,7 +708,7 @@ async fn genuine_spawn_scenario(stage: Option<StageScenario>) {
         .filter(|receipt| {
             matches!(
                 receipt.change.fact,
-                tilo_peer_state::owner_commit::AgentRuntimeFact::ProcessExited { .. }
+                tilo_room::owner_commit::AgentRuntimeFact::ProcessExited { .. }
             )
         })
         .count();

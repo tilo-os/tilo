@@ -9,7 +9,7 @@ use tilo_delivery_protocol::delivery_v3::onboarding_wire::{
     HandoffSegment, MAX_HANDOFF_RANGE_BYTES, MAX_RESPONSE_BYTES, MAX_SEGMENT_BYTES,
     OnboardingOperation, OnboardingRequest, OnboardingResponse, OnboardingScope, ReplyBodyKind,
 };
-use tilo_peer_state::join::{JoinTransportRequest, JoinTransportResponse};
+use tilo_room::join::{JoinTransportRequest, JoinTransportResponse};
 use tilo_user_identity::DeviceCert;
 use tilo_workspace_host::ingress::ByteCredit;
 use tilo_workspace_host::onboarding_input as input;

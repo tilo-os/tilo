@@ -4,7 +4,7 @@
 use crate::peer_actions::PolicyTime;
 use collab_types::{DocumentMutation, SignedOp};
 use std::sync::{Arc, Mutex, OnceLock};
-use tilo_peer_state::owner_commit::{
+use tilo_room::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
 };
 use tilo_user_identity::DeviceCert;

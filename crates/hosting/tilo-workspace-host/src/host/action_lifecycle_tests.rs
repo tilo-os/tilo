@@ -1,5 +1,5 @@
 use super::*;
-use tilo_peer_state::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
+use tilo_room::owner_commit::{CommitOperation, OwnerCommitRequest, OwnerCommitService};
 use ui::automerge::{AutoCommit, ROOT, transaction::Transactable};
 
 fn mutation(owner: &SessionOwner, key: &str) -> collab_types::DocumentMutation {

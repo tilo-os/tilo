@@ -50,7 +50,7 @@ impl ShellNetwork {
                 .as_nanos(),
         )
         .map_err(|error| error.to_string())?;
-        let room = tilo_peer_state::join::decode_and_verify_invitation_text(
+        let room = tilo_room::join::decode_and_verify_invitation_text(
             &text,
             None,
             &tilo_user_identity::RevocationList::default(),

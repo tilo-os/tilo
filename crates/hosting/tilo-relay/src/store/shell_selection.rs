@@ -15,7 +15,7 @@ use std::{
     io::Seek,
     path::{Path, PathBuf},
 };
-use tilo_peer_state::{
+use tilo_room::{
     NeighbourMsg,
     coverage::{Coverage, route_key},
     retained_proof::{

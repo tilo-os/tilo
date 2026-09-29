@@ -208,7 +208,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
                 administrator,
                 crate::collaboration::IssueInvitationRequest {
                     request_id: [94; 32],
-                    role: tilo_peer_state::join::MemberRole::Editor,
+                    role: tilo_room::join::MemberRole::Editor,
                     recipient_user_public_key: None,
                     invitee_name: None,
                     expires_at_ns: f.now + 300_000_000_000,
@@ -218,7 +218,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         })
         .unwrap()
         .unwrap();
-    let verified_invite = tilo_peer_state::join::decode_and_verify_invitation(
+    let verified_invite = tilo_room::join::decode_and_verify_invitation(
         &issued.signed_invitation,
         None,
         &tilo_user_identity::RevocationList::new(),
@@ -274,7 +274,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
     let mut discovery = serde_json::json!({"bootstrap":{"room":f.owner.peer().room()}});
     assert!(discovery["bootstrap"].get("delivery_hint").is_none());
     crate::enrollment::append_delivery_hint(&mut discovery, &f.owner, &ingress).unwrap();
-    let hinted: tilo_peer_state::join::TransportHint =
+    let hinted: tilo_room::join::TransportHint =
         serde_json::from_value(discovery["bootstrap"]["delivery_hint"].clone()).unwrap();
     assert_eq!(&hinted, f.owner.stored_delivery_hint().unwrap());
     assert!(serde_json::to_vec(&discovery).unwrap().len() < 128 * 1024);
@@ -479,7 +479,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         old.expires_at_ns,
     )
     .unwrap();
-    let advertised: tilo_peer_state::join::TransportHint =
+    let advertised: tilo_room::join::TransportHint =
         serde_json::from_value(renewed_enrollment["bootstrap"]["delivery_hint"].clone()).unwrap();
     assert_eq!(
         postcard::to_stdvec(&advertised).unwrap(),

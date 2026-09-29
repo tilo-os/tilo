@@ -52,7 +52,7 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 # The governor's per-application open action a hosted room's launches use.
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-desktop = { path = "../desktop" }
-tilo-peer-state = { path = "../../collab/tilo-peer-state" }
+tilo-room = { path = "../../collab/tilo-room" }
 tilo-automerge-isolate.workspace = true
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 # Native media HTTP client. TLS comes from the workspace's rustls-no-provider
@@ -269,7 +269,7 @@ tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }
 # The native durable owner of enrolled rooms, kept inside the state file.
-tilo-joined-room = { path = "../../collab/tilo-joined-room" }
+tilo-room-session = { path = "../../collab/tilo-room-session" }
 # `network::identity` verifies raw Ed25519 signatures directly
 # against a peer's device pubkey (as recovered from their
 # DeviceCert). Same version + features shape as the dev-deps entry
@@ -318,7 +318,7 @@ runtime-portal = { path = "../../runtime/runtime-portal" }
 atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
 tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
-tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
+tilo-room-session = { path = "../../collab/tilo-room-session", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
 collab-fixtures = { path = "../../collab/collab-fixtures" }
 # A real app over the production broker in the feedback-channel end-to-end.
