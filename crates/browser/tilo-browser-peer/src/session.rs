@@ -415,6 +415,7 @@ impl PeerHandle {
             held_outbound: saved.held.into_iter().collect(),
             doc_seq: 0,
             barriers: Vec::new(),
+            held_barriers: Vec::new(),
             admission_since: None,
         };
         task.update(|status| {
@@ -787,6 +788,10 @@ struct Task {
     held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
+    /// Barriers called while frames were held, with the routes those frames
+    /// are held on: each waits for them to enter the outbox, then for the
+    /// outbox as it stands then.
+    held_barriers: Vec<(BTreeSet<DocumentRoute>, Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
     admission_since: Option<u64>,
 }
@@ -1184,9 +1189,11 @@ impl Task {
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
             Command::Barrier(done) => {
-                match self.outbox.back() {
-                    None => done(Ok(())),
-                    Some(last) => self.barriers.push((last.op, done)),
+                if self.held_outbound.is_empty() {
+                    self.await_outbox(done);
+                } else {
+                    let held = self.held_outbound.keys().cloned().collect();
+                    self.held_barriers.push((held, done));
                 }
                 true
             }
@@ -1502,6 +1509,7 @@ impl Task {
             }
             if self.held_outbound.len() != held_before {
                 self.persist_channels(true);
+                self.release_barriers();
             }
             for outgoing in changes.outgoing {
                 let Some(client) = client else {
@@ -1586,6 +1594,30 @@ async fn sign_governance(
 }
 
 impl Task {
+    /// Complete `done` once every entry now in the outbox is retired.
+    fn await_outbox(&mut self, done: Completion) {
+        match self.outbox.back() {
+            None => done(Ok(())),
+            Some(last) => self.barriers.push((last.op, done)),
+        }
+    }
+
+    /// Move each held barrier whose routes hold nothing any more on to the
+    /// outbox, which now carries what those routes held.
+    fn release_barriers(&mut self) {
+        let (waiting, released): (Vec<_>, Vec<_>) = std::mem::take(&mut self.held_barriers)
+            .into_iter()
+            .partition(|(routes, _)| {
+                routes
+                    .iter()
+                    .any(|route| self.held_outbound.contains_key(route))
+            });
+        self.held_barriers = waiting;
+        for (_, done) in released {
+            self.await_outbox(done);
+        }
+    }
+
     /// Retire outbox entry `op`: acknowledged at host order `seq`, or refused
     /// (`None`, it can never become durable).
     fn acknowledge(&mut self, op: [u8; 16], seq: Option<u64>) {
