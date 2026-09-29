@@ -535,6 +535,12 @@ impl BufferSizes {
     }
 }
 
+/// A counter at or above this did not count anything. The largest binding
+/// holds 2^25 words, and a counter bumps once per element it tries to
+/// place, so no frame reaches 2^31; values up there are what a counter
+/// read back from an aborted pass wraps to.
+const CORRUPT_COUNT: u32 = 1 << 31;
+
 /// Words of `ptcl` reserved per tile before any allocation happens, from
 /// `PTCL_INITIAL_ALLOC` in `shader/shared/ptcl.wgsl`. Kept in step by
 /// hand, like the other shader constants in this file.
@@ -781,10 +787,16 @@ impl BumpBudget {
     /// under-provision a growing scene. A failure may prevent later stages
     /// from reporting their final demand, so convergence is not guaranteed
     /// in a single subsequent render.
+    ///
+    /// A counter that has wrapped (see [`CORRUPT_COUNT`]) is ignored rather
+    /// than believed: growing from it would pin a binding's worth of memory
+    /// per buffer for the rest of the process on one bad readback.
     pub fn observe(&mut self, used: &BumpAllocators) -> bool {
         let before = *self;
         let grow = |field: &mut u32, used: u32, ceiling: u32| {
-            *field = (*field).max(used.saturating_mul(2).min(ceiling));
+            if used < CORRUPT_COUNT {
+                *field = (*field).max(used.saturating_mul(2).min(ceiling));
+            }
         };
         grow(&mut self.lines, used.lines, Self::CEILING.lines);
         grow(&mut self.binning, used.binning, Self::CEILING.binning);
@@ -825,7 +837,9 @@ const fn align_up(len: u32, alignment: u32) -> u32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{BufferSizes, BumpAllocators, BumpBudget, PTCL_INITIAL_ALLOC, RenderConfig};
+    use super::{
+        BufferSizes, BumpAllocators, BumpBudget, CORRUPT_COUNT, PTCL_INITIAL_ALLOC, RenderConfig,
+    };
     use crate::{Layout, LineSoup, WorkgroupCounts};
 
     /// A layout with nothing in it. The bump-allocated sizes do not
@@ -1078,15 +1092,17 @@ mod tests {
     #[test]
     fn growth_stops_at_the_ceiling() {
         let mut budget = BumpBudget::INITIAL;
+        // The largest count still believed; above it is a wrapped readback.
+        let most = CORRUPT_COUNT - 1;
         let huge = BumpAllocators {
             failed: 0x1f,
-            binning: u32::MAX,
-            ptcl: u32::MAX,
-            tile: u32::MAX,
-            seg_counts: u32::MAX,
-            segments: u32::MAX,
-            blend: u32::MAX,
-            lines: u32::MAX,
+            binning: most,
+            ptcl: most,
+            tile: most,
+            seg_counts: most,
+            segments: most,
+            blend: most,
+            lines: most,
         };
         budget.observe(&huge);
         assert_eq!(budget.tiles, BumpBudget::CEILING.tiles);
@@ -1115,6 +1131,26 @@ mod tests {
         ] {
             assert!(bytes <= limit, "{name} is {bytes} bytes, past {limit}");
         }
+    }
+
+    /// Opening Search at 5K overflowed blend spill; the readback from the
+    /// aborted pass reported 2.4e9 segments and 4.3e9 blend words against
+    /// a real 1e5. Believing it pinned a binding per buffer for the session.
+    #[test]
+    fn a_wrapped_counter_does_not_grow_the_budget() {
+        let mut budget = BumpBudget::INITIAL.with_max_binding_bytes(WEBGPU_DEFAULT_BINDING);
+        let wrapped = BumpAllocators {
+            failed: 0x10,
+            segments: 2_373_742_623,
+            blend: 4_293_529_600,
+            lines: 38_037,
+            ..BumpAllocators::default()
+        };
+        assert!(wrapped.segments >= CORRUPT_COUNT && wrapped.blend >= CORRUPT_COUNT);
+        assert!(budget.observe(&wrapped), "the plausible lines count still grows");
+        assert_eq!(budget.lines, 2 * 38_037);
+        assert_eq!(budget.segments, BumpBudget::INITIAL.segments);
+        assert_eq!(budget.blend_spill, BumpBudget::INITIAL.blend_spill);
     }
 
     #[test]
