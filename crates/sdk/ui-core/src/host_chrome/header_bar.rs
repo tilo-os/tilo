@@ -527,6 +527,36 @@ mod tests {
     }
 
     #[test]
+    fn framework_history_menu_opens_at_a_recent_change() {
+        let mut app = crate::app::framework_history_tests::native_chrome_app();
+        let commands = app.host_commands(true);
+        let mut driver = driver(&commands, crate::Theme::light());
+        driver.click_named("host-header-history").unwrap();
+        let bar = driver.root_mut::<HeaderBar>();
+        let labels: Vec<_> = bar.menu.items().iter().map(|item| item.label()).collect();
+        assert_eq!(labels.len(), 4, "Show History, a separator and two changes");
+        assert!(
+            labels[2..]
+                .iter()
+                .all(|label| label.is_some_and(|label| label.contains(" · ")))
+        );
+        let newest = bar.menu.item_rect(2).unwrap().center();
+        driver.click_at(newest.x, newest.y);
+        let requests = driver.root_mut::<HeaderBar>().take_requests();
+        let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
+            panic!("choosing a change hands back one command: {requests:?}");
+        };
+        assert!(app.invoke_host_command(invocation));
+        crate::app::framework_history_tests::layout(&mut app);
+        let show = app
+            .host_commands(false)
+            .into_iter()
+            .find(|command| command.group == CommandGroup::History)
+            .unwrap();
+        assert_eq!(show.label, "Hide History", "History opened");
+    }
+
+    #[test]
     fn search_toggle_and_window_controls_ask_the_app_and_the_runner() {
         let mut app = app_with_history();
         let commands = app.host_commands(false);

@@ -415,7 +415,7 @@ mod tests {
     use objc2_app_kit::{NSEventModifierFlags, NSMenu, NSMenuItem};
 
     use super::{ChromeRequest, MacChrome};
-    use crate::app::App;
+    use crate::app::{App, framework_history_tests};
 
     fn titles(menu: &NSMenu) -> Vec<String> {
         (0..menu.numberOfItems())
@@ -500,6 +500,41 @@ mod tests {
         assert_eq!(
             titles(&submenu(bar, "History"))[..2],
             ["Hide History", "Compare Selection"]
+        );
+    }
+
+    #[test]
+    fn framework_history_menu_lists_recent_changes_and_opens_at_the_chosen_one() {
+        // SAFETY: as above; the menus never leave this thread.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut app = framework_history_tests::native_chrome_app();
+
+        let chosen: Rc<RefCell<Vec<ChromeRequest>>> = Rc::default();
+        let sink = Rc::clone(&chosen);
+        let chrome = MacChrome::new(mtm, move |request| sink.borrow_mut().push(request));
+        chrome.update(app.host_commands(true));
+
+        let history = submenu(&chrome.menu_bar, "History");
+        let items = titles(&history);
+        assert_eq!(items[0], "Show History");
+        assert!(items[1].is_empty(), "recent changes follow a separator");
+        assert_eq!(items.len(), 4, "two recent changes: {items:?}");
+        assert!(items[2..].iter().all(|title| title.contains(" · ")));
+
+        let newest = history.itemAtIndex(2).unwrap();
+        let target = &*chrome.target;
+        let enabled: bool = unsafe { msg_send![target, validateMenuItem: &*newest] };
+        assert!(enabled);
+        let _: () = unsafe { msg_send![target, performHostCommand: &*newest] };
+        let Some(ChromeRequest::Command(invocation)) = chosen.borrow_mut().pop() else {
+            panic!("choosing a recent change dispatches its command");
+        };
+        assert!(app.invoke_host_command(&invocation));
+        framework_history_tests::layout(&mut app);
+        chrome.update(app.host_commands(true));
+        assert_eq!(
+            titles(&submenu(&chrome.menu_bar, "History"))[0],
+            "Hide History"
         );
     }
 }
