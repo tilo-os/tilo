@@ -388,7 +388,11 @@ impl FrameHarness {
                 ))
             })();
             for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(button, &intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    button,
+                    &intent.address,
+                    &result,
+                );
             }
             if let Some(pane) = self.document_history.pane_mut() {
                 crate::widget::controls::on_control_invocation_result(
