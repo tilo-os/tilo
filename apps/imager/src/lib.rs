@@ -294,10 +294,21 @@ fn demo_iso_source() -> crate::model::Source {
     }
 }
 
+fn select_source(doc: &mut automerge::AutoCommit, source: crate::model::Source) {
+    let _ = ui::tilo_actions::Action::apply(
+        &crate::actions::ImagerAction::SelectSource {
+            source: Box::new(source),
+            previous: None,
+            recent_rank: 0,
+        },
+        doc,
+    );
+}
+
 fn seed_scenario_drive_empty(doc: &mut automerge::AutoCommit) {
     use crate::doc::ImagerDoc;
     ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+    select_source(doc, demo_iso_source());
 }
 
 fn seed_scenario_source_empty(doc: &mut automerge::AutoCommit) {
@@ -309,16 +320,26 @@ fn seed_scenario_drive_internal(doc: &mut automerge::AutoCommit) {
     use crate::doc::ImagerDoc;
     use crate::model::sample_source;
     ImagerDoc::seed(doc, &[]);
-    ImagerDoc::set_source(doc, Some(&sample_source()));
+    select_source(doc, sample_source());
 }
 
 /// Pose the "drive", "customize", "confirm", "progress", "done" and
 /// "done-failed" stations (plus the "source"/unknown default) on top of the
 /// already-seeded demo document.
 fn seed_scenario_common(doc: &mut automerge::AutoCommit, scenario: &str) {
-    use crate::doc::ImagerDoc;
     if scenario == "drive" {
-        ImagerDoc::set_source(doc, Some(&demo_iso_source()));
+        select_source(doc, demo_iso_source());
     }
 }
 pub use resource::{Imager, ImagerShell};
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn drive_scenario_selects_the_iso_through_the_source_action() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        super::seed_scenario(&mut doc, "drive-empty");
+        let source = crate::doc::ImagerDoc::source(&doc).expect("iso selected");
+        assert!(source.name.contains("Fedora"));
+    }
+}
