@@ -1663,7 +1663,10 @@ fn run_check(args: CheckArgs) -> Result<Value> {
         (
             "test",
             "Rust tests and generated accessibility contract",
-            &|| quality.test.execute(),
+            &|| {
+                tilo_app_cli::native_libs::require_fonts()?;
+                quality.test.execute()
+            },
         ),
         ("certify", "Tilo-native runtime certification", &|| {
             certify_one(&path)
