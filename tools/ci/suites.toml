@@ -344,6 +344,24 @@ suites = [
 ]
 
 [[group]]
+name = "platform-web"
+# The portal crates' browser modules behind their wasm32 backends.
+inputs = [
+  "crates/platform/tilo-clipboard/web/",
+  "crates/platform/tilo-dialogs/web/",
+  "crates/platform/tilo-location/web/",
+  "crates/platform/tilo-notify/web/",
+  "crates/platform/tilo-secrets/web/",
+]
+suites = [
+  "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
+  "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
+  "crates/platform/tilo-location/web/location.test.mjs",
+  "crates/platform/tilo-notify/web/notify.test.mjs",
+  "crates/platform/tilo-secrets/web/secrets.test.mjs",
+]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
