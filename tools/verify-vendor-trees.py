@@ -3,9 +3,12 @@
 
 The winit crates.io source archive contains Cargo publication bookkeeping
 that Tilo deliberately omits from that vendored tree. Tilo also adds one local
-``cargo-machete`` annotation to winit's normalized manifest. Everything else,
-including Vello's retained package files, must match the recorded standalone
-tips byte-for-byte.
+``cargo-machete`` annotation to winit's normalized manifest. The forks are
+published under their own names (tilo-winit, tilo-vello, tilo-vello-encoding),
+so their manifests carry a publication identity -- package name, description,
+readme, packaged files, renamed dependencies -- and a ``TILO-FORK.md``; those
+lines are set aside before comparing. Everything else, including Vello's
+retained package files, must match the recorded standalone tips byte-for-byte.
 """
 
 from __future__ import annotations
@@ -34,6 +37,29 @@ ignored = [
 ]
 
 '''
+
+
+FORK_FILES = {"TILO-FORK.md"}
+
+# Manifest lines that give a fork its crates.io identity.
+IDENTITY_PREFIXES = (
+    b"name = ",
+    b"description = ",
+    b"readme = ",
+    b"exclude = ",
+    b"# Cargo publication bookkeeping",
+    b'    "/TILO-FORK.md",',
+    b'package = "tilo-',
+    b'path = "../',
+)
+
+
+def identity_neutral(manifest: bytes) -> bytes:
+    """`manifest` without the lines that give a fork its identity (the
+    `[lib]`/`[[bin]]`/`[[example]]` `name`s go too, on both sides)."""
+    return b"\n".join(
+        line for line in manifest.split(b"\n") if not line.startswith(IDENTITY_PREFIXES)
+    )
 
 
 def git(root: Path, *args: str) -> bytes:
@@ -79,6 +105,8 @@ def compare_tree(
     for path in sorted(expected - mapped_actual):
         errors.append(f"missing vendored file: {vendor_prefix}/{path}")
     for path in sorted(mapped_actual - expected):
+        if Path(path).name in FORK_FILES:
+            continue
         errors.append(f"unexpected vendored file: {vendor_prefix}/{path}")
 
     for path in sorted(expected & mapped_actual):
@@ -94,6 +122,8 @@ def compare_tree(
                 )
                 continue
             found = found.replace(WINIT_MACHETE_BLOCK, b"", 1)
+        if Path(path).name == "Cargo.toml":
+            found, wanted = identity_neutral(found), identity_neutral(wanted)
         if found != wanted:
             errors.append(f"vendored content differs: {vendored_path.relative_to(root)}")
 

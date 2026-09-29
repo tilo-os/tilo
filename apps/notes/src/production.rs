@@ -34,14 +34,14 @@ pub fn prepare_notebook_with_source(
     let lock = crate::storage::lock_workspace(root)?;
     let key = crate::legacy_import::source_key(root).map_err(|e| e.to_string())?;
     let checkout = crate::legacy_import::destination(key);
-    std::fs::create_dir_all(state_root).map_err(|e| e.to_string())?;
-    let state_root = state_root.canonicalize().map_err(|e| e.to_string())?;
+    crate::files::create_dir_all(state_root).map_err(|e| e.to_string())?;
+    let state_root = tilo_files::canonicalize(state_root).map_err(|e| e.to_string())?;
     let marker_path = root.join(".notes-canonical-v1");
     let custody = serde_json::json!({
         "version": 1, "state_root": state_root, "workspace": workspace_id,
         "package": crate::definition().app_id, "record": checkout.id.as_str(),
     });
-    let retired = match std::fs::read(&marker_path) {
+    let retired = match crate::files::read(&marker_path) {
         Ok(bytes) => {
             let saved: serde_json::Value = serde_json::from_slice(&bytes)
                 .map_err(|e| format!("invalid canonical custody marker: {e}"))?;
@@ -50,7 +50,7 @@ pub fn prepare_notebook_with_source(
             }
             true
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(tilo_files::FsError::NotFound) => false,
         Err(error) => return Err(error.to_string()),
     };
     let records = ui::record::RecordOwners::new(state_root)
@@ -91,7 +91,7 @@ pub fn prepare_notebook_with_source(
     // Publish retirement only after acknowledged canonical durability. A crash
     // before this point retries the same destination without importing again.
     if !retired {
-        atomic_file::write(
+        crate::files::write(
             &marker_path,
             &serde_json::to_vec(&custody).map_err(|e| e.to_string())?,
         )

@@ -3,7 +3,7 @@
 
 use std::io::{self, Read, Write};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use git2::transport::{Service, SmartSubtransport, SmartSubtransportStream, Transport};
 use reqwest::blocking::{Client, Response};
@@ -189,7 +189,7 @@ impl Session {
         let helper = settings.for_url(raw_url)?;
         base.set_username("")
             .map_err(|()| failure("invalid Git HTTP username"))?;
-        let deadline = Instant::now()
+        let deadline = ui::time::now()
             .checked_add(OPERATION_TIMEOUT)
             .ok_or_else(|| failure("Git HTTP deadline exceeds the clock range"))?;
         Ok(Self {
@@ -205,7 +205,7 @@ impl Session {
 
     fn remaining(&self) -> Result<Duration, git2::Error> {
         self.deadline
-            .checked_duration_since(Instant::now())
+            .checked_duration_since(ui::time::now())
             .filter(|remaining| !remaining.is_zero())
             .ok_or_else(|| failure("Git HTTP operation timed out"))
     }
@@ -957,7 +957,7 @@ fn run_helper_command(
                     let mut arguments: Vec<_> = arguments.iter().map(String::as_str).collect();
                     arguments.push("get");
                     let remaining = deadline
-                        .checked_duration_since(Instant::now())
+                        .checked_duration_since(ui::time::now())
                         .ok_or_else(|| failure("Git credential helper timed out"))?;
                     bounded_command::run(&executable, &arguments, Some(input), 64 * 1024, remaining)
                 }
@@ -972,7 +972,7 @@ impl Helper {
         &self,
         timeout: Duration,
     ) -> Result<(Zeroizing<String>, Zeroizing<String>), git2::Error> {
-        let deadline = Instant::now()
+        let deadline = ui::time::now()
             .checked_add(timeout)
             .ok_or_else(|| failure("credential deadline unavailable"))?;
         let mut username = self.username.clone().map(Zeroizing::new);
@@ -995,7 +995,7 @@ impl Helper {
             }
             input.push('\n');
             let remaining = deadline
-                .checked_duration_since(Instant::now())
+                .checked_duration_since(ui::time::now())
                 .ok_or_else(|| failure("Git credential helper timed out"))?;
             let Ok(output) = run_helper_command(command, input.as_bytes(), deadline, remaining)?
             else {

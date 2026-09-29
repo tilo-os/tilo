@@ -28,7 +28,6 @@ apps/maps/src/app.rs white_or_black 3
 apps/maps/src/canvas.rs literal_color 1
 apps/maps/src/canvas.rs white_or_black 7
 apps/maps/src/draw.rs literal_color 1
-apps/maps/src/livetest.rs white_or_black 1
 apps/maps/src/offline_panel.rs white_or_black 1
 apps/music/src/app/render.rs white_or_black 7
 apps/music/src/art.rs white_or_black 3
