@@ -105,12 +105,17 @@ impl LiveHeader {
             crate::scale::logical_size((physical.width, physical.height), window.scale_factor());
         let bounds = Rect::new(0.0, 0.0, size.0, size.1);
         let key = app.host_commands_key();
-        let stale = self.key != Some(key) && self.bar.modal_capture().is_none();
-        if stale {
+        let mut rebuilt = false;
+        if self.key != Some(key) && self.bar.modal_capture().is_none() {
             self.key = Some(key);
-            self.bar = HeaderBar::new(&window.title(), &app.host_commands(true));
+            let (title, commands) = (window.title(), app.host_commands(true));
+            // A new bar forgets the pointer: a press would become a move.
+            if !self.bar.presents(&title, &commands) {
+                self.bar = HeaderBar::new(&title, &commands);
+                rebuilt = true;
+            }
         }
-        if !stale && bounds == self.window {
+        if !rebuilt && bounds == self.window {
             return;
         }
         self.window = bounds;
