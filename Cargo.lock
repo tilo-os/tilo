@@ -3662,6 +3662,96 @@ dependencies = [
 ]
 
 [[package]]
+name = "example-background-task"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-bound-controls"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-counter"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-data-table"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-graph-screens"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-localized"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-qr-code"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-shared-checklist"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-tree-browser"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
+name = "example-virtual-list"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-app",
+ "workspace-hack",
+]
+
+[[package]]
 name = "fallible-iterator"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6457,6 +6547,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-clock",
+ "tilo-os-search",
  "tilo-rt",
  "tilo-xdg-paths",
  "toml 1.0.6+spec-1.1.0",
@@ -7304,6 +7395,8 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-capture",
+ "tilo-dialogs",
  "tracing",
  "workspace-hack",
 ]
@@ -9041,6 +9134,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-spotlight"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7b49ed7257b0fe84be8cdc9f99435c39cd8d278eb7e7f3db4214c68c81cfb6d"
+dependencies = [
+ "bitflags 2.11.0",
+ "block2 0.6.2",
+ "objc2 0.6.3",
+ "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
+]
+
+[[package]]
 name = "objc2-core-wlan"
 version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9234,7 +9340,7 @@ dependencies = [
  "objc2-link-presentation",
  "objc2-quartz-core 0.2.2",
  "objc2-symbols",
- "objc2-uniform-type-identifiers",
+ "objc2-uniform-type-identifiers 0.2.2",
  "objc2-user-notifications 0.2.2",
 ]
 
@@ -9247,6 +9353,16 @@ dependencies = [
  "block2 0.5.1",
  "objc2 0.5.2",
  "objc2-foundation 0.2.2",
+]
+
+[[package]]
+name = "objc2-uniform-type-identifiers"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7902ac02859fc1f7045f8b598c63f1ae0cc7efeaa06a9bc9f3d9a3c955974fa4"
+dependencies = [
+ "objc2 0.6.3",
+ "objc2-foundation 0.3.2",
 ]
 
 [[package]]
@@ -11833,6 +11949,21 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-rt",
  "tilo-test-env",
+ "workspace-hack",
+]
+
+[[package]]
+name = "runtime-update"
+version = "0.1.0"
+dependencies = [
+ "ed25519-dalek 3.0.0",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2 0.11.0",
+ "tempfile",
+ "thiserror 2.0.18",
  "workspace-hack",
 ]
 
@@ -14593,6 +14724,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-appearance"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-atomic-file"
 version = "0.1.0"
 dependencies = [
@@ -14786,7 +14930,9 @@ dependencies = [
  "gstreamer",
  "gstreamer-app",
  "gstreamer-video",
+ "libc",
  "os-actions",
+ "tempfile",
  "thiserror 2.0.18",
  "tilo-rt",
  "wasm-bindgen",
@@ -15196,6 +15342,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-file-provider"
+version = "0.1.0"
+dependencies = [
+ "capnp",
+ "libc",
+ "runtime-fs",
+ "runtime-portal",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-files"
 version = "0.1.0"
 dependencies = [
@@ -15325,6 +15486,19 @@ dependencies = [
  "unic-langid",
  "workspace-hack",
  "zbus",
+]
+
+[[package]]
+name = "tilo-host-search"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
+ "objc2-core-spotlight",
+ "objc2-foundation 0.3.2",
+ "tempfile",
+ "tracing",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -15644,6 +15818,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-os-search"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "block2 0.6.2",
+ "objc2 0.6.3",
+ "objc2-core-spotlight",
+ "objc2-foundation 0.3.2",
+ "objc2-uniform-type-identifiers 0.3.2",
+ "serde",
+ "tempfile",
+ "tilo-actions",
+ "tilo-search",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
@@ -15692,6 +15886,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "blake3",
+ "channel-crypto",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
@@ -16008,6 +16203,7 @@ dependencies = [
  "chrono",
  "collab-types",
  "ed25519-dalek 3.0.0",
+ "fuser",
  "getrandom 0.4.3",
  "hex",
  "http-body-util",
@@ -16033,18 +16229,23 @@ dependencies = [
  "tilo-atomic-file",
  "tilo-automerge-fork",
  "tilo-automerge-isolate",
+ "tilo-capture",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-dialogs",
  "tilo-fs",
+ "tilo-host-search",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
+ "tilo-os-search",
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16280,6 +16481,7 @@ dependencies = [
  "tilo-actions",
  "tilo-advisory-lock",
  "tilo-app-state",
+ "tilo-appearance",
  "tilo-atomic-file",
  "tilo-automerge",
  "tilo-automerge-fork",
@@ -16289,6 +16491,7 @@ dependencies = [
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
+ "tilo-host-search",
  "tilo-media",
  "tilo-paths",
  "tilo-resource",
@@ -16316,6 +16519,7 @@ dependencies = [
  "uuid",
  "wgpu",
  "wgpu-hal",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "wire-frame",
  "workspace-hack",
@@ -16372,6 +16576,7 @@ dependencies = [
  "tilo-atomic-file",
  "tilo-automerge",
  "tilo-automerge-fork",
+ "tilo-secrets",
  "workspace-hack",
  "zeroize",
 ]
@@ -16592,6 +16797,7 @@ dependencies = [
  "brotli",
  "bytes",
  "calculator",
+ "channel-crypto",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
