@@ -82,6 +82,8 @@ struct AppHandler {
     /// The reload library this process runs. The dev loop stages the first one
     /// from the build that produced this host, so it starts as the running code.
     dev_loaded_library: Option<std::path::PathBuf>,
+    /// The last in-place reload, until its first frame is submitted.
+    dev_reload_timing: Option<super::DevReloadTiming>,
     /// The menu bar and title-bar search field, when the host draws them.
     #[cfg(target_os = "macos")]
     host_chrome: Option<crate::host_chrome::macos::MacChrome>,
@@ -928,6 +930,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
@@ -1348,6 +1351,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
@@ -1924,6 +1928,11 @@ impl AppHandler {
             base_color: app.theme.bg_app,
             damage_regions,
             full_redraw: full_redraw_required,
+            on_present: self.dev_reload_timing.take().map(|timing| {
+                let submitted = crate::time::wall();
+                Box::new(move |presented| timing.record(submitted, presented))
+                    as crate::render_thread::PresentHook
+            }),
         };
         record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
         if let Some((origin, entered)) = native_redraw_entry {
@@ -2622,8 +2631,11 @@ impl AppHandler {
             }
             return;
         };
+        let received = crate::time::wall();
+        let started = crate::time::now();
         let _ = super::write_dev_checkpoint(&self.app, &session);
         let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
+        let checkpointed = started.elapsed();
         let slots = windows
             .iter()
             .map(|(id, _)| super::DevWindowSlot {
@@ -2635,6 +2647,7 @@ impl AppHandler {
                     .unwrap_or_else(|| checkpoint.clone()),
             })
             .collect::<Vec<_>>();
+        let loading = crate::time::now();
         let reloaded = match super::reload_from_library(&library, &slots) {
             Ok(reloaded) => reloaded,
             Err(error) => {
@@ -2642,6 +2655,8 @@ impl AppHandler {
                 return;
             }
         };
+        let loaded = loading.elapsed();
+        let installing = crate::time::now();
         if let Some(root) = reloaded.root {
             if !self.app.install_reloaded_view(root) {
                 eprintln!(
@@ -2651,6 +2666,14 @@ impl AppHandler {
             }
             self.app.init_layout();
         }
+        self.dev_reload_timing = Some(super::DevReloadTiming {
+            library: library.clone(),
+            received,
+            checkpoint: checkpointed,
+            load: reloaded.load,
+            handoff: loaded.saturating_sub(reloaded.load),
+            install: installing.elapsed(),
+        });
         self.dev_loaded_library = Some(library);
         self.dev_window_state = reloaded
             .windows
@@ -3813,6 +3836,7 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
+            dev_reload_timing: None,
             #[cfg(any(target_os = "macos", windows))]
             host_chrome: None,
             #[cfg(any(target_os = "macos", windows))]

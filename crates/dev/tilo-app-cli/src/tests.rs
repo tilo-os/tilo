@@ -4836,8 +4836,8 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     }
 }
 
-/// Inside the Tilo workspace the toolkit is built on its own; a standalone app cannot select it,
-/// so every artifact for its target is linked dynamically and the toolkit comes in as a dependency.
+/// Inside the Tilo workspace the toolkit comes in as a dependency with the flags the host and the
+/// library share; a standalone app links every artifact for its target dynamically instead.
 #[test]
 fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace() {
     let manifest = Path::new("/apps/notes/Cargo.toml");
@@ -4852,13 +4852,14 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
     assert_eq!(
         member.iter().map(|step| step.label).collect::<Vec<_>>(),
-        [
-            "the shared toolkit",
-            "the reload host",
-            "the reload library"
-        ]
+        ["the reload host", "the reload library"]
     );
-    assert_eq!(args(&member[0])[..3], ["rustc", "-p", "runtime-dylib"]);
+    assert!(
+        member
+            .iter()
+            .all(|step| !args(step).contains(&"runtime-dylib".to_owned())),
+        "a step that selects the toolkit with its own flags rebuilds it for every other step"
+    );
     assert!(member.iter().all(|step| step.cargo.env.is_empty()));
     assert!(!args(&member[1]).contains(&"--target".to_owned()));
 

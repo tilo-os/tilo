@@ -641,7 +641,7 @@ and Ctrl-C terminate the
 complete Cargo/app process group, so an earlier window cannot be stranded
 beside the new one.
 Use `--app-only` when toolkit edits should not restart this app, and
-`--debounce-ms` to adjust the default 150 ms quiet period.
+`--debounce-ms` to adjust the default 30 ms quiet period.
 `tilo-app dev --platform web` runs the same loop in the browser
 ([The web](#the-web)).
 
