@@ -6,7 +6,8 @@ use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::{
-    Action, ActionError, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
+    Action, ActionError, ActionParam, ActionRegistry, ActionSpec, EncodedAction, OperationKind,
+    ParamType,
 };
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
@@ -123,6 +124,33 @@ impl Resource for Terminal {
                 ops.push(spec.privileged());
             }
         }
+        for (id, label) in [
+            ("paste", "Paste"),
+            ("paste-primary", "Paste primary selection"),
+        ] {
+            ops.push(
+                ActionSpec::typed_operation(
+                    id,
+                    label,
+                    "text",
+                    OperationKind::Effect,
+                    "terminal.paste",
+                    vec![ActionParam::required(
+                        "text",
+                        ParamType::Text,
+                        "Exact text to paste after confirmation",
+                    )],
+                    |args| {
+                        EncodedAction::encode_operation(
+                            "terminal.paste",
+                            &args.text("text").unwrap_or_default(),
+                        )
+                        .expect("a borrowed string always serializes")
+                    },
+                )
+                .privileged(),
+            );
+        }
         ops
     }
 }
@@ -169,9 +197,75 @@ impl ResourceApp for TerminalShell {
 }
 
 impl ResourceSurface<Terminal> for TerminalWidget {
+    /// The grid is this PTY's. An empty session projection must not clear it.
     fn present(&mut self, _state: &std::rc::Rc<SessionState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<Terminal>) {}
+    fn attach(&mut self, _cx: SurfaceCx<Terminal>) {
+        self.mark_framework_hosted();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::resources::PublishesResources;
+
+    #[test]
+    fn publish_owns_session_door_and_hosted_keeps_only_the_transcript() {
+        let published = ui::tilo_resource::publish::<Terminal>(
+            "terminal.session",
+            "Terminal",
+            &SessionState::default(),
+        );
+        let ids: Vec<&str> = published
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in [
+            "send",
+            "run",
+            "interrupt",
+            "clear",
+            "paste",
+            "paste-primary",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride publish: {ids:?}"
+            );
+        }
+
+        let mut widget = TerminalWidget::spawn_headless().expect("headless terminal");
+        widget.force_grid(vec!["hello".into()]);
+        assert!(!widget.is_framework_hosted());
+        let doc = ui::automerge::AutoCommit::new();
+        let standalone = widget.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, Terminal::KIND);
+
+        widget.mark_hosted_for_test();
+        let extras = widget.resources(&doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.kind != Terminal::KIND),
+            "hosted must not republish terminal.session"
+        );
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "terminal.transcript");
+        ResourceSurface::<Terminal>::present(
+            &mut widget,
+            &std::rc::Rc::new(SessionState::default()),
+        );
+        assert!(
+            widget
+                .visible_lines()
+                .iter()
+                .any(|line| line.contains("hello")),
+            "empty present must not wipe the local grid"
+        );
+    }
 }
 
 fn read_string(doc: &Doc, key: &str) -> Option<String> {
