@@ -66,7 +66,10 @@ pub(crate) fn load_or_create(
 }
 
 fn get(store: &SecretStore) -> Result<Option<SigningKey>, PersistError> {
-    let Some(secret) = store.get_blocking(DEVICE_KEY).map_err(keychain_error)? else {
+    let Some(secret) = store
+        .get_blocking(DEVICE_KEY)
+        .map_err(|error| keychain_error(&error))?
+    else {
         return Ok(None);
     };
     let bytes = secret.expose();
@@ -89,7 +92,7 @@ fn put(store: &SecretStore, key: &SigningKey) -> Result<(), PersistError> {
                 label: Some("Tilo device key".into()),
             },
         )
-        .map_err(keychain_error)?;
+        .map_err(|error| keychain_error(&error))?;
     match get(store)? {
         Some(stored) if stored.as_bytes() == key.as_bytes() => Ok(()),
         _ => Err(PersistError::Io(io::Error::other(
@@ -114,7 +117,7 @@ fn remove_legacy_file(paths: &IdentityPaths) -> Result<(), PersistError> {
     Ok(())
 }
 
-fn keychain_error(error: SecretError) -> PersistError {
+fn keychain_error(error: &SecretError) -> PersistError {
     let kind = match error {
         SecretError::Denied => io::ErrorKind::PermissionDenied,
         _ => io::ErrorKind::Other,
