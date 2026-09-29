@@ -224,9 +224,9 @@ where
                     match &cap.scope {
                         Scope::Workspace => (),
                         Scope::Room(room) if room == meta.room => (),
-                        // Enforced only where files are opened; it never
-                        // decides a document read.
-                        Scope::FsPath(_) => return Ok(()),
+                        // Enforced only where files are opened, or where an
+                        // action is invoked; neither decides a document read.
+                        Scope::FsPath(_) | Scope::Action { .. } => return Ok(()),
                         _ => return Err(Error::UnsupportedPolicy),
                     }
                     // A grant addressed to another person can never match this

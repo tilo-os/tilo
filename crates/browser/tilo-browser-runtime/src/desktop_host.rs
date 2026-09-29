@@ -1363,7 +1363,7 @@ impl DesktopRoot {
                         &self.resolver.host.routes,
                     )
                     .ok()?;
-                    (checkout.id.as_str() == target.id && checkout.kind.as_str() == target.kind)
+                    (checkout.id.as_str() == target.id && checkout.kind.names(&target.kind))
                         .then_some((group, tab.id))
                 });
             if let Some((group, tab)) = destination {
