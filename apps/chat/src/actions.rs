@@ -1204,6 +1204,296 @@ fn channel_label(ch: &ChannelResource) -> String {
     format!("{} {}", ch.kind.glyph(), name)
 }
 
+/// Workspace Document ops for [`tilo_resource::publish`] — create channel /
+/// category. Open stays a View on the contextual standalone tree.
+pub(crate) fn publish_workspace_document(id: &str, name: &str) -> Resource {
+    let mut workspace = Resource::new(
+        format!("chat.workspace:{id}"),
+        "chat.workspace",
+        if name.trim().is_empty() {
+            "Workspace"
+        } else {
+            name
+        },
+    );
+    workspace = workspace.with_action(new_channel_action_spec(id));
+    workspace = workspace.with_action(new_category_action_spec(id));
+    annotate_contracts(&mut workspace);
+    workspace
+}
+
+/// Channel Document ops for [`tilo_resource::publish`] — post / rename /
+/// archive / mark-read / delete. Open / attach / call stay Views/Effects.
+pub(crate) fn publish_channel_document(
+    me: &str,
+    participants: &[crate::mention::Participant],
+    ch: &ChannelResource,
+    top_level_count: i64,
+    messages: &[MessageResource],
+) -> Resource {
+    let mut channel = Resource::new(
+        format!("chat.channel:{}", ch.id),
+        "chat.channel",
+        channel_label(ch),
+    );
+    let timeline = ch.kind != ChannelKind::Voice;
+    if timeline {
+        channel = channel.with_action(ActionSpec::prompted(
+            "post",
+            "Post message",
+            "Message",
+            "type a message… (@Name mentions a member)",
+            ExecutionLocus::ClientLocal,
+            {
+                let cid = ch.id.clone();
+                let me = me.to_owned();
+                let room = participants.to_vec();
+                move |text: &str| {
+                    let id = format!("m_{}", uuid::Uuid::new_v4().simple());
+                    let mentions = crate::mention::resolve(text, &room);
+                    encode(&agent_authored(
+                        &me,
+                        &room,
+                        send_message_action(
+                            &cid,
+                            &id,
+                            &me,
+                            unix_now_i64(),
+                            text,
+                            None,
+                            None,
+                            mentions,
+                        ),
+                    ))
+                }
+            },
+        ));
+    }
+    channel = channel.with_action(ActionSpec::prompted(
+        "rename",
+        "Rename channel",
+        "Name",
+        "channel name…",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            move |name: &str| encode(&rename_channel_action(&cid, name.trim()))
+        },
+    ));
+    if ch.archived {
+        channel = channel.with_action(immediate_spec(
+            "unarchive",
+            "Unarchive channel",
+            &archive_channel_action(&ch.id, false),
+        ));
+    } else {
+        channel = channel.with_action(immediate_spec(
+            "archive",
+            "Archive channel",
+            &archive_channel_action(&ch.id, true),
+        ));
+    }
+    channel = channel.with_action(immediate_spec(
+        "mark-read",
+        "Mark as read",
+        &mark_read_action(&ch.id, me, top_level_count),
+    ));
+    channel = channel.with_action(immediate_spec(
+        "delete",
+        "Delete channel",
+        &delete_channel_action(&ch.id),
+    ));
+    for message in messages {
+        channel = channel.with_child(publish_message_document(me, participants, ch, message));
+    }
+    annotate_contracts(&mut channel);
+    channel
+}
+
+/// Message Document ops for [`tilo_resource::publish`] — edit / react / pin /
+/// delete. Reveal / read stay Views on the contextual tree.
+pub(crate) fn publish_message_document(
+    me: &str,
+    participants: &[crate::mention::Participant],
+    ch: &ChannelResource,
+    m: &MessageResource,
+) -> Resource {
+    let mut message = Resource::new(
+        format!("chat.message:{}", m.id),
+        "chat.message",
+        m.label.clone(),
+    );
+    message = message.with_action(ActionSpec::prompted(
+        "edit",
+        "Edit message",
+        "Message",
+        "new text…",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            let mid = m.id.clone();
+            move |text: &str| encode(&edit_message_action(&cid, &mid, text, unix_now_i64()))
+        },
+    ));
+    message = message.with_action(ActionSpec::prompted(
+        "react",
+        "Add reaction",
+        "Emoji",
+        "👍",
+        ExecutionLocus::ClientLocal,
+        {
+            let cid = ch.id.clone();
+            let mid = m.id.clone();
+            let me = me.to_owned();
+            move |emoji: &str| encode(&add_reaction_action(&cid, &mid, emoji.trim(), &me))
+        },
+    ));
+    if m.pinned {
+        message = message.with_action(immediate_spec(
+            "unpin",
+            "Unpin message",
+            &pin_message_action(&ch.id, &m.id, false),
+        ));
+    } else {
+        message = message.with_action(immediate_spec(
+            "pin",
+            "Pin message",
+            &pin_message_action(&ch.id, &m.id, true),
+        ));
+    }
+    message = message.with_action(immediate_spec(
+        "delete",
+        "Delete message",
+        &delete_message_action(&ch.id, &m.id),
+    ));
+    let ctx = ChatResourceCtx {
+        me: me.to_owned(),
+        workspace_id: String::new(),
+        workspace_name: String::new(),
+        channels: Vec::new(),
+        active_channel: ch.id.clone(),
+        messages: Vec::new(),
+        participants: participants.to_vec(),
+    };
+    if m.author == me && acts_as_agent(&ctx) {
+        message = message.with_action(set_work_spec(&ch.id, &m.id));
+    }
+    annotate_contracts(&mut message);
+    message
+}
+
+/// Category Document ops for [`tilo_resource::publish`].
+pub(crate) fn publish_category_document(category: &CategoryResource) -> Resource {
+    let mut resource = Resource::new(
+        format!("chat.category:{}", category.id),
+        "chat.category",
+        category.name.clone(),
+    )
+    .with_action(ActionSpec::prompted(
+        "rename",
+        "Rename category",
+        "Name",
+        "category name…",
+        ExecutionLocus::ClientLocal,
+        {
+            let id = category.id.clone();
+            move |name: &str| encode(&rename_category_action(&id, name.trim()))
+        },
+    ));
+    resource = resource.with_action(immediate_spec(
+        if category.collapsed {
+            "expand"
+        } else {
+            "collapse"
+        },
+        if category.collapsed {
+            "Expand category"
+        } else {
+            "Collapse category"
+        },
+        &set_category_collapsed_action(&category.id, !category.collapsed),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "delete",
+        "Delete category",
+        &delete_category_action(&category.id),
+    ));
+    annotate_contracts(&mut resource);
+    resource
+}
+
+/// Workspace / channel / category / message Document children for
+/// [`tilo_resource::publish`]. Bounded like the standalone eager page.
+pub(crate) fn publish_document_children(state: &crate::resource::ChatState) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT
+        .saturating_sub(1)
+        .saturating_sub(state.draft_keys.len());
+    let mut workspaces = state.workspaces.clone();
+    workspaces.sort_by_key(|workspace| workspace.order);
+    for ws in workspaces.into_iter().take(EAGER_WORKSPACE_LIMIT) {
+        if remaining == 0 {
+            break;
+        }
+        let mut workspace = publish_workspace_document(&ws.id, &ws.name);
+        remaining = remaining.saturating_sub(1);
+
+        let mut channels = state
+            .channels
+            .iter()
+            .filter(|channel| channel.workspace == ws.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        channels.sort_by_key(|channel| channel.order);
+        for channel in channels.into_iter().take(remaining) {
+            let ch = ChannelResource {
+                id: channel.id.clone(),
+                name: channel.name,
+                kind: channel.kind,
+                archived: channel.archived,
+            };
+            let top_level = state
+                .channel_top_level
+                .iter()
+                .find(|(id, _)| id == &ch.id)
+                .map(|(_, count)| *count)
+                .unwrap_or(0);
+            let messages = state
+                .channel_messages
+                .iter()
+                .find(|(id, _)| id == &ch.id)
+                .map(|(_, messages)| messages.as_slice())
+                .unwrap_or(&[]);
+            workspace = workspace.with_child(publish_channel_document(
+                &state.me,
+                &state.participants,
+                &ch,
+                top_level,
+                messages,
+            ));
+            remaining = remaining.saturating_sub(1);
+        }
+        let mut categories = state
+            .categories
+            .iter()
+            .filter(|category| category.workspace == ws.id)
+            .cloned()
+            .collect::<Vec<_>>();
+        categories.sort_by_key(|category| category.order);
+        for category in categories.into_iter().take(remaining) {
+            let category = CategoryResource {
+                id: category.id,
+                name: category.name,
+                collapsed: category.collapsed,
+            };
+            workspace = workspace.with_child(publish_category_document(&category));
+            remaining = remaining.saturating_sub(1);
+        }
+        children.push(workspace);
+    }
+    children
+}
+
 /// Build the resource tree Chat currently has open: the active workspace (root),
 /// one `chat.channel:<id>` per channel, and — under the one open channel — a
 /// `chat.message:<id>` per message. Every operation is the same action the
@@ -1231,6 +1521,11 @@ pub fn provide_resources(ctx: &ChatResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     }
     let all_channels = ChatDoc::list_channels(doc);
     let mut root = published;
+    // Prefer the contextual View/Effect-enriched eager page over publish's
+    // Document-only workspace children. Keep rich-text drafts from publish.
+    // Hosted ResourceRoot keeps those Document children as the palette door.
+    root.children
+        .retain(|child| child.id.as_str().starts_with("chat.draft:"));
     // The publish root, its rich-text draft children, and the people page are
     // already spoken for; the remainder is the eager workspace/channel page.
     let mut remaining = EAGER_RESOURCE_SNAPSHOT_LIMIT
@@ -2202,6 +2497,16 @@ fn message_label(
     users: &[crate::model::User],
     agents: &std::collections::HashMap<String, String>,
 ) -> String {
+    message_label_for_resource(author_id, text, attachment, users, agents)
+}
+
+pub(crate) fn message_label_for_resource(
+    author_id: &str,
+    text: &str,
+    attachment: Option<&crate::model::Attachment>,
+    users: &[crate::model::User],
+    agents: &std::collections::HashMap<String, String>,
+) -> String {
     let author = agents.get(author_id).map_or_else(
         || {
             users
@@ -2218,7 +2523,7 @@ fn message_label(
                 | crate::model::Attachment::Image { name, .. }
                 | crate::model::Attachment::Video { name, .. },
             ) => name.as_str(),
-            None => "Attachment",
+            None => "(no text)",
         }
     } else {
         text.trim()
