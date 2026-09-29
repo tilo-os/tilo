@@ -28,6 +28,7 @@ postcard = { workspace = true, features = ["use-std"] }
 hex.workspace = true
 thiserror.workspace = true
 rand.workspace = true
+blake3.workspace = true
 # The toolkit adapter: `CollabTransport` for `CollaborationManager::with_transport`.
 ui = { version = "0.1.0", package = "tilo-ui", path = "../../sdk/ui-core", default-features = false, optional = true }
 # The browser is a channel member device, as native peers are.
