@@ -115,7 +115,7 @@ mod imp_native {
     use crate::NetError;
 
     pub(super) struct Endpoint<T> {
-        endpoint: iroh::Endpoint,
+        iroh: iroh::Endpoint,
         // Owns the accept loop; kept alive so peers can dial in.
         router: iroh::protocol::Router,
         alpn: &'static [u8],
@@ -130,7 +130,7 @@ mod imp_native {
     /// queue.
     struct Accept<T, F> {
         framing: wire_frame::Framing,
-        accept: std::sync::Arc<F>,
+        decode: std::sync::Arc<F>,
         inbound: mpsc::Sender<T>,
     }
 
@@ -138,7 +138,7 @@ mod imp_native {
         fn clone(&self) -> Self {
             Self {
                 framing: self.framing,
-                accept: std::sync::Arc::clone(&self.accept),
+                decode: std::sync::Arc::clone(&self.decode),
                 inbound: self.inbound.clone(),
             }
         }
@@ -165,7 +165,7 @@ mod imp_native {
                 match frames.read_frame_async().await {
                     Ok(Some([])) => {}
                     Ok(Some(frame)) => {
-                        let Some(value) = (self.accept)(frame) else {
+                        let Some(value) = (self.decode)(frame) else {
                             continue;
                         };
                         match self.inbound.try_send(value) {
@@ -201,7 +201,7 @@ mod imp_native {
                     alpn,
                     Accept {
                         framing,
-                        accept: std::sync::Arc::new(accept),
+                        decode: std::sync::Arc::new(accept),
                         inbound: inbound_tx,
                     },
                 )
@@ -211,7 +211,7 @@ mod imp_native {
             let ticket = serde_json::to_string(&endpoint.addr())
                 .map_err(|error| NetError::Protocol(error.to_string()))?;
             Ok(Self {
-                endpoint,
+                iroh: endpoint,
                 router,
                 alpn,
                 framing,
@@ -235,7 +235,7 @@ mod imp_native {
             let addr = serde_json::from_str::<iroh::EndpointAddr>(ticket)
                 .map_err(|error| NetError::InvalidRequest(format!("peer ticket: {error}")))?;
             let (frames, mut outbound) = mpsc::channel::<Vec<u8>>(capacity);
-            let (endpoint, alpn, framing) = (self.endpoint.clone(), self.alpn, self.framing);
+            let (endpoint, alpn, framing) = (self.iroh.clone(), self.alpn, self.framing);
             drop(self.runtime.spawn(async move {
                 let Ok(connection) = endpoint.connect(addr, alpn).await else {
                     return;

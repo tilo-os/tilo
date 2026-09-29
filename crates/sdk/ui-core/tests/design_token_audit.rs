@@ -469,7 +469,12 @@ fn declared_borders_in_chrome_do_not_grow() {
 
 /// The resource app framework's entry points. Each builds its launch from
 /// `LaunchSpec`, so an app started through one is on the shared launcher.
-const FRAMEWORK_LAUNCHERS: [&str; 2] = ["framework::run::<", "framework::launch_spec::<"];
+/// `ui::main!` expands to `framework::run` or a definition's launch spec.
+const FRAMEWORK_LAUNCHERS: [&str; 3] = [
+    "framework::run::<",
+    "framework::launch_spec::<",
+    "ui::main!(",
+];
 const FRAMEWORK_APP: &str = "crates/sdk/tilo-app/src/framework/app.rs";
 
 /// The signature and body of the top-level `pub fn NAME<` in `source`, up to
