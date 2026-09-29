@@ -100,26 +100,6 @@ struct AppHandler {
     host_appearance: Option<crate::host_appearance::Source>,
 }
 
-/// Hand a Spotlight result that launched or woke this app to the runtime it
-/// attached to, which indexed it. Spotlight wakes the app of the bundle that
-/// owns the items (in `Tilo.app`, the Store), not the daemon; the daemon
-/// re-checks and opens the result through the action host.
-#[cfg(target_os = "macos")]
-fn forward_spotlight_results() {
-    let (Some(profile), Some(mtm)) = (
-        std::env::var_os("TILO_RUNTIME_PROFILE"),
-        objc2::MainThreadMarker::new(),
-    ) else {
-        return;
-    };
-    let socket = std::path::PathBuf::from(profile).join("native.sock");
-    tilo_os_search::spotlight::continue_with(mtm, move |entry| {
-        if let Err(error) = tilo_os_search::native::open(&socket, entry) {
-            tracing::warn!(%error, "a Spotlight result did not open");
-        }
-    });
-}
-
 #[cfg(target_os = "macos")]
 impl AppHandler {
     /// Put History, Search and Undo into the menu bar and title bar.
@@ -3805,8 +3785,7 @@ impl App {
             );
         }
         let event_loop = event_loop_builder.build().unwrap();
-        #[cfg(target_os = "macos")]
-        forward_spotlight_results();
+        tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]

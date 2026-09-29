@@ -430,7 +430,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
     };
 
     // What the app a Spotlight click woke sends: the daemon opens it.
-    tilo_os_search::native::open(&socket, entry).unwrap();
+    tilo_host_search::open(&socket, &entry.to_string()).unwrap();
     let invoked = host.invoked.lock().unwrap().clone();
     assert_eq!(invoked.len(), 1);
     assert_eq!(
@@ -441,7 +441,7 @@ fn a_result_another_process_was_handed_opens_through_the_action_host() {
     // Access is revoked before the next walk: the daemon re-checks and refuses.
     host.offered
         .store(false, std::sync::atomic::Ordering::SeqCst);
-    let refused = tilo_os_search::native::open(&socket, entry).unwrap_err();
+    let refused = tilo_host_search::open(&socket, &entry.to_string()).unwrap_err();
     assert!(refused.to_string().contains("NotOffered"), "{refused}");
     assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
     serving.join().unwrap();

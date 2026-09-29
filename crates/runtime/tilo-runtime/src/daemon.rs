@@ -806,13 +806,11 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
                 Ok(value) if value.get("native") == Some(&json!("join")) => {
                     Some(answer_join(joiner, &value))
                 }
-                Ok(value) if value.get("native") == Some(&json!(tilo_os_search::native::OPEN)) => {
-                    Some(
-                        runtime
-                            .block_on(answer_open(search, &value))
-                            .map_err(io::Error::other)?,
-                    )
-                }
+                Ok(value) if value.get("native") == Some(&json!(tilo_host_search::OPEN)) => Some(
+                    runtime
+                        .block_on(answer_open(search, &value))
+                        .map_err(io::Error::other)?,
+                ),
                 Ok(value) => runtime
                     .block_on(server.handle(value))
                     .map_err(io::Error::other)?,
