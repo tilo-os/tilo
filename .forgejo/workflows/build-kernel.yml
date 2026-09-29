@@ -233,9 +233,8 @@ jobs:
             echo 'TILO_COMPILER_CACHE_SECRETS'
           } >> "$GITHUB_ENV"
 
-      # The shared setup gives the builder the runner pool's registries and
-      # exports TILO_LAYER_CACHE_REGISTRY (see build-image).
-      - name: Set up buildx for registry cache export
+      # The shared setup gives the builder the runner pool's registries.
+      - name: Set up buildx
         uses: ./.forgejo/actions/setup-buildx
         with:
           driver-opts: |
@@ -301,14 +300,14 @@ jobs:
           # A published kernel imports no layer cache: no uncached rebuild
           # checks it, and the cache tag is writable by other jobs. Publishing
           # runs refresh the cache that pull requests then consume.
-          cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-from: ${{ github.event_name == 'pull_request' && format('type=gha,scope=kernel-{0}', matrix.arch) || '' }}
           # PRs consume the shared cache but do not update it: exporting cache
           # work can outlive a successful compile and exhaust the runner's
           # hard deadline. Main/tag/dispatch builds refresh final-stage
           # dependencies only; mode=max duplicates the multi-GiB source tree.
           # ignore-error: a cache write failure must not fail a build whose
           # image was already pushed; the next run simply starts colder.
-          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1},mode=min,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch) || '' }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=gha,scope=kernel-{0},mode=min,ignore-error=true', matrix.arch) || '' }}
           provenance: false
 
       # The build step never fails the job itself (continue-on-error), so
