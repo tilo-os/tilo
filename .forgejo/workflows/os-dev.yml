@@ -17,6 +17,8 @@ on:
     branches: [main]
     paths:
       - "os/**"
+      - "!os/docs/**"
+      - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"
