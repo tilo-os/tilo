@@ -50,6 +50,28 @@ runs:
           : > "$config"
         fi
         printf '\n%s\n' "$EXTRA_CONFIG" >> "$config"
+        # The builder is a sibling of the job container in the slot's Docker,
+        # outside the job's memory limit. Bound it below the slot's memory so
+        # a build that outgrows it fails alone: at the slot limit the kernel
+        # also kills the Docker daemon and with it the job.
+        opts="$DRIVER_OPTS"
+        # The runner slots prewarm this BuildKit image (infra runner-config.yaml).
+        if ! grep -Eq '(^|[[:space:],])image=' <<< "$opts"; then
+          opts=$(printf '%s\nimage=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8' "$opts" | sed '/^$/d')
+        fi
+        if ! grep -Eq '(^|[[:space:],])memory=' <<< "$opts"; then
+          total=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
+          if [[ $total =~ ^[0-9]+$ ]] && (( total > 8 * 1024 * 1024 * 1024 )); then
+            limit=$(( total - 4 * 1024 * 1024 * 1024 ))
+            opts=$(printf '%s\nmemory=%s\nmemory-swap=%s' "$opts" "$limit" "$limit" | sed '/^$/d')
+            echo "::notice::BuildKit builder memory bound: $(( limit / 1024 / 1024 )) MiB of $(( total / 1024 / 1024 )) MiB"
+          fi
+        fi
+        {
+          echo 'driver-opts<<TILO_DRIVER_OPTS'
+          printf '%s\n' "$opts"
+          echo 'TILO_DRIVER_OPTS'
+        } >> "$GITHUB_OUTPUT"
         name=
         if [[ $PERSISTENT == true ]]; then
           if grep -q '^\[worker\.oci\]' "$config"; then
@@ -60,7 +82,7 @@ runs:
           printf '\n[worker.oci]\n  gc = true\n  reservedSpace = "2GB"\n  maxUsedSpace = "30GB"\n  minFreeSpace = "30GB"\n' >> "$config"
           # A builder's configuration is fixed when its container starts, so
           # the name covers it; the slot's DinD maintenance keeps tilo-* state.
-          digest=$( { cat "$config"; printf '%s' "$DRIVER_OPTS"; } | sha256sum | cut -c1-12)
+          digest=$( { cat "$config"; printf '%s' "$opts"; } | sha256sum | cut -c1-12)
           name="tilo-$TRUST-$digest"
           echo "::notice::persistent BuildKit builder $name"
         fi
@@ -71,7 +93,7 @@ runs:
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       with:
         driver: docker-container
-        driver-opts: ${{ inputs.driver-opts }}
+        driver-opts: ${{ steps.config.outputs.driver-opts }}
         buildkitd-config: ${{ steps.config.outputs.path }}
         name: ${{ steps.config.outputs.name }}
         # Removes the builder container at the end of the job but keeps its
