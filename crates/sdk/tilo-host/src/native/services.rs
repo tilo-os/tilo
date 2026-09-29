@@ -3,7 +3,8 @@
 //! - clipboard: `tilo_clipboard::system()`;
 //! - files and opener: `tilo_dialogs::system_picker()` and
 //!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
-//!   on macOS, the Common Item Dialogs on Windows);
+//!   on macOS, the Common Item Dialogs on Windows), or with
+//!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -40,7 +41,15 @@ pub fn services(app_id: Option<&str>) -> HostServices {
 /// speech in [`super::android::services`] and keeps null media/capture.
 #[cfg(not(target_os = "android"))]
 pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
+    // A session nobody sits at (a provider's guest) answers choosers itself.
+    let files = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+        .filter(|directory| !directory.is_empty())
+        .and_then(|directory| {
+            tilo_dialogs::unattended_picker(directory.into(), services.files.clone())
+        })
+        .unwrap_or_else(|| services.files.clone());
     HostServices {
+        files,
         speech: Arc::new(SystemSpeech),
         media_session: Arc::new(super::mpris::DesktopMediaSessions),
         screen_capture: Arc::new(super::capture::DesktopScreenCapture),
