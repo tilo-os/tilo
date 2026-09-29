@@ -1015,7 +1015,7 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 RUN --network=none \
-    --mount=type=bind,from=builder,source=/out,target=/out,ro \
+    --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \
       --manifest /tilo-components/components.toml \
       --from /out --from /out/optional \
@@ -2819,8 +2819,8 @@ COPY --from=component-files /image/windows/ /
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
-COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=builder \
+COPY --from=native-builder-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
     /usr/share/tilo/
@@ -2840,8 +2840,8 @@ COPY --from=builder \
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
-COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=builder /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
+COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # Browser and shell are compiled in one Cargo invocation. The browser's WPE
 # feature can therefore affect shell's dynamic link closure. Check it only
 # after both the WPE files and their runtime RPM dependencies are present.
