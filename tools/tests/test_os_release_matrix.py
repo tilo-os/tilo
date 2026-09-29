@@ -228,7 +228,7 @@ class OsDevLaneTests(unittest.TestCase):
             step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
             self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
             self.assertIn("-f os/Containerfile.dev", step)
-            self.assertIn("type=gha,scope=tilo-vm-dev-$ARCH", step)
+            self.assertNotIn("--cache-to", step)
             self.assertIn("--secret id=actions_cache_url,env=ACTIONS_CACHE_URL", step)
             self.assertIn("push=true", step)
             self.assertIn("PUSHED_DIGEST=", step)
