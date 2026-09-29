@@ -249,9 +249,9 @@ diagnostic. A customized router context is reported as app-owned and therefore
 not statically verifiable; generated contexts fail early on missing factories.
 
 With no name, `tilo-app new` runs as a small terminal wizard for the package
-name, window title, application ID, and starter shape. It presents nine
-numbered templates with their intended use; numbers, full names, and shortcuts
-are accepted. Invalid package names, IDs, and template choices are explained
+name, window title, application ID, and template. It presents the numbered
+templates with their intended use; numbers and full names are accepted.
+Invalid package names, IDs, and template choices are explained
 and re-prompted without discarding earlier answers. Enter accepts a displayed
 default. Before writing, the wizard shows the resolved app title, package,
 application ID, template purpose, and destination for confirmation. Declining
@@ -261,29 +261,30 @@ With a name and flags the command is deterministic and suitable for scripts;
 omitted `--template` defaults to `starter` outside an interactive terminal:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new log-browser \
-  --id org.example.log-browser \
-  --title "Log Browser" \
-  --template data
-
-cargo run -p tilo-app-cli --bin tilo-app -- new activity-feed --template list
-cargo run -p tilo-app-cli --bin tilo-app -- new qr-code --template qr
-cargo run -p tilo-app-cli --bin tilo-app -- new repo-scan --template async
-cargo run -p tilo-app-cli --bin tilo-app -- new notes --template document
-cargo run -p tilo-app-cli --bin tilo-app -- new project-workspace --template workspace
+cargo run -p tilo-app-cli --bin tilo-app -- new --list-templates
+cargo run -p tilo-app-cli --bin tilo-app -- new errands \
+  --id org.example.errands \
+  --title "Errands" \
+  --template collection
 ```
 
-Use `--template workspace` for a composed professional starting point rather
-than an isolated widget example. It creates a responsive master-detail shell
-whose projects are a `Collection` in the resource. The selection is view state;
-`cx.switch` rebuilds only the detail pane when it changes, and the pane's fields
-bind to the selected project's actions. Wide windows show both panes; compact
-windows switch between full-width navigation and detail panes with an
-accessible Back action. Switching items preserves independent edits, and the
-framework supplies persistence, collaboration, history and undo without
-app-owned synchronization callbacks. The generated headless scenario exercises
-navigation and editing, and the generated tests cover wide and compact
-geometry, undo, and the native-contract audit.
+A template is a starting point you scaffold and then own, so there are only
+four, each the least code that is a correct app of one shape:
+
+| Template | Starts you with |
+| --- | --- |
+| `starter` | One resource, one action, one bound field and a derived label |
+| `document` | One collaborative document: bound fields, a live preview, a destructive `clear` |
+| `collection` | Items in a `Collection` the user adds, edits, checks off and removes, with item actions and an empty state |
+| `graph` | Serialized, live-editable screens under `ui/` above controls bound to the resource |
+
+Every template starts empty, reads every string from its own
+`locales/en-US.ftl`, uses only shared widgets and theme values, and exposes each
+capability as an action. Each ships with tests for its actions, its bound
+controls, undo, permissions, persistence and the native-contract audit, plus a
+saved headless scenario. Programs that teach one concept, such as virtualized
+lists, background work or a responsive master-detail shell, are examples
+rather than templates; see [Examples](examples.md).
 
 After creation, the printed commands use shell-safe paths and include the
 first test, development, run, saved-scenario, screenshot, inspection, and
@@ -2168,8 +2169,9 @@ layout heights feed back into scrolling and hit testing. The built-in
 scrollbar, keyboard navigation, and key-based selection all use the same
 viewport.
 
-Use `tilo-app new activity-feed --template list` to start from the sparse-model
-form instead. The generated `ActivityModel` reports 100 million stable keys
+Start from the `virtual-list` example (`tilo-app new activity-feed
+--from-example virtual-list`) for the sparse-model form instead. Its
+`ActivityModel` reports 100 million stable keys
 without allocating their rows, mixes measured 44px and 72px delegates, embeds
 an independently actionable button in each mounted row, and ships with a
 headless contract for bounded mounting, selection, variable geometry, child

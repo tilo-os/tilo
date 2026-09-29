@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "name-input", "action": "set_value", "value": "Atlas"}},
+  {"expect": {"target": "name-preview", "role": "static_text", "name": "Atlas"}},
+  {"perform": {"target": "create", "action": "activate"}}
+]

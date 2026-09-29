@@ -36,6 +36,8 @@ struct Cli {
 enum Command {
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
+    /// List the example apps `tilo-app new --from-example` starts from.
+    Examples,
     /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
@@ -673,9 +675,21 @@ struct NewArgs {
     #[arg(long)]
     title: Option<String>,
 
-    /// Starter shape to generate.
-    #[arg(long, value_enum)]
+    /// Starter shape to generate; `--list-templates` describes each.
+    #[arg(long, value_enum, conflicts_with = "from_example")]
     template: Option<TemplateArg>,
+
+    /// Start from a complete example app instead of a template, renamed to
+    /// this app; `tilo-app examples` lists them.
+    #[arg(long, value_name = "EXAMPLE")]
+    from_example: Option<String>,
+
+    /// List the templates `--template` accepts, then exit.
+    #[arg(long, conflicts_with_all = [
+        "name", "id", "title", "template", "from_example", "directory", "ui_path", "sdk_git",
+        "sdk_rev", "dry_run", "dev",
+    ])]
+    list_templates: bool,
 
     /// Destination directory. Defaults to `apps/<name>` in a Tilo checkout.
     #[arg(long)]
@@ -709,24 +723,48 @@ struct NewArgs {
 /// `#[action]` edits and a view bound to them.
 #[derive(Clone, Copy, Debug, ValueEnum)]
 enum TemplateArg {
-    /// A profile resource edited through bound text, toggle, number, slider and choice controls.
+    /// One resource, one action and one bound field: the smallest correct app.
     Starter,
-    /// A virtualized, selectable data table over sparse external rows; opened rows are resource state.
-    Data,
-    /// A sparse, variable-height list with interactive retained row widgets.
-    List,
-    /// A stable-id, accessible tree suitable for professional hierarchy UIs.
-    Tree,
-    /// A live-editable serialized UI graph above controls bound to the resource.
-    Graph,
-    /// Typed background work on resource input, with automatic wakeup and keyed result views.
-    Async,
-    /// A collaborative document with a live preview, undo and confirmation for destructive edits.
+    /// One collaborative document with a live preview, undo and a destructive clear.
     Document,
-    /// IME-capable input driving an accessible generated QR image.
+    /// A list of items the user adds, edits, checks off and removes.
+    Collection,
+    /// Serialized, live-editable screens above controls bound to the resource.
+    Graph,
+    // Templates earlier versions had, now examples; naming one says which.
+    #[value(hide = true)]
+    Data,
+    #[value(hide = true)]
+    List,
+    #[value(hide = true)]
+    Tree,
+    #[value(hide = true)]
+    Async,
+    #[value(hide = true)]
     Qr,
-    /// A responsive master-detail app with durable per-item editing.
+    #[value(hide = true)]
     Workspace,
+}
+
+impl TemplateArg {
+    fn template(self) -> Result<tilo_app_cli::Template> {
+        let retired = match self {
+            Self::Starter => return Ok(tilo_app_cli::Template::Starter),
+            Self::Document => return Ok(tilo_app_cli::Template::Document),
+            Self::Collection => return Ok(tilo_app_cli::Template::Collection),
+            Self::Graph => return Ok(tilo_app_cli::Template::Graph),
+            Self::Data => "data",
+            Self::List => "list",
+            Self::Tree => "tree",
+            Self::Async => "async",
+            Self::Qr => "qr",
+            Self::Workspace => "workspace",
+        };
+        let example = tilo_app_cli::retired_template_example(retired).unwrap_or("counter");
+        anyhow::bail!(
+            "the {retired} template is now the `{example}` example; run `tilo-app new NAME --from-example {example}`"
+        )
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default, ValueEnum)]
@@ -779,6 +817,7 @@ fn main() -> ExitCode {
     let name = cli.command.name();
     let result = match cli.command {
         Command::New(args) => run_new(args, interactive),
+        Command::Examples => Ok(list_examples()),
         Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
@@ -880,6 +919,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::New(_) => "new",
+            Self::Examples => "examples",
             Self::Add(_) => "add",
             Self::Locale(_) => "locale",
             Self::Scenario(_) => "scenario",
@@ -2101,22 +2141,20 @@ fn responsive_acceptance_runs(app_root: &Path) -> Vec<ResponsiveAcceptanceRun> {
 }
 
 fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
+    if args.list_templates {
+        return Ok(list_templates());
+    }
     let start_dev = args.dev;
     let request = tilo_app_cli::NewAppRequest {
         name: args.name,
         app_id: args.id,
         title: args.title,
-        template: args.template.map(|template| match template {
-            TemplateArg::Starter => tilo_app_cli::Template::Starter,
-            TemplateArg::Data => tilo_app_cli::Template::Data,
-            TemplateArg::List => tilo_app_cli::Template::List,
-            TemplateArg::Tree => tilo_app_cli::Template::Tree,
-            TemplateArg::Graph => tilo_app_cli::Template::Graph,
-            TemplateArg::Async => tilo_app_cli::Template::Async,
-            TemplateArg::Document => tilo_app_cli::Template::Document,
-            TemplateArg::Qr => tilo_app_cli::Template::Qr,
-            TemplateArg::Workspace => tilo_app_cli::Template::Workspace,
-        }),
+        template: args.template.map(TemplateArg::template).transpose()?,
+        example: args
+            .from_example
+            .as_deref()
+            .map(tilo_app_cli::examples::find)
+            .transpose()?,
         directory: args.directory,
         ui_path: args.ui_path,
         sdk_git: args.sdk_git,
@@ -2147,69 +2185,143 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
     }
 }
 
+fn list_templates() -> Value {
+    let templates = tilo_app_cli::templates_json();
+    for template in templates.as_array().into_iter().flatten() {
+        let name = template["name"].as_str().unwrap_or_default();
+        let default = if template["default"] == true {
+            " (default)"
+        } else {
+            ""
+        };
+        println!(
+            "{name:<11} {}{default}",
+            template["description"].as_str().unwrap_or_default()
+        );
+    }
+    println!("\nCreate one with `tilo-app new NAME --template NAME`.");
+    json!({ "templates": templates })
+}
+
+fn list_examples() -> Value {
+    for example in tilo_app_cli::examples::ALL {
+        let web = if example.web { "" } else { " (native only)" };
+        println!("{:<17} {}{web}", example.name, example.concept);
+        println!("{:<17} {}", "", example.summary);
+    }
+    println!(
+        "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
+    );
+    json!({ "examples": tilo_app_cli::examples::examples_json() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    /// new exposes the sparse list, typed async, durable document, accessible QR and professional
-    /// workspace templates, and can enter dev but cannot dev a dry run.
+    /// new starts from an example instead of a template, never both, and examples are listed.
     #[test]
-    fn new_exposes_every_app_template_and_refuses_to_dev_a_dry_run() {
-        // Phase: new_exposes_the_sparse_list_template.
-        {
-            let cli =
-                Cli::try_parse_from(["tilo-app", "new", "activity-feed", "--template", "list"])
-                    .expect("list template command");
-            let Command::New(args) = cli.command else {
-                panic!("expected new command");
-            };
-            assert!(matches!(args.template, Some(TemplateArg::List)));
-        }
-
-        // Phase: new_exposes_the_typed_async_template.
-        {
-            let cli = Cli::try_parse_from(["tilo-app", "new", "repo-scan", "--template", "async"])
-                .expect("async template command");
-            let Command::New(args) = cli.command else {
-                panic!("expected new command");
-            };
-            assert!(matches!(args.template, Some(TemplateArg::Async)));
-        }
-
-        // Phase: new_exposes_the_durable_document_template.
-        {
-            let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", "document"])
-                .expect("document template command");
-            let Command::New(args) = cli.command else {
-                panic!("expected new command");
-            };
-            assert!(matches!(args.template, Some(TemplateArg::Document)));
-        }
-
-        // Phase: new_exposes_the_accessible_qr_template.
-        {
-            let cli = Cli::try_parse_from(["tilo-app", "new", "qr-code", "--template", "qr"])
-                .expect("QR template command");
-            let Command::New(args) = cli.command else {
-                panic!("expected new command");
-            };
-            assert!(matches!(args.template, Some(TemplateArg::Qr)));
-        }
-
-        // Phase: new_exposes_the_professional_workspace_template.
-        {
-            let cli = Cli::try_parse_from([
+    fn new_starts_from_an_example_instead_of_a_template() {
+        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--from-example", "counter"])
+            .expect("from-example command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert_eq!(args.from_example.as_deref(), Some("counter"));
+        for conflicting in [
+            [
                 "tilo-app",
                 "new",
-                "project-studio",
+                "notes",
+                "--from-example",
+                "counter",
                 "--template",
-                "workspace",
-            ])
-            .expect("workspace template command");
+                "starter",
+            ]
+            .as_slice(),
+            [
+                "tilo-app",
+                "new",
+                "--list-templates",
+                "--from-example",
+                "counter",
+            ]
+            .as_slice(),
+        ] {
+            assert!(Cli::try_parse_from(conflicting).is_err(), "{conflicting:?}");
+        }
+        let listed = list_examples();
+        assert_eq!(
+            listed["examples"].as_array().map(Vec::len),
+            Some(tilo_app_cli::examples::ALL.len())
+        );
+    }
+
+    /// new offers each template by name, points a retired template at the example that replaced
+    /// it, lists templates only on their own, and can enter dev but cannot dev a dry run.
+    #[test]
+    fn new_exposes_every_app_template_and_refuses_to_dev_a_dry_run() {
+        // Phase: new_accepts_every_template_by_name.
+        {
+            for template in tilo_app_cli::Template::ALL {
+                let cli = Cli::try_parse_from([
+                    "tilo-app",
+                    "new",
+                    "notes",
+                    "--template",
+                    template.name(),
+                ])
+                .expect("template command");
+                let Command::New(args) = cli.command else {
+                    panic!("expected new command");
+                };
+                let parsed = args.template.expect("a template").template().unwrap();
+                assert_eq!(parsed, template);
+            }
+        }
+
+        // Phase: a_retired_template_names_its_example.
+        {
+            for (retired, example) in [
+                ("list", "virtual-list"),
+                ("data", "data-table"),
+                ("tree", "tree-browser"),
+                ("workspace", "tree-browser"),
+                ("async", "background-task"),
+                ("qr", "qr-code"),
+            ] {
+                let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--template", retired])
+                    .expect("retired template command still parses");
+                let Command::New(args) = cli.command else {
+                    panic!("expected new command");
+                };
+                let error = args.template.expect("a template").template().unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains(&format!("--from-example {example}")),
+                    "{error}"
+                );
+            }
+        }
+
+        // Phase: listing_templates_stands_alone.
+        {
+            let cli = Cli::try_parse_from(["tilo-app", "new", "--list-templates"])
+                .expect("list templates command");
             let Command::New(args) = cli.command else {
                 panic!("expected new command");
             };
-            assert!(matches!(args.template, Some(TemplateArg::Workspace)));
+            assert!(args.list_templates);
+            assert!(Cli::try_parse_from(["tilo-app", "new", "notes", "--list-templates"]).is_err());
+            let listed = list_templates();
+            let names: Vec<_> = listed["templates"]
+                .as_array()
+                .expect("a template list")
+                .iter()
+                .map(|template| template["name"].as_str().expect("a name"))
+                .collect();
+            assert_eq!(names, ["starter", "document", "collection", "graph"]);
         }
 
         // Phase: new_can_enter_dev_but_cannot_dev_a_dry_run.
