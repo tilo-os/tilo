@@ -78,18 +78,8 @@ impl Standalone {
         stage("locking the profile");
         let lock = profile::lock(root)?;
         stage("provisioning the collaboration identity");
-        let identity_dir = runtime_identity::identity_dir_from_env()?;
-        let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
         let storage = IdentityStorage::for_session();
-        tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
-            &identity_dir,
-            &paths,
-            storage,
-        )?;
-        let device = tilo_user_identity::persist::load_device_key(&paths)
-            .map_err(io::Error::other)?
-            .verifying_key()
-            .to_bytes();
+        let device = provision_device(storage)?;
         stage("loading the workspace");
         let workspace = ProfileWorkspace::open(root)?;
         let room_id = workspace.room();
@@ -316,6 +306,22 @@ fn channels(root: &Path) -> BrokerChannels {
         ),
     }
     channels
+}
+
+/// This device's collaboration identity, provisioned in `storage` on first
+/// start; answers its device key.
+fn provision_device(storage: IdentityStorage) -> io::Result<[u8; 32]> {
+    let identity_dir = runtime_identity::identity_dir_from_env()?;
+    let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+    tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
+        &identity_dir,
+        &paths,
+        storage,
+    )?;
+    Ok(tilo_user_identity::persist::load_device_key(&paths)
+        .map_err(io::Error::other)?
+        .verifying_key()
+        .to_bytes())
 }
 
 /// The profile's workspace files, shown at their folder in this user's

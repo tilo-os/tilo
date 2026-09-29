@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- TiloFiles.appex, embedded in Tilo.app (so.tilo.runtime) under
+     Contents/PlugIns. build.sh sets both version keys to the app's. -->
+<plist version="1.0"><dict>
+  <key>CFBundleDevelopmentRegion</key><string>en</string>
+  <key>CFBundleDisplayName</key><string>Tilo</string>
+  <key>CFBundleExecutable</key><string>TiloFiles</string>
+  <key>CFBundleIdentifier</key><string>so.tilo.runtime.files</string>
+  <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
+  <key>CFBundleName</key><string>TiloFiles</string>
+  <key>CFBundlePackageType</key><string>XPC!</string>
+  <key>CFBundleShortVersionString</key><string>0.0.0</string>
+  <key>CFBundleVersion</key><string>0.0.0</string>
+  <key>LSMinimumSystemVersion</key><string>13.0</string>
+  <key>NSExtension</key><dict>
+    <key>NSExtensionPointIdentifier</key><string>com.apple.fileprovider-nonui</string>
+    <key>NSExtensionPrincipalClass</key><string>TiloFileProviderExtension</string>
+    <key>NSExtensionFileProviderDocumentGroup</key><string>group.so.tilo.runtime</string>
+    <key>NSExtensionFileProviderSupportsEnumeration</key><true/>
+  </dict>
+</dict></plist>
