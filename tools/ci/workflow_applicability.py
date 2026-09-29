@@ -7,6 +7,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import tomllib
 
 
 APPLICABILITY_INPUT = "tools/ci/workflow_applicability.py"
@@ -200,7 +201,72 @@ def workflow_contract_changed(repo, base, head, workflow):
         return True
 
 
-def applicable(repo, event_name, event, paths, workflow=None):
+ROOT_CARGO_FILES = ("Cargo.lock", "Cargo.toml")
+
+
+def cargo_closure_changed(repo, base, head, packages):
+    """Whether the root Cargo files changed anything the packages build with.
+
+    Compares every Cargo.lock entry reachable from the packages, and the root
+    manifest with workspace membership, metadata and the dependency, profile
+    and patch entries of crates outside that closure left out. Changes to the
+    packages' own sources and manifests are path triggers of their own.
+    """
+    def show(ref, path):
+        return tomllib.loads(subprocess.check_output(
+            ["git", "-C", str(repo), "show", f"{ref}:{path}"], stderr=subprocess.PIPE).decode())
+
+    def closure(lock):
+        by_name = {}
+        for entry in lock.get("package", []):
+            by_name.setdefault(entry["name"], []).append(entry)
+        seen = {}
+        stack = [entry for name in packages for entry in by_name.get(name, [])
+                 if "source" not in entry]
+        while stack:
+            entry = stack.pop()
+            key = (entry["name"], entry["version"], entry.get("source", ""))
+            if key in seen:
+                continue
+            seen[key] = (entry.get("checksum", ""), tuple(sorted(entry.get("dependencies", []))))
+            for spec in entry.get("dependencies", []):
+                name, *version = spec.split(" ")
+                matches = by_name.get(name, [])
+                if version:
+                    matches = [m for m in matches if m["version"] == version[0]] or matches
+                stack.extend(matches)
+        return seen
+
+    def manifest(root, names):
+        root = dict(root)
+        workspace = {key: value for key, value in root.get("workspace", {}).items()
+                     if key not in ("members", "exclude", "default-members", "metadata")}
+        workspace["dependencies"] = {name: value for name, value in
+                                     workspace.get("dependencies", {}).items() if name in names}
+        root["workspace"] = workspace
+        profiles = {}
+        for name, profile in root.get("profile", {}).items():
+            profile = dict(profile)
+            overrides = {crate: value for crate, value in profile.pop("package", {}).items()
+                         if crate in names}
+            if overrides:
+                profile["package"] = overrides
+            if profile:
+                profiles[name] = profile
+        root["profile"] = profiles
+        root["patch"] = {source: kept for source, crates in root.get("patch", {}).items()
+                         if (kept := {crate: value for crate, value in crates.items()
+                                      if crate in names})}
+        return root
+
+    before, after = closure(show(base, "Cargo.lock")), closure(show(head, "Cargo.lock"))
+    if not before or before != after:
+        return True
+    names = {name for name, _, _ in before}
+    return manifest(show(base, "Cargo.toml"), names) != manifest(show(head, "Cargo.toml"), names)
+
+
+def applicable(repo, event_name, event, paths, workflow=None, cargo_packages=()):
     patterns = [pattern_regex(p) for p in paths]
     if event_name in ("push", "workflow_dispatch"):
         return True, []
@@ -221,6 +287,9 @@ def applicable(repo, event_name, event, paths, workflow=None):
         workflow = Path(workflow).as_posix()
         contract_inputs = {APPLICABILITY_INPUT, HISTORY_INPUT, workflow}
         direct = [path for path in matched if path not in contract_inputs]
+        if (cargo_packages and set(direct) & set(ROOT_CARGO_FILES)
+                and not cargo_closure_changed(repo, ancestor, refs[1], cargo_packages)):
+            direct = [path for path in direct if path not in ROOT_CARGO_FILES]
         if direct:
             return True, matched
         if matched and workflow_contract_changed(repo, ancestor, refs[1], workflow):
@@ -233,12 +302,16 @@ def main():
     cli = argparse.ArgumentParser(description=__doc__)
     cli.add_argument("--workflow", required=True)
     cli.add_argument("--event", help="event name when run from a called workflow")
+    cli.add_argument("--cargo-package", action="append", default=[],
+                     help="count root Cargo.lock/Cargo.toml changes only when they change "
+                          "what this package builds with")
     args = cli.parse_args()
     try:
         paths = declared_paths(args.workflow)
         event = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text())
         result, matched = applicable(
-            Path.cwd(), args.event or os.environ["GITHUB_EVENT_NAME"], event, paths, args.workflow
+            Path.cwd(), args.event or os.environ["GITHUB_EVENT_NAME"], event, paths, args.workflow,
+            args.cargo_package
         )
         print(json.dumps({"applicable": result, "matched_paths": matched}))
         with open(os.environ["GITHUB_OUTPUT"], "a") as stream:
