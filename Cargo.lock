@@ -14884,6 +14884,7 @@ name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
  "automerge",
+ "blake3",
  "bytes",
  "channel-crypto",
  "collab-types",
