@@ -240,7 +240,15 @@ class OsDevLaneTests(unittest.TestCase):
     def test_dev_images_carry_the_apps_of_their_commit(self):
         workflow = WORKFLOW.read_text()
         step = workflow.split("      - name: Materialize the pinned app collection\n", 1)[1]
-        self.assertTrue(step.startswith("        if: github.event_name != 'workflow_call'\n"))
+        step = step.split("\n      - name:", 1)[0]
+        self.assertNotIn("        if:", step)
+        # A dev build takes the published collection only when its source has
+        # this commit's app inputs, as Release / apps defines them.
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn(".forgejo/workflows/release-apps.yml", step)
+        self.assertIn("index.json | jq -r '.source // empty'", step)
+        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+                        step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
 
