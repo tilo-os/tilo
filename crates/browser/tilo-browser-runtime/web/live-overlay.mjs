@@ -305,6 +305,9 @@ export const AGENT_TYPING_EXPIRE_MS = 4000;
  * peer's own ops track, so a long window would be visible typing latency.
  */
 export const LIVE_PUBLICATION_WINDOW_MS = 16;
+/** Presented frames that re-read the snapshot after an action changed the
+ * mount: its caret may settle a frame after the action returns. */
+const REFRESH_FRAMES = 2;
 
 /**
  * Remote in-flight typing from `OpsFrame::Preview`, per publisher and
@@ -558,6 +561,7 @@ export function createLiveOverlay({
   let closed = false;
   let pointer = null; // canvas CSS px
   let inputDirty = false; // something to publish
+  let refreshFrames = 0; // presented frames that re-read after an action
   let stateDirty = true; // focus/selection/drag may have changed: re-read the snapshot
   let lastPresented;
   let current = null; // parsed snapshot
@@ -760,7 +764,12 @@ export function createLiveOverlay({
     view,
     stats: () => ({...stats, cursors: view.cursorCount, ghosts: view.ghostCount, members: memberRows.size, attached: Boolean(api), meanFrameMs: stats.frames ? stats.totalFrameMs / stats.frames : 0}),
     /** Frame hook: the runtime presented (windows may have moved under remote cursors). */
-    wake() { if (lastRemoteCount) schedule(); },
+    wake() {
+      if (refreshFrames > 0) { refreshFrames--; inputDirty = true; stateDirty = true; schedule(); } else if (lastRemoteCount) schedule();
+    },
+    /** The mount changed without input (an action moved the caret or edited):
+     * publish its presence now and after the next presented frames. */
+    refresh() { refreshFrames = REFRESH_FRAMES; inputDirty = true; stateDirty = true; schedule(); },
     /** A desktop command entered submission: preview a window reorder at once. */
     commandPending(pending) {
       if (!api?.available) return;
