@@ -1247,6 +1247,11 @@ pub struct ShellNetwork {
     wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
+    /// This device's presence per room as workspace-host live frames.
+    live_presence: Mutex<crate::shell::live_presence::Outbound>,
+    /// Names live members asked to be drawn with, per room and handle:
+    /// browsers and agents that are no peers of the room document.
+    live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -1643,6 +1648,8 @@ impl ShellNetwork {
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+            live_presence: Mutex::default(),
+            live_labels: Mutex::default(),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1852,8 +1859,16 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return empty;
         };
-
-        replica.tree.read().room_peer_labels(room)
+        let mut labels = replica.tree.read().room_peer_labels(room);
+        drop(replica);
+        if let Ok(live) = self.live_labels.lock()
+            && let Some(live) = live.get(cluster_id)
+        {
+            for (handle, label) in live {
+                labels.entry(*handle).or_insert_with(|| label.clone());
+            }
+        }
+        labels
     }
 
     /// Live session handles and their admitted display names for one room.
@@ -2373,6 +2388,138 @@ impl ShellNetwork {
             presence,
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Publish an app's presence on the room's workspace-host live plane,
+    /// where browsers and agents draw it: the pointer and caret in the
+    /// record, under this person's name.
+    pub fn publish_live_presence(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        presence: &collab_types::PeerPresence,
+    ) {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        let ws = room_topic_id(room);
+        let focus = tilo_relay_protocol::live::LiveRecord {
+            app: app_id.to_owned(),
+            record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
+        };
+        let frame = self.live_presence.lock().ok().and_then(|mut live| {
+            live.update(
+                ws,
+                focus,
+                self.live_participant(),
+                presence,
+                std::time::Instant::now(),
+            )
+        });
+        if let Some(frame) = frame {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+        }
+    }
+
+    /// Repeat quiet live presence so other devices keep drawing it.
+    fn live_keepalive(&self) {
+        let due = self
+            .live_presence
+            .lock()
+            .map(|mut live| live.keepalives(std::time::Instant::now()))
+            .unwrap_or_default();
+        for (ws, frame) in due {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+        }
+    }
+
+    /// How this device asks live members to draw it: the person's name,
+    /// else the device's certified label.
+    fn live_participant(&self) -> tilo_relay_protocol::live::LiveParticipant {
+        let label = ui::local_identity::load()
+            .map(|identity| identity.display_name)
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                self.host_identity
+                    .as_ref()
+                    .map(|identity| identity.device_cert.device_label.clone())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Tilo".into());
+        let device = self
+            .host_identity
+            .as_ref()
+            .map_or(*self.local_peer_id.as_bytes(), |identity| {
+                identity.device_signing_key.verifying_key().to_bytes()
+            });
+        crate::shell::live_presence::participant(label, &device)
+    }
+
+    /// A live member's frame: its pointer and caret reach local apps as
+    /// presence of the sender's handle, and its name labels that handle.
+    fn handle_live_frame(&self, ws: u64, from: [u8; 32], frame: &[u8]) {
+        let Some(inbound) = crate::shell::live_presence::inbound(frame) else {
+            return;
+        };
+        let room = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == ws)
+        });
+        let Some(room) = room else {
+            return;
+        };
+        let cluster_id = room.to_string();
+        let peer = neighbour_wire::peer_handle(&from);
+        tracing::debug!(
+            room = %cluster_id,
+            from = %hex::encode(&from[..4]),
+            label = inbound.label.as_deref().unwrap_or(""),
+            app = %inbound.app_id,
+            updates = ?inbound.updates.iter().map(|update| &update.payload).collect::<Vec<_>>(),
+            "live presence from a workspace member"
+        );
+        if let Some(label) = inbound.label
+            && let Ok(mut labels) = self.live_labels.lock()
+        {
+            let previous = labels
+                .entry(cluster_id.clone())
+                .or_default()
+                .insert(peer, label.clone());
+            if previous.as_ref() != Some(&label) {
+                tracing::info!(
+                    room = %cluster_id,
+                    from = %hex::encode(&from[..4]),
+                    label,
+                    app = %inbound.app_id,
+                    "a live member's cursor reaches this device"
+                );
+            }
+        }
+        for presence in inbound.updates {
+            self.handle_typed_app_presence_message(
+                peer,
+                inbound.app_id.clone(),
+                cluster_id.clone(),
+                presence,
+            );
+        }
+    }
+
+    /// Ask the room's workspace hosts to replay the room, for a local app
+    /// that just joined one of its records: what they replayed or fanned out
+    /// before was dropped here while nothing held the record, and the app
+    /// would otherwise miss the room's history.
+    pub fn request_room_replay(&self, cluster_id: &str) {
+        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
+            let _ = self.cmd_tx.try_send(NetCmd::Replay {
+                ws: room_topic_id(room),
+            });
+        }
     }
 
     /// Shared handle to the inbound app-presence buffer, drained by the
@@ -4430,6 +4577,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -4455,6 +4603,7 @@ impl ShellNetwork {
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
             NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
+            NetEvent::Live { ws, from, frame } => self.handle_live_frame(ws, from, &frame),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
@@ -6200,6 +6349,8 @@ pub(crate) fn shell_network_for_test(
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+        live_presence: Mutex::default(),
+        live_labels: Mutex::default(),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),

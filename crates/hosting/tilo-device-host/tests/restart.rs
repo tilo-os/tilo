@@ -737,7 +737,7 @@ async fn admit_until_ready(
                     )
                     .unwrap();
             }
-            Inbound::RemoteAction { .. } => {}
+            Inbound::RemoteAction { .. } | Inbound::Live { .. } => {}
         }
     }
 }

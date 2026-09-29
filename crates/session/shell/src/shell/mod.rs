@@ -42,6 +42,7 @@ pub mod collab_history;
 pub mod collab_mls_authority;
 pub mod collab_outbound;
 pub mod collab_presence;
+pub mod live_presence;
 pub mod color_pipeline;
 pub mod continuity_policy;
 pub mod continuity_suggestion;
