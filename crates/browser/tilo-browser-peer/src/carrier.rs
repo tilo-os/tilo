@@ -254,6 +254,12 @@ impl HttpsLink {
         self.features & FEATURE_RESUME != 0
     }
 
+    /// Whether the host asks members to compact sealed routes
+    /// (`Envelope::CompactVolunteer`).
+    pub fn compacts(&self) -> bool {
+        self.features & tilo_relay_protocol::web::FEATURE_COMPACTION != 0
+    }
+
     /// Queue one envelope for the host, in order.
     ///
     /// # Errors

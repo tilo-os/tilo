@@ -118,9 +118,18 @@ pub struct OpenedDocument {
     /// The complete mutation when this is the last segment of a segmented
     /// transfer; `envelope` is then that segment's.
     whole: Option<DocumentMutation>,
+    /// Retained entry ids of the frames this document came in.
+    entries: Vec<[u8; 32]>,
 }
 
 impl OpenedDocument {
+    /// The host's ids ([`tilo_relay_protocol::compaction::entry_id`]) of the
+    /// retained frames this document came in: one, or every segment of a
+    /// reassembled transfer.
+    pub fn entries(&self) -> &[[u8; 32]] {
+        &self.entries
+    }
+
     /// The typed mutation: carried by a whole frame, or reassembled from
     /// every segment of a large one.
     pub fn mutation(&self) -> Option<DocumentMutation> {
@@ -164,6 +173,7 @@ struct Transfer {
     total_len: u64,
     segment_len: u32,
     segments: BTreeMap<u32, Vec<u8>>,
+    entries: Vec<[u8; 32]>,
     bytes: usize,
     touched: u64,
 }
@@ -228,6 +238,7 @@ impl Reassembly {
             total_len: segment.total_len,
             segment_len: segment.segment_len,
             segments: BTreeMap::new(),
+            entries: Vec::new(),
             bytes: 0,
             touched: 0,
         });
@@ -235,6 +246,7 @@ impl Reassembly {
         transfer.bytes = transfer.bytes.saturating_add(len);
         let count = segment.count() as usize;
         transfer.segments.insert(segment.index, segment.data);
+        transfer.entries.extend_from_slice(&document.entries);
         self.buffered = self.buffered.saturating_add(len);
         if transfer.segments.len() < count {
             return Ok(None);
@@ -257,6 +269,7 @@ impl Reassembly {
             DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
             DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
         });
+        document.entries = transfer.entries;
         Ok(Some(document))
     }
 
@@ -460,6 +473,7 @@ pub fn open_frame(
         author,
         decrypted_payload,
         whole: None,
+        entries: vec![tilo_relay_protocol::compaction::entry_id(body)],
     }))
 }
 
@@ -474,6 +488,7 @@ mod tests {
         author: [u8; 32],
         payload: Vec<u8>,
     ) -> OpenedDocument {
+        let entry = tilo_relay_protocol::compaction::entry_id(&payload);
         OpenedDocument {
             route: DocumentRoute {
                 app_id: "app".into(),
@@ -492,6 +507,7 @@ mod tests {
             author,
             decrypted_payload: None,
             whole: None,
+            entries: vec![entry],
         }
     }
 
@@ -594,6 +610,11 @@ mod tests {
         }
         assert_eq!(completed.len(), 1, "the transfer completes exactly once");
         assert!(completed[0].is_reassembled());
+        assert_eq!(
+            completed[0].entries().len(),
+            3,
+            "a reassembled document names every segment it came in, once"
+        );
         assert_eq!(completed[0].mutation(), Some(mutation));
         assert_eq!(reassembly.buffered_bytes(), 0);
     }
