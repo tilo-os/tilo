@@ -17,6 +17,7 @@
 //!   instead of retrying forever; only [`PeerHandle::reconnect`] retries.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt::Write as _;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -1417,12 +1418,16 @@ impl Task {
                     .get(..4)
                     .and_then(|b| b.try_into().ok())
                     .unwrap_or_default();
-                *self.opened.entry((document.route.clone(), from)).or_default() += 1;
+                let opened = self
+                    .opened
+                    .entry((document.route.clone(), from))
+                    .or_default();
+                *opened = opened.saturating_add(1);
                 self.emit(&PeerEvent::Document(Box::new(document)));
             }
             Ok(None) => {}
             Err(error) => {
-                self.refused = (self.refused.0 + 1, error.to_string());
+                self.refused = (self.refused.0.saturating_add(1), error.to_string());
                 self.emit(&PeerEvent::DocumentRejected(error.to_string()));
             }
         }
@@ -1471,23 +1476,25 @@ impl Task {
                 self.persist_channels(false);
                 let mut channels = self.channels.describe();
                 for ((route, from), count) in &self.opened {
-                    channels.push_str(&format!(
+                    let _ = write!(
+                        channels,
                         "\nopened {}/{} from {}: {count}",
                         route.app_id,
                         route.record,
                         hex::encode(from)
-                    ));
+                    );
                 }
                 for (route, held) in &self.held_inbound {
-                    channels.push_str(&format!(
+                    let _ = write!(
+                        channels,
                         "\nheld for keys {}/{}: {}",
                         route.app_id,
                         route.record,
                         held.len()
-                    ));
+                    );
                 }
                 if self.refused.0 > 0 {
-                    channels.push_str(&format!("\nrefused {}: {}", self.refused.0, self.refused.1));
+                    let _ = write!(channels, "\nrefused {}: {}", self.refused.0, self.refused.1);
                 }
                 if lock(&self.shared).status.channels != channels {
                     self.update(|status| status.channels = channels);
