@@ -410,9 +410,6 @@ mod tests {
         )
         .await
         .unwrap();
-        // The full-replica worker keeps its proof fresh (it counts for 5 s);
-        // a start slower than that on a loaded runner must not read it stale.
-        fs::full_replica::save_status(&status_path, &status).unwrap();
         let profile = relay.handle().mesh_profile();
         assert_eq!(
             profile.replication.get(&42),
