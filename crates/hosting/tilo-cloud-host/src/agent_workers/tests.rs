@@ -57,6 +57,48 @@ fn broker_thread_store_opens_take_no_durability_barrier() {
     assert_eq!(reconciles, 0, "a read-only open paid durability barriers");
 }
 
+/// On a broker-like thread, after this process forgot every durable file it
+/// knew (a fresh process, or files changed outside it): the reconciliations
+/// three request-handling Store opens pay, then the barriers one commit
+/// through the same owner path pays.
+fn broker_thread_barriers_after_cache_miss(owner: Arc<RuntimeOwner>) -> (u64, u64) {
+    crate::storage::forget_durable_for_test();
+    std::thread::spawn(move || {
+        let before = crate::storage::reconciles_for_test();
+        for _ in 0..3 {
+            drop(owner.store().unwrap());
+        }
+        let reads = crate::storage::reconciles_for_test() - before;
+        let mut store = owner.store().unwrap();
+        let mut state = store.state.clone();
+        state.generation += 1;
+        let before = crate::storage::write_barriers_for_test();
+        store.commit(state).unwrap();
+        (reads, crate::storage::write_barriers_for_test() - before)
+    })
+    .join()
+    .unwrap()
+}
+
+/// `serve` installs one long-lived Store per root (`owner_cell`) before the
+/// broker starts, reconciling it once on its own thread. Broker request
+/// handling borrows that Store, so even when nothing on disk is known durable
+/// it waits on no file or directory barrier; only opens from disk would.
+#[test]
+fn broker_thread_takes_no_durability_barrier_on_a_cache_miss() {
+    let (directory, owner) = selected();
+    // The control: opened from disk, a cache miss pays the barriers again.
+    let (reads, writes) = broker_thread_barriers_after_cache_miss(owner.clone());
+    assert!(reads > 0);
+    assert!(writes > 0);
+    let _daemon = crate::owner_cell::install(directory.path(), "agent-admission").unwrap();
+    let (reads, writes) = broker_thread_barriers_after_cache_miss(owner);
+    assert_eq!(reads, 0, "broker request handling paid durability barriers");
+    // No barrier was dropped: a commit through the long-lived Store still
+    // returns only after its durability barrier.
+    assert!(writes > 0, "a long-lived Store commit skipped its barrier");
+}
+
 // A second host/owner or a legacy/no-owner broker must not stand in for the
 // actual Cloud owner-bound broker used by the managed runtime.
 #[tokio::test(flavor = "current_thread")]
