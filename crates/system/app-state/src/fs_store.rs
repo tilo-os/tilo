@@ -897,13 +897,13 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &batch.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            atomic_file::write(&sidecar, hex::encode(writer).as_bytes())
+            tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
                 .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
         return match &batch.op {
             WriteOp::Replace(bytes) => {
-                atomic_file::write(&document, bytes)
+                tilo_files::native::atomic::write(&document, bytes)
                     .map_err(|e| io_err(format!("writing {}", document.display()), e))?;
                 sync_ancestors(shared, &owner.directory)?;
                 owner.check()
@@ -917,7 +917,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
                 fs::create_dir_all(parent)
                     .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
             }
-            atomic_file::write(view, bytes)
+            tilo_files::native::atomic::write(view, bytes)
                 .map_err(|e| io_err(format!("writing {}", view.display()), e))
         }
         WriteOp::Append(bytes) => {

@@ -225,7 +225,7 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::Rect as KurboRect;
 
 /// Cached [`crate::host::RunnerDiagnostics::perf_log`] check
-/// (`QUICK_UI_PERF=1` natively), so the per-frame read is cheap.
+/// (`TILO_UI_PERF=1` natively), so the per-frame read is cheap.
 #[cfg(feature = "native")]
 fn perf_enabled() -> bool {
     use std::sync::OnceLock;
@@ -233,7 +233,7 @@ fn perf_enabled() -> bool {
     *FLAG.get_or_init(|| crate::host::environment().diagnostics.perf_log)
 }
 
-/// `QUICK_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
+/// `TILO_UI_NO_SCROLL_OPT=1` disables the scroll-reposition fast path,
 /// forcing a full `compute_layout` on every `layout_dirty` frame — a safety
 /// valve if a subtree ever needs a re-solve without reporting
 /// `layout_needs_measure`.

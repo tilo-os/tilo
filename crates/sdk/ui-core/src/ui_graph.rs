@@ -1157,7 +1157,7 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    atomic_file::write(path, json.as_bytes())
+    tilo_files::native::atomic::write(path, json.as_bytes())
         .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 

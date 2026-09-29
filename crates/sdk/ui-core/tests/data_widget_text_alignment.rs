@@ -11,7 +11,7 @@
 //! checks the alignment contract each widget paints against, on the pixels
 //! it actually produced.
 //!
-//! With `QUICK_UI_SCREENSHOT_DIR` set, each frame is also written under
+//! With `TILO_UI_SCREENSHOT_DIR` set, each frame is also written under
 //! `data_widget_text_alignment/` there as visual evidence; the assertions
 //! are the regression.
 //!

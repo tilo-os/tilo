@@ -144,26 +144,26 @@ impl ChipKind {
         ChipKind::Deletes,
     ];
 
-    pub fn label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDITS",
-            ChipKind::Comments => "COMMENTS",
-            ChipKind::Governance => "GOVERNANCE",
-            ChipKind::Deletes => "DELETES",
-        }
+    pub fn label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits",
+            ChipKind::Comments => "history-chip-comments",
+            ChipKind::Governance => "history-chip-access",
+            ChipKind::Deletes => "history-chip-deletions",
+        })
     }
 
     /// Used when the full label set will not fit; every chip switches
     /// together, or mixed lengths would read as a rendering accident.
-    pub fn short_label(&self) -> &'static str {
-        match self {
-            ChipKind::All => "ALL",
-            ChipKind::Edits => "EDIT",
-            ChipKind::Comments => "NOTE",
-            ChipKind::Governance => "GOV",
-            ChipKind::Deletes => "DEL",
-        }
+    pub fn short_label(&self) -> String {
+        crate::i18n!(match self {
+            ChipKind::All => "history-chip-all",
+            ChipKind::Edits => "history-chip-edits-short",
+            ChipKind::Comments => "history-chip-comments-short",
+            ChipKind::Governance => "history-chip-access-short",
+            ChipKind::Deletes => "history-chip-deletions-short",
+        })
     }
 
     /// `All` is empty because "no op-class filter" is how [`HistoryFilter`]
@@ -601,10 +601,16 @@ impl ActivityTimeline {
     pub fn active_filter_summary(&self) -> String {
         let mut parts: Vec<String> = Vec::new();
         if self.active_chip != ChipKind::All {
-            parts.push(self.active_chip.label().to_string());
+            parts.push(self.active_chip.label());
         }
-        for op in &self.filter.op_classes {
-            let label = format!("{op:?}").to_uppercase();
+        let chip_classes = self.active_chip.op_classes();
+        for op in self
+            .filter
+            .op_classes
+            .iter()
+            .filter(|op| !chip_classes.contains(op))
+        {
+            let label = crate::history_source::op_class_label(*op);
             if !parts.contains(&label) {
                 parts.push(label);
             }
@@ -2579,7 +2585,7 @@ impl ActivityTimeline {
                 } else {
                     chip.label()
                 };
-                total += f64::from(tr.measure(l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
+                total += f64::from(tr.measure(&l, chip_text_size, None).0) + 16.0 + CHIP_GAP;
             }
             total
         };
@@ -2624,7 +2630,7 @@ impl ActivityTimeline {
             } else {
                 chip.label()
             };
-            let (w, _) = text_renderer.measure(label, chip_text_size, None);
+            let (w, _) = text_renderer.measure(&label, chip_text_size, None);
             let chip_w = f64::from(w) + 16.0;
             let chip_h = (strip.height() - 8.0).max(20.0);
             let cy = f64::midpoint(strip.y0, strip.y1);
@@ -2641,10 +2647,10 @@ impl ActivityTimeline {
             let text_color = if active { active_text } else { idle_text };
             let edge = (!active).then(|| crate::surface::edge_on(body));
             crate::surface::pill(scene, transform, chip_rect, body, edge, None);
-            let (lw, lh) = text_renderer.measure(label, chip_text_size, None);
+            let (lw, lh) = text_renderer.measure(&label, chip_text_size, None);
             text_renderer.draw_text(
                 scene,
-                label,
+                &label,
                 chip_text_size,
                 text_color,
                 translated(
@@ -2762,11 +2768,16 @@ impl ActivityTimeline {
             Some(NameTarget::Selection)
         );
 
-        let clear_w = 54.0_f64;
+        let clear_label = crate::i18n!("history-selection-clear");
+        let name_label = crate::i18n!("history-selection-name");
+        let chip_w = |tr: &mut TextRenderer, label: &str, min: f64| {
+            (f64::from(tr.measure(label, size, None).0) + 20.0).max(min)
+        };
+        let clear_w = chip_w(tr, &clear_label, 54.0);
         let action_w = if naming || self.preview_selection || self.on_name_group.is_none() {
             0.0
         } else {
-            96.0_f64
+            chip_w(tr, &name_label, 96.0)
         };
         let clear = Rect::new(
             bar.x1 - 8.0 - clear_w,
@@ -2775,9 +2786,9 @@ impl ActivityTimeline {
             bar.center().y + 11.0,
         );
         self.clear_selection_rect = clear;
-        draw_chip(scene, transform, tr, theme, clear, "Clear", false);
+        draw_chip(scene, transform, tr, theme, clear, &clear_label, false);
 
-        let label = format!("{n} change{} selected", if n == 1 { "" } else { "s" });
+        let label = crate::i18n!("history-selection-count", "count" => n);
         let label_budget = (bar.width() - clear_w - action_w - 40.0).max(0.0);
         let shown = fit_text(tr, &label, size, label_budget);
         let label_top = text_top(tr, size, bar.center().y);
@@ -2812,7 +2823,7 @@ impl ActivityTimeline {
             );
             if !self.preview_selection && action.x0 > bar.x0 + 10.0 {
                 self.name_selection_rect = action;
-                draw_chip(scene, transform, tr, theme, action, "Name these", true);
+                draw_chip(scene, transform, tr, theme, action, &name_label, true);
             }
         }
     }
@@ -4149,7 +4160,7 @@ mod tests {
                 detail.contains("2 hidden"),
                 "counts what it is hiding: {detail}"
             );
-            assert!(detail.contains("COMMENTS"), "names the filter: {detail}");
+            assert!(detail.contains("Comments"), "names the filter: {detail}");
         }
 
         fn a_host_time_range_is_named_in_the_explanation() {

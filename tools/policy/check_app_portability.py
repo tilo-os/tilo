@@ -36,7 +36,7 @@ import re
 import sys
 import tomllib
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -55,6 +55,8 @@ class Finding:
     path: str
     line: int
     what: str
+    # A `[strict]` rule for this package: no baseline allowance.
+    strict: bool = False
 
     def __str__(self) -> str:
         return f"{self.path}:{self.line}: {self.rule} {self.what}"
@@ -431,8 +433,11 @@ class SourceScanner:
             spec = self.rules["R3"]
             prefixes = tuple(spec.get("literal-prefixes", []))
             contains = spec.get("literal-contains", [])
+            exempt = tuple(spec.get("exempt-literal-prefixes", []))
             for literal in strings:
                 value = literal.value
+                if exempt and value.startswith(exempt):
+                    continue
                 if value.startswith(prefixes) or any(part in value for part in contains):
                     add("R3", literal.start, f"platform path {literal.value[:60]!r}")
             names = set(spec.get("env-names", []))
@@ -502,6 +507,8 @@ class Package:
     directory: Path
     # The rules that apply, given the package's platforms.
     rules: set[str]
+    # Rules with no baseline allowance (``[strict]``, for apps on every platform).
+    strict: set[str] = field(default_factory=set)
 
 
 def load_manifest(path: Path) -> dict:
@@ -527,26 +534,27 @@ def discover(root: Path, table: dict) -> list[Package]:
     apps = root / "apps"
     model_pattern = table.get("scope", {}).get("model-crates", "apps/*-model")
     model_rules = table.get("scope", {}).get("model-rules", [])
+    strict_spec = table.get("strict", {})
     if apps.is_dir():
         for directory in sorted(apps.iterdir()):
             if not (directory / "Cargo.toml").is_file():
                 continue
             relative = directory.relative_to(root).as_posix()
             manifest_path = directory / "tilo-app.toml"
+            strict: set[str] = set()
             if manifest_path.is_file():
                 package = load_manifest(manifest_path).get("package", {})
                 platforms = tuple(package.get("platforms", DEFAULT_PLATFORMS))
                 candidates = list(rules)
+                if set(strict_spec.get("platforms", [])) <= set(platforms):
+                    strict = set(strict_spec.get("rules", []))
             elif fnmatch.fnmatchcase(relative, model_pattern):
                 platforms = DEFAULT_PLATFORMS
                 candidates = [rule for rule in model_rules if rule in rules]
             else:
                 continue
-            packages.append(
-                Package(
-                    "apps", directory.name, directory, active_rules(rules, candidates, platforms)
-                )
-            )
+            active = active_rules(rules, candidates, platforms)
+            packages.append(Package("apps", directory.name, directory, active, active & strict))
     sdk = table.get("sdk", {})
     for crate in sdk.get("crates", []):
         directory = root / crate
@@ -657,10 +665,18 @@ def manifest_findings(
         and not matches_any(path.relative_to(root).as_posix(), allowed)
     ):
         predicates = r1.get("predicates", [])
-        for target in manifest.get("target", {}) or {}:
+        build_only = set(r1.get("build-only-target-dependencies", []))
+        for target, tables in (manifest.get("target", {}) or {}).items():
             if target.startswith("cfg(") and not any(
                 re.search(rf"\b{re.escape(p)}\b", target) for p in predicates
             ):
+                continue
+            named = {
+                alias
+                for kind in ("dependencies", "dev-dependencies", "build-dependencies")
+                for alias in (tables or {}).get(kind, {})
+            }
+            if named and named <= build_only:
                 continue
             hits.append(("R1", header_line(text, target), f"`[target.{target}]` section"))
 
@@ -723,7 +739,10 @@ def audit(root: Path = ROOT, rules_path: Path | None = None) -> list[Finding]:
             if (path, line, rule) in seen:
                 continue
             seen.add((path, line, rule))
-            findings.append(Finding(package.section, package.name, rule, path, line, what))
+            findings.append(
+                Finding(package.section, package.name, rule, path, line, what,
+                        rule in package.strict)
+            )
     return findings
 
 
@@ -821,6 +840,19 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{finding.section}.{finding.package}: {finding}")
         return 0
 
+    strict = [finding for finding in findings if finding.strict]
+    if strict:
+        print("app portability FAILED: platform code in an app that runs everywhere",
+              file=sys.stderr)
+        for finding in strict:
+            print(f"  {finding.package}: {finding}", file=sys.stderr)
+        print(
+            "\n  An app whose platforms are linux, macos and web holds no platform code:\n"
+            "  move it into a platform crate (crates/platform/*) or an SDK API. Run\n"
+            "  `tilo-app check --lint <app>` for the remedies.",
+            file=sys.stderr,
+        )
+        return 1
     regressions, stale = compare(current, load_baseline(ROOT / BASELINE))
     if regressions:
         print("app portability FAILED: platform code grew", file=sys.stderr)

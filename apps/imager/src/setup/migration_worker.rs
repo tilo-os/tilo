@@ -342,7 +342,7 @@ impl Drop for MigrationWorker {
 mod tests {
     use std::fs;
     use std::sync::mpsc;
-    use std::time::{Duration, Instant};
+    use ui::time::Duration;
 
     use super::*;
 
@@ -397,7 +397,7 @@ mod tests {
             // this bound only catches a worker that never finishes.
             let deadline = tilo_test_env::hang_deadline();
             while worker.phase.load(Ordering::Acquire) != FINISHED {
-                assert!(Instant::now() < deadline, "worker did not finish");
+                assert!(ui::time::now() < deadline, "worker did not finish");
                 std::thread::sleep(Duration::from_millis(1));
             }
             let mut updates = 0;
@@ -485,7 +485,7 @@ mod tests {
                     assert!(cancelled.cancel());
                     break;
                 }
-                assert!(Instant::now() < deadline, "worker did not report progress");
+                assert!(ui::time::now() < deadline, "worker did not report progress");
                 std::thread::yield_now();
             }
             let outcome = finish(&mut cancelled);

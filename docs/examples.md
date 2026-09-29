@@ -37,22 +37,23 @@ starting point, so they are examples now; naming one tells you which.
 | --- | --- | --- |
 | `counter` | Resources and actions: validation, undo, confirmation, roles. | yes |
 | `bound-controls` | Text, checkbox, number, slider and dropdown bound to fields. | yes |
-| `virtual-list` | A sparse, virtualized list with stable keys and row controls. | no |
-| `data-table` | Columns over a sparse table model, cells that invoke actions. | no |
+| `virtual-list` | A sparse, virtualized list with stable keys and row controls. | yes |
+| `data-table` | Columns over a sparse table model, cells that invoke actions. | yes |
 | `tree-browser` | Tree navigation and an adaptive master-detail shell. | yes |
-| `background-task` | Cancellable work off the UI thread, started through an action. | no |
+| `background-task` | Cancellable work off the UI thread, started through an action. | yes |
 | `shared-checklist` | What merges when two people edit at once, and what undo takes back. | yes |
 | `localized` | Catalogs, arguments, plurals, live language switching, pseudo-locale. | yes |
 | `graph-screens` | Serialized screens, a Rust component mounted in one, the router. | yes |
 | `qr-code` | A generated visual with alternative text, empty until it has input. | yes |
 
 `tilo-app examples` prints this list (`--json` for scripts, with each
-example's path and whether it is web-capable). The three native-only examples
-load data or compute on a `std::thread`.
+example's path and whether it is web-capable). The examples that load data or
+compute in the background do it through `ui::background`, which runs on a
+thread where the target has one and on the page's executor on the web.
 
 The column is what the portability lint finds, not a promise: the lint records
-the standard-library APIs the web target cannot run (threads, the file system,
-processes, sockets, `Instant` and `SystemTime`) apart from its findings, and
+the sites of its web rules (threads, the std clock, std files and sockets:
+W1-W3 in `tools/policy/app_portability_rules.toml`) apart from its findings, and
 `every_example_is_indexed_and_portable` fails when an example's Web flag
 disagrees with it. `tilo-app build --platform web` refuses an app that uses
 one. CI builds every web-capable example for the web when one of them, or the

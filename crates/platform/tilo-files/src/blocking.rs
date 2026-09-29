@@ -45,6 +45,20 @@ pub fn append(dir: &Dir, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
     dir.local()?.append(path, bytes)
 }
 
+/// Replace the file's contents in place, creating it and its folders when
+/// missing: a cache entry the app can fetch again. Not crash-safe: a crash
+/// may leave the file partly written, where [`write_atomic`] leaves the old
+/// or the new contents.
+///
+/// # Errors
+///
+/// [`FsError::IsADirectory`], the backend's failure, and
+/// [`FsError::Unsupported`] on the web off the mirror.
+pub fn write(dir: &Dir, path: &VPath, bytes: &[u8]) -> Result<(), FsError> {
+    crate::below_root(path)?;
+    dir.local()?.write(path, bytes)
+}
+
 /// [`Dir::write_atomic`], synchronously.
 ///
 /// # Errors
@@ -105,6 +119,18 @@ pub fn rename_noreplace(dir: &Dir, from: &VPath, to: &VPath) -> Result<(), FsErr
 pub fn remove(dir: &Dir, path: &VPath) -> Result<(), FsError> {
     crate::below_root(path)?;
     dir.local()?.remove(path)
+}
+
+/// Remove a file, or a directory and everything below it: a cache the app
+/// discards. A symbolic link is removed itself; what it points to is kept.
+///
+/// # Errors
+///
+/// [`FsError::NotFound`], [`FsError::InvalidPath`] for the root, the
+/// backend's failure, and [`FsError::Unsupported`] on the web off the mirror.
+pub fn remove_all(dir: &Dir, path: &VPath) -> Result<(), FsError> {
+    crate::below_root(path)?;
+    dir.local()?.remove_all(path)
 }
 
 /// [`Dir::create_dir_all`], synchronously.
