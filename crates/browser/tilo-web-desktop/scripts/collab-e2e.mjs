@@ -91,6 +91,9 @@ const APPS = {
     webEdit: nodes => nodes.find(n => n.bounds && /text/i.test(n.role) && /thought|note/i.test(`${n.name} ${n.value}`)) ??
       nodes.find(n => n.bounds && /textinput|textarea|textfield|multiline/i.test(n.role)),
     agentTask: text => `In Scratchpad, edit note "${text}"`,
+    // The editor fills the window: where to click when the page exposes no
+    // positioned semantics yet.
+    webClick: [600, 420],
   },
 };
 // Steps of the native input timeline (100 ms each) at which a timeline-typing
@@ -479,7 +482,8 @@ async function runApp(name) {
     const nativeHas = text => until(async () => (await ax.text()).includes(text), 30000);
     const typeInto = async (page, text, slot) => {
       let nodes = await pageNodes(page);
-      let node = app.webEdit(nodes, T.mac, slot);
+      // Without the native note, later writers use the note page A made.
+      let node = app.webEdit(nodes, T.mac, slot) ?? (slot > 1 ? app.webEdit(nodes, T.web, slot) : undefined);
       // Without the native note (it did not replay), a page writes in a note
       // of its own so the other checks still run.
       const create = !node && nodes.find(n => n.bounds && n.name === 'New note');
@@ -490,6 +494,7 @@ async function runApp(name) {
         node = nodes.find(n => n.bounds && /text/i.test(n.role) && n.name !== 'Note title');
         result.notes.push(`${page.name} made its own note: the native note was not there`);
       }
+      if (!node && app.webClick) node = {bounds: {x0: app.webClick[0] - 10, x1: app.webClick[0] + 10, y0: app.webClick[1] - 10, y1: app.webClick[1] + 10}};
       if (!node) throw new Error(`${page.name}: nothing to type into (${nodes.filter(n => n.bounds).map(n => `${n.role}:${n.name}`).join(' | ').slice(0, 400)})`);
       const bx = node.bounds;
       await click(page, Math.max(bx.x0 + 4, bx.x1 - 6), (bx.y0 + bx.y1) / 2);
@@ -612,7 +617,7 @@ async function runApp(name) {
     });
 
     // 9. Page B reloads: same device, still a member.
-    await phase('reload keeps membership (no new certificate, content back)', async () => {
+    await phase('reloaded page edits reach browser and native', async () => {
       const certifications = () => (read(relay.stdout).match(/certifying a browser device=Browser-B\b/g) ?? []).length;
       const before = certifications();
       const reloaded = Date.now();
