@@ -635,6 +635,36 @@ fn add_comment_resource_action(root: &mut Resource, ctx: &WpResourceCtx) {
     ));
 }
 
+/// Selection, comment, and find-hit rows that depend on this peer's caret.
+/// Not a second `word-processor.document` root.
+pub(crate) fn live_presentation_resources(ctx: &WpResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
+    let mut scratch = Resource::new("word-processor.live", "word_processor.live", "Live");
+    add_selection_resources(&mut scratch, ctx, editing::large_selection(ctx, doc, None));
+    add_comment_resource_action(&mut scratch, ctx);
+    if !ctx.search_hits.is_empty()
+        && let Ok(containers) = tilo_doc::model::open(doc, &automerge::ROOT)
+    {
+        let snapshot = tilo_doc::model::materialize(doc, &containers);
+        add_search_resources(&mut scratch, ctx, &snapshot);
+    }
+    let mut extras = scratch.children;
+    if let Some(selection) = extras
+        .iter_mut()
+        .find(|resource| resource.kind == "word_processor.selection")
+    {
+        selection.actions.extend(scratch.actions);
+    } else if !scratch.actions.is_empty() {
+        let mut selection = Resource::new(
+            "word-processor.selection",
+            "word_processor.selection",
+            "Current selection",
+        );
+        selection.actions.extend(scratch.actions);
+        extras.insert(0, selection);
+    }
+    extras
+}
+
 fn add_search_resources(
     root: &mut Resource,
     ctx: &WpResourceCtx,
@@ -2024,6 +2054,29 @@ mod tests {
             .into_iter()
             .nth(n)
             .expect("seeded block")
+    }
+
+    #[test]
+    fn live_presentation_keeps_selection_without_a_document_root() {
+        let doc = wp_seed();
+        let ctx = wp_ctx(&doc);
+        let extras = live_presentation_resources(&ctx, &doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.id.as_str() != "word-processor.document"),
+            "hosted extras must not republish the document root"
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "word_processor.selection"),
+            "selection stays addressable: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.kind.as_str())
+                .collect::<Vec<_>>()
+        );
     }
 
     /// "Hello" selected in the second block, as the widget reports it.

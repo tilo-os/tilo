@@ -949,8 +949,8 @@ mod tests {
         let (state, _, format) =
             open_document(&path, tilo_content::ContentStore::memory()).unwrap();
         assert_eq!(format, WpFormat::Text);
-        let c = qdoc::model::open(&state.doc, &state.root).unwrap();
-        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let c = tilo_doc::model::open(&state.doc, &state.root).unwrap();
+        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
         let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
         assert_eq!(texts, lines);
         assert!(
