@@ -63,7 +63,7 @@ export async function mountDesktop(target,options={}) {
   const commandStatus=document.createElement('div');commandStatus.setAttribute('role','status');commandStatus.setAttribute('aria-live','polite');
   commandStatus.style.cssText='display:none;position:absolute;bottom:12px;left:12px;max-width:80%;padding:8px 12px;background:#20242e;color:#fff;border-radius:8px;font:13px system-ui;pointer-events:none';
   surface.append(canvas,editor,accessibility,commandStatus);target.append(surface);
-  let id,storage,closed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
+  let id,storage,closed=false,crashed=false,composing=false,pasteShift=false,flush=Promise.resolve(),lastState,readyResolve,readyReject,persistenceFailed=false;
   const presented=new Promise((resolve,reject)=>{readyResolve=resolve;readyReject=reject;});
   void presented.catch(()=>{});
   const report=data=>{
@@ -119,12 +119,12 @@ export async function mountDesktop(target,options={}) {
     composition=newComposition();old.replaceWith(editor);
     if(focused){const scope=inputScope.capture();if(scope)(scope.legacy||scope.ime?editor:canvas).focus({preventScroll:true});}
   }
-  function active(){return !closed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
-  const fontMountValid=()=>!closed&&registry.current(token)&&id!==undefined&&runtimeReady;
+  function active(){return !closed&&!crashed&&!surface.inert&&registry.current(token)&&id!==undefined&&runtimeReady;}
+  const fontMountValid=()=>!closed&&!crashed&&registry.current(token)&&id!==undefined&&runtimeReady;
   fontDemands=createFontDemandPump({loader:fontLoader,valid:fontMountValid,report,install:(name,bytes)=>runtime.install_font(id,name,bytes),failed:()=>runtime.font_failed(id)});
   const fontInstaller=createIdleFontInstaller({loader:fontLoader,names:APP_FONTS,valid:fontMountValid,install:(name,bytes)=>runtime.install_font(id,name,bytes)});
   function update(raw){
-    if(closed||!registry.current(token))return;
+    if(closed||crashed||!registry.current(token))return;
     const state=JSON.parse(raw);if(state.clipboard){report(state);return;}
     if('focusPresence' in state)options.peer?.live?.publishPresence({selection:state.focusPresence});
     if(!runtimeReady&&['gpu-pending','presented'].includes(state.phase)){
@@ -224,6 +224,8 @@ export async function mountDesktop(target,options={}) {
     return flush;
   }
   function onCrash(crash){
+    // The module is stopped: nothing on this page may call into it again.
+    crashed=true;surface.inert=true;
     const action=crashAction(crash,crash.tab!=null&&crashes.record(config.room,crash));
     report({phase:'crashed',crashedWindow:crash.tab??null,error:crash.message,restarting:action==='restart'&&options.restartOnCrash!==false});
     if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
