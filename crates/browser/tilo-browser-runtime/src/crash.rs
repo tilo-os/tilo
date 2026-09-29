@@ -56,13 +56,24 @@ pub(crate) fn quarantined(tab: u64, title: &str) -> Option<ui::widget::TileConte
     })
 }
 
+static PANICKED: AtomicBool = AtomicBool::new(false);
+
+/// Why a call fails once [`stopped`].
+pub(crate) const STOPPED: &str = "the runtime stopped after an application panicked";
+
+/// Whether a panic stopped the runtime: its state may still be borrowed by
+/// the code that panicked, so nothing may enter it again.
+pub(crate) fn stopped() -> bool {
+    PANICKED.load(Ordering::Relaxed)
+}
+
 /// Tell the page about the first panic: the window whose application was
 /// running (`null` outside any), and the message. Later panics follow from
-/// the first (state it left borrowed) and would misname the window.
-pub(crate) fn report(panic: &std::panic::PanicHookInfo<'_>) {
-    static REPORTED: AtomicBool = AtomicBool::new(false);
-    if REPORTED.swap(true, Ordering::Relaxed) {
-        return;
+/// the first (state it left borrowed) and would misname the window; false
+/// for them.
+pub(crate) fn report(panic: &std::panic::PanicHookInfo<'_>) -> bool {
+    if PANICKED.swap(true, Ordering::Relaxed) {
+        return false;
     }
     let tab = ui::widget::panic_scope::current();
     let message = panic
@@ -77,4 +88,5 @@ pub(crate) fn report(panic: &std::panic::PanicHookInfo<'_>) {
     {
         let _ = listener.call1(&JsValue::NULL, &JsValue::from_str(&report.to_string()));
     }
+    true
 }

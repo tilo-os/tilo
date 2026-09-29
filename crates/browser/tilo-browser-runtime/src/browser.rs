@@ -283,12 +283,16 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
     static PANIC_HOOK: std::sync::Once = std::sync::Once::new();
     PANIC_HOOK.call_once(|| {
         std::panic::set_hook(Box::new(|panic| {
+            // Only the first: later panics follow from the state it left
+            // borrowed, and would bury it.
+            if !crate::crash::report(panic) {
+                return;
+            }
             // A JS Error carries the wasm call stack, which names the caller
             // a std panic location does not.
             web_sys::console::error_1(&js_sys::Error::new(&format!(
                 "Browser runtime panic: {panic}"
             )));
-            crate::crash::report(panic);
         }));
     });
     if let Some(p) = LOOP.with_borrow(Clone::clone) {
@@ -306,8 +310,17 @@ fn with_mount<R>(
     id: u64,
     run: impl FnOnce(&mut Mount) -> Result<R, JsValue>,
 ) -> Result<R, JsValue> {
-    MOUNTS
-        .with_borrow_mut(|mounts| run(mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?))
+    // After a panic the module keeps whatever the panic left borrowed; a
+    // later call from the page fails instead of panicking again.
+    if crate::crash::stopped() {
+        return Err(error(crate::crash::STOPPED));
+    }
+    MOUNTS.with(|mounts| {
+        let mut mounts = mounts
+            .try_borrow_mut()
+            .map_err(|_| error("the mount is busy (a call from inside the runtime)"))?;
+        run(mounts.get_mut(&id).ok_or_else(|| error("closed mount"))?)
+    })
 }
 
 /// Mount an application on `canvas`. `config` is JSON (`app`, `profile`,
@@ -326,6 +339,9 @@ pub fn mount(
     hydrated: JsValue,
     status: Function,
 ) -> Result<u64, JsValue> {
+    if crate::crash::stopped() {
+        return Err(error(crate::crash::STOPPED));
+    }
     if STOP.with_borrow(Option::is_some) {
         return Err(error("terminal shutdown is still pending"));
     }
