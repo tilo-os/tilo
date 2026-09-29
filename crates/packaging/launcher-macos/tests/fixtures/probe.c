@@ -41,6 +41,38 @@ int main(int argc, char **argv) {
         int fd = open(arg, O_RDWR);
         return fd >= 0 && write(fd, marker, sizeof marker) == sizeof marker ? 0 : 1;
     }
+    if (strcmp(op, "replace") == 0) {
+        /* Consume $TILO_PROBE_TOKENS (one per line), save arg by writing
+         * its sibling ".<name>.tilo-save" and renaming that over it, then
+         * try to create any other file beside it (exit 5 if that worked). */
+        const char *tokens = getenv("TILO_PROBE_TOKENS");
+        char buffer[4096];
+        if (tokens == NULL || strlen(tokens) >= sizeof buffer) {
+            return 2;
+        }
+        strcpy(buffer, tokens);
+        for (char *token = strtok(buffer, "\n"); token; token = strtok(NULL, "\n")) {
+            if (sandbox_extension_consume(token) < 0) {
+                return 3;
+            }
+        }
+        const char *slash = strrchr(arg, '/');
+        if (slash == NULL) {
+            return 2;
+        }
+        char sibling[2048], other[2048];
+        int dir = (int)(slash - arg);
+        snprintf(sibling, sizeof sibling, "%.*s/.%s.tilo-save", dir, arg, slash + 1);
+        snprintf(other, sizeof other, "%.*s/unrelated.tmp", dir, arg);
+        int fd = open(sibling, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd < 0 || write(fd, marker, sizeof marker) != sizeof marker || close(fd) != 0) {
+            return 1;
+        }
+        if (rename(sibling, arg) != 0) {
+            return 1;
+        }
+        return open(other, O_WRONLY | O_CREAT, 0644) >= 0 ? 5 : 0;
+    }
     if (strcmp(op, "exec") == 0) {
         execl(arg, arg, (char *)NULL);
         return 1;
