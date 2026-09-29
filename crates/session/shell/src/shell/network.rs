@@ -2355,6 +2355,37 @@ impl ShellNetwork {
             .resolve(cluster_id, app_id, wire)
     }
 
+    /// A document this device published earlier that its workspace host
+    /// replayed ([`NetEvent::OwnReplay`]): queued for the broker as this
+    /// device's own editor op. The broker still checks the signature, and its
+    /// per-author sequence drops what the device already holds.
+    fn dispatch_own_replayed_document(&self, msg: NeighbourMsg) {
+        let NeighbourMsg::AppDocument {
+            peer,
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+        } = msg
+        else {
+            return;
+        };
+        let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
+            return;
+        };
+        if self.is_in_room(&cluster_id) {
+            self.handle_document_message(
+                peer,
+                app_id,
+                cluster_id,
+                record_id,
+                collab_types::Role::Editor,
+                true,
+                *envelope,
+            );
+        }
+    }
+
     /// Queue a received signed document for the broker's drainer.
     pub fn handle_document_message(
         &self,
@@ -4676,6 +4707,7 @@ impl ShellNetwork {
                 replayed,
                 msg,
             } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, replayed, msg),
+            NetEvent::OwnReplay { msg, .. } => self.dispatch_own_replayed_document(msg),
             NetEvent::PersonalFabric {
                 ws,
                 peer,
@@ -10650,9 +10682,53 @@ mod tests {
             );
         }
 
+        /// This device's own document comes back only as host-replayed
+        /// history, queued as its own replayed edit; the same message as
+        /// ordinary traffic under this device's session is an echo.
+        fn a_replayed_own_document_reaches_the_broker_and_an_echo_does_not() {
+            let (net, room, _, own_signing) = network_with_admitted_peer();
+            let cluster = room.to_string();
+            let own = net.local_peer_hash;
+            let NetEvent::Msg { msg, .. } = app_document_event(
+                "so.tilo.notes",
+                &cluster,
+                own,
+                iroh::SecretKey::from_bytes(&[72; 32]).public(),
+                &own_signing,
+            ) else {
+                unreachable!()
+            };
+            net.event_tx
+                .try_send(NetEvent::Msg {
+                    ws: room_topic_id(room),
+                    peer: iroh::SecretKey::from_bytes(&[72; 32]).public(),
+                    membership_epoch: None,
+                    replayed: true,
+                    msg: msg.clone(),
+                })
+                .expect("queue the echo");
+            net.tick();
+            assert!(net.inbound_documents_handle().lock().unwrap().is_empty());
+
+            net.event_tx
+                .try_send(NetEvent::OwnReplay {
+                    ws: room_topic_id(room),
+                    msg,
+                })
+                .expect("queue the replay");
+            net.tick();
+            let inbound = net.inbound_documents_handle();
+            let delivered = inbound.lock().unwrap();
+            assert_eq!(delivered.len(), 1);
+            assert!(delivered[0].replayed);
+            assert_eq!(delivered[0].peer, own);
+            assert_eq!(delivered[0].role, collab_types::Role::Editor);
+        }
+
         file_backed_records_never_put_a_path_on_the_wire();
         a_sealed_record_name_reaches_the_local_app_holding_that_record();
         app_document_from_a_room_we_are_not_in_never_reaches_the_broker();
+        a_replayed_own_document_reaches_the_broker_and_an_echo_does_not();
     }
 
     #[test]
