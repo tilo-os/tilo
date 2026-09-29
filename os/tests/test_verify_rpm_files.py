@@ -43,6 +43,14 @@ class VerifyRpmFilesTests(unittest.TestCase):
         result, _ = self.run_with("S.5......    /usr/bin/tool\n")
         self.assertEqual(result.returncode, 1)
 
+    def test_lost_data_is_located(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            lost = Path(tmp) / "lib.so"
+            lost.write_bytes(b"x" * 65536 + bytes(4096 * 10) + b"y" * 5000)
+            result, _ = self.run_with(f"..5......    {lost}\n")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("10 of 28 4 KiB blocks all zero: 16-25", result.stderr)
+
     def test_expected_changes_pass(self):
         listing = "\n".join([
             "missing     /usr/share/doc/ours/README",
