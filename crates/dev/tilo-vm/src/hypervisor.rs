@@ -460,6 +460,7 @@ pub fn domain_xml_with_uuid(
     </interface>
     <serial type='pty'/>
     <console type='pty'/>
+    <controller type='usb' model='qemu-xhci'/>
     <input type='tablet' bus='usb'/>
     <input type='keyboard' bus='usb'/>
     <graphics type='spice' autoport='yes'/>{gl}
@@ -1454,6 +1455,12 @@ mod tests {
             assert!(xml.contains("<features><acpi/></features>"), "{xml}");
             assert!(!xml.contains("<apic/>"), "{xml}");
             assert!(xml.contains("<cpu mode='host-passthrough'/>"), "{xml}");
+            // libvirt adds no USB controller to an aarch64 `virt` machine and then
+            // refuses the USB tablet and keyboard.
+            assert!(
+                xml.contains("<controller type='usb' model='qemu-xhci'/>"),
+                "{xml}"
+            );
         }
 
         // Phase: domain_xml_when_emulated_uses_tcg.
