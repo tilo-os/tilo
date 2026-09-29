@@ -96,6 +96,7 @@ ARG TILO_CACHE_PROBE_NONCE=""
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
     SCCACHE_GHA_VERSION=tilo-relay-v1 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
     TILO_CACHE_PROBE_NONCE=${TILO_CACHE_PROBE_NONCE} \
     RUSTC_WRAPPER=/usr/local/bin/sccache \

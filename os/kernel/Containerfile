@@ -220,7 +220,7 @@ RUN --mount=type=secret,id=actions_cache_url \
     ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)"; \
     ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)"; \
     export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_DIRECT=false \
-      SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1; \
+      SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1 SCCACHE_IDLE_TIMEOUT=0; \
     case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
       shared:0|off:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 ;; \
       shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
