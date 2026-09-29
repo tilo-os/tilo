@@ -187,9 +187,10 @@ ARG TILO_CARGO_FRESHNESS=clean
 # CI's dev lane links without LTO, as its production image does; everyone else
 # keeps thin LTO.
 ARG TILO_DEV_RUST_LTO=thin
-# The shared compiler cache CI and remote builders use, when its settings
-# and credentials (BuildKit or podman secrets) are passed. Without them sccache
-# keeps its local cache mount only.
+# A shared compiler cache when one is passed: CI's runner cache through the
+# actions_cache_url / actions_runtime_token secrets, or an S3 bucket through
+# SCCACHE_BUCKET and the aws_* secrets. Without either sccache keeps its local
+# cache mount only.
 ARG SCCACHE_BUCKET=""
 ARG SCCACHE_ENDPOINT=""
 ARG SCCACHE_REGION="auto"
@@ -200,6 +201,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
+    --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
     trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) printf 'TILO_DEV_RUST_LTO must be thin or off\n' >&2; exit 1 ;; esac \
     && if [ -n "$SCCACHE_BUCKET" ]; then \
@@ -207,6 +210,11 @@ RUN --mount=type=cache,target=/build/.cargo-home \
                 SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
                 AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)" \
                 AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)"; \
+       fi \
+    && ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)" \
+    && ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)" \
+    && if [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ]; then \
+         export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-dev-image-v1; \
        fi \
     && if ! sccache --start-server; then \
          export RUSTC_WRAPPER=; \
