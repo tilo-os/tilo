@@ -127,6 +127,50 @@ impl StatePeer {
     }
 }
 
+impl StatePeer {
+    /// Every encrypted record whose sealed history has used three quarters
+    /// of its bound, as `(app, record)`: its key holder compacts it before
+    /// new writes are refused.
+    #[must_use]
+    pub fn sealed_records_to_compact(&self) -> Vec<(String, String)> {
+        self.core
+            .documents
+            .iter()
+            .filter(|(_, document)| {
+                let bytes: usize = document.sealed.iter().map(|op| op.payload.len()).sum();
+                document.sealed.len() >= super::MAX_SEALED_OPS / 4 * 3
+                    || bytes >= super::MAX_SEALED_BYTES / 4 * 3
+            })
+            .map(|(route, _)| (route.app.clone(), route.record.clone()))
+            .collect()
+    }
+
+    /// This replica's own sealed writes (the compactions it minted) that
+    /// `before` does not hold. A governed snapshot cannot carry sealed
+    /// history, so they are published as themselves.
+    pub(super) fn own_sealed_publications(&self, before: Option<&Self>) -> Vec<NeighbourMsg> {
+        let author = Ed25519PublicKey::from_bytes(self.core.authority.device_public_key);
+        let mut messages = Vec::new();
+        for (route, document) in &self.core.documents {
+            let published = before
+                .and_then(|before| before.core.documents.get(route))
+                .map_or(&[][..], |prior| prior.sealed.as_slice());
+            for op in &document.sealed {
+                if op.author == author && !published.contains(op) {
+                    messages.push(NeighbourMsg::AppDocument {
+                        peer: peer_handle(author.as_bytes()),
+                        app_id: route.app.clone(),
+                        cluster_id: self.core.room.clone(),
+                        record_id: route.record.clone(),
+                        envelope: Box::new(op.clone()),
+                    });
+                }
+            }
+        }
+        messages
+    }
+}
+
 /// The history after `compaction`, whose envelope passed every admission
 /// check, supersedes `history`: the compaction, then every write it does not
 /// cover, in order. `floors` are the record's sequence floors before it.
