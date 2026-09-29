@@ -6,7 +6,7 @@
 use std::fs::File;
 use std::process::{Command, Stdio};
 use std::sync::mpsc::{self, Receiver, Sender};
-use ui::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
 
 use serde::Deserialize;
 
