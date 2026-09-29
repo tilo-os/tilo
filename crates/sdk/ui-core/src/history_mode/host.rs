@@ -170,24 +170,17 @@ impl HistoryHost {
         self.open
     }
 
-    /// The newest `limit` changes the timeline would list now, newest first,
-    /// whether or not History is open.
+    /// The changes the timeline would list now, in causal order, whether
+    /// or not History is open.
     #[cfg(any(feature = "native", test))]
-    pub(crate) fn recent_entries(
-        &self,
-        doc: &AutoCommit,
-        limit: usize,
-    ) -> Vec<crate::widget::HistoryEntry> {
+    pub(crate) fn current_entries(&self, doc: &AutoCommit) -> Vec<crate::widget::HistoryEntry> {
         let Some(controller) = self.controller.as_ref().filter(|_| !self.invalid_owner) else {
             return Vec::new();
         };
-        let Ok(document) = self.source().document(doc) else {
-            return Vec::new();
-        };
-        let mut entries = controller.entries_at(&document);
-        entries.reverse();
-        entries.truncate(limit);
-        entries
+        self.source()
+            .document(doc)
+            .map(|document| controller.entries_at(&document))
+            .unwrap_or_default()
     }
 
     /// The host's own chrome presents History: drop the toolbar's button.

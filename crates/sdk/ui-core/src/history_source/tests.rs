@@ -824,10 +824,17 @@ fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
             .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
         "the genesis is made by the record's derived actor at time zero"
     );
+    let kept = HistorySource::new().entries(&mut doc);
     assert_eq!(
-        HistorySource::new().entries(&mut doc).len(),
+        kept.len(),
         1,
         "a document's history keeps the version it was created as"
+    );
+    assert!(kept[0].is_genesis(), "and says it is the genesis");
+    assert_eq!(kept[0].summary, "Created");
+    assert!(
+        !kept[0].is_revertible(),
+        "creation is restored to, not reverted"
     );
     assert!(
         HistorySource::new()
@@ -843,6 +850,7 @@ fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
         .entries(&mut doc);
     assert_eq!(entries.len(), 1, "only the edit someone made");
     assert_eq!(entries[0].timestamp, at(T0));
+    assert!(!entries[0].is_genesis());
     assert_eq!(
         entries[0].author.identity_short,
         short_id(&doc.get_actor().to_hex_string())
@@ -871,11 +879,13 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
         None,
         "a primary document records no identity"
     );
+    let kept = HistorySource::new().entries(&mut doc);
     assert_eq!(
-        HistorySource::new().entries(&mut doc).len(),
+        kept.len(),
         1,
         "its own history keeps the version it was created as"
     );
+    assert!(kept[0].is_genesis());
     assert!(
         HistorySource::new()
             .without_record_genesis()
@@ -886,6 +896,10 @@ fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
 
     doc.put(ROOT, "categories", "general, voice").unwrap();
     doc.commit();
+    assert!(
+        !HistorySource::new().entries(&mut doc)[1].is_genesis(),
+        "an edit at time zero is not the genesis"
+    );
     assert_eq!(
         HistorySource::new()
             .without_record_genesis()
