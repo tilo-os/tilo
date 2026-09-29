@@ -84,6 +84,8 @@ pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+#[cfg(target_os = "macos")]
+mod keychain;
 pub mod machine_mesh;
 #[cfg(target_os = "linux")]
 pub mod nofollow;

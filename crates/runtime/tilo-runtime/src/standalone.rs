@@ -77,12 +77,13 @@ impl Standalone {
         stage("provisioning the collaboration identity");
         let identity_dir = runtime_identity::identity_dir_from_env()?;
         let paths = tilo_identity_host::provisioning::collaboration_identity_paths();
+        let storage = IdentityStorage::for_session();
         tilo_identity_host::provisioning::ensure_foreign_collaboration_identity(
             &identity_dir,
             &paths,
-            IdentityStorage::Platform,
+            storage,
         )?;
-        let device = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
+        let device = tilo_user_identity::persist::load_device_key(&paths)
             .map_err(io::Error::other)?
             .verifying_key()
             .to_bytes();
@@ -99,8 +100,12 @@ impl Standalone {
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined rooms and channel keys");
-        let (joined, channel_keys) =
-            joined_rooms_and_keys(root, &room_id, (Arc::clone(&channels), Arc::clone(&fanout)))?;
+        let (joined, channel_keys) = joined_rooms_and_keys(
+            root,
+            &room_id,
+            storage,
+            (Arc::clone(&channels), Arc::clone(&fanout)),
+        )?;
         stage("opening the room owner");
         let owner = room_owner(
             root,
@@ -335,6 +340,7 @@ fn room_owner(
 fn joined_rooms_and_keys(
     profile: &Path,
     room: &str,
+    storage: IdentityStorage,
     broker: (Arc<Mutex<BrokerChannels>>, Arc<FanoutState>),
 ) -> io::Result<(Arc<Joined>, channels::Channels)> {
     let custody = tilo_identity_host::broker::trusted_current_device(room)?;
@@ -343,6 +349,7 @@ fn joined_rooms_and_keys(
     let keys = channels::open(
         profile,
         RoomId::parse(room).ok_or_else(|| io::Error::other("invalid runtime room"))?,
+        storage,
         custody.0,
         Arc::clone(&joined),
         channels,

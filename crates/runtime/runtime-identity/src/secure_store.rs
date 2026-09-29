@@ -2,11 +2,13 @@
 //!
 //! The preferred backend is the system secret store through `tilo-secrets`:
 //! the freedesktop Secret Service over D-Bus on Linux, the login Keychain on
-//! macOS. A session without one (a rescue shell, CI, or a desktop without a
-//! Secret Service) falls back to a mode-0600 file below the mode-0700
-//! identity directory. That fallback is deliberately named *broker file*: the
-//! launcher may read it, sandboxed applications never receive either its path
-//! or its bytes.
+//! macOS. A Linux session without one (a rescue shell, CI, or a desktop
+//! without a Secret Service) falls back to a mode-0600 file below the
+//! mode-0700 identity directory. That fallback is deliberately named *broker
+//! file*: the launcher may read it, sandboxed applications never receive
+//! either its path or its bytes. macOS always has the Keychain, so there a
+//! failing Keychain fails the operation, and a broker file an earlier build
+//! wrote moves into the Keychain the next time its identity is secured.
 //!
 //! `SecretProvider` is the hardware-backed seam. A TPM/FIDO implementation
 //! can implement it and pass it to the `_with_provider` APIs; this crate does
@@ -347,6 +349,23 @@ pub(crate) fn provider_for<'a>(
     }
 }
 
+/// Whether a session without an answering system store keeps new identity
+/// secrets in the broker file. The login Keychain is always there on macOS,
+/// so a failing one fails the operation instead.
+pub(crate) const FILE_FALLBACK: bool = !cfg!(target_os = "macos");
+
+/// Set (to anything) in a test's environment, it keeps every identity
+/// secret of the session in private files, out of the user's login Keychain
+/// or Secret Service. A release build ignores it.
+pub const FILE_SECRETS_ENV: &str = "TILO_IDENTITY_FILE_SECRETS";
+
+/// Whether this session was told to keep its identity secrets in files
+/// ([`FILE_SECRETS_ENV`]).
+#[must_use]
+pub fn file_secrets_requested() -> bool {
+    cfg!(debug_assertions) && std::env::var_os(FILE_SECRETS_ENV).is_some()
+}
+
 pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider + '_> {
     #[cfg(test)]
     {
@@ -354,11 +373,14 @@ pub(crate) fn preferred_provider(identity_dir: &Path) -> Box<dyn SecretProvider 
     }
     #[cfg(not(test))]
     {
+        if file_secrets_requested() {
+            return Box::new(BrokerFileProvider::new(identity_dir));
+        }
         // An answering store can still refuse (a locked collection whose
         // prompt is dismissed): callers try the provider and fall back only on
         // a real store failure.
         let system = SecretServiceProvider::system();
-        if system.available() {
+        if !FILE_FALLBACK || system.available() {
             Box::new(system)
         } else {
             Box::new(BrokerFileProvider::new(identity_dir))

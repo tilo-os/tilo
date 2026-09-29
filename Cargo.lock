@@ -16134,6 +16134,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16383,6 +16384,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-secrets",
  "workspace-hack",
  "zeroize",
 ]
