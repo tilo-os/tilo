@@ -291,19 +291,34 @@ impl Harness {
             &canonical[range],
         )
         .unwrap();
-        let (status, bytes) = self
-            .signed(
-                "POST",
-                "/peer/v3/state",
-                frame(MessageType::StateItemChunk, &chunk.encode().unwrap()),
-            )
-            .await;
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
+        let body = frame(MessageType::StateItemChunk, &chunk.encode().unwrap());
+        // Deferred staging capacity answers a retryable 503; like the browser,
+        // re-issue the same range with a fresh proof after a doubling backoff.
+        let deadline = tilo_test_env::hang_deadline();
+        let mut pause = Duration::from_millis(200);
+        let bytes = loop {
+            let (status, bytes) = self.signed("POST", "/peer/v3/state", body.clone()).await;
+            if status == StatusCode::SERVICE_UNAVAILABLE
+                && bytes == b"temporarily-unavailable"
+                && std::time::Instant::now() < deadline
+            {
+                drive(
+                    &mut self.ingress,
+                    &mut self.f.owner,
+                    tokio::time::sleep(pause),
+                )
+                .await;
+                pause = (pause * 2).min(Duration::from_secs(2));
+                continue;
+            }
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+            break bytes;
+        };
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert!(rest.is_empty());
         (kind, payload.to_vec())
