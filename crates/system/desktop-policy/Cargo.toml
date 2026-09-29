@@ -2,8 +2,11 @@
 name = "desktop-policy"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "Canonical desktop policy shared by the Tilo launcher, Settings and workspace chrome."
 
 [features]
 # Reading and writing personal defaults on the host filesystem, and the
@@ -13,10 +16,10 @@ default = ["host-storage"]
 host-storage = ["dep:atomic-file", "dep:package-store", "dep:xdg-paths"]
 
 [dependencies]
-xdg-paths = { path = "../xdg-paths", optional = true }
+xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
 # Which packages are installed and where their trees are.
-package-store = { path = "../../packaging/package-store", optional = true }
-atomic-file = { path = "../atomic-file", optional = true }
+package-store = { version = "0.1.0", path = "../../packaging/package-store", optional = true }
+atomic-file = { version = "0.1.0", path = "../atomic-file", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

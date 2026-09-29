@@ -790,9 +790,26 @@ fn govern_elsewhere(
             subject,
             expires_unix,
         },
-        Operation::GrantAppAction { .. } | Operation::RevokeAppAction { .. } => {
-            return Err("app action grants are not available in a hosted workspace".into());
-        }
+        Operation::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        } => DesktopCommand::GrantAppAction {
+            app,
+            target_app,
+            action,
+            lifetime,
+        },
+        Operation::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        } => DesktopCommand::RevokeAppAction {
+            app,
+            target_app,
+            action,
+        },
     };
     let bound = serde_json::to_string(&BoundCommand {
         source: CommandSource {

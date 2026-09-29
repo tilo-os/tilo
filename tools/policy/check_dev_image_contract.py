@@ -208,7 +208,7 @@ def check_builder_packages(repo: Path) -> list[Finding]:
         committed = []
     findings = []
     for arch in ("x86_64", "aarch64"):
-        wanted = module.builder_packages(repo / "os/Containerfile", "builder", arch)
+        wanted = module.builder_packages(repo / "os/Containerfile", "builder-base", arch)
         if committed != wanted:
             added = sorted(set(wanted) - set(committed))
             removed = sorted(set(committed) - set(wanted))

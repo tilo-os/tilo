@@ -27,7 +27,7 @@ sha2.workspace = true
 hex.workspace = true
 thiserror.workspace = true
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 clap.workspace = true
 ed25519-dalek.workspace = true
 libc.workspace = true

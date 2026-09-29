@@ -121,7 +121,9 @@ audit() {
     probe="$(mktemp -d)"
     container="$(docker create --entrypoint /none "$ref")"
     docker cp "$container:/usr/lib/tilo/wpe-stage-arch" "$probe/arch"
-    docker cp "$container:/wpe/usr/lib" "$probe/lib"
+    # Containerfile.wpe removes /wpe/usr/lib when it is a symlink; Fedora's
+    # WebKit libraries are installed in the retained /wpe/usr/lib64 tree.
+    docker cp "$container:/wpe/usr/lib64" "$probe/lib"
     docker rm "$container" >/dev/null
     test "$(cat "$probe/arch")" = "$arch"
     find "$probe/lib" -name 'libWPEWebKit-2.0.so*' -print -quit | grep -q .
@@ -228,9 +230,16 @@ promote() {
   git config user.name 'Tilo CI'
   git config user.email 'ci@tilo.invalid'
   git add "$pins"
-  git commit -m "build(os): refresh native $label buildroot snapshots"
   snapshot_digest="$(sha256sum "$pins" | awk '{print $1}')"
-  branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"
+  # The branch name open-snapshot-pr.py verifies: a wpe-stage pin is not a
+  # buildroot's.
+  if [ "$kind" = wpe-stage ]; then
+    git commit -m "build(os): pin the native $label stages"
+    branch="automation/wpe-stage-snapshot-${snapshot_digest:0:16}"
+  else
+    git commit -m "build(os): refresh native $label buildroot snapshots"
+    branch="automation/$kind-buildroot-snapshot-${snapshot_digest:0:16}"
+  fi
   remote_tip="$(git ls-remote --heads origin "refs/heads/$branch" | awk '{print $1}')"
   git push --force-with-lease="refs/heads/$branch:$remote_tip" origin "HEAD:refs/heads/$branch"
   python3 os/dev/open-snapshot-pr.py \

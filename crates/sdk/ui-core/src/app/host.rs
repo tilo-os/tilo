@@ -252,7 +252,7 @@ fn run_layout_pass(
     let view = crate::view::capability::view_state(app.root_widget.as_ref());
     // A pending structural rebuild means the old map may already contain
     // removed controls. Capture only from an admitted, unchanged topology.
-    app.layout.structure_dirty |= app.root_widget.take_structure_dirty();
+    app.layout.structure_dirty |= app.take_composition_dirty();
     let focus = if app.layout.structure_dirty {
         CompositionFocus::capture_live(app.root_widget.as_ref())
     } else {
@@ -336,7 +336,7 @@ fn run_layout_pass(
         let start = crate::time::now();
         app.apply_history_presentation(current_root);
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
-        let dirty = app.root_widget.take_structure_dirty();
+        let dirty = app.take_composition_dirty();
         // Translation-only frames avoid both composition and a tree snapshot.
         let geometry = if viewport_changed {
             composition_geometry(&app.layout.taffy, current_root)?

@@ -208,7 +208,12 @@ impl Uploads {
                 &admission.encode()?,
             )?));
         }
-        ensure!(self.inflight.len() < INFLIGHT, "upload workers busy");
+        // Busy workers are staging capacity: a chunk whose reply outran the
+        // request deadline (answered retryable) is still staging when the
+        // client re-issues it, and that retry must be told to wait, not refused.
+        if self.inflight.len() >= INFLIGHT {
+            return Err(anyhow::Error::from(UploadFailure::Capacity).context("upload workers busy"));
+        }
         let identity = StageIdentity {
             workspace: owner.workspace_id(),
             device: admitted.session().device_certificate().device_public_key,
@@ -217,10 +222,10 @@ impl Uploads {
             total: chunk.canonical_size(),
         };
         let key = (identity.device, identity.delivery);
-        ensure!(
-            !self.inflight.values().any(|flight| flight.key == key),
-            "upload chunk already in flight"
-        );
+        if self.inflight.values().any(|flight| flight.key == key) {
+            return Err(anyhow::Error::from(UploadFailure::Capacity)
+                .context("upload chunk already in flight"));
+        }
         let copied = UploadChunk::copy(&chunk, budget)?;
         let stage = match self.take_idle(&identity) {
             Some(stage) => Ok(stage),
