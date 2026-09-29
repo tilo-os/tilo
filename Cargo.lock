@@ -14882,7 +14882,6 @@ dependencies = [
 name = "tilo-browser-peer"
 version = "0.1.0"
 dependencies = [
- "blake3",
  "bytes",
  "channel-crypto",
  "collab-types",
@@ -14917,7 +14916,6 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
- "uuid",
  "web-time",
  "workspace-hack",
 ]
