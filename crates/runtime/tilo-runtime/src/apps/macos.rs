@@ -68,7 +68,6 @@ pub(super) fn launch(apps: &Apps, app: &InstalledApp, sockets: &Sockets) -> Resu
             &manifest.sandbox.net.hosts,
             &[],
         ),
-        gate_socket: None,
         inherit_fds: services.fds(),
         env: services
             .env(&app.package_id, &apps.room)

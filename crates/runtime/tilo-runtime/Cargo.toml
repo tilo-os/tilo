@@ -60,6 +60,8 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
+# The one per-user index the host's own search reads.
+tilo-os-search = { path = "../os-search" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }

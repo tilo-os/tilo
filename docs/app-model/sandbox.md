@@ -319,7 +319,8 @@ After all three layers, your `main()` sees:
 - `TILO_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
   capability names you. Absent otherwise.
 - `HTTPS_PROXY` / `ALL_PROXY` / `TILO_NET_GATE` — only when your egress is
-  filtered to a host allowlist.
+  filtered to a host allowlist. On macOS the proxy variables name the gate
+  and `TILO_NET_GATE` is absent.
 - `TILO_WORKSPACE_ID` — the workspace the compositor opened you into, as a
   UUID. Two things read it: `runtime::is_tilo_native()` only asks whether it
   is set, and the UI toolkit uses the value as the collaboration cluster id.
@@ -384,7 +385,7 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
-| Network: allowlist | Connect to the egress gate's Unix socket only (`TILO_NET_GATE`) |
+| Network: allowlist | Connect to one loopback port only: the egress gate the launcher runs for this launch, named by `HTTP(S)_PROXY` and `ALL_PROXY` |
 | Network: host | IP in and out, the system resolver, `trustd`. Filesystem sockets such as an `ssh-agent` stay closed |
 | Service descriptors | Inherited from the runtime at fixed numbers. Every other descriptor is closed by `POSIX_SPAWN_CLOEXEC_DEFAULT` |
 
@@ -406,10 +407,12 @@ nothing is ever started unsandboxed.
 - Device grants (camera, microphone) are not honoured under Seatbelt.
   macOS gates them through TCC, and the profile grants no TCC service,
   so the app is denied rather than widened.
-- An allowlisted network under Seatbelt reaches only the gate's Unix
-  socket. There is no network namespace in which to run the loopback
-  relay, so `HTTP_PROXY`/`ALL_PROXY`-style clients are offline until the
-  app talks to `TILO_NET_GATE` directly.
+- An allowlisted network under Seatbelt has no empty namespace behind it,
+  so the gate listens on a loopback TCP port instead of a Unix socket, and
+  the profile admits that one port. Any local process can reach the port;
+  that grants nothing, because an unconfined process already has the
+  network and the gate reaches only what the allowlist names. There is no
+  `TILO_NET_GATE` on macOS.
 - A process whose ad-hoc signature claims the App Sandbox entitlement
   gets Seatbelt, and then `libsystem_secinit` tries to apply App Sandbox
   on top. That aborts the process, which fails closed.
