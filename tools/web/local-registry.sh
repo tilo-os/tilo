@@ -28,9 +28,6 @@
 #   --origin ORIGIN    page origin allowed to read cross-origin; repeatable
 #                      (default http://localhost:4321)
 #   --app MANIFEST=WASM  also publish this app module; repeatable
-#   --relay-core DIR   also publish DIR's core (build-web-core.sh --features
-#                      relay) as so.tilo.runtime.web-relay; it must have the
-#                      build's runtime ABI id
 #   --check            verify end to end in Node, then stop the server
 set -euo pipefail
 
@@ -40,7 +37,6 @@ target_dir=${CARGO_TARGET_DIR:-$repo/target}
 port=8787
 origins=()
 extra_apps=()
-relay_core=""
 check=0
 build=""
 
@@ -49,14 +45,13 @@ while (($#)); do
     --port) port=$2; shift 2 ;;
     --origin) origins+=("$2"); shift 2 ;;
     --app) extra_apps+=("$2"); shift 2 ;;
-    --relay-core) relay_core=$(cd "$2" && pwd); shift 2 ;;
     --check) check=1; shift ;;
-    -h|--help) sed -n '2,34p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,31p' "$0"; exit 0 ;;
     -*) echo "unknown option $1" >&2; exit 2 ;;
     *) build=$(cd "$1" && pwd); shift ;;
   esac
 done
-[[ -n $build || ${#extra_apps[@]} -gt 0 ]] || { sed -n '2,34p' "$0"; exit 2; }
+[[ -n $build || ${#extra_apps[@]} -gt 0 ]] || { sed -n '2,31p' "$0"; exit 2; }
 ((${#origins[@]})) || origins=(http://localhost:4321)
 base="http://127.0.0.1:$port"
 
@@ -121,33 +116,19 @@ publish() {
 
 pack() { "$tapp" pack-web --identity "$state/keys/publisher.json" "$@"; }
 
-# publish_core BUILD MANIFEST PACKAGE_ID: a core with its glue as assets.
-publish_core() {
-  local dir=$1 manifest=$2 id=$3 core_wasm release glue
-  core_wasm=$dir/$(json 'console.log(require(process.argv[1]).core.path)' "$dir/runtime.json")
-  release=$(json 'console.log(require(process.argv[1]).runtime)' "$dir/runtime.json")
-  glue=$(mktemp -d)
-  (cd "$(dirname "$core_wasm")" && find . -type f ! -name '*.wasm' -exec cp --parents {} "$glue" \;)
-  pack --manifest "$manifest" --module "$core_wasm" --asset-dir "$glue" --provides "$release" \
-    -o "$state/tapps/$id.tapp"
-  rm -rf "$glue"
-  publish "$state/tapps/$id.tapp" "$id"
-}
-
 apps=()
 runtime_abi=""
-relay_runtime=""
 if [[ -n $build ]]; then
   echo "== core from $build"
+  core_wasm=$build/$(json 'console.log(require(process.argv[1]).core.path)' "$build/runtime.json")
   runtime_abi=$(json 'console.log(require(process.argv[1]).abi)' "$build/runtime.json")
-  publish_core "$build" "$repo/tools/web/web-core.tilo-app.toml" so.tilo.runtime.web
-  if [[ -n $relay_core ]]; then
-    echo "== relay core from $relay_core"
-    relay_abi=$(json 'console.log(require(process.argv[1]).abi)' "$relay_core/runtime.json")
-    [[ $relay_abi == "$runtime_abi" ]] || { echo "the relay core's ABI $relay_abi differs from $runtime_abi" >&2; exit 1; }
-    publish_core "$relay_core" "$repo/tools/web/web-core-relay.tilo-app.toml" so.tilo.runtime.web-relay
-    relay_runtime=so.tilo.runtime.web-relay
-  fi
+  release=$(json 'console.log(require(process.argv[1]).runtime)' "$build/runtime.json")
+  glue=$(mktemp -d)
+  (cd "$(dirname "$core_wasm")" && find . -type f ! -name '*.wasm' -exec cp --parents {} "$glue" \;)
+  pack --manifest "$repo/tools/web/web-core.tilo-app.toml" --module "$core_wasm" \
+    --asset-dir "$glue" --provides "$release" -o "$state/tapps/so.tilo.runtime.web.tapp"
+  rm -rf "$glue"
+  publish "$state/tapps/so.tilo.runtime.web.tapp" so.tilo.runtime.web
 
   echo "== apps from $build"
   while IFS=$'\t' read -r id package module; do
@@ -174,10 +155,9 @@ done
 
 echo "== snapshot"
 reg sign-snapshot --owner-key-file "$state/keys/owner.seed" --valid-for-seconds 86400 >/dev/null
-json 'const [file, baseUrl, ownerKeyHex, runtimeAbi, relayRuntimePackage, ...apps] = process.argv.slice(1);
-  require("node:fs").writeFileSync(file, JSON.stringify({baseUrl, ownerKeyHex, runtimeAbi: runtimeAbi || undefined,
-    relayRuntimePackage: relayRuntimePackage || undefined, apps}, null, 2) + "\n");' \
-  "$state/registry.json" "$base" "$owner_hex" "$runtime_abi" "$relay_runtime" "${apps[@]}"
+json 'const [file, baseUrl, ownerKeyHex, runtimeAbi, ...apps] = process.argv.slice(1);
+  require("node:fs").writeFileSync(file, JSON.stringify({baseUrl, ownerKeyHex, runtimeAbi: runtimeAbi || undefined, apps}, null, 2) + "\n");' \
+  "$state/registry.json" "$base" "$owner_hex" "$runtime_abi" "${apps[@]}"
 cat "$state/registry.json"
 # The build's registry.html reads it next to itself.
 [[ -z $build ]] || cp "$state/registry.json" "$build/registry.json"

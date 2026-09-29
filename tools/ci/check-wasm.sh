@@ -28,9 +28,6 @@ check "web core" -p tilo-browser-runtime -p ebook -p word-processor -p chat --fe
 # build-web-core.sh --features cloud: the same core with the certified peer.
 check "web core with peer" -p tilo-browser-runtime -p ebook -p word-processor -p chat \
   --features tilo-browser-runtime/dylink,tilo-browser-runtime/cloud
-# build-web-core.sh --features relay: the same core with the relay peer.
-check "web core with relay peer" -p tilo-browser-runtime -p ebook -p word-processor -p chat \
-  --features tilo-browser-runtime/dylink,tilo-browser-runtime/relay
 # scripts/build.sh: the Cloud frontend's monolithic module.
 check "cloud frontend" -p tilo-browser-runtime --features cloud,static-apps
 # web-registry-client/build-verifier.sh.
