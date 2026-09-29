@@ -230,36 +230,16 @@ fn policy_contract() -> ActionContract {
     }
 }
 
-/// The resource tree Backups publishes: the retention policy, with a child per
-/// class exporting set / increase / decrease, each the same action the
-/// on-screen affordance dispatches.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete stable resource hierarchy is intentionally visible together"
-)]
-pub fn provide_resources(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-) -> Vec<Resource> {
-    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
-}
+/// Stable id for the published workspace root ([`tilo_resource::publish`]).
+pub const BACKUPS_RESOURCE_ID: &str = "backups";
 
-/// As [`provide_resources`], but lets a live local backend surface the reason
-/// an otherwise-saved configuration is unavailable. The public three-argument
-/// form keeps deterministic callers and tests independent of host-only paths.
-#[allow(
-    clippy::too_many_lines,
-    reason = "the complete stable resource hierarchy is intentionally visible together"
-)]
-pub fn provide_resources_with_unavailable_reason(
-    policy: &RetentionPolicy,
-    catalog: &Catalog,
-    configured: bool,
-    unavailable_reason: Option<&str>,
-) -> Vec<Resource> {
-    let unavailable_reason =
-        unavailable_reason.unwrap_or("Choose a source and destination before running a backup");
+const DEFAULT_UNAVAILABLE: &str = "Choose a source and destination before running a backup";
+
+/// Retention-policy Document tree: one child per class with set / increase /
+/// decrease — the same actions the on-screen affordances dispatch. Rides
+/// [`crate::resource::Backups::children`] so hosted palette traffic goes through
+/// [`tilo_resource::publish`], never a second hand-built `backups.policy` root.
+pub(crate) fn publish_policy_document(policy: &RetentionPolicy) -> Resource {
     let mut root = Resource::new("backups.policy", "backups.policy", "Retention policy");
 
     for field in PolicyField::ALL {
@@ -301,15 +281,23 @@ pub fn provide_resources_with_unavailable_reason(
 
         root = root.with_child(fr);
     }
+    root
+}
 
-    let mut backups = Resource::new("backups", "backups.workspace", "Backups");
+/// Workspace View / Effect ops that are not document state (run backup, set up).
+/// Published via [`crate::resource::Backups::local_operations`].
+pub(crate) fn workspace_effect_specs(
+    configured: bool,
+    unavailable_reason: &str,
+) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     if let Some(spec) = operation_spec(
         "backup-now",
         "Run backup now",
         OperationKind::Effect,
         &BackupOperation::BackupNow,
     ) {
-        backups = backups.with_action(if configured {
+        specs.push(if configured {
             spec
         } else {
             spec.unavailable("not_configured", unavailable_reason)
@@ -321,9 +309,12 @@ pub fn provide_resources_with_unavailable_reason(
         OperationKind::Effect,
         &BackupOperation::Setup,
     ) {
-        backups = backups.with_action(spec);
+        specs.push(spec);
     }
+    specs
+}
 
+fn catalog_source_set(catalog: &Catalog) -> Resource {
     let mut sources = Resource::new("backups.sources", "backups.source-set", "Backup sources");
     for source in &catalog.sources {
         let source_id = source.id.clone();
@@ -361,8 +352,10 @@ pub fn provide_resources_with_unavailable_reason(
         }
         sources = sources.with_child(source_resource.with_child(schedule));
     }
-    backups = backups.with_child(sources);
+    sources
+}
 
+fn catalog_destination_set(catalog: &Catalog) -> Resource {
     let mut destinations = Resource::new(
         "backups.destinations",
         "backups.destination-set",
@@ -386,8 +379,10 @@ pub fn provide_resources_with_unavailable_reason(
         }
         destinations = destinations.with_child(destination_resource);
     }
-    backups = backups.with_child(destinations);
+    destinations
+}
 
+fn catalog_snapshot_set(catalog: &Catalog, configured: bool, unavailable_reason: &str) -> Resource {
     let mut snapshots = Resource::new(
         "backups.snapshots",
         "backups.snapshot-set",
@@ -397,7 +392,63 @@ pub fn provide_resources_with_unavailable_reason(
         snapshots =
             snapshots.with_child(snapshot_resource(snapshot, configured, unavailable_reason));
     }
-    backups = backups.with_child(snapshots);
+    snapshots
+}
+
+/// Live catalog Views/Effects that are not document state. Hosted
+/// [`PublishesResources`] returns these beside [`tilo_resource::publish`] —
+/// never a second `backups.policy` / `backups` Document door.
+pub(crate) fn live_catalog_extras(
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
+    vec![
+        catalog_source_set(catalog),
+        catalog_destination_set(catalog),
+        catalog_snapshot_set(catalog, configured, reason),
+    ]
+}
+
+/// The resource tree Backups publishes standalone / `--shots` / unit tests:
+/// retention policy Document ops plus the safe backup automation catalog.
+#[allow(
+    clippy::too_many_lines,
+    reason = "the complete stable resource hierarchy is intentionally visible together"
+)]
+pub fn provide_resources(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+) -> Vec<Resource> {
+    provide_resources_with_unavailable_reason(policy, catalog, configured, None)
+}
+
+/// As [`provide_resources`], but lets a live local backend surface the reason
+/// an otherwise-saved configuration is unavailable. The public three-argument
+/// form keeps deterministic callers and tests independent of host-only paths.
+pub fn provide_resources_with_unavailable_reason(
+    policy: &RetentionPolicy,
+    catalog: &Catalog,
+    configured: bool,
+    unavailable_reason: Option<&str>,
+) -> Vec<Resource> {
+    let unavailable_reason = unavailable_reason.unwrap_or(DEFAULT_UNAVAILABLE);
+    let root = publish_policy_document(policy);
+
+    let mut backups = Resource::new(BACKUPS_RESOURCE_ID, "backups.workspace", "Backups");
+    for spec in workspace_effect_specs(configured, unavailable_reason) {
+        backups = backups.with_action(spec);
+    }
+    backups = backups
+        .with_child(catalog_source_set(catalog))
+        .with_child(catalog_destination_set(catalog))
+        .with_child(catalog_snapshot_set(
+            catalog,
+            configured,
+            unavailable_reason,
+        ));
 
     // Keep the long-standing policy root first: automation clients that began
     // at the original public root retain a stable traversal order.

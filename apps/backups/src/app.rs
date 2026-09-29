@@ -424,8 +424,33 @@ impl BackupsApp {
     }
 
     /// Show the retention policy the framework resource already holds.
+    /// An empty/default projection must not wipe unpublished local policy.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::BackupsState) {
+        let untouched = state.policy == RetentionPolicy::default();
+        let local_unpublished = self.ui.policy != RetentionPolicy::default();
+        if untouched && local_unpublished {
+            return;
+        }
         self.ui.policy = state.policy;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ui_policy(&self) -> &RetentionPolicy {
+        &self.ui.policy
+    }
+
+    #[cfg(test)]
+    pub(crate) fn ui_policy_mut(&mut self) -> &mut RetentionPolicy {
+        &mut self.ui.policy
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
@@ -5155,11 +5180,12 @@ impl ui::search::capability::SearchSource for BackupsApp {
 }
 
 impl ui::resources::PublishesResources for BackupsApp {
-    /// Publish the retention-policy resource tree to the shell's Ctrl+K palette
-    /// (see [`crate::actions`]).
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// policy Document ops ride [`tilo_resource::publish`]; this returns only
+    /// live catalog extras (never a second `backups.policy` / workspace root).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
     }
