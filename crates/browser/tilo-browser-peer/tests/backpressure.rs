@@ -128,6 +128,13 @@ async fn a_browser_that_stops_reading_lags_behind_its_queue_and_keeps_its_sessio
     }
     let receipt = author.barrier().unwrap();
     let published = Instant::now();
+    // The host ends a session nobody polled for 45 s; stop pausing well
+    // before that however slowly the commits become durable.
+    let unpause = paused.clone();
+    tokio::spawn(async move {
+        tokio::time::sleep(Duration::from_secs(30)).await;
+        unpause.store(false, Ordering::Relaxed);
+    });
     // Every commit is fsynced into the retained log and each lagging
     // subscriber's pending queue, which outlasts `wait_for` on some disks.
     tokio::task::spawn_blocking(move || receipt.recv_timeout(Duration::from_secs(90)))
