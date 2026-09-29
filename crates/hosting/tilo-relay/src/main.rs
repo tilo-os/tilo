@@ -392,7 +392,7 @@ mod tests {
         // These paths model the firstboot-generated handoff while keeping the
         // test hermetic instead of writing under /etc or /var/lib.
         config.home_peer_bundle = bundle_path;
-        config.full_replica_status = status_path;
+        config.full_replica_status = status_path.clone();
         config.state_root = temp.path().join("relay-state");
         config.identity_root = temp.path().join("identity");
         config.services = ServiceCapabilities::home_peer();
@@ -410,6 +410,9 @@ mod tests {
         )
         .await
         .unwrap();
+        // The full-replica worker keeps its proof fresh (it counts for 5 s);
+        // a start slower than that on a loaded runner must not read it stale.
+        fs::full_replica::save_status(&status_path, &status).unwrap();
         let profile = relay.handle().mesh_profile();
         assert_eq!(
             profile.replication.get(&42),
