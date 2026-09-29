@@ -2597,7 +2597,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
     install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
-    python3 /run/tilo-prepare-hardware-profile.py \
+    # -B: the script imports hardware_profile from /run, and its bytecode
+    # (which records the checkout's mtime) would otherwise stay in the layer.
+    python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
