@@ -2991,17 +2991,26 @@ impl ui::resources::PublishesResources for TubeApp {
     /// framework hosts the surface, [`tilo_resource::publish`] already owns
     /// navigation, queue, subscriptions and settings — keep only live catalogue,
     /// watch context, history/search and device-sync extras.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        #[cfg(feature = "grayjay-sync")]
+        let device = self.device_sync_view();
+        #[cfg(not(feature = "grayjay-sync"))]
+        let device_default = crate::sync::SyncView::default();
+        #[cfg(not(feature = "grayjay-sync"))]
+        let device = &device_default;
+        let model = self.model_ref();
         if self.actions.is_hosted() {
-            #[cfg(feature = "grayjay-sync")]
-            let device = self.device_sync_view();
-            #[cfg(not(feature = "grayjay-sync"))]
-            let device_default = crate::sync::SyncView::default();
-            #[cfg(not(feature = "grayjay-sync"))]
-            let device = &device_default;
-            return crate::actions::live_presentation_resources(self.model_ref(), device);
+            return crate::actions::live_presentation_resources(model, device);
         }
-        self.publish_resources(doc)
+        let shared = crate::resource::TubeShared::from_model(model);
+        let mut root =
+            ui::tilo_resource::publish::<crate::resource::Tube>("tube.app", "Tube", &shared);
+        // The watch page is what the person is looking at, so it stays ahead of
+        // the library in a bounded palette.
+        let mut children = crate::actions::live_presentation_resources(model, device);
+        children.append(&mut root.children);
+        root.children = children;
+        vec![root]
     }
 }
 

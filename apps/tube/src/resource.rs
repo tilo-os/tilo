@@ -39,6 +39,19 @@ impl TubeShared {
         model.settings = self.settings.clone();
         model
     }
+
+    /// The collaborative slice of a live model, without the fetched catalogue.
+    pub(crate) fn from_model(model: &TubeModel) -> Self {
+        let flags = |ids: &[String]| -> BTreeMap<String, bool> {
+            ids.iter().cloned().map(|id| (id, true)).collect()
+        };
+        Self {
+            likes: flags(&model.liked),
+            queue: flags(&model.queue),
+            subscriptions: flags(&model.subscriptions),
+            settings: model.settings.clone(),
+        }
+    }
 }
 
 /// The Tube application resource.
