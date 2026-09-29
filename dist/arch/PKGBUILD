@@ -42,6 +42,7 @@ package_tilo-session() {
     'seatd' 'libinput' 'systemd-libs' 'libdrm' 'mesa' 'pipewire' 'dbus'
     'fontconfig' 'freetype2' 'harfbuzz' 'bubblewrap' 'systemd'
     'xwayland-satellite' 'xdg-desktop-portal' 'xdg-dbus-proxy'
+    'gstreamer' 'gst-plugins-base-libs'
     'python'  # tilo-flight-recorder
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD' 'greetd: display manager')
@@ -83,7 +84,7 @@ package_tilo-runtime() {
   # The Tilo app's window and GPU stack is dlopen()ed, invisible to namcap.
   depends=(
     'glibc' 'gcc-libs' 'bubblewrap' 'xdg-desktop-portal' 'xdg-dbus-proxy'
-    'vulkan-icd-loader' 'libglvnd' 'wayland' 'libxkbcommon'
+    'vulkan-icd-loader' 'libglvnd' 'wayland' 'libxkbcommon' 'hicolor-icon-theme'
   )
   optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD')
   cd "$srcdir/runtime-payload"
