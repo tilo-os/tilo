@@ -14,13 +14,13 @@ on:
     paths:
       - "os/Containerfile.ci-fast"
       - "os/Containerfile.ci-control"
-      - ".forgejo/workflows/build-ci-fast-image.yml"
+      - ".forgejo/workflows/build-ci-fast-images.yml"
   push:
     branches: [main]
     paths:
       - "os/Containerfile.ci-fast"
       - "os/Containerfile.ci-control"
-      - ".forgejo/workflows/build-ci-fast-image.yml"
+      - ".forgejo/workflows/build-ci-fast-images.yml"
   workflow_dispatch:
 
 concurrency:

@@ -308,7 +308,8 @@ impl Widget for NotesApp {
     ui::provides!(
         dyn ui::widget::CompleteContentProvider,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped
     );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
@@ -437,12 +438,6 @@ impl Widget for NotesApp {
         "NotesApp"
     }
 
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -500,6 +495,14 @@ impl Widget for NotesApp {
             self.selection = Selection::collapsed(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::record::capability::RecordScoped for NotesApp {
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
     }
 }
 

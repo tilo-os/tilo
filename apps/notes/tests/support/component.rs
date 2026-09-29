@@ -119,7 +119,7 @@ pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     );
 }
 pub fn close_widget(widget: &mut dyn ui::Widget) {
-    let reports = widget.close_components();
+    let reports = ui::component_lifecycle::close_components(widget);
     assert!(!reports.is_empty());
     for report in &reports {
         assert_closed(report);

@@ -773,6 +773,29 @@ fn unschematised_changes_are_named_by_what_they_edited() {
 }
 
 #[test]
+fn a_feed_counts_edited_fields_and_never_shows_their_keys() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "desktop_counter_v1", 1_u64).unwrap();
+    doc.commit();
+    doc.put(ROOT, "desktop_counter_v1", 2_u64).unwrap();
+    doc.put(ROOT, "contents_owners_v1", "peer").unwrap();
+    doc.commit();
+    doc.delete(ROOT, "contents_owners_v1").unwrap();
+    doc.commit();
+    let summaries = HistorySource::new()
+        .without_field_paths()
+        .entries(&mut doc)
+        .into_iter()
+        .map(|entry| entry.summary)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summaries,
+        ["Edited 1 field", "Edited 2 fields", "Removed 1 field"]
+    );
+    assert!(summaries.iter().all(|summary| !summary.contains("_v1")));
+}
+
+#[test]
 fn an_action_context_names_its_change_before_any_field_fallback() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "draft").unwrap();

@@ -81,7 +81,7 @@ jobs:
     container:
       # Visual goldens are meaningful only when fonts, Mesa and the software
       # renderer are byte-for-byte identical to the reviewed refresh job.
-      # Advance this digest together with refresh-visual-baselines.yml.
+      # Advance this digest together with dev-visual-baselines.yml.
       image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
     env:
       CARGO_HOME: /cargo-home
@@ -247,7 +247,7 @@ jobs:
       # Ignored tests whose requirement this runner meets: the shell ones
       # spawn a real headless compositor (llvmpipe), format-host needs the
       # Markdown codec built as a wasm32-wasip2 component. FUSE-only ignored
-      # tests run in fs-fuse.yml. Newly enabled: a failure is listed in the
+      # tests run in ci-filesystem.yml. Newly enabled: a failure is listed in the
       # job summary but does not fail the run until the lane has passed here.
       - name: Run ignored tests this runner supports
         if: ${{ !cancelled() && steps.workspace-tests.outcome != 'skipped' }}

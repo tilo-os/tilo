@@ -4941,7 +4941,8 @@ impl Widget for PdfApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::record::capability::RecordScoped
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5014,31 +5015,6 @@ impl Widget for PdfApp {
             return self.completed_portal_action.take();
         }
         None
-    }
-
-    fn record_intent(&self) -> Option<ui::RecordCheckout> {
-        self.markup_record.clone()
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        if self.editing.is_some() {
-            return Err("Finish or cancel the active PDF edit before switching documents".into());
-        }
-        self.portal_rx = None;
-        self.portal_save_rx = None;
-        self.portal_import_rx = None;
-        self.cancel_pending_open();
-        self.pending_import = None;
-        if let Some(request) = self.pending_save.take() {
-            let _ = self
-                .raster_handle
-                .as_ref()
-                .and_then(|handle| handle.cancel_save(request).ok());
-        }
-        self.pending_worker_plan = None;
-        self.portal_action = None;
-        self.completed_portal_action = None;
-        Ok(())
     }
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -5957,6 +5933,32 @@ impl Widget for PdfApp {
     }
 }
 
+impl ui::record::capability::RecordScoped for PdfApp {
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.markup_record.clone()
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.editing.is_some() {
+            return Err("Finish or cancel the active PDF edit before switching documents".into());
+        }
+        self.portal_rx = None;
+        self.portal_save_rx = None;
+        self.portal_import_rx = None;
+        self.cancel_pending_open();
+        self.pending_import = None;
+        if let Some(request) = self.pending_save.take() {
+            let _ = self
+                .raster_handle
+                .as_ref()
+                .and_then(|handle| handle.cancel_save(request).ok());
+        }
+        self.pending_worker_plan = None;
+        self.portal_action = None;
+        self.completed_portal_action = None;
+        Ok(())
+    }
+}
+
 impl ui::search::capability::SearchSource for PdfApp {
     fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
         (self.has_document && !self.awaiting_markup_record)
@@ -6183,7 +6185,7 @@ mod tests {
         app.markup_record = Some(selected.clone());
         app.source_path = Some("selected.pdf".into());
         app.begin_edit(EditTarget::Signer, "Draft signer");
-        assert!(app.release_record_scope().is_err());
+        assert!(ui::record::capability::release_record_scope(&mut app).is_err());
         assert!(app.pending_open.is_some());
         assert_eq!(app.markup_record, Some(selected.clone()));
         assert_eq!(
@@ -6227,7 +6229,7 @@ mod tests {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         });
-        app.release_record_scope().unwrap();
+        ui::record::capability::release_record_scope(&mut app).unwrap();
         assert!(app.portal_rx.is_none());
         assert!(app.portal_save_rx.is_none());
         assert!(app.portal_import_rx.is_none());
@@ -6279,7 +6281,7 @@ mod tests {
     /// Standalone fixture frames explicitly admit a file's record, just like
     /// the live host. Multi-document tests retain their `RecordSet` separately.
     fn sync_fixture(app: &mut PdfApp, st: &mut ui::State) {
-        if let Some(want) = app.record_intent() {
+        if let Some(want) = ui::record::capability::record_intent(app) {
             if ui::record::identity(&st.doc).is_none() {
                 ui::RecordSet::in_memory().checkout(st, None, &want);
             }
@@ -7589,7 +7591,7 @@ mod tests {
         out: Option<&str>,
         theme: Theme,
     ) -> Framed<PdfApp> {
-        if let Some(want) = app.record_intent() {
+        if let Some(want) = ui::record::capability::record_intent(&app) {
             if ui::record::identity(&st.doc).is_none() {
                 ui::RecordSet::in_memory().checkout(&mut st, None, &want);
             }

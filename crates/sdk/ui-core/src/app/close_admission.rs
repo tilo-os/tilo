@@ -44,7 +44,10 @@ impl App {
         if self.close_admission.save_waiting {
             return false;
         }
-        let pending = self.root_widget.unsaved_documents(&self.state.doc);
+        let pending = crate::component_lifecycle::unsaved_documents(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+        );
         let remaining: Vec<_> = pending
             .into_iter()
             .filter(|document| !self.close_admission.discarded.contains(document))
@@ -88,7 +91,9 @@ impl App {
         // No document mutation/event may run between checkpoint and finalization.
         // Existing teardown may cancel jobs through its immutable-document poll.
         self.component_close_reports
-            .extend(self.root_widget.finish_admitted_close());
+            .extend(crate::component_lifecycle::finish_admitted_close(
+                self.root_widget.as_mut(),
+            ));
         self.close_wake_scope();
         true
     }
@@ -97,12 +102,11 @@ impl App {
         let _entry = self.enter_wake_scope();
         let mut errors = Vec::new();
         if self.legacy_persistence == crate::launch::LegacyPersistencePolicy::WidgetOwned {
-            if let Err(error) = self
-                .root_widget
-                .try_flush_owned_persistence()
-                .unwrap_or_else(|| {
-                    Err("widget-owned persistence requires a checked flush hook".into())
-                })
+            if let Err(error) =
+                crate::component_lifecycle::try_flush_owned_persistence(self.root_widget.as_mut())
+                    .unwrap_or_else(|| {
+                        Err("widget-owned persistence requires a checked flush hook".into())
+                    })
             {
                 errors.push(error);
             }
@@ -125,9 +129,12 @@ impl App {
                 errors.push(error);
             }
         }
-        errors.extend(self.root_widget.checkpoint_components());
-        self.component_close_reports
-            .extend(self.root_widget.take_component_close_reports());
+        errors.extend(crate::component_lifecycle::checkpoint_components(
+            self.root_widget.as_mut(),
+        ));
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root_widget.as_mut()),
+        );
         errors.extend(crate::close_admission::retry_reports(
             &mut self.component_close_reports,
         ));
@@ -153,7 +160,10 @@ impl App {
                 self.request_close();
             }
             Choice::Discard => {
-                let current = self.root_widget.unsaved_documents(&self.state.doc);
+                let current = crate::component_lifecycle::unsaved_documents(
+                    self.root_widget.as_ref(),
+                    &self.state.doc,
+                );
                 if current != self.close_admission.reviewed {
                     self.close_admission.discarded.clear();
                     self.close_admission.retire_presentation();
@@ -171,12 +181,13 @@ impl App {
     }
 
     fn start_close_save(&mut self) -> Result<(), String> {
-        let current: Vec<_> = self
-            .root_widget
-            .unsaved_documents(&self.state.doc)
-            .into_iter()
-            .filter(|document| !self.close_admission.discarded.contains(document))
-            .collect();
+        let current: Vec<_> = crate::component_lifecycle::unsaved_documents(
+            self.root_widget.as_ref(),
+            &self.state.doc,
+        )
+        .into_iter()
+        .filter(|document| !self.close_admission.discarded.contains(document))
+        .collect();
         if current != self.close_admission.reviewed {
             self.close_admission.retire_presentation();
             self.request_close();
@@ -468,7 +479,10 @@ mod tests {
         save_allowed: bool,
     }
     impl Widget for OwnedRoot {
-        crate::provides!(dyn crate::resources::PublishesResources);
+        crate::provides!(
+            dyn crate::resources::PublishesResources,
+            dyn crate::component_lifecycle::ComponentLifecycle
+        );
 
         fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             self.text.sync(doc, path);
@@ -512,35 +526,6 @@ mod tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.text.get_rect()
         }
-        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-            self.flushes.set(self.flushes.get() + 1);
-            Some(if self.fail.get() {
-                Err("fixture owned writer refused".into())
-            } else {
-                Ok(())
-            })
-        }
-        fn unsaved_documents(
-            &self,
-            doc: &automerge::AutoCommit,
-        ) -> Vec<crate::close_admission::UnsavedDocument> {
-            use automerge::ReadDoc;
-            if self.document.as_ref().is_some_and(|dirty| dirty.get()) {
-                vec![crate::close_admission::UnsavedDocument {
-                    save: tilo_actions::ActionAddress::new("test.quit:root", "save"),
-                    identity: "draft.md".into(),
-                    revision: doc
-                        .get(automerge::ROOT, "draft")
-                        .unwrap()
-                        .unwrap()
-                        .0
-                        .to_string()
-                        .into_bytes(),
-                }]
-            } else {
-                Vec::new()
-            }
-        }
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
@@ -563,6 +548,38 @@ mod tests {
             Ok(Some(crate::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )))
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for OwnedRoot {
+        fn unsaved_documents(
+            &self,
+            doc: &automerge::AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            use automerge::ReadDoc;
+            if self.document.as_ref().is_some_and(|dirty| dirty.get()) {
+                vec![crate::close_admission::UnsavedDocument {
+                    save: tilo_actions::ActionAddress::new("test.quit:root", "save"),
+                    identity: "draft.md".into(),
+                    revision: doc
+                        .get(automerge::ROOT, "draft")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .to_string()
+                        .into_bytes(),
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+        fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+            self.flushes.set(self.flushes.get() + 1);
+            Some(if self.fail.get() {
+                Err("fixture owned writer refused".into())
+            } else {
+                Ok(())
+            })
         }
     }
 
@@ -757,7 +774,10 @@ mod tests {
             .doc
             .put(automerge::ROOT, "draft", "pending edit")
             .unwrap();
-        let document = app.root_widget.unsaved_documents(&app.state.doc)[0].clone();
+        let document =
+            crate::component_lifecycle::unsaved_documents(app.root_widget.as_ref(), &app.state.doc)
+                [0]
+            .clone();
         assert!(
             tilo_actions::door::resolve(
                 &crate::resources::resources(app.root_widget.as_ref(), &app.state.doc),
