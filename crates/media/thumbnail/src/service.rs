@@ -90,7 +90,9 @@ impl ThumbState {
 }
 
 /// A loader run on a worker, never on the requesting thread: reading an
-/// xattr or a file may cross a FUSE boundary and wait on a peer.
+/// xattr or a file may cross a FUSE boundary and wait on a peer. Only a
+/// host with no threads at all (a browser page, which has no FUSE either)
+/// runs it on the requesting thread.
 type Loader = Box<dyn FnOnce() -> Option<Vec<u8>> + Send + 'static>;
 
 enum Work {
@@ -334,6 +336,9 @@ pub struct ThumbnailService {
     shared: Arc<Shared>,
     _shutdown: Arc<Shutdown>,
     edge: u32,
+    /// No worker could start (a browser page has no threads): each request
+    /// is generated on the requesting thread instead.
+    inline: bool,
 }
 
 impl ThumbnailService {
@@ -359,6 +364,13 @@ impl ThumbnailService {
     ///
     /// Returns an error if neither location can be created.
     pub fn open_default(workers: usize) -> std::io::Result<Self> {
+        // No cache directory and no file system (the page): previews live
+        // in memory. `temp_dir` panics there rather than failing.
+        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            != tilo_paths::Availability::Available
+        {
+            return Ok(Self::ephemeral(workers));
+        }
         let dir = xdg_paths::cache_dir().map_or_else(
             || std::env::temp_dir().join("tilo-thumbnails"),
             |cache| cache.join("tilo").join("thumbnails"),
@@ -402,16 +414,22 @@ impl ThumbnailService {
             max_settled: max_settled.max(1),
             wake: Mutex::new(None),
         });
+        let mut started = 0_usize;
         for i in 0..workers.max(1) {
             let shared = shared.clone();
-            let _ = std::thread::Builder::new()
+            if std::thread::Builder::new()
                 .name(format!("tilo-thumb-{i}"))
-                .spawn(move || worker_loop(&shared));
+                .spawn(move || worker_loop(&shared))
+                .is_ok()
+            {
+                started = started.saturating_add(1);
+            }
         }
         Self {
             _shutdown: Arc::new(Shutdown(shared.clone())),
             shared,
             edge,
+            inline: started == 0,
         }
     }
 
@@ -491,7 +509,35 @@ impl ThumbnailService {
         }
         drop(inner);
         self.shared.work.notify_one();
+        if self.inline {
+            self.run_queued();
+            return self.peek(&request.key).unwrap_or(ThumbState::Loading);
+        }
         ThumbState::Loading
+    }
+
+    /// Generate every queued preview on this thread, for a service with no
+    /// workers.
+    fn run_queued(&self) {
+        let mut video = VideoPipeline::default();
+        loop {
+            let mut inner = self.shared.lock();
+            if inner.shutdown {
+                return;
+            }
+            let Some(job) = inner.take(None) else {
+                return;
+            };
+            drop(inner);
+            let key = job.key;
+            let cache = if job.transient {
+                &self.shared.transient
+            } else {
+                &self.shared.cache
+            };
+            let slot = run_job(cache, job, &mut video);
+            finish(&self.shared, key, slot);
+        }
     }
 
     /// Request a preview for a file on disk at [`Priority::Visible`].
@@ -667,35 +713,40 @@ fn worker_loop(shared: &Arc<Shared>) {
             &shared.cache
         };
         let slot = run_job(cache, job, &mut video);
-        let mut inner = shared.lock();
-        inner.in_flight = inner.in_flight.saturating_sub(1);
-        inner.slots.insert(key, slot);
-        inner.settled.push_back(key);
-        while inner.settled.len() > shared.max_settled {
-            let Some(old) = inner.settled.pop_front() else {
-                break;
-            };
-            if inner.settled.contains(&old) || inner.queued.contains_key(&old) {
-                continue;
-            }
-            if inner
-                .slots
-                .get(&old)
-                .is_some_and(|s| !matches!(s, Slot::Loading))
-            {
-                inner.slots.remove(&old);
-            }
+        finish(shared, key, slot);
+    }
+}
+
+/// Record a generated preview, bound the settled results and tell the app.
+fn finish(shared: &Shared, key: ThumbKey, slot: Slot) {
+    let mut inner = shared.lock();
+    inner.in_flight = inner.in_flight.saturating_sub(1);
+    inner.slots.insert(key, slot);
+    inner.settled.push_back(key);
+    while inner.settled.len() > shared.max_settled {
+        let Some(old) = inner.settled.pop_front() else {
+            break;
+        };
+        if inner.settled.contains(&old) || inner.queued.contains_key(&old) {
+            continue;
         }
-        drop(inner);
-        shared.settled.notify_all();
-        let wake = shared
-            .wake
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        if let Some(wake) = wake {
-            wake();
+        if inner
+            .slots
+            .get(&old)
+            .is_some_and(|s| !matches!(s, Slot::Loading))
+        {
+            inner.slots.remove(&old);
         }
+    }
+    drop(inner);
+    shared.settled.notify_all();
+    let wake = shared
+        .wake
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some(wake) = wake {
+        wake();
     }
 }
 

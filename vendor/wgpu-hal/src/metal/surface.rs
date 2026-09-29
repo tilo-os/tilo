@@ -16,7 +16,6 @@ use super::OsFeatures;
 impl super::Surface {
     pub fn new(layer: Retained<CAMetalLayer>) -> Self {
         Self {
-            #[cfg(feature = "tilo-presentation-feedback")]
             next_present_observer: Mutex::new(None),
             render_layer: Mutex::new(layer),
             swapchain_format: RwLock::new(None),
@@ -32,7 +31,6 @@ impl super::Surface {
     ///
     /// # Errors
     /// Returns an error on unsupported OS versions or if an observer is already armed.
-    #[cfg(feature = "tilo-presentation-feedback")]
     pub fn observe_next_present(
         &self,
         observer: alloc::sync::Arc<dyn Fn(f64, u64) + Send + Sync>,

@@ -1,0 +1,98 @@
+//! The current process, with one API on every target.
+//!
+//! On Linux and macOS an app runs as an OS process with an id. In the
+//! browser it runs inside the page, which has no process of its own; the
+//! functions here answer `None` there instead of panicking as
+//! `std::process::id` does.
+//!
+//! This crate is the platform layer's home for process capabilities; child
+//! processes, process groups and PTYs (today's `bounded-command`) move here.
+
+/// A capability of this crate.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Feature {
+    /// The current process has an OS process id.
+    ProcessId,
+}
+
+/// Whether a feature works on this target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Availability {
+    Available,
+    Unsupported(&'static str),
+}
+
+/// Each feature's availability on Linux, macOS and the web, in that order.
+pub const CAPABILITIES: &[(Feature, [Availability; 3])] = &[(
+    Feature::ProcessId,
+    [
+        Availability::Available,
+        Availability::Available,
+        Availability::Unsupported("a page has no process id"),
+    ],
+)];
+
+/// Whether `feature` works on the running target.
+#[must_use]
+pub fn availability(feature: Feature) -> Availability {
+    match feature {
+        Feature::ProcessId => {
+            if backend::HAS_PROCESS_ID {
+                Availability::Available
+            } else {
+                Availability::Unsupported("a page has no process id")
+            }
+        }
+    }
+}
+
+/// The current process's OS id, or `None` where apps do not run as OS
+/// processes (the browser).
+#[must_use]
+pub fn id() -> Option<u32> {
+    backend::id()
+}
+
+#[cfg(not(target_family = "wasm"))]
+mod backend {
+    pub const HAS_PROCESS_ID: bool = true;
+
+    #[allow(
+        clippy::unnecessary_wraps,
+        reason = "the signature is shared with the browser backend, which has no id"
+    )]
+    pub fn id() -> Option<u32> {
+        Some(std::process::id())
+    }
+}
+
+#[cfg(target_family = "wasm")]
+mod backend {
+    pub const HAS_PROCESS_ID: bool = false;
+
+    pub fn id() -> Option<u32> {
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn availability_matches_the_table_for_this_target() {
+        let column = if cfg!(target_family = "wasm") {
+            2
+        } else {
+            usize::from(cfg!(target_os = "macos"))
+        };
+        for (feature, row) in CAPABILITIES {
+            assert_eq!(availability(*feature), row[column]);
+        }
+    }
+
+    #[test]
+    fn native_processes_have_an_id() {
+        assert_eq!(id().is_some(), cfg!(not(target_family = "wasm")));
+    }
+}

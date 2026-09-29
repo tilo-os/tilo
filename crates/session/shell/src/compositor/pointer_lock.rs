@@ -31,7 +31,7 @@ use crate::compositor::state::State;
 /// constraint is engaged and otherwise reaches the focused client. Named
 /// in the legends of the active keyboard layout (`Strg+Alt+Esc` on German).
 pub fn release_chord_label() -> String {
-    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
+    super::release_chord_label()
 }
 
 /// Whether `event` is the release chord, on key press.

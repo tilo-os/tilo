@@ -27,7 +27,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 fnv.workspace = true
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 atomic-file = { path = "../../crates/system/atomic-file" }

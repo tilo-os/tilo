@@ -94,7 +94,7 @@ fn drain(
         let (complete, outcome) = crate::agent_documents::apply_worker_document(
             &owner,
             pending,
-            std::time::Instant::now() + crate::agent_workers::tests::HARNESS_TURN,
+            crate::agent_workers::tests::HARNESS_TURN,
         );
         outcome.unwrap();
         workers.committed().unwrap();

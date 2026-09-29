@@ -121,6 +121,12 @@ fn existing_certificate_signatures_and_verification_keep_their_preimage() {
     warm.device_label = "warm-up device".to_owned();
     sign_device_cert(&mut warm, &root).unwrap();
     verify_device_cert(&warm).unwrap();
+    // Tests on other threads insert into the same set; room for them keeps
+    // the measured insert from being the one that grows it.
+    crate::cert::verified_signatures()
+        .lock()
+        .unwrap()
+        .reserve(1024);
     let (verified, allocations) = measured(|| verify_device_cert(&certificate));
     verified.unwrap();
     assert_eq!(

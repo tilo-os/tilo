@@ -21,6 +21,8 @@ pub(crate) struct QsActionAvailability {
     pub(crate) wifi: bool,
     pub(crate) power_profile: bool,
     pub(crate) vpn: bool,
+    pub(crate) bluetooth: bool,
+    pub(crate) airplane_mode: bool,
 }
 
 impl QsActionAvailability {
@@ -31,6 +33,8 @@ impl QsActionAvailability {
             wifi: true,
             power_profile: true,
             vpn: true,
+            bluetooth: true,
+            airplane_mode: true,
         }
     }
 
@@ -57,6 +61,9 @@ impl QsActionAvailability {
             wifi: network_manager,
             power_profile: present("powerprofilesctl"),
             vpn: network_manager,
+            // The radio is BlueZ's; its client ships with the daemon.
+            bluetooth: present("bluetoothctl"),
+            airplane_mode: network_manager,
         }
     }
 }
@@ -153,6 +160,8 @@ mod availability_tests {
             assert!(found.wifi);
             assert!(!found.power_profile);
             assert!(found.vpn);
+            assert!(!found.bluetooth);
+            assert!(found.airplane_mode);
         }
 
         #[cfg(not(target_os = "linux"))]

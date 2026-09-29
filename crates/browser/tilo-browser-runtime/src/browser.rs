@@ -2550,14 +2550,20 @@ pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
                     crate::live_view::record_snapshot_json(
                         &record.app,
                         record.checkout.id.as_str(),
-                        m.frame.focus_presence_payload(),
+                        crate::live_view::published_selection(
+                            m.frame.focus_presence_payload(),
+                            &ui::presence::capability::subtree_presence(m.frame.root_widget()),
+                        ),
                     )
                     .to_string()
                 },
             ));
         };
-        let selection = m.frame.focus_presence_payload();
         let layout = desktop.live.borrow();
+        let selection = crate::live_view::published_selection(
+            m.frame.focus_presence_payload(),
+            &layout.window_presence,
+        );
         let records = desktop.tab_records.borrow();
         Ok(crate::live_view::snapshot_json(&layout, &records, selection).to_string())
     })

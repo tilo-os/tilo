@@ -96,7 +96,6 @@ fn request_with(f: &Fixture, exe: &Path, op: &str, arg: OsString) -> LaunchReque
         container_dir: f.container.clone(),
         capabilities: CapabilityPlan::empty(),
         egress: EgressDecision::Blocked,
-        gate_socket: None,
         inherit_fds: Vec::new(),
         env: Vec::new(),
         trust: TrustRequirement::DeveloperId,
@@ -258,21 +257,229 @@ fn network_follows_the_egress_decision() {
     to_agent.egress = EgressDecision::Unrestricted;
     assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
 
-    let gate = f.root.join("gate.sock");
-    let _gate = UnixListener::bind(&gate).unwrap();
-    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["example.com".into()]));
-    let mut to_gate = request(&f, "unix", &gate);
-    to_gate.egress = filtered.clone();
-    assert_eq!(exit_code(&to_gate), REFUSED, "no gate was configured");
-    to_gate.gate_socket = Some(gate.clone());
-    assert_eq!(exit_code(&to_gate), OK, "the gate was unreachable");
-    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port);
-    tcp_gated.egress = filtered;
-    tcp_gated.gate_socket = Some(gate);
+    // A host allowlist: the launcher's gate is the only way out, through the
+    // proxy environment, and it carries only the granted hosts.
+    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["localhost".into()]));
+    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port.clone());
+    tcp_gated.egress = filtered.clone();
     assert_eq!(
         exit_code(&tcp_gated),
         REFUSED,
         "filtered egress bypassed the gate"
+    );
+    let through_gate = |target: String| {
+        let mut req = request_with(&f, &f.probe, "proxy", OsString::from(target));
+        req.egress = filtered.clone();
+        exit_code(&req)
+    };
+    let port = port.to_str().unwrap();
+    assert_eq!(
+        through_gate(format!("localhost:{port}")),
+        OK,
+        "a granted host was unreachable through the gate"
+    );
+    assert_eq!(
+        through_gate(format!("127.0.0.1:{port}")),
+        REFUSED,
+        "an address literal satisfied a hostname grant"
+    );
+    assert_eq!(
+        through_gate("example.com:443".to_string()),
+        REFUSED,
+        "an ungranted host was reachable"
+    );
+    let mut to_agent = request(&f, "unix", &agent);
+    to_agent.egress = filtered;
+    assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
+}
+
+fn user_cache_dir() -> PathBuf {
+    let mut buf = vec![0_u8; 1024];
+    // SAFETY: `buf` is writable for its length.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    assert!(len > 0 && len <= buf.len());
+    buf.truncate(len.saturating_sub(1));
+    std::fs::canonicalize(String::from_utf8(buf).unwrap()).unwrap()
+}
+
+/// Removes an app's cache directory, which lives outside the fixture.
+struct CacheDir(PathBuf);
+
+impl Drop for CacheDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn each_app_keeps_its_own_shader_cache_and_no_other() {
+    let f = fixture();
+    let room = format!("cache-test-{}", std::process::id());
+    let container = prepare_container(&f.root.join("support"), Some(&room), PACKAGE).unwrap();
+    let other = prepare_container(&f.root.join("support"), Some(&room), "so.tilo.other").unwrap();
+    let own = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+{PACKAGE}")));
+    let _other = CacheDir(user_cache_dir().join(format!("so.tilo+{room}+so.tilo.other")));
+
+    let mut req = request_with(&f, &f.probe, "cache", OsString::from("com.apple.metal"));
+    req.container_dir = container;
+    assert_eq!(
+        exit_code(&req),
+        OK,
+        "the app's cache directory was not writable"
+    );
+    assert!(own.0.join("com.apple.metal").is_file());
+
+    let mut intruder = request_with(
+        &f,
+        &f.probe,
+        "cache",
+        OsString::from(format!("../so.tilo+{room}+{PACKAGE}/planted")),
+    );
+    intruder.container_dir = other;
+    assert_eq!(
+        exit_code(&intruder),
+        REFUSED,
+        "an app wrote into another app's cache"
+    );
+    assert!(!own.0.join("planted").exists());
+}
+
+#[test]
+fn a_path_picked_in_the_runtimes_chooser_opens_and_nothing_else_does() {
+    let f = fixture();
+    let picked = f.root.join("outside/picked.txt");
+    std::fs::write(&picked, b"picked").unwrap();
+    let with_token = |path: &Path, token: Option<String>| {
+        let mut req = request(&f, "picked", path);
+        req.env = token
+            .map(|token| (OsString::from("TILO_PROBE_TOKEN"), OsString::from(token)))
+            .into_iter()
+            .collect();
+        exit_code(&req)
+    };
+    assert_eq!(
+        with_token(&picked, None),
+        REFUSED,
+        "an unpicked path opened"
+    );
+    let token = tilo_dialogs::confined::issue_extension(&picked).unwrap();
+    assert_eq!(
+        with_token(&picked, Some(token.clone())),
+        OK,
+        "the picked path did not open"
+    );
+    assert_eq!(
+        with_token(&f.secret, Some(token)),
+        REFUSED,
+        "one path's grant opened another"
+    );
+    let into_payload =
+        tilo_dialogs::confined::issue_extension(&f.payload.join("data.txt")).unwrap();
+    assert_eq!(
+        with_token(&f.payload.join("data.txt"), Some(into_payload)),
+        REFUSED,
+        "a grant made the payload writable"
+    );
+}
+
+/// Save through the runtime's chooser, as `tilo_dialogs::confined::serve`
+/// answers it: the destination and its one sibling are granted.
+fn saved_through_the_chooser(destination: &Path) -> Vec<String> {
+    use std::io::{BufRead as _, Write as _};
+    use tilo_dialogs::confined::{Answer, encode_request, serve};
+    let (mut app, runtime) = std::os::unix::net::UnixStream::pair().unwrap();
+    let chosen = destination.to_path_buf();
+    let server = std::thread::spawn(move || serve(runtime, |_| Ok(Some(vec![chosen.clone()]))));
+    let request = tilo_dialogs::portal::PickRequest::save("Save", "Save", "doc.txt");
+    writeln!(app, "{}", encode_request(&request)).unwrap();
+    let mut line = String::new();
+    std::io::BufReader::new(app.try_clone().unwrap())
+        .read_line(&mut line)
+        .unwrap();
+    drop(app);
+    server.join().unwrap().unwrap();
+    match Answer::decode(&line).unwrap() {
+        Answer::Picked(mut picked) => picked.remove(0).tokens,
+        other => panic!("{other:?}"),
+    }
+}
+
+#[test]
+fn a_save_replaces_the_picked_file_through_its_one_sibling() {
+    let f = fixture();
+    let destination = f.root.join("outside/doc.txt");
+    std::fs::write(&destination, b"old").unwrap();
+    let replace = |tokens: &[String]| {
+        let mut req = request(&f, "replace", &destination);
+        req.env = vec![(
+            OsString::from("TILO_PROBE_TOKENS"),
+            OsString::from(tokens.join("\n")),
+        )];
+        exit_code(&req)
+    };
+    let tokens = saved_through_the_chooser(&destination);
+    assert_eq!(tokens.len(), 2, "the destination and its sibling");
+    assert_eq!(
+        replace(&tokens[..1]),
+        REFUSED,
+        "the sibling was writable without its grant"
+    );
+    assert_eq!(replace(&tokens), OK, "the save by rename failed");
+    assert_eq!(
+        std::fs::read(&destination).unwrap(),
+        b"TILO_SEATBELT_PROBE_MARKER\0"
+    );
+    assert!(!f.root.join("outside/unrelated.tmp").exists());
+    assert_eq!(replace(&tokens), OK, "a second save failed");
+}
+
+/// A confined app captures through the broker it inherits: the descriptor
+/// passing and the stream survive the Seatbelt profile, and an undeclared
+/// device is refused.
+#[test]
+fn a_confined_app_captures_only_what_its_broker_grants() {
+    use std::sync::Arc;
+    use tilo_capture::DeviceKind;
+    use tilo_capture::broker::{Policy, Sources, serve};
+    let f = fixture();
+    let grants_dir = tempfile::tempdir().unwrap();
+    let grants = Arc::new(
+        tilo_capture::grants::DeviceGrants::open(&grants_dir.path().join("grants")).unwrap(),
+    );
+    let (app, runtime) = std::os::unix::net::UnixDatagram::pair().unwrap();
+    let policy: Arc<dyn Policy> = Arc::new(tilo_capture::grants::GrantPolicy {
+        grants,
+        room: "personal".into(),
+        app: PACKAGE.into(),
+        declared: vec![DeviceKind::Camera],
+        consent: |_| Ok(true),
+    });
+    let sources: Arc<dyn Sources> = Arc::new(tilo_capture::broker::synthetic::Devices);
+    std::thread::spawn(move || serve(&runtime, &policy, &sources));
+    let capture = |what: &str| {
+        let mut req = request_with(&f, &f.probe, "capture", OsString::from(what));
+        req.inherit_fds = vec![app.as_raw_fd()];
+        req.env = vec![(
+            OsString::from("TILO_SVC_CAPTURE_FD"),
+            OsString::from(app.as_raw_fd().to_string()),
+        )];
+        exit_code(&req)
+    };
+    assert_eq!(
+        capture("camera 640 480"),
+        OK,
+        "the granted camera did not stream"
+    );
+    assert_eq!(
+        capture("microphone 48000"),
+        REFUSED,
+        "an undeclared device was captured"
     );
 }
 

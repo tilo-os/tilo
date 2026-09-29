@@ -44,10 +44,9 @@ async fn cloud_policy_clock_selected_source_retirement_denies_pending_document_a
     let signer = documents.bind(route.clone(), certificate);
     let first = tokio::spawn(signer.commit(&route, mutation.clone()));
     let pending = requests.recv().await.unwrap();
-    let (complete, result) = pending
-        .apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
-            owner.store()?.commit_agent_document(route, cert, mutation)
-        });
+    let (complete, result) = pending.apply(tilo_test_env::hang_bound(), |route, cert, mutation| {
+        owner.store()?.commit_agent_document(route, cert, mutation)
+    });
     assert!(result.is_ok(), "valid selected owner document failed");
     complete();
     assert!(first.await.unwrap().is_ok());
@@ -56,10 +55,9 @@ async fn cloud_policy_clock_selected_source_retirement_denies_pending_document_a
     let pending = requests.recv().await.unwrap();
     let before = std::fs::read(dir.path().join("state.json")).unwrap();
     source.retire();
-    let (complete, result) = pending
-        .apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
-            owner.store()?.commit_agent_document(route, cert, mutation)
-        });
+    let (complete, result) = pending.apply(tilo_test_env::hang_bound(), |route, cert, mutation| {
+        owner.store()?.commit_agent_document(route, cert, mutation)
+    });
     complete();
     assert!(result.is_err());
     assert!(second.await.unwrap().is_err());
