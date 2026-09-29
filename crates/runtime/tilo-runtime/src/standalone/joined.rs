@@ -230,7 +230,7 @@ impl Joined {
                         self.publish(&scope, &session);
                     }
                     Some(Inbound::Presence { payload, .. }) => self.receive_governance(&payload),
-                    Some(Inbound::RemoteAction { .. }) => {}
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {}
                 },
                 () = wake.notified() => self.publish(&scope, &session),
                 _ = refresh.tick() => {

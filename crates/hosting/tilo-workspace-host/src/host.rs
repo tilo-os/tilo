@@ -1300,7 +1300,7 @@ where
                         committed.mark_governance_reconciled();
                         drained = drained.saturating_add(1);
                     }
-                    Some(Inbound::RemoteAction { .. }) => {
+                    Some(Inbound::RemoteAction { .. } | Inbound::Live { .. }) => {
                         drained = drained.saturating_add(1);
                     }
                     Some(message) => {
@@ -1318,7 +1318,9 @@ where
                                 tilo_peer_state::TransportOrigin::UntrustedPresence(author),
                                 payload,
                             ),
-                            Inbound::Ready { .. } | Inbound::RemoteAction { .. } => unreachable!(),
+                            Inbound::Ready { .. }
+                            | Inbound::RemoteAction { .. }
+                            | Inbound::Live { .. } => unreachable!(),
                         };
                         let decoded = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&bytes)
                             .map_err(anyhow::Error::from);
@@ -2482,7 +2484,7 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                             Inbound::Presence {author,payload} => (tilo_peer_state::TransportOrigin::UntrustedPresence(author),payload),
                             // The session peer serves no remote-action route; the relay only
                             // forwards these to devices that registered one.
-                            Inbound::RemoteAction {..} => continue,
+                            Inbound::RemoteAction {..} | Inbound::Live {..} => continue,
                             Inbound::Ready {..} => unreachable!(),
                         };
                         let inbound_bytes = bytes.len();
