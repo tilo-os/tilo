@@ -374,6 +374,8 @@ async fn enrolled_deployment() -> (
     std::net::TcpListener,
     std::net::UdpSocket,
 ) {
+    // The served broker, runtime and HTTPS threads open this Store too.
+    crate::storage::test_journal::journal_this_process();
     let (transport_root, store_root, config, ready, tcp, udp) =
         crate::https_owner::serve::tests::fixture().await;
     let owner_root = SigningKey::from_bytes(&[7; 32]);
