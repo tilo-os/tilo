@@ -757,7 +757,7 @@ tilo-app package --arch aarch64                      # Tilo OS, thin
 tilo-app package --platform linux --arch x86_64      # dist/<pkg>-linux-x86_64.tapp
 tilo-app package --platform macos --arch aarch64     # dist/<pkg>-macos-aarch64.tapp
 tilo-app package --platform windows --arch x86_64    # dist/<pkg>-windows-x86_64.tapp
-tilo-app package --platform android                  # dist/<pkg>-android-aarch64.tapp, .apk, .aab
+tilo-app package --platform android                  # dist/<pkg>-android-{aarch64,x86_64}.tapp, .apk, .aab
 ```
 
 Other Linux desktops, Windows and macOS ship no Tilo toolkit, so a build for
@@ -769,8 +769,9 @@ and the toolkit release it links, which is `[package].runtime`, so the
 manifest must declare one (`tilo-app new` does). Only the GUI entrypoint ships.
 There, collaboration comes from the per-user `tilo-runtime` service when it is
 running, as for Tilo's own apps on those systems. `[budget]` applies to the
-thin Tilo OS build only; a desktop build answers to the registry's 64 MiB
-desktop limit instead. A static build of a starter app is about 40 MB.
+thin Tilo OS build only; a desktop or Android build answers to the registry's
+64 MiB limit instead, and the size report measures it against that. A
+static build of a starter app is about 40 MB.
 
 Build on the system you target, or with a cross toolchain Cargo can drive;
 `--target` overrides the triple (for example `x86_64-pc-windows-gnu`).
@@ -846,7 +847,7 @@ tilo-app doctor --platform android   # what the Android toolchain lacks
 tilo-app setup android               # install the SDK side of it
 tilo-app run --platform android      # install on the connected device, stream its log
 tilo-app dev --platform android      # rebuild, reinstall and restart on every save
-tilo-app package --platform android  # dist/<pkg>-android-aarch64.{tapp,apk,aab}
+tilo-app package --platform android  # dist/<pkg>-android-<arch>.{tapp,apk,aab}, both arches
 ```
 
 `--arch aarch64|x86_64` picks the ABI (`run` and `dev` default to the

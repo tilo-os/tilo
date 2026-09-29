@@ -17,12 +17,13 @@ tilo-app setup android                       # install the SDK side of it
 tilo-app run --platform android              # build, install, start, stream the log
 tilo-app dev --platform android              # the same, again on every save
 tilo-app build --platform android --arch x86_64
-tilo-app package --platform android          # signed .apk + .aab + a registry .tapp
+tilo-app package --platform android          # per architecture: signed .apk + .aab + a registry .tapp
 tilo-app check --platform android            # Clippy for aarch64-linux-android
 ```
 
-`--arch` is `aarch64` (arm64-v8a) or `x86_64`. `build`, `package` and `check`
-default to `aarch64`; `run` and `dev` build for the device's own ABI.
+`--arch` is `aarch64` (arm64-v8a) or `x86_64`. `build` and `check` default to
+`aarch64`; `run` and `dev` build for the device's own ABI; `package` builds
+both unless `--arch` picks one.
 
 **Devices.** `run` and `dev` install on `--device SERIAL`, else
 `$ANDROID_SERIAL`, else the one device `adb devices` lists; with none or
@@ -39,10 +40,20 @@ desktop; a rebuild takes as long as an incremental `cargo build` of the app.
 
 **Output.** `build` writes
 `target/android/<app>/<profile>/<app>-<abi>.apk`, debuggable and signed with
-the per-user debug key. `package` writes `dist/<app>-android-<arch>.tapp`
-and, beside it, `.apk` and `.aab` with the same name: a release build, signed
-as below. The `.tapp` is what `tilo-app publish` uploads; the registry lists
-it under the `android` platform, and Tilo OS clients never install it.
+the per-user debug key. `package` writes, for each architecture,
+`dist/<app>-android-<arch>.tapp` and, beside it, `.apk` and `.aab` with the
+same name: a release build, signed as below. It checks every output before it
+builds either, and `--output` names one package, so it needs `--arch`. There
+is one APK per architecture rather than one universal APK because the registry
+lists one build per architecture and a device downloads only its own. The
+`.tapp` is what `tilo-app publish` uploads; the registry lists it under the
+`android` platform, and Tilo OS clients never install it.
+
+**Size.** An Android package answers to the registry's limit for a build that
+links the toolkit in, 64 MiB (`tilo_app_package::platform_size_limit`, the
+function the registry enforces), not to `[budget]`, which bounds the thin Tilo
+OS build. A release starter app is about 39 MiB, most of it the library and
+the font catalog.
 
 ## The toolchain
 
@@ -59,12 +70,23 @@ The build uses no Gradle. It needs:
 - optionally bundletool, for the `.aab`. Without it `package` makes the APK
   only and says so; `--no-bundle` skips the bundle on purpose.
 
-`tilo-app doctor --platform android` checks each and prints the fix.
+`tilo-app doctor --platform android` checks each and prints the fix. For the
+JDK and the zip tools that is the one command for this system's family, read
+from `/etc/os-release` (every family's when it is none of them):
+
+| Family | Command |
+| --- | --- |
+| Fedora, RHEL (dnf) | `sudo dnf install -y java-21-openjdk-devel zip unzip` |
+| Debian, Ubuntu (apt) | `sudo apt-get install -y openjdk-17-jdk-headless zip unzip` |
+| macOS (brew) | `brew install openjdk@21 zip unzip` |
+
 `tilo-app setup android` fetches the command-line tools when `sdkmanager` is
 missing, installs the SDK packages (and the NDK when none is found), downloads
 bundletool into the SDK and adds the Rust targets; `--accept-licenses` accepts
-the SDK licences without prompting, for CI. It cannot install a JDK or `zip`:
-those come from the system's package manager.
+the SDK licences without prompting, for CI. It cannot install a JDK or the zip
+tools, so it prints the command above for whichever are missing, first and
+again at the end, and stops early without `unzip` when it must unpack the
+command-line tools.
 
 `crates/sdk/ui-core/android/build-apk.sh <app> [--abi ABI]... [--release]`
 remains as a thin wrapper over the same commands for apps in this checkout.
@@ -246,8 +268,6 @@ directory, since fontdb cannot map a file inside an APK; the device's
 - **No Tilo sandbox.** The app is not launched under Tilo's runtime host
   (`TILO_RUNTIME_STANDALONE=1`), so its Landlock and bubblewrap confinement
   does not apply; the app runs in Android's own per-app sandbox.
-- **One ABI per package.** `package` builds one architecture per `.apk`;
-  run it once per `--arch` for both.
 - **No in-place reload.** `dev` reinstalls and restarts the app on each change.
 - **TalkBack explore-by-touch is untested on a device.** The emulator image has
   no TalkBack and `adb` cannot inject hover events.

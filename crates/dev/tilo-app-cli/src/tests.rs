@@ -3955,8 +3955,14 @@ fn package_size_is_reported_against_the_app_budget() {
         package: Some(2000),
         binary: Some(2500),
     };
-    let report =
-        size::SizeReport::measure(payload, &[PathBuf::from("bin/app")], 1500, budget).unwrap();
+    let report = size::SizeReport::measure(
+        payload,
+        &[PathBuf::from("bin/app")],
+        1500,
+        budget,
+        tilo_app_package::MAX_APP_TAPP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         report
             .files
@@ -3981,10 +3987,34 @@ fn package_size_is_reported_against_the_app_budget() {
     assert_eq!(json["package_bytes"], 1500);
     assert_eq!(json["over_budget"].as_array().unwrap().len(), 1);
 
-    let over = size::SizeReport::measure(payload, &[], 2001, budget).unwrap();
+    let over = size::SizeReport::measure(
+        payload,
+        &[],
+        2001,
+        budget,
+        tilo_app_package::MAX_APP_TAPP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         over.overruns(),
         ["the package is 1 B over its budget of 2.0 KiB"]
+    );
+
+    // A build that links the toolkit in answers to the registry's limit for
+    // its platform, the one the registry enforces.
+    let android = size::SizeReport::measure(
+        payload,
+        &[],
+        16 * 1024 * 1024,
+        size::Budget::default(),
+        tilo_app_package::platform_size_limit(PackagePlatform::Android.registry_name()),
+    )
+    .unwrap();
+    assert_eq!(android.limit, tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES);
+    assert!(
+        android.render().contains("25% of the 64.0 MiB limit"),
+        "{}",
+        android.render()
     );
 }
 
