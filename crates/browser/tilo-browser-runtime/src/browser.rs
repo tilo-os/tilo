@@ -961,6 +961,7 @@ async fn shared_gpu(
     .map_err(|e| e.to_string())?;
     if caps == SurfaceCaps::CONSERVATIVE {
         renderer.set_bump_budget_limit(CONSERVATIVE_BUMP_BUDGET_BYTES);
+        renderer.set_bump_budget_grow_once(true);
         renderer.set_image_atlas_max(CONSERVATIVE_IMAGE_ATLAS_MAX);
     } else {
         renderer.set_bump_budget_limit(MAX_BUMP_BUDGET_BYTES);
