@@ -86,6 +86,9 @@ pub(crate) struct Room {
     /// Records the room delivered that no mount had open, as wire
     /// `(app, record)`.
     stored: BTreeSet<(String, String)>,
+    /// Routes a delivered document failed to apply to: this page never
+    /// answers a compaction request for them.
+    unapplied: HashSet<DocumentRoute>,
 }
 
 /// The record a checkout is on the collaboration wire.
@@ -134,6 +137,7 @@ pub(crate) fn open(
         desktop_snapshotted: false,
         desktop_value: None,
         stored: BTreeSet::new(),
+        unapplied: HashSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -271,13 +275,20 @@ impl Room {
     fn receive(&mut self) -> Vec<Arc<dyn Fn() + Send + Sync>> {
         let mut woken: HashSet<u64> = HashSet::new();
         let mut batches: Vec<(DocumentRoute, Vec<DocumentMutation>)> = Vec::new();
+        let mut compactions: Vec<(DocumentRoute, [u8; 16])> = Vec::new();
         for event in self.events.drain() {
             match event {
                 PeerEvent::Ready { workspace_id } if workspace_id == self.workspace => {
                     self.ready = true;
                 }
+                PeerEvent::CompactionRequested { route, request }
+                    if route.cluster_id == self.uuid =>
+                {
+                    compactions.push((route, request));
+                }
                 PeerEvent::Document(document) if document.route.cluster_id == self.uuid => {
                     let Some(mutation) = document.mutation() else {
+                        self.unapplied.insert(document.route.clone());
                         warn(&format!(
                             "{}/{}: not a complete document mutation",
                             document.route.app_id, document.route.record
@@ -304,7 +315,21 @@ impl Room {
             if let Err(error) =
                 self.apply(&route, tilo_browser_peer::coalesce(mutations), &mut woken)
             {
+                self.unapplied.insert(route.clone());
                 warn(&format!("{}/{}: {error}", route.app_id, route.record));
+            }
+        }
+        // Every document delivered before a request is applied by now.
+        for (route, request) in compactions {
+            match self.snapshot_of(&route) {
+                Ok(Some(snapshot)) => {
+                    let _ = self.peer.compact(request, snapshot);
+                }
+                Ok(None) => {}
+                Err(error) => warn(&format!(
+                    "{}/{}: no snapshot to compact: {error}",
+                    route.app_id, route.record
+                )),
             }
         }
         woken
@@ -315,6 +340,46 @@ impl Room {
                 Arc::clone(&mounted.attachment.notify)
             })
             .collect()
+    }
+
+    /// The route's document as this page holds it, for a host compaction
+    /// request: an open record's replica, the desktop, or a record's stored
+    /// document. `None` when the page cannot vouch for every change it was
+    /// delivered for the route.
+    fn snapshot_of(&mut self, route: &DocumentRoute) -> Result<Option<Vec<u8>>, String> {
+        if self.unapplied.contains(route) {
+            return Ok(None);
+        }
+        if route.app_id == DESKTOP_APP {
+            return Ok(Some(self.desktop.document_mut().save()));
+        }
+        for mounted in self.mounts.values() {
+            for store in mounted.attachment.stores.borrow().iter() {
+                if store.package_and_home().0 != route.app_id {
+                    continue;
+                }
+                if let Some(checkout) = store
+                    .open_records()
+                    .into_iter()
+                    .find(|checkout| checkout.id.as_str() == route.record)
+                {
+                    return store
+                        .replication_snapshot(&checkout.id)
+                        .map(|(bytes, _)| Some(bytes))
+                        .map_err(|error| error.to_string());
+                }
+            }
+        }
+        let Some(id) = ui::record::RecordId::parse(&route.record) else {
+            return Ok(None);
+        };
+        let key = StorageKey::record(&route.app_id, self.uuid.clone(), id.storage_key());
+        Ok(self
+            .store
+            .read(&key)
+            .map_err(|error| error.to_string())?
+            .map(|stored| stored.bytes)
+            .filter(|bytes| !bytes.is_empty()))
     }
 
     fn apply(
