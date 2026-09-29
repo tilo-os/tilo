@@ -199,8 +199,11 @@ done
 [[ $converged == true ]] || die "$index_tag did not converge on the published children"
 index_digest=$(manifest_digest "$index_tag")
 # The index is rebuilt whenever another architecture lands; keep each one
-# reachable by its digest, as for the child above.
-skopeo copy --all --preserve-digests "docker://$REPOSITORY@$index_digest" \
+# reachable by its digest, as for the child above. Only the index is copied:
+# its children are already in the repository, and copying them again with
+# --all refuses an index whose children mix gzip and zstd layers under
+# --preserve-digests.
+skopeo copy --multi-arch index-only --preserve-digests "docker://$REPOSITORY@$index_digest" \
   "docker://$REPOSITORY:$DEV_TAG-${index_digest:7:16}" >/dev/null
 note "$index_tag ($index_digest) holds $(jq -r '[.[].architecture] | join(", ")' <<< "$wanted")"
 [[ $IMAGE_ONLY == 0 ]] || exit 0
