@@ -3500,10 +3500,35 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             let manifest: toml::Table =
                 toml::from_str(&cargo_toml(&spec).expect("render Cargo.toml"))
                     .expect("generated Cargo.toml");
-            let hack = manifest
-                .get("dependencies")
-                .and_then(|dependencies| dependencies.get("workspace-hack"));
+            let target = |cfg: &str, name: &str| {
+                manifest
+                    .get("target")
+                    .and_then(|targets| targets.get(cfg))
+                    .and_then(|target| target.get("dependencies"))
+                    .and_then(|dependencies| dependencies.get(name))
+                    .cloned()
+            };
+            let native = "cfg(not(target_arch = \"wasm32\"))";
+            let web = "cfg(target_arch = \"wasm32\")";
+            let hack = target(native, "workspace-hack");
             assert_eq!(hack.is_some(), workspace_member, "{manifest:#?}");
+            if workspace_member {
+                assert!(
+                    manifest
+                        .get("dependencies")
+                        .and_then(|dependencies| dependencies.get("workspace-hack"))
+                        .is_none(),
+                    "the hack's native feature set must stay off the web build"
+                );
+                assert!(target(native, "ui").is_some(), "{manifest:#?}");
+                let portable = target(web, "ui").expect("the web build's portable SDK");
+                assert_eq!(
+                    portable
+                        .get("default-features")
+                        .and_then(toml::Value::as_bool),
+                    Some(false)
+                );
+            }
         }
     }
 
@@ -5561,6 +5586,90 @@ fn every_example_is_what_new_renders_for_it() {
     }
 }
 
+/// Threads, files, processes, sockets and the clock are portable across native
+/// platforms but absent on the web: the lint records them apart, they do not
+/// fail it, and the web build refuses the app before building anything.
+#[test]
+fn portability_lint_records_what_the_web_target_cannot_run() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("worker");
+    create_app(request(app.clone())).unwrap();
+    let report = lint_portability(&app).unwrap();
+    assert!(report.web_capable(), "{}", report.render());
+
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str(
+        r#"
+use std::{fs, time::Instant};
+use std::time::{Duration, SystemTime};
+
+pub fn work() -> Duration {
+    let started = Instant::now();
+    std::thread::spawn(|| {}).join().ok();
+    let _ = std::process::Command::new("true");
+    let _ = fs::read("x");
+    let _ = SystemTime::now();
+    started.elapsed()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exempt() {
+        std::thread::sleep(std::time::Duration::ZERO);
+        let _ = std::net::TcpListener::bind("127.0.0.1:0");
+    }
+}
+"#,
+    );
+    std::fs::write(app.join("src/lib.rs"), &lib).unwrap();
+    let report = lint_portability(&app).unwrap();
+    assert!(report.passed(), "{}", report.render());
+    assert!(report.findings.is_empty());
+    assert!(!report.web_capable());
+    let line = |needle: &str| {
+        lib.lines()
+            .position(|line| line.contains(needle))
+            .map(|index| index + 1)
+    };
+    let sites: Vec<_> = report
+        .web
+        .iter()
+        .map(|finding| (finding.line, finding.kind))
+        .collect();
+    for needle in [
+        "use std::{fs, time::Instant}",
+        "use std::time::{Duration, SystemTime}",
+        "std::thread::spawn",
+        "std::process::Command",
+    ] {
+        assert!(
+            sites.contains(&(
+                line(needle).unwrap(),
+                portability::FindingKind::NativeOnlyStd
+            )),
+            "{needle} is not flagged in {sites:?}"
+        );
+    }
+    assert!(
+        report
+            .web
+            .iter()
+            .all(|finding| finding.line < line("#[cfg(test)]").unwrap()),
+        "tests are exempt: {sites:?}"
+    );
+    let rendered = report.render();
+    assert!(rendered.contains("native-only"), "{rendered}");
+    assert!(rendered.contains("`std::thread` has no implementation on the web target"));
+
+    let error = crate::web::build_web(&app, &crate::web::WebBuildRequest::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot run on the web"), "{error}");
+    assert!(error.contains("std::thread"), "{error}");
+    assert!(!app.join("target/web-build").exists());
+}
+
 /// Every example is listed with its lesson in examples/README.md and
 /// docs/examples.md, and every example passes the portability lint.
 #[test]
@@ -5578,6 +5687,13 @@ fn every_example_is_indexed_and_portable() {
         );
         let report = portability::lint_app(&root.join(example.path())).expect("lint");
         assert!(report.passed(), "{}", report.render());
+        assert_eq!(
+            example.web,
+            report.web_capable(),
+            "{}: the Web column must say what the lint finds\n{}",
+            example.name,
+            report.render_web()
+        );
     }
     let json = examples::examples_json();
     assert_eq!(

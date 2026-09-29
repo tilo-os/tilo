@@ -111,6 +111,7 @@ jobs:
       android_packages: ${{ steps.plan.outputs.android_packages }}
       wasm_required: ${{ steps.plan.outputs.wasm_required }}
       wasm_packages: ${{ steps.plan.outputs.wasm_packages }}
+      web_examples: ${{ steps.plan.outputs.web_examples }}
       selected_count: ${{ steps.plan.outputs.selected_count }}
       workspace_count: ${{ steps.plan.outputs.workspace_count }}
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
@@ -605,13 +606,14 @@ jobs:
           done
 
   # Browser crates (anything built on wasm-bindgen) and their cfg(wasm32)
-  # code paths, which no native job compiles. Type-check only: the browser
-  # bundle build and its tests run elsewhere.
+  # code paths, which no native job compiles, type-checked; and the selected
+  # web-capable examples, built for the web. The browser bundle build and its
+  # tests run elsewhere.
   wasm:
     if: needs.select.outputs.wasm_required == 'true'
     needs: [builder, select]
     runs-on: runner
-    timeout-minutes: 60
+    timeout-minutes: 90
     env:
       CARGO_BUILD_JOBS: '4'
       CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS: -D warnings
@@ -632,6 +634,7 @@ jobs:
         run: rustup target add wasm32-unknown-unknown
 
       - name: Check browser crates for wasm32
+        if: needs.select.outputs.wasm_packages != ''
         env:
           PACKAGES: ${{ needs.select.outputs.wasm_packages }}
         run: |
@@ -646,6 +649,19 @@ jobs:
       # the Cloud frontend with `cloud,static-apps`; check those as built.
       - name: Check the browser's wasm32 builds
         run: bash tools/ci/check-wasm.sh
+
+      # `tilo-app build --platform web` for every selected web-capable
+      # example, against one web core.
+      - name: Build web-capable examples for the web
+        if: needs.select.outputs.web_examples != ''
+        env:
+          WEB_EXAMPLES: ${{ needs.select.outputs.web_examples }}
+        run: |
+          set -euo pipefail
+          # shellcheck disable=SC2086
+          bash tools/ci/measure.sh "web examples" -- \
+            bash scripts/ci-run.sh "tilo-app build --platform web (examples)" -- \
+            bash tools/ci/build-web-examples.sh $WEB_EXAMPLES
 
   pins:
     if: needs.select.outputs.pins_required == 'true'
