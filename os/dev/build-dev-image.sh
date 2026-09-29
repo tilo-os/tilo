@@ -169,9 +169,10 @@ podman image exists "$base" || die "the production base $base is not in local st
     TILO_DEV_BASE=registry.tilo.so/tilo/tilo:<tag> $0"
 base_digest="$(podman image inspect --format '{{.Digest}}' "$base" 2>/dev/null || true)"
 [[ "$base_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || base_digest=""
-# Production builds clamp .Created to their commit's time; tilo-vm compares it
+# The base's commit time (its org.tilo.source-date-epoch label, else .Created,
+# which production builds clamp to it); tilo-vm compares it
 # with the base of the image a VM runs, so a VM is not moved onto an older base.
-base_created="$(podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$base" 2>/dev/null || true)"
+base_created="$(tilo_image_source_time "$base")"
 
 read -r -a _extra_build_args <<< "${TILO_BUILD_ARGS:-}"
 SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git -C "$TILO_REPO" log -1 --format=%ct 2>/dev/null || echo 0)}"
