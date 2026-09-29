@@ -222,8 +222,7 @@ impl OwnerCommitService for HostSigning {
 }
 impl PendingSignature {
     pub(crate) fn reject_unstarted(self, reason: String) -> Result<(), String> {
-        self.0
-            .reject_unstarted(crate::owner_commit::execution_deadline(), reason)
+        self.0.reject_unstarted(reason)
     }
     pub(crate) fn diagnostic_timing(&self) -> Timing {
         self.1.child("owner_signature")
@@ -233,20 +232,19 @@ impl PendingSignature {
         self.0.matches_route(app, record)
     }
     pub fn apply(self, owner: &mut SessionOwner) -> (impl FnOnce() + use<>, Result<(), String>) {
-        self.apply_until(owner, crate::owner_commit::execution_deadline())
+        self.apply_with(owner, crate::owner_commit::turn_budget())
     }
-    /// [`Self::apply`] with the caller's reply deadline chosen by the owner
-    /// turn instead of the shipping execution budget.
-    fn apply_until(
+    /// [`Self::apply`] with this turn's stall budget chosen by the caller.
+    fn apply_with(
         self,
         owner: &mut SessionOwner,
-        deadline: std::time::Instant,
+        budget: std::time::Duration,
     ) -> (impl FnOnce() + use<>, Result<(), String>) {
         let timing = self.1;
         let policy_time = self.2;
         timing.mark("owner_dequeued");
         self.0.apply_scoped_fenced(
-            deadline,
+            budget,
             |route, certificate, mutation, authorization| {
                 if let Some(authorization) = authorization {
                     let time = policy_time.as_ref().ok_or_else(|| HostDocumentTurnError::Refused("startup replay requires original registered owner time".into()))?;
@@ -553,7 +551,7 @@ mod tests {
         let request = pending.recv().await.unwrap();
         let before = owner.status().generation;
         let (complete, outcome) = request.apply(
-            crate::owner_commit::execution_deadline(),
+            crate::owner_commit::turn_budget(),
             |route, cert, mutation| {
                 assert_eq!(cert, &owner.identity.native_cert);
                 let mut candidate = owner.peer().clone();
@@ -836,7 +834,7 @@ mod tests {
         // The owner turn starts the caller's reply deadline. Its shipping five
         // seconds would also bound this runner's commit fsyncs, so the turn
         // here grants the shared hang bound instead.
-        let (complete, result) = pending.apply_until(&mut owner, tilo_test_env::hang_deadline());
+        let (complete, result) = pending.apply_with(&mut owner, tilo_test_env::hang_bound());
         result.unwrap();
         complete();
         let signed = waiting.await.unwrap().unwrap();
@@ -853,8 +851,11 @@ mod tests {
         assert_eq!(owner.status(), committed);
     }
 
-    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn started_signing_timeout_keeps_committed_receipt_and_uncertainty() {
+    /// A started turn that stops making progress for its whole stall budget is
+    /// uncertain: the caller fails closed, and the owner's committed receipt
+    /// stays retained for settlement.
+    #[tokio::test(start_paused = true)]
+    async fn started_signing_stall_keeps_committed_receipt_and_uncertainty() {
         let root = tempfile::tempdir().unwrap();
         let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
@@ -869,18 +870,60 @@ mod tests {
         let (complete, result) = pending.apply(&mut owner);
         result.unwrap();
         assert_eq!(owner.status().generation, before + 1);
-        // The owner barrier happened; deliberately withhold the existing completion.
-        let error = tokio::time::timeout(std::time::Duration::from_secs(7), waiting)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap_err();
-        assert!(error.contains("outcome unknown"));
+        // The owner barrier happened; deliberately withhold the existing
+        // completion, as a hung owner turn would. The paused clock runs out
+        // the whole stall budget.
+        let began = tokio::time::Instant::now();
+        let error = waiting.await.unwrap().unwrap_err();
+        assert!(began.elapsed() >= crate::owner_commit::turn_budget());
+        assert!(error.contains("outcome unknown"), "{error}");
         assert!(service.health().is_err());
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         complete();
         assert_eq!(service.shared.pending_exact_receipts().unwrap(), 1);
         assert_eq!(owner.status().generation, before + 1);
+    }
+
+    /// A turn far slower than any single step's budget, which keeps
+    /// completing steps, is a definite answer and never latches the signer.
+    #[tokio::test(start_paused = true)]
+    async fn slow_signing_turn_that_completes_is_definite() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
+        let (service, mut receiver) = HostSigning::new(handle);
+        let route = RouteSpec::app("so.tilo.chat", owner.peer().room().parse().unwrap());
+        let signer = service.bind(route.clone(), owner.identity.native_cert.clone());
+        let mutation =
+            DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
+        let waiting = tokio::spawn(signer.commit(&route, mutation));
+        let pending = receiver.recv().await.unwrap();
+        let (complete, result) = pending.apply(&mut owner);
+        result.unwrap();
+        // Publication takes most of a budget: longer than the five seconds a
+        // caller used to allow, still well within this step's own budget.
+        tokio::time::sleep(
+            crate::owner_commit::turn_budget()
+                .checked_sub(std::time::Duration::from_secs(1))
+                .unwrap(),
+        )
+        .await;
+        assert!(
+            !waiting.is_finished(),
+            "a progressing turn is not uncertain"
+        );
+        complete();
+        let signed = waiting
+            .await
+            .unwrap()
+            .expect("a slow turn answers definitely");
+        assert!(service.health().is_ok());
+        let receipt = service
+            .commit(request(&owner, "so.tilo.chat", "", signed))
+            .await
+            .expect("its exact receipt is consumed");
+        drop(receipt);
+        assert_eq!(service.shared.pending_exact_receipts().unwrap(), 0);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -907,7 +950,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn signing_uses_owner_timestamp_not_a_fresh_budget_on_start_delivery() {
+    async fn signing_stall_bound_is_granted_by_the_owner_turn() {
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
         let (handle, _ordinary) = OwnerCommitMailbox::bounded(8);
@@ -918,11 +961,11 @@ mod tests {
             DocumentMutation::Snapshot(owner.peer().document("so.tilo.chat", "").unwrap());
         let waiting = tokio::spawn(signer.commit(&route, mutation));
         let pending = receiver.recv().await.unwrap();
-        // Deliver an owner deadline already elapsed, representing late observation.
-        let (_complete, _) = pending.0.apply(
-            std::time::Instant::now() - std::time::Duration::from_millis(1),
-            |_, _, _| Err("elapsed owner turn".into()),
-        );
+        // The owner grants no time and never answers: its caller, however
+        // late it observes the start, gets no budget of its own.
+        let (_complete, _) = pending.0.apply(std::time::Duration::ZERO, |_, _, _| {
+            Err("elapsed owner turn".into())
+        });
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(250), waiting)
                 .await
