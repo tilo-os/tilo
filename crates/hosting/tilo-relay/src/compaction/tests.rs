@@ -46,7 +46,7 @@ fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) 
                     attestation,
                     collab_types::OpClass::Splice,
                     std::time::UNIX_EPOCH,
-                    seq + index as u64,
+                    seq.saturating_add(index as u64),
                     collab_types::EncryptionMetadata::mls_application(
                         1,
                         collab_types::ChannelId::new(),
@@ -60,7 +60,7 @@ fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) 
                     attestation,
                     collab_types::OpClass::Splice,
                     std::time::UNIX_EPOCH,
-                    seq + index as u64,
+                    seq.saturating_add(index as u64),
                 )
             };
             op.signature = collab_types::Signature::from_bytes(
@@ -99,7 +99,7 @@ fn device_frames(seed: u8, mutation: &DocumentMutation, sealed: bool, seq: u64) 
 
 fn retain(store: &WorkspaceStore, frames: Vec<Vec<u8>>, seq: &mut u64) {
     for frame in frames {
-        *seq += 1;
+        *seq = seq.saturating_add(1);
         let checkpoint = matches!(
             crate::store::retained::payload(&frame, WORKSPACE),
             Some((_, CoeditPayload::Checkpoint { .. }))
@@ -183,7 +183,7 @@ fn the_host_folds_a_long_tail_and_a_late_joiner_converges_from_its_snapshot() {
                 author,
                 &DocumentMutation::Incremental(doc.save_after(&before)),
                 false,
-                10 + edit as u64,
+                u64::try_from(edit).unwrap().saturating_add(10),
             ),
             &mut seq,
         );
@@ -227,7 +227,7 @@ fn a_change_retained_during_the_fold_or_depending_on_unreadable_content_is_kept(
                 1,
                 &DocumentMutation::Incremental(on_a.save_after(&before)),
                 false,
-                10 + edit as u64,
+                u64::try_from(edit).unwrap().saturating_add(10),
             ),
             &mut seq,
         );
@@ -309,7 +309,7 @@ fn a_sealed_tail_is_never_folded_and_asks_for_a_member() {
     let mut doc = AutoCommit::new();
     for edit in 0..COMPACT_TAIL_ENTRIES {
         let before = doc.get_heads();
-        doc.put(ROOT, "k", edit as i64).unwrap();
+        doc.put(ROOT, "k", i64::try_from(edit).unwrap()).unwrap();
         doc.commit();
         retain(
             &store,
