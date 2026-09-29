@@ -503,6 +503,12 @@ impl SnippetsApp {
         self.actions.mark_hosted_for_test();
     }
 
+    /// Test-only: select a sidebar folder so hosted extras bind folder-scoped create.
+    #[cfg(test)]
+    pub(crate) fn select_folder_for_test(&mut self, folder: &str) {
+        self.selection = crate::model::Selection::Folder(folder.to_string());
+    }
+
     pub(crate) fn snippet_count(&self) -> usize {
         self.library.snippets.len()
     }
@@ -1528,17 +1534,21 @@ impl ui::search::capability::SearchSource for SnippetsApp {
 }
 
 impl ui::resources::PublishesResources for SnippetsApp {
-    /// Publish the library + its snippets so the host's Ctrl+K action palette
-    /// scopes to them. When the framework hosts the surface,
-    /// [`tilo_resource::publish`] already owns the library door; hosted
-    /// returns nothing rather than a second hand-built tree.
+    /// Standalone / `--shots` / unit tests publish the library root. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns that
+    /// door — keep only the sidebar-folder create extras.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
-            return Vec::new();
+            return crate::actions::live_folder_resources(&self.snippets_resource_ctx());
         }
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
     }
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::actions::live_folder_resources(&self.snippets_resource_ctx())
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
         if id == "snippets.library" {
             return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
                 .pop();

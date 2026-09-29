@@ -361,22 +361,15 @@ pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
     children
 }
 
-/// Build the small contextual root shown immediately by Ctrl+K (standalone /
-/// `--shots` / unit tests). When the framework hosts the surface,
-/// [`tilo_resource::publish`] owns this door instead.
-pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
-    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
-    for spec in library_view_specs() {
-        lib = lib.with_action(spec);
-    }
+/// Stable resource id for the peer's selected sidebar folder.
+pub fn folder_resource_id(folder: &str) -> String {
+    format!("snippets.folder:{}", stable_key(folder))
+}
 
-    // Library-level: create a new snippet at the current folder. The uuid is
-    // minted once when the title argument is committed, then baked into the
-    // envelope, so replay stays deterministic. Hosted publish uses the same
-    // action via [`crate::resource::Snippets::declarations`] (folder defaults
-    // to the All Snippets root there — presentation folder is a View concern).
-    let folder = ctx.current_folder.clone();
-    lib = lib.with_action(ActionSpec::prompted(
+/// Prompted create filed under `folder`. Uuid is minted when the title is
+/// committed so replay stays deterministic.
+fn new_snippet_in_folder_spec(folder: String) -> ActionSpec {
+    ActionSpec::prompted(
         "new-snippet",
         "New snippet",
         "Title",
@@ -391,7 +384,46 @@ pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> 
             }
             encode(&create_snippet_action(s))
         },
-    ));
+    )
+}
+
+/// Peer-local sidebar folder: create bound to the selected folder. Published
+/// beside the framework root when hosted — never a second `snippets.library`.
+/// [`crate::resource::Snippets::declarations`] already files under All Snippets,
+/// so an empty folder yields no extra.
+pub fn live_folder_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
+    if ctx.current_folder.is_empty() {
+        return Vec::new();
+    }
+    vec![folder_context_resource(ctx)]
+}
+
+fn folder_context_resource(ctx: &SnippetsResourceCtx) -> Resource {
+    let folder = ctx.current_folder.clone();
+    Resource::new(
+        folder_resource_id(&folder),
+        "snippets.folder",
+        folder.clone(),
+    )
+    .with_action(new_snippet_in_folder_spec(folder))
+}
+
+/// Build the small contextual root shown immediately by Ctrl+K (standalone /
+/// `--shots` / unit tests). When the framework hosts the surface,
+/// [`tilo_resource::publish`] owns the library door; [`live_folder_resources`]
+/// keeps only the sidebar-folder create.
+pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
+    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
+    for spec in library_view_specs() {
+        lib = lib.with_action(spec);
+    }
+
+    // Library-level: create a new snippet at the current folder. The uuid is
+    // minted once when the title argument is committed, then baked into the
+    // envelope, so replay stays deterministic. Hosted publish uses the same
+    // action via [`crate::resource::Snippets::declarations`] (folder defaults
+    // to the All Snippets root there — presentation folder is a View concern).
+    lib = lib.with_action(new_snippet_in_folder_spec(ctx.current_folder.clone()));
 
     vec![lib]
 }

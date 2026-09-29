@@ -1,12 +1,12 @@
 //! Snippets as a [`tilo_resource::Resource`]: one action vocabulary, one
 //! publish path for the library.
 //!
-//! Document mutations (`new-snippet`, per-snippet rename / language / tags /
-//! star / delete, …) live on this resource via [`Resource::declarations`] /
-//! [`Resource::children`]. Search focus is a View
+//! Document mutations (`new-snippet` under All Snippets, per-snippet rename /
+//! language / tags / star / delete, …) live on this resource via
+//! [`Resource::declarations`] / [`Resource::children`]. Search focus is a View
 //! ([`Resource::local_operations`]). Hosted [`PublishesResources::resources`]
-//! stays empty — never a second hand-built `snippets.library` root beside
-//! [`tilo_resource::publish`].
+//! returns only the peer's sidebar-folder create (`snippets.folder`) — never a
+//! second hand-built `snippets.library` root beside [`tilo_resource::publish`].
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
@@ -216,7 +216,7 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
-    fn resource_publish_owns_library_door_and_hosted_keeps_no_second_tree() {
+    fn resource_publish_owns_library_door_and_hosted_keeps_folder_extras() {
         let mut doc = AutoCommit::new();
         let mut snippet = Snippet::blank("Ops");
         snippet.title = "Deploy".into();
@@ -283,11 +283,48 @@ mod tests {
 
         app.mark_hosted_for_test();
         assert!(app.is_hosted());
+        let without_folder = ui::resources::PublishesResources::resources(&app, &seeded);
+        assert!(
+            without_folder.is_empty(),
+            "All Snippets has no folder extra beyond publish declarations: {:?}",
+            without_folder
+                .iter()
+                .map(|r| r.id.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        app.select_folder_for_test("Ops");
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
-            extras.is_empty(),
+            extras
+                .iter()
+                .all(|resource| resource.kind != "snippets.library"),
             "hosted must not republish snippets.library beside ResourceRoot: {:?}",
             extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            extras.len(),
+            1,
+            "hosted returns the sidebar-folder slice alone"
+        );
+        assert_eq!(extras[0].kind, "snippets.folder");
+        assert_eq!(extras[0].id.as_str(), actions::folder_resource_id("Ops"));
+        assert!(
+            extras[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet"),
+            "hosted keeps folder-bound New snippet"
+        );
+        assert!(
+            !extras[0].actions.iter().any(|action| action.id == "search"
+                || action.id == "rename"
+                || action.id == "delete"),
+            "hosted folder must not copy library Views or per-snippet Document ops already on publish"
+        );
+        assert!(
+            extras[0].children.is_empty(),
+            "hosted folder must not nest per-snippet children already on publish"
         );
 
         let door = provide_resources(&state);
