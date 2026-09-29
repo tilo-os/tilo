@@ -366,3 +366,18 @@ history-action-stale-cursor = Der Verlauf hat sich seit dieser Seite geändert. 
 history-action-unknown-entry = Diese Änderung ist nicht im Verlauf dieses Dokuments.
 history-action-unknown-session = Diese Vorschau ist nicht geöffnet.
 history-action-invalid = Diese Verlaufsanfrage ist ungültig.
+
+# Befehlspalette: Tastenhinweise, Ergebniszahl und leere Zustände.
+palette-name = Befehlspalette
+palette-results = Ergebnisse
+palette-hint-navigate = Navigieren
+palette-hint-open = Öffnen
+palette-hint-run = Ausführen
+palette-hint-close = Schließen
+palette-result-count = { $count ->
+    [one] 1 Ergebnis
+   *[other] { $count } Ergebnisse
+}
+palette-empty = Nichts anzuzeigen
+palette-no-results = Keine Ergebnisse für „{ $query }“
+palette-no-results-hint = Weniger Wörter versuchen oder den Bereich erweitern
