@@ -1110,7 +1110,7 @@ fn draw_pane_intro(
     draw_icon(
         scene,
         transform,
-        icon_rect.inset(9.0),
+        icon_rect.inset(-9.0),
         icon,
         colors.accent[4],
         LUCIDE_DEFAULT_STROKE_PX,
@@ -4001,51 +4001,20 @@ fn draw_permission_composer(
         text_renderer,
         theme,
     );
-    let profiles = permission_profiles_rect(pane_rect);
-    let profiles_rr = RoundedRect::from_rect(profiles, f64::from(tokens.radii.md));
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        if is_owner {
-            colors.accent[5].with_alpha_factor(0.12)
-        } else {
-            colors.surfaces.raised.with_alpha_factor(0.55)
-        },
-        None,
-        &profiles_rr,
-    );
-    scene.stroke(
-        &Stroke::new(1.0),
-        transform,
-        if is_owner {
-            colors.accent[5].with_alpha_factor(0.45)
-        } else {
-            colors.border_standard
-        },
-        None,
-        &profiles_rr,
-    );
-    text_renderer.draw_text(
+    Button::paint(
         scene,
-        &t_args(
-            "workspace-settings-saved-roles",
-            &[("count", subject_draft.0.permission_profiles.len().into())],
-        ),
-        tokens.typography.scale.xs,
-        if is_owner {
-            colors.accent[4]
-        } else {
-            colors.text_dim
-        },
-        at(transform, profiles.x0 + 9.0, profiles.y0 + 6.0),
-        Some({
-            #[allow(
-                clippy::cast_possible_truncation,
-                reason = "settings-pane geometry is a small logical-pixel width"
-            )]
-            let width = (profiles.width() - 18.0).max(0.0) as f32;
-            width
-        }),
+        transform,
+        text_renderer,
+        theme,
+        &ButtonFace::new(
+            permission_profiles_rect(pane_rect),
+            &t_args(
+                "workspace-settings-saved-roles",
+                &[("count", subject_draft.0.permission_profiles.len().into())],
+            ),
+        )
+        .disabled(!is_owner)
+        .text_size(tokens.typography.scale.xs),
     );
     let card = permission_composer_card(pane_rect);
     ui::surface::card(
