@@ -1300,6 +1300,31 @@ impl PdfApp {
         self.actions.attach(dispatcher);
     }
 
+    #[cfg(test)]
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test-only: open find and materialise matches for `query`.
+    #[cfg(test)]
+    pub(crate) fn stage_find_for_test(&mut self, query: &str) {
+        self.open_search();
+        self.search_input.set_text(query);
+        self.recompute_matches();
+    }
+
+    /// Test-only: live find hit count after [`Self::stage_find_for_test`].
+    #[cfg(test)]
+    pub(crate) fn find_match_count_for_test(&self) -> usize {
+        self.match_count()
+    }
+
     /// The presentation context Ctrl+K needs to build the document-level action
     /// (add a note at the current page). `None` when no document is open.
     pub(crate) fn pdf_resource_ctx(&self) -> Option<crate::actions::PdfResourceCtx> {
@@ -5980,10 +6005,14 @@ impl ui::resources::PublishesResources for PdfApp {
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`].
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes this document. The widget tree would
-        // be a second door.
+        // Framework [`tilo_resource::publish`] owns `pdf.document`, page/zoom
+        // Views, and markup children. Find hits are live presentation only —
+        // keep that same standalone slice when hosted, never a second root.
         if self.actions.is_hosted() {
-            return Vec::new();
+            return self
+                .pdf_resource_ctx()
+                .map(|ctx| crate::actions::find_result_resources(&ctx))
+                .unwrap_or_default();
         }
         self.publish_resources(doc)
     }
