@@ -34,24 +34,43 @@ evaluated. They do not establish that Hydra is a good Tilo CI control plane,
 that Nix can build the bootc OS efficiently, or that Nix's artifact boundaries
 match Tilo's development loop.
 
-## Hardware topology to test
+## Actual hardware and CI recommendation
 
-The AWS 192-core/768-GiB metal host should initially remain a Linux/KVM host.
-Install the Nix daemon beside the current infrastructure; put its store and
-build temporary directory on local NVMe. Run Hydra and PostgreSQL on a small
-separate NixOS machine. Register the metal host as an `ssh-ng` Nix builder with
-`x86_64-linux` and measured `maxJobs`, `speedFactor`, and supported features.
-Only advertise `kvm` on a builder that can actually run the selected VM tests.
-Nix's `maxJobs` counts concurrent derivations, not CPU cores; a 192-core host
-must not be configured as 192 unconstrained Rust/image builds. Set job count
-from measured per-job memory and CPU usage, with explicit capacity reserved
-for interactive development VMs. Add ARM64 as a separate native builder.
+AWS inventory on 2026-09-29 showed two running `r7a.metal-48xl` CI machines
+(`ci-x86-2` and `ci-x86-3`) in `us-west-2`. They are Talos Kubernetes workers
+in the `ci-x86` pool, managed by OpenTofu; they are not general SSH hosts for
+installing a Nix daemon. The EKS API currently admits only three configured
+public CIDRs, none of which is this development machine. AWS login alone does
+not supply cluster access. Both observed x86 metal instances are Spot; a new
+CI controller cannot make those nodes interruption-proof. No production
+infrastructure was changed.
 
-The Nix store/cache and the VM image/artifact store are different products.
-Keep both on fast local storage and push accepted immutable results to a
-remote cache or object store. The Hydra evaluator must not be the large build
-machine. For PR-controlled code, use an isolated builder trust domain rather
-than treating Nix's build sandbox as a complete adversarial boundary.
+The existing CI already uses Kata microVMs on Kubernetes, with a Forgejo
+Actions runner broker and warm disk/image seeds. Argo Workflows would not
+replace Kata or Kubernetes; it could only replace the Actions/broker job
+lifecycle with direct workflow pods. That is a meaningful change only if it
+removes runner registration/heartbeat and broker failures without losing the
+measured warm path. Do not choose Argo merely because the hosts run Kubernetes.
+
+Keep the existing affected-package planner, merge-candidate status contract,
+and build scripts while comparing one identical job and an 80-job burst through
+both execution paths. Measure queue-to-command latency, lost jobs, artifact
+delivery, cache warmth and human intervention. If direct Argo pods win, Argo
+CD can deploy the controller/templates and a thin Forgejo status bridge can
+submit generated DAGs. If they do not, retain Forgejo Actions as executor and
+put the structural effort into artifact selection, receipts and VM development.
+Either way, developers and agents should use a Tilo CI CLI/API and the Forgejo
+check summary; the workflow controller's UI is an operations view.
+
+Nix and BuildStream remain candidates for the artifact/build graph, not the
+cluster scheduler. Nix can run in a container or persistent builder pod, but
+its store, binary cache, privileged daemon and KVM access need deliberate
+design; the current monolithic source derivation already invalidates on a
+README edit. Hydra would add a separate NixOS/PostgreSQL control plane and
+compete with Kubernetes for scheduling. It is no longer the default choice
+for this Talos/Argo CD environment. If Nix's artifact graph wins a measured
+fit test, invoke it from the chosen CI executor and give it a dedicated cache
+and builder pool. For PR-controlled code, isolate builders from signing keys.
 
 ## VM development plane
 
@@ -64,15 +83,15 @@ The provider-specific part is VM lifecycle (allocate, snapshot, reset, destroy,
 serial before the guest is ready). A physical Tilo machine implements the first
 part and has no VM lifecycle.
 
-Use libvirt on the metal host for provisioning first. It already exposes a
-remote management URI and supports serial and screenshots. `tilo-vm` currently
-allows a libvirt URI in `vms.toml`, but its disk creation/XML writes and
-`127.0.0.1` guest SSH forwarding still assume that `tilo-vm` runs on the VM
-host. The first remote implementation can therefore run a `tilo-vm` host agent
-over SSH on that machine, while the client forwards commands and streams
-artifacts. Add leases, quotas and per-agent disk overlays only when multiple
-agents use it. This VM service is independent of Hydra; CI may request a VM
-from it, but interactive agent sessions also use it directly.
+For the current Talos hosts, test KubeVirt as the VM provisioner: VM lifecycle,
+placement and volumes remain Kubernetes resources, while `tilo-vm` speaks its
+existing action protocol to the Tilo guest. KubeVirt offers serial and
+graphical consoles and snapshot APIs; verify storage-class snapshot support,
+KVM device access and bootc disk boot in this cluster before adoption. A
+small Tilo machine service can add leases, agent-scoped credentials and one
+endpoint for actions/screenshots/serial. This service is independent of the CI
+controller; CI and interactive agents are peer clients. A physical Tilo
+machine implements the same machine-control half without a VM lifecycle.
 
 ## Decision test on the actual metal host
 
@@ -81,12 +100,12 @@ graph: (1) shell-only edit, (2) shared toolkit edit, (3) boot-chain edit.
 For each, record changed derivations, executed CPU-minutes, cache bytes moved,
 time to usable Tilo VM, KVM result, and human interventions. The candidate
 must make the existing bootc image and its VM tests first-class outputs; a
-successful Nix build of `tilo-session` alone is insufficient. Stand up a
-Hydra jobset against those outputs on the separate NixOS controller and run
-one representative PR burst. If it removes the current broker incidents while
-preserving selective reuse and the `tilo-vm` development loop, migrate one
-output class at a time. Keep the present Forgejo merge gate active until the
-replacement emits equivalent status for the actual merge candidate.
+successful Nix build of `tilo-session` alone is insufficient. Compare native
+scripts, Nix and BuildStream on the three changes before selecting the build
+graph. Compare Actions/Kata with direct Argo/Kata execution separately. Migrate
+one output class at a time only after both comparisons favor the new path.
+Keep the present Forgejo merge gate active until any replacement emits
+equivalent status for the actual merge candidate.
 
 BuildStream remains a valid competing graph engine for the bootc image. A
 linear build graph, VM provisioning layer, and CI control plane may be
