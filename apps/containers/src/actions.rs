@@ -242,7 +242,7 @@ mod tests {
                 "precondition: replicas share a base"
             );
 
-            // Real keystroke → create_modal_key → ViewDoc::set_create_field (a splice).
+            // Real keystroke → create_modal_key → SetCreateField (a splice).
             send(&mut app, &mut doc, &char_event("w"));
             doc.commit();
             assert_eq!(

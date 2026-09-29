@@ -13,15 +13,28 @@ use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
 use crate::app::ContainersApp;
-use crate::doc::{DetailTab, Section, ViewDoc};
+use crate::doc::{CreateField, DetailTab, Section, ViewDoc};
 
 /// Collaborative view preferences. Engine inventory and pull jobs are not
 /// document state — they ride live extras / standalone overlay.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ContainersAction {
-    SetSection { section: String },
-    SetSelected { id: Option<String> },
-    SetTab { tab: String },
+    SetSection {
+        section: String,
+    },
+    SetSelected {
+        id: Option<String>,
+    },
+    SetTab {
+        tab: String,
+    },
+    /// Replace one create-form draft field.
+    SetCreateField {
+        field: String,
+        value: String,
+    },
+    /// Clear the create-form draft after a container is submitted.
+    ClearCreate,
 }
 
 impl Action for ContainersAction {
@@ -36,6 +49,16 @@ impl Action for ContainersAction {
             Self::SetTab { tab } => {
                 ViewDoc::set_tab(doc, DetailTab::parse(tab));
             }
+            Self::SetCreateField { field, value } => {
+                let Some(field) = CreateField::ALL
+                    .into_iter()
+                    .find(|candidate| candidate.key() == field)
+                else {
+                    return Err(ActionError::Refused("unknown create field".into()));
+                };
+                ViewDoc::set_create_field(doc, field, value);
+            }
+            Self::ClearCreate => ViewDoc::clear_create(doc),
         }
         Ok(())
     }
@@ -397,5 +420,27 @@ mod tests {
             "ActionSink must record document actions on the local host"
         );
         assert_eq!(ViewDoc::section(&local), Section::Volumes);
+    }
+
+    #[test]
+    fn create_draft_is_a_replayable_action() {
+        let mut doc = AutoCommit::new();
+        ContainersAction::SetCreateField {
+            field: "image".into(),
+            value: "nginx".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "nginx");
+        ContainersAction::ClearCreate.apply(&mut doc).unwrap();
+        assert_eq!(ViewDoc::create_field(&doc, CreateField::Image), "");
+        assert!(
+            ContainersAction::SetCreateField {
+                field: "not-a-field".into(),
+                value: "x".into(),
+            }
+            .apply(&mut doc)
+            .is_err()
+        );
     }
 }
