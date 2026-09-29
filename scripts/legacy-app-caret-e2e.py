@@ -133,6 +133,65 @@ def wait_until(description: str, predicate):
     raise Failure(f"timed out waiting for {description}{suffix}")
 
 
+# Starting a process cold is bounded by its own progress, not by DEADLINE:
+# a freshly installed LibreOffice first reads hundreds of MiB of libraries,
+# which on a busy disk takes longer than any fixed interaction budget. The
+# wait fails once the watched process group stops using CPU and stops
+# reading for STALL seconds, and in any case after STARTUP_HANG.
+STALL = 20.0
+STARTUP_HANG = 180.0
+
+
+def group_progress(pgid: int) -> tuple[int, ...]:
+    """CPU ticks, major faults and bytes read by every process in a group."""
+    ticks = faults = read = 0
+    for proc in Path("/proc").iterdir():
+        if not proc.name.isdigit():
+            continue
+        try:
+            stat = (proc / "stat").read_text()
+            fields = stat[stat.rindex(")") + 2:].split()
+            if int(fields[2]) != pgid:
+                continue
+            faults += int(fields[9])
+            ticks += int(fields[11]) + int(fields[12])
+            for line in (proc / "io").read_text().splitlines():
+                if line.startswith("read_bytes:"):
+                    read += int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return (ticks, faults, read)
+
+
+def wait_while_progressing(description: str, predicate, process: subprocess.Popen):
+    """Wait for `predicate` while `process`'s group keeps making progress."""
+    started = time.monotonic()
+    last_progress_at = started
+    last = group_progress(process.pid)
+    last_error = None
+    while True:
+        try:
+            value = predicate()
+            if value:
+                return value
+        except (ConnectionError, FileNotFoundError, json.JSONDecodeError, OSError) as error:
+            last_error = error
+        now = time.monotonic()
+        current = group_progress(process.pid)
+        if current != last:
+            last, last_progress_at = current, now
+        stalled = now - last_progress_at >= STALL
+        if stalled or now - started >= STARTUP_HANG:
+            why = (
+                f"{process.args[0]} made no CPU or read progress for {STALL:.0f}s"
+                if stalled
+                else f"still starting after {STARTUP_HANG:.0f}s"
+            )
+            suffix = f"; last error: {last_error}" if last_error else ""
+            raise Failure(f"timed out waiting for {description}: {why}{suffix}")
+        time.sleep(0.05)
+
+
 # A SIGKILLed process is only reaped once it leaves the kernel: one blocked
 # in a driver or filesystem call, or being dumped, outlives the signal.
 KILLED_REAP_SECONDS = 30.0
@@ -443,9 +502,11 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
             )
-            wait_until("test-control socket", control_path.exists)
+            wait_while_progressing("test-control socket", control_path.exists, compositor)
             control = Control(control_path)
-            wait_until("initial workspace", lambda: control.send({"op": "state_dump"}))
+            wait_while_progressing(
+                "initial workspace", lambda: control.send({"op": "state_dump"}), compositor
+            )
             complete_onboarding(control)
             display_file = runtime / "tilo-session" / "wayland-display"
             display = wait_until(
@@ -472,9 +533,10 @@ def run_case(shell: Path, case: Case, artifacts: Path) -> None:
                 start_new_session=True,
             )
 
-            frame = wait_until(
+            frame = wait_while_progressing(
                 f"{case.name} to render a real frame",
                 lambda: frame_or_process_exit(control, case, app),
+                app,
             )
             rect = frame["rect"]
             click_x = rect["x"] + rect["w"] * case.click_fraction[0]

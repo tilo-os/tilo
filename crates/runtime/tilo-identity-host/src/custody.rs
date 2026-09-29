@@ -45,8 +45,8 @@ impl HostIdentity {
         ws: WorkspaceId,
     ) -> Result<(DeviceCert, Vec<tilo_user_identity::RevocationEntry>), String> {
         let (cert, revocations) = if let Some(paths) = &self.identity_paths {
-            let stored_key = tilo_user_identity::persist::read_device_key(&paths.device_privkey)
-                .map_err(|e| e.to_string())?;
+            let stored_key =
+                tilo_user_identity::persist::load_device_key(paths).map_err(|e| e.to_string())?;
             if stored_key.verifying_key() != self.device_signing_key.verifying_key() {
                 return Err("native device custody changed".into());
             }

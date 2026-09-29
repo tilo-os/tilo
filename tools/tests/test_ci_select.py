@@ -254,6 +254,36 @@ class SelectorTests(unittest.TestCase):
              "wasm_required=false", "wasm_packages="],
         )
 
+    def test_wasm_lane_builds_selected_examples_and_all_when_the_web_build_changes(self):
+        self.setUp()
+        self.metadata["packages"].append({
+            "name": "example-counter",
+            "manifest_path": str(self.root / "examples/apps/counter/Cargo.toml"),
+            "targets": [{"name": "example-counter"}],
+            "dependencies": [{"name": "base", "path": str(self.root / "base")}],
+        })
+        def plan(changes):
+            return ci_select.make_plan(self.metadata, self.root, changes, 2)
+        reached = plan(["base/src/lib.rs"])
+        self.assertTrue(reached["wasm_required"])
+        self.assertEqual(reached["wasm"], [])
+        self.assertEqual(reached["web_examples"], ["example-counter"])
+        unrelated = plan(["qdoc/src/lib.rs"])
+        self.assertFalse(unrelated["wasm_required"])
+        self.assertEqual(unrelated["web_examples"], [])
+        build = plan(["crates/browser/tilo-browser-runtime/scripts/build-web-app.sh"])
+        self.assertTrue(build["wasm_required"])
+        self.assertEqual(build["web_examples"], ["example-counter"])
+        with tempfile.TemporaryDirectory() as directory:
+            output = Path(directory) / "outputs"
+            ci_select.emit_github(reached, output)
+            ci_select.emit_github(unrelated, output)
+            lines = output.read_text().splitlines()
+        self.assertEqual(
+            [line for line in lines if line.startswith("web_examples=")],
+            ["web_examples=example-counter", "web_examples="],
+        )
+
     def test_dependency_graph_selects_owners_and_dependants_or_falls_back_to_full(self):
         with self.subTest(phase='reverse dependency closure'):
             self.setUp()

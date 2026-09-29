@@ -11308,7 +11308,10 @@ impl ui::record::capability::RecordScoped for WordProcessorWidget {
     /// An untitled document names no record until it is saved and has a path.
     fn record_intent(&self) -> Option<ui::RecordCheckout> {
         self.path.as_ref().map(|p| {
-            ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
+            ui::RecordCheckout::new(
+                ui::RecordId::for_file(p),
+                ui::RecordKind::new(crate::RECORD_KIND),
+            )
         })
     }
     fn release_record_scope(&mut self) -> Result<(), String> {

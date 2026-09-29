@@ -1,0 +1,55 @@
+[package]
+name = "tilo-clipboard"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "The clipboard on Linux, macOS and the web: text, images and the primary selection, with an in-process fallback."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_clipboard"
+path = "src/lib.rs"
+
+[dependencies]
+# Attaching to the runner's display, on every target so the call compiles
+# everywhere; only a Wayland display attaches.
+raw-window-handle = "0.6"
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
+tracing.workspace = true
+
+# X11 and macOS (`NSPasteboard`). Wayland goes through the app's own
+# connection below: `arboard`'s Wayland path needs the data-control manager
+# protocol Tilo withholds from sandboxed apps.
+[target.'cfg(any(target_os = "linux", target_os = "macos", windows))'.dependencies]
+arboard = { workspace = true, features = ["image-data"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+image = { workspace = true, features = ["png"] }
+libc.workspace = true
+# `smithay-clipboard` reads over the app's own `wl_display`; the image and
+# text publisher uses the regular focus-gated `wl_data_device` protocol
+# through smithay-client-toolkit, because data-control would bypass Tilo's
+# focus/privilege boundary.
+smithay-clipboard = "0.7"
+# Without default features: `xkbcommon` makes sctk's build script demand the
+# libxkbcommon development package, and the clipboard never decodes keys.
+smithay-client-toolkit = { version = "0.20.0", default-features = false, features = ["calloop"] }
+
+# The page's clipboard: trusted clipboard events and a synchronous copy.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+js-sys = "=0.3.85"
+
+[dev-dependencies]
+# Bounds the Wayland worker tests' waits.
+tilo-test-env = { path = "../../dev/test-env" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

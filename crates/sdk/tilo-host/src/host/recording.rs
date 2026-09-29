@@ -157,6 +157,7 @@ impl HostServices {
             media_session: Arc::new(recorder.clone()),
             location: Arc::new(recorder.clone()),
             screen_capture: Arc::new(recorder.clone()),
+            secrets: Arc::new(super::InProcessSecrets::default()),
         };
         (services, recorder)
     }

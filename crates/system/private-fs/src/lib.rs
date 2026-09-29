@@ -19,6 +19,21 @@ use std::path::Path;
 #[path = "private_fs_windows.rs"]
 mod platform;
 
+/// Targets without an owner-checked filesystem, such as the browser, have no
+/// private files: every request is refused rather than weakened.
+#[cfg(not(any(unix, windows)))]
+mod platform {
+    use super::{File, Path, io};
+
+    pub fn directory(_path: &Path) -> io::Result<()> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+
+    pub fn open(_path: &Path, _write: bool, _create: bool, _exclusive: bool) -> io::Result<File> {
+        Err(io::Error::from(io::ErrorKind::Unsupported))
+    }
+}
+
 #[cfg(unix)]
 mod platform {
     use super::{File, OpenOptions, Path, io};

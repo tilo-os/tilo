@@ -34,6 +34,58 @@ fn at(now: u64) -> web_time::SystemTime {
     web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now)
 }
 
+/// A fresh request proof for `session`, valid for 30 s.
+pub(super) fn sign_proof(
+    session: ([u8; 16], [u8; 32]),
+    key: &ed25519_dalek::SigningKey,
+    method: &str,
+    target: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    let now = tilo_delivery_protocol::clock::now_ns();
+    RequestProof::sign(
+        session.0,
+        session.1,
+        &Request::new(method, target, body).unwrap(),
+        now,
+        now + 30_000_000_000,
+        key,
+    )
+    .unwrap()
+    .encode()
+    .unwrap()
+}
+
+/// The browser's schedule for re-issuing a state chunk the host deferred
+/// (`503 temporarily-unavailable` while staging capacity is held): the same
+/// range with a fresh proof, 200 ms doubling to 2 s, within the hang bound.
+pub(super) struct Deferral {
+    deadline: std::time::Instant,
+    pause: Duration,
+}
+impl Deferral {
+    pub(super) fn new() -> Self {
+        Self {
+            deadline: tilo_test_env::hang_deadline(),
+            pause: Duration::from_millis(200),
+        }
+    }
+    /// The pause before re-issuing, or `None` when `status` and `body` are the
+    /// final reply.
+    pub(super) fn pause(&mut self, status: StatusCode, body: &[u8]) -> Option<Duration> {
+        let deferred =
+            status == StatusCode::SERVICE_UNAVAILABLE && body == b"temporarily-unavailable";
+        if deferred { self.next() } else { None }
+    }
+    /// The pause before re-issuing after a transient failure, or `None` at
+    /// the hang bound.
+    pub(super) fn next(&mut self) -> Option<Duration> {
+        let pause = self.pause;
+        self.pause = (pause * 2).min(Duration::from_secs(2));
+        (std::time::Instant::now() < self.deadline).then_some(pause)
+    }
+}
+
 /// Serve the actor side until the client future completes: accept requests,
 /// and run owner maintenance so handed-off work and held polls complete.
 pub(super) async fn drive<T>(
@@ -145,9 +197,7 @@ impl Harness {
         Self::serve_reconciled(f, true).await
     }
     async fn serve_reconciled(mut f: Fixture, reconciled: bool) -> Self {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let (listener, udp) = crate::https::bind_https_pair().await;
         let address = listener.local_addr().unwrap();
         let origin = format!("https://127.0.0.1:{}", address.port());
         let now = f.now;
@@ -181,7 +231,8 @@ impl Harness {
         let assets = tempfile::tempdir().unwrap();
         std::fs::write(assets.path().join("index.html"), "isolated").unwrap();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
-        let endpoint = endpoint(address, vec![certificate.clone()], key.clone_key()).unwrap();
+        let endpoint =
+            endpoint_from_socket(udp, vec![certificate.clone()], key.clone_key()).unwrap();
         let pinned = certificate.clone();
         let config = IngressConfig {
             origin,
@@ -252,18 +303,13 @@ impl Harness {
     }
 
     pub(super) fn proof(&self, method: &str, target: &str, body: &[u8]) -> Vec<u8> {
-        let now = tilo_delivery_protocol::clock::now_ns();
-        RequestProof::sign(
-            self.session.0,
-            self.session.1,
-            &Request::new(method, target, body).unwrap(),
-            now,
-            now + 30_000_000_000,
+        sign_proof(
+            self.session,
             &self.f.owner.identity.native,
+            method,
+            target,
+            body,
         )
-        .unwrap()
-        .encode()
-        .unwrap()
     }
 
     pub(super) async fn signed(
@@ -274,6 +320,29 @@ impl Harness {
     ) -> (StatusCode, Vec<u8>) {
         let proof = self.proof(method, target, &body);
         self.call(method, target, body, Some(proof)).await
+    }
+
+    /// [`Self::signed`] on a route the browser re-issues in place (state
+    /// chunks, snapshot manifests and chunks), following its [`Deferral`].
+    pub(super) async fn retrying(
+        &mut self,
+        method: &str,
+        target: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut deferral = Deferral::new();
+        loop {
+            let (status, bytes) = self.signed(method, target, body.clone()).await;
+            let Some(pause) = deferral.pause(status, &bytes) else {
+                return (status, bytes);
+            };
+            drive(
+                &mut self.ingress,
+                &mut self.f.owner,
+                tokio::time::sleep(pause),
+            )
+            .await;
+        }
     }
 
     /// One `POST /peer/v3/state` request carrying the given exact range.
@@ -291,13 +360,8 @@ impl Harness {
             &canonical[range],
         )
         .unwrap();
-        let (status, bytes) = self
-            .signed(
-                "POST",
-                "/peer/v3/state",
-                frame(MessageType::StateItemChunk, &chunk.encode().unwrap()),
-            )
-            .await;
+        let body = frame(MessageType::StateItemChunk, &chunk.encode().unwrap());
+        let (status, bytes) = self.retrying("POST", "/peer/v3/state", body).await;
         assert_eq!(
             status,
             StatusCode::OK,
@@ -665,7 +729,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // Baseline: one signed manifest scoped to this consumer and the head cut.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Baseline),
@@ -701,7 +765,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
             "/peer/v3/snapshots/{}/chunks/{index}",
             hex::encode(issue.pin)
         );
-        let (status, bytes) = h.signed("GET", &target, vec![]).await;
+        let (status, bytes) = h.retrying("GET", &target, vec![]).await;
         assert_eq!(status, StatusCode::OK);
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert_eq!(kind, MessageType::SnapshotChunk);
@@ -740,7 +804,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // Renewal of the live pin keeps every immutable claim.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {
@@ -761,7 +825,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // An unknown pin (e.g. after a host restart) requires a fresh snapshot.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {
@@ -788,7 +852,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
         previous = Some(boundary);
     };
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::ReplayAfter {
@@ -959,65 +1023,92 @@ impl Harness {
             },
         };
         use tilo_peer_state::join::JoinTransportRequest as J;
-        let now = tilo_delivery_protocol::clock::now_ns();
         let origin = self.ingress.origin().to_owned();
         let body = postcard::to_stdvec(&inner).unwrap();
         let certificate = postcard::to_stdvec(&joiner.certificate).unwrap();
-        let mut request = OnboardingRequest {
-            version: 3,
-            operation: match inner {
-                J::Inspect { .. } => OnboardingOperation::Inspect,
-                J::Challenge(_) => OnboardingOperation::Challenge,
-                J::Complete(_) => OnboardingOperation::Complete,
-                J::MembershipChallenge(_) => OnboardingOperation::MembershipChallenge,
-                J::MembershipComplete(_) => OnboardingOperation::MembershipComplete,
-            },
-            scope: OnboardingScope {
-                origin: &origin,
-                host: self.f.owner.host_certificate().device_public_key,
-                workspace: self.f.owner.workspace_id(),
-                root: self.f.owner.peer().authority().user_public_key,
-                room: self.f.owner.peer().room().parse().unwrap(),
-            },
-            certificate: &certificate,
-            nonce: [nonce; 32],
-            issued_at_ns: now,
-            expires_at_ns: now + 60_000_000_000,
-            body_digest: *blake3::hash(&body).as_bytes(),
-            body: &body,
-            signature: [[0; 32]; 2],
-        };
-        request.signature = split_signature(
-            joiner
-                .device
-                .sign(&request.signing_digest().unwrap())
-                .to_bytes(),
-        );
-        let wire = request.encode().unwrap();
-        let (status, bytes) = {
-            let transport =
-                self.client
-                    .request_method("POST", request.operation.path(), wire, None);
-            let ingress = &mut self.ingress;
-            let owner = &mut self.f.owner;
-            tokio::pin!(transport);
-            loop {
-                tokio::select! {
-                    out = &mut transport => break out,
-                    incoming = ingress.recv() => {
-                        let incoming = incoming.unwrap();
-                        assert!(matches!(incoming.route(), Route::Onboarding(_)));
-                        ingress.onboard(owner, host, incoming).await;
+        // A host still reconciling its relay-retained room state defers
+        // onboarding, and a busy one may reset the connection; the browser
+        // retries both as a new signed request.
+        let mut deferral = Deferral::new();
+        let mut attempt = 0u8;
+        let (request, bytes) = loop {
+            let now = tilo_delivery_protocol::clock::now_ns();
+            let mut request = OnboardingRequest {
+                version: 3,
+                operation: match inner {
+                    J::Inspect { .. } => OnboardingOperation::Inspect,
+                    J::Challenge(_) => OnboardingOperation::Challenge,
+                    J::Complete(_) => OnboardingOperation::Complete,
+                    J::MembershipChallenge(_) => OnboardingOperation::MembershipChallenge,
+                    J::MembershipComplete(_) => OnboardingOperation::MembershipComplete,
+                },
+                scope: OnboardingScope {
+                    origin: &origin,
+                    host: self.f.owner.host_certificate().device_public_key,
+                    workspace: self.f.owner.workspace_id(),
+                    root: self.f.owner.peer().authority().user_public_key,
+                    room: self.f.owner.peer().room().parse().unwrap(),
+                },
+                certificate: &certificate,
+                nonce: {
+                    let mut value = [nonce; 32];
+                    value[31] = value[31].wrapping_add(attempt);
+                    value
+                },
+                issued_at_ns: now,
+                expires_at_ns: now + 60_000_000_000,
+                body_digest: *blake3::hash(&body).as_bytes(),
+                body: &body,
+                signature: [[0; 32]; 2],
+            };
+            request.signature = split_signature(
+                joiner
+                    .device
+                    .sign(&request.signing_digest().unwrap())
+                    .to_bytes(),
+            );
+            let wire = request.encode().unwrap();
+            let reply = {
+                let transport =
+                    self.client
+                        .try_request_method("POST", request.operation.path(), wire, None);
+                let ingress = &mut self.ingress;
+                let owner = &mut self.f.owner;
+                tokio::pin!(transport);
+                loop {
+                    tokio::select! {
+                        out = &mut transport => break out,
+                        incoming = ingress.recv() => {
+                            let incoming = incoming.unwrap();
+                            assert!(matches!(incoming.route(), Route::Onboarding(_)));
+                            ingress.onboard(owner, host, incoming).await;
+                        }
                     }
                 }
+            };
+            let pause = match &reply {
+                Ok((status, bytes)) => deferral.pause(*status, bytes),
+                Err(_) => deferral.next(),
+            };
+            if let Some(pause) = pause {
+                attempt += 1;
+                drive(
+                    &mut self.ingress,
+                    &mut self.f.owner,
+                    tokio::time::sleep(pause),
+                )
+                .await;
+                continue;
             }
+            let (status, bytes) = reply.expect("onboarding transport");
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+            break (request, bytes);
         };
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
         let response = OnboardingResponse::decode(&bytes).unwrap();
         response
             .verify_host_signature(&request, tilo_delivery_protocol::clock::now_ns())
@@ -1475,7 +1566,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     let large = native_edit(&h.f.owner, "restart-large", value);
     let (second, _) = h.upload([2; 16], &large).await;
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Baseline),
@@ -1502,7 +1593,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
         })
     };
     let (status, bytes) = h
-        .signed("POST", "/peer/v3/snapshots", renew(manifest.digest()))
+        .retrying("POST", "/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, payload, _) = framing::decode_frame_prefix(&bytes).unwrap();
@@ -1524,7 +1615,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
             "/peer/v3/snapshots/{}/chunks/{index}",
             hex::encode(issue.pin)
         );
-        let (status, bytes) = h.signed("GET", &target, vec![]).await;
+        let (status, bytes) = h.retrying("GET", &target, vec![]).await;
         assert_eq!(status, StatusCode::OK);
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert_eq!(kind, MessageType::SnapshotChunk);
@@ -1540,7 +1631,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     assert_eq!(boundary.unwrap().committed(), &issue.scope.committed);
     // The pre-restart digest remains the previous anchor for a lost reply.
     let (status, bytes) = h
-        .signed("POST", "/peer/v3/snapshots", renew(manifest.digest()))
+        .retrying("POST", "/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -1549,7 +1640,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     );
     // A pin never issued still requires a fresh snapshot.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {

@@ -27,7 +27,21 @@ fi
 grep -Fq '/usr/libexec/tilo/airplay-encrypted-session-test.sh' "$workflow"
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"' EXIT
+finish() {
+  status=$?
+  if (( status != 0 )); then
+    # The production script's output explains which phase ended the run.
+    for out in stdout stderr; do
+      if [[ -s "$work/$out" ]]; then
+        echo "--- airplay-encrypted-session.sh $out ---" >&2
+        sed 's/^/  /' "$work/$out" >&2
+      fi
+    done
+  fi
+  rm -rf "$work"
+  exit "$status"
+}
+trap finish EXIT
 mkdir -p "$work/bin"
 
 write_gst_ok() {
@@ -63,6 +77,11 @@ set -euo pipefail
 dir="${TILO_AIRPLAY_FIXTURE_DIR:?}"
 scenario="${TILO_AIRPLAY_FIXTURE_SCENARIO:?}"
 echo "listening on 127.0.0.1:17000"
+# Pairing needs a connected sender: report nothing until one is ready for
+# its signals, as the real receiver would.
+while [[ ! -f "$dir/sender-ready" ]]; do
+  sleep 0.05
+done
 case "$scenario" in
   happy|teardown-stall|force-cleanup|media-stall)
     echo "stats: connections=1 info=1 pairing=1/1 fairplay=1 setup=1 feedback=0 teardown=0 events=0 video=0/0B audio=0/0B timing=0/0 digest_challenges=0"
@@ -115,6 +134,7 @@ dir="\${TILO_AIRPLAY_FIXTURE_DIR:?}"
 mode="$mode"
 if [[ "\$mode" == "ignore-term" ]]; then
   trap '' TERM
+  : >"\$dir/sender-ready"
   while true; do sleep 0.05; done
 fi
 term_handler() {
@@ -122,6 +142,7 @@ term_handler() {
   exit 0
 }
 trap term_handler TERM
+: >"\$dir/sender-ready"
 # Short sleeps so a deferred bash TERM trap runs promptly.
 while true; do
   sleep 0.05
@@ -136,12 +157,27 @@ run_script() {
   TILO_AIRPLAY_GST_INSPECT="$work/bin/gst-inspect" \
   TILO_DOUBLETAKE_TEST_RECEIVER="$work/bin/receiver" \
   TILO_DOUBLETAKE="$work/bin/sender" \
-  AIRPLAY_PLUGIN_DEADLINE_SEC="${AIRPLAY_PLUGIN_DEADLINE_SEC:-2}" \
-  AIRPLAY_SETUP_DEADLINE_SEC="${AIRPLAY_SETUP_DEADLINE_SEC:-1}" \
-  AIRPLAY_MEDIA_DEADLINE_SEC="${AIRPLAY_MEDIA_DEADLINE_SEC:-1}" \
-  AIRPLAY_TEARDOWN_DEADLINE_SEC="${AIRPLAY_TEARDOWN_DEADLINE_SEC:-1}" \
-  AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC="${AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC:-1}" \
+  AIRPLAY_PLUGIN_DEADLINE_SEC="${AIRPLAY_PLUGIN_DEADLINE_SEC:-$ample}" \
+  AIRPLAY_SETUP_DEADLINE_SEC="${AIRPLAY_SETUP_DEADLINE_SEC:-$ample}" \
+  AIRPLAY_MEDIA_DEADLINE_SEC="${AIRPLAY_MEDIA_DEADLINE_SEC:-$ample}" \
+  AIRPLAY_TEARDOWN_DEADLINE_SEC="${AIRPLAY_TEARDOWN_DEADLINE_SEC:-$ample}" \
+  AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC="${AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC:-$ample}" \
   "$script" >"$work/stdout" 2>"$work/stderr"
+}
+
+# Phases that must pass get ample time and finish as soon as they progress;
+# only the phase a scenario stalls gets a short deadline, so its expiry is the
+# one reported however slow the host is.
+ample=60
+short=1
+deadline_var() {
+  case "$1" in
+    plugin-discovery) echo AIRPLAY_PLUGIN_DEADLINE_SEC ;;
+    setup) echo AIRPLAY_SETUP_DEADLINE_SEC ;;
+    media) echo AIRPLAY_MEDIA_DEADLINE_SEC ;;
+    teardown) echo AIRPLAY_TEARDOWN_DEADLINE_SEC ;;
+    force-cleanup) echo AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC ;;
+  esac
 }
 
 expect_fail_phase() {
@@ -150,24 +186,27 @@ expect_fail_phase() {
   rm -rf "$work/fixture"
   mkdir -p "$work/fixture"
   set +e
-  run_script "$scenario"
+  (
+    export "$(deadline_var "$phase")=$short"
+    run_script "$scenario"
+  )
   status=$?
   set -e
   if (( status == 0 )); then
     echo "expected $phase deadline failure for scenario $scenario" >&2
-    cat "$work/stderr" >&2
     exit 1
   fi
-  grep -Fq "airplay ${phase} deadline exceeded" "$work/stderr"
+  if ! grep -Fq "airplay ${phase} deadline exceeded" "$work/stderr"; then
+    echo "scenario $scenario did not end on the $phase deadline" >&2
+    exit 1
+  fi
 }
 
 # --- plugin-discovery hang names its phase ---------------------------------
 write_gst_hang
 write_receiver
 write_sender normal
-AIRPLAY_PLUGIN_DEADLINE_SEC=1
 expect_fail_phase setup-stall plugin-discovery
-unset AIRPLAY_PLUGIN_DEADLINE_SEC
 
 # --- missing plugin fails closed (not a silent skip) -----------------------
 write_gst_missing
@@ -201,13 +240,8 @@ expect_fail_phase force-cleanup force-cleanup
 write_sender normal
 rm -rf "$work/fixture"
 mkdir -p "$work/fixture"
-# Generous bounds for the fixture's cooperative progress.
-AIRPLAY_PLUGIN_DEADLINE_SEC=2 \
-AIRPLAY_SETUP_DEADLINE_SEC=2 \
-AIRPLAY_MEDIA_DEADLINE_SEC=2 \
-AIRPLAY_TEARDOWN_DEADLINE_SEC=2 \
-AIRPLAY_FORCE_CLEANUP_DEADLINE_SEC=2 \
-  run_script happy
+# Every phase progresses, so ample bounds cost nothing.
+run_script happy
 
 # Production script still declares distinct deadlines (not one coarse timeout).
 grep -Eq 'AIRPLAY_SETUP_DEADLINE_SEC:-30' "$script"

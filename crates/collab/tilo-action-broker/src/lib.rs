@@ -15,6 +15,7 @@ pub mod collab_presence;
 pub mod collaboration_admin;
 pub mod enrolled_dispatch;
 pub mod host_documents;
+pub mod owner_turn;
 pub mod peer_actions;
 pub mod policy;
 pub mod route;

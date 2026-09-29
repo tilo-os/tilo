@@ -29,7 +29,7 @@ vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 base64.workspace = true
 workspace-hack = { version = "0.1" }
 

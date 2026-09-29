@@ -1,0 +1,9 @@
+[
+  {"perform": {"target": "name-input", "action": "set_value", "value": "Atlas"}},
+  {"expect": {"target": "name-preview", "role": "static_text", "name": "Atlas"}},
+  {"perform": {"target": "create", "action": "activate"}},
+  {"perform": {"target": "open-about", "action": "activate"}},
+  {"expect": {"target": "title", "name": "About"}},
+  {"perform": {"target": "back", "action": "activate"}},
+  {"expect": {"target": "open-about", "name": "About this app"}}
+]

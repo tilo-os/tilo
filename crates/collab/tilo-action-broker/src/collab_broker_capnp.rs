@@ -2391,6 +2391,9 @@ pub struct CapnpBrokerState {
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
+    /// Wakes the broker loop to adopt a newly admitted local worker at once
+    /// rather than on its next housekeeping tick.
+    worker_admitted: tokio::sync::Notify,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
     enrolled: crate::enrolled_dispatch::EnrolledRegistry,
@@ -2677,6 +2680,7 @@ impl CapnpBrokerState {
             },
         });
         drop(workers);
+        self.worker_admitted.notify_one();
         Ok(client)
     }
 
@@ -3038,6 +3042,7 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
+                worker_admitted: tokio::sync::Notify::new(),
                 host_workers: Mutex::new(HashMap::new()),
                 enrolled: crate::enrolled_dispatch::EnrolledRegistry::default(),
                 #[cfg(test)]
@@ -10123,6 +10128,7 @@ pub(super) fn spawn_configured(
                             continue;
                         },
                         conn = listener.accept() => conn,
+                        () = state.worker_admitted.notified() => continue,
                     };
                     let (stream, _) = match stream {
                         Ok(s) => s,

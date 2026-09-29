@@ -15,7 +15,7 @@ license = "MIT OR Apache-2.0"
 ignored = ["getrandom03"]
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-actions = { path = "../../collab/actions" }

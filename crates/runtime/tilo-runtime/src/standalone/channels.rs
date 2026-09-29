@@ -28,9 +28,10 @@ use tilo_action_broker::{
     collab_core::BrokerChannels,
 };
 use tilo_desktop_model::RoomId;
+use tilo_identity_host::provisioning::IdentityStorage;
 
-/// Sealed channel state, and the key that seals it (owner-only; a platform
-/// keychain is not used yet).
+/// Sealed channel state, and where a Linux profile keeps the key that seals
+/// it (owner-only).
 const CHANNEL_STATE: &str = "channels";
 const CHANNEL_STATE_KEY: &str = "channel-state.key";
 const PUMP_INTERVAL: Duration = Duration::from_millis(100);
@@ -52,6 +53,7 @@ impl Drop for Channels {
 pub(super) fn open(
     profile: &Path,
     own_room: RoomId,
+    storage: IdentityStorage,
     device_key: ed25519_dalek::SigningKey,
     joined: Arc<Joined>,
     broker: Arc<Mutex<BrokerChannels>>,
@@ -60,7 +62,7 @@ pub(super) fn open(
     let service = ChannelEncryption::open(
         ChannelEncryptionConfig {
             root: profile.join(CHANNEL_STATE),
-            vault: vault_key(&profile.join(CHANNEL_STATE_KEY))?,
+            vault: vault_key(profile, own_room, storage)?,
             device_key,
         },
         Box::new(Directory {
@@ -112,25 +114,114 @@ impl ChannelDirectory for Directory {
     }
 }
 
-/// The key sealing the channel state, created once in an owner-only file.
-fn vault_key(path: &Path) -> io::Result<VaultKey> {
+/// The key sealing `room`'s channel state in `profile`, created once: in the
+/// login Keychain on macOS, else in an owner-only file.
+fn vault_key(profile: &Path, room: RoomId, storage: IdentityStorage) -> io::Result<VaultKey> {
+    let file = profile.join(CHANNEL_STATE_KEY);
+    #[cfg(target_os = "macos")]
+    if storage == IdentityStorage::Platform {
+        return keychain::vault_key(&file, room).map(VaultKey::new);
+    }
+    let _ = (room, storage);
+    if let Some(key) = read_key_file(&file)? {
+        return Ok(VaultKey::new(key));
+    }
+    let key = random_key();
+    atomic_file::write_with_mode(&file, &key, 0o600)?;
+    Ok(VaultKey::new(key))
+}
+
+fn read_key_file(path: &Path) -> io::Result<Option<[u8; 32]>> {
     match std::fs::read(path) {
-        Ok(bytes) => {
-            let key: [u8; 32] = bytes.try_into().map_err(|_| {
-                io::Error::new(io::ErrorKind::InvalidData, "invalid channel state key")
-            })?;
-            Ok(VaultKey::new(key))
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let mut key = [0; 32];
-            rand_core::Rng::fill_bytes(
-                &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
-                &mut key,
-            );
-            atomic_file::write_with_mode(path, &key, 0o600)?;
-            Ok(VaultKey::new(key))
-        }
+        Ok(bytes) => bytes
+            .try_into()
+            .map(Some)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid channel state key")),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error),
+    }
+}
+
+fn random_key() -> [u8; 32] {
+    let mut key = [0; 32];
+    rand_core::Rng::fill_bytes(
+        &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
+        &mut key,
+    );
+    key
+}
+
+/// The channel-state key as a Keychain generic password. A key file an
+/// earlier build wrote moves in once: stored, read back, then removed. A
+/// Keychain that refuses or fails fails the start; nothing falls back to a
+/// file.
+#[cfg(target_os = "macos")]
+mod keychain {
+    use super::{RoomId, random_key, read_key_file};
+    use std::{io, path::Path};
+    use tilo_secrets::{PutOptions, SecretStore};
+
+    const SECRETS_APP: &str = "so.tilo.runtime";
+
+    pub(super) fn vault_key(file: &Path, room: RoomId) -> io::Result<[u8; 32]> {
+        let store = SecretStore::for_app(SECRETS_APP);
+        let name = format!("channel-state-v1.{room}");
+        let stored = get(&store, &name)?;
+        let legacy = read_key_file(file)?;
+        let key = match (stored, legacy) {
+            (Some(stored), Some(legacy)) if stored != legacy => {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!(
+                        "the login Keychain and {} hold different channel state keys",
+                        file.display()
+                    ),
+                ));
+            }
+            (Some(stored), _) => stored,
+            (None, legacy) => {
+                let key = legacy.unwrap_or_else(random_key);
+                store
+                    .put_blocking(
+                        &name,
+                        &key,
+                        PutOptions {
+                            label: Some("Tilo channel state key".into()),
+                        },
+                    )
+                    .map_err(|error| keychain_error(&error))?;
+                if get(&store, &name)? != Some(key) {
+                    return Err(io::Error::other(
+                        "the login Keychain did not return the stored channel state key",
+                    ));
+                }
+                key
+            }
+        };
+        if legacy.is_some() {
+            std::fs::remove_file(file)?;
+        }
+        Ok(key)
+    }
+
+    fn get(store: &SecretStore, name: &str) -> io::Result<Option<[u8; 32]>> {
+        store
+            .get_blocking(name)
+            .map_err(|error| keychain_error(&error))?
+            .map(|secret| {
+                secret.expose().try_into().map_err(|_| {
+                    io::Error::new(io::ErrorKind::InvalidData, "invalid channel state key")
+                })
+            })
+            .transpose()
+    }
+
+    fn keychain_error(error: &tilo_secrets::SecretError) -> io::Error {
+        let kind = match error {
+            tilo_secrets::SecretError::Denied => io::ErrorKind::PermissionDenied,
+            _ => io::ErrorKind::Other,
+        };
+        io::Error::new(kind, format!("login Keychain, channel state key: {error}"))
     }
 }
 

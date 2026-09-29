@@ -560,6 +560,9 @@ impl CloudService {
         match request.route() {
             Route::State => {
                 if upload::partial_chunk(request.body()).is_some() {
+                    if !request.start() {
+                        return None;
+                    }
                     self.uploads.start(
                         &self.source,
                         &self.pool,
@@ -681,6 +684,12 @@ impl CloudService {
         request: BufferedRequest,
         handler: impl FnOnce(&mut Self, &BufferedRequest) -> Result<Option<Vec<u8>>>,
     ) -> Option<BufferedRequest> {
+        // Taken on: the front waits for this answer instead of timing it out.
+        // A request deferred below, busy before any effect, is refused by
+        // `defer` at its own bound.
+        if !request.start() {
+            return None;
+        }
         match handler(self, &request) {
             Ok(Some(body)) => {
                 let _ = request.respond(StatusCode::OK, exact_body(body));
@@ -700,6 +709,9 @@ impl CloudService {
         request: BufferedRequest,
         handler: impl FnOnce(&mut Self, &BufferedRequest) -> Result<Option<Vec<u8>>>,
     ) -> Option<BufferedRequest> {
+        if !request.start() {
+            return None;
+        }
         match handler(self, &request) {
             Ok(Some(body)) => {
                 let _ = request.respond(StatusCode::OK, exact_body(body));

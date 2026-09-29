@@ -2485,6 +2485,13 @@ impl Widget for CommandPalette {
                     self.is_focused = true;
                     true
                 }
+                // Assistive technology and agents set the query as a value,
+                // exactly as typing it would.
+                Action::SetValue(value) if self.arg_state.is_none() => {
+                    self.is_focused = true;
+                    self.set_query(value);
+                    true
+                }
                 _ => false,
             };
         }

@@ -1,0 +1,283 @@
+#!/usr/bin/python3
+"""Apply one caller's staged plan of changes to the read-only ESP.
+
+    tilo-esp-write CALLER
+
+/boot (the ESP, or the separate /boot beside it) stays mounted read-only.
+The units that maintain it decide what to change without privileges and stage
+a plan; this helper, started as tilo-esp-write@CALLER.service, is the only
+step that writes. It remounts the ESP read-write inside its own private mount
+namespace (PrivateMounts=yes), so the global mount never becomes writable.
+
+A plan is read only from the caller's own directory,
+/var/lib/tilo/esp-plan/CALLER/plan.json (root-owned, mode 0700, a
+StateDirectory= of the caller's unit). It lists operations relative to the
+ESP; each caller may use only the operations and paths it needs:
+
+    {"ops": [
+      {"op": "mkdir",   "path": "EFI/tilo"},
+      {"op": "rename",  "src": "loader/entries/x.conf", "dst": "loader/entries/x+3.conf"},
+      {"op": "install", "file": "repair.efi", "sha256": "...", "dst": "EFI/Linux/tilo-repair.efi"},
+      {"op": "remove",  "path": "EFI/tilo/repair.efi"}
+    ]}
+
+Every path is walked one component at a time with O_NOFOLLOW, so a symlink
+anywhere on the ESP is refused rather than followed. An install opens its
+staged file O_NOFOLLOW, checks its SHA-256 against the plan, writes it to a
+temporary name beside its destination, fsyncs it, renames it into place and
+fsyncs the directory: each operation is atomic, and an interruption between
+operations leaves every file either old or new. The plan and staged files are
+removed once applied, or once refused.
+"""
+import hashlib
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+
+PLAN_ROOT = os.environ.get("TILO_ESP_PLAN_ROOT", "/var/lib/tilo/esp-plan")
+TMP_PREFIX = ".tilo-esp-write."
+NAME = r"[A-Za-z0-9][A-Za-z0-9._+-]*"
+STAGED = re.compile(NAME + r"\Z")
+
+# What each caller may do. Patterns match whole ESP-relative paths.
+POLICY = {
+    "boot-entries": {
+        "mkdir": [r"EFI/tilo", r"EFI/Linux"],
+        # Boot counters: a bootc entry gains, or keeps counting down, its +N tries.
+        "rename": [(r"loader/entries/bootc[A-Za-z0-9._-]*(\+[0-9]+(-[0-9]+)?)?\.conf",
+                    r"loader/entries/bootc[A-Za-z0-9._-]*\+[0-9]+(-[0-9]+)?\.conf")],
+        "install": [r"EFI/Linux/tilo-repair\.efi", r"EFI/tilo/repair\.source"],
+        "remove": [r"EFI/Linux/tilo-repair\.efi", r"loader/entries/tilo-repair\.conf",
+                   r"EFI/tilo/repair\.efi"],
+    },    # Signing replaces the managed boot artefacts with signed copies, and
+    # installs nothing else (tilo-secureboot's artefacts()).
+    "secureboot-sign": {
+        "install": [r"EFI/systemd/systemd-boot(x64|aa64|ia32)\.efi",
+                    r"EFI/BOOT/BOOT(X64|AA64)\.EFI",
+                    r"EFI/Linux/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi",
+                    r"EFI/Linux/bootc/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi"],
+    },
+}
+
+
+# Callers whose installs may only replace a file that is already there: a
+# signer re-signs artefacts and must never add a boot menu entry.
+REPLACE_ONLY = {"secureboot-sign"}
+
+
+class Refused(Exception):
+    pass
+
+
+def log(msg):
+    print(f"tilo-esp-write: {msg}", flush=True)
+
+
+def esp_root(caller):
+    """The directory the caller's paths are relative to, found as the caller
+    finds it (tilo-deployment's and tilo-secureboot's esp_path)."""
+    forced = os.environ.get("TILO_ESP")
+    if forced:
+        return forced
+    if caller == "boot-entries":
+        candidates = [("/boot", "loader/entries"), ("/boot/efi", "loader/entries")]
+    else:
+        candidates = [("/boot/efi", "EFI"), ("/boot", "EFI")]
+    for root, marker in candidates:
+        if os.path.isdir(os.path.join(root, marker)):
+            return root
+    raise Refused("no ESP at /boot or /boot/efi")
+
+
+def allowed(caller, op, *paths):
+    rules = POLICY[caller].get(op, [])
+    for rule in rules:
+        if isinstance(rule, tuple):
+            if len(paths) == 2 and all(re.fullmatch(r, p) for r, p in zip(rule, paths)):
+                return
+        elif len(paths) == 1 and re.fullmatch(rule, paths[0]):
+            return
+    raise Refused(f"{caller} may not {op} {' -> '.join(paths)}")
+
+
+def components(path):
+    parts = path.split("/")
+    if not path or path.startswith("/") or any(not re.fullmatch(NAME, p) for p in parts):
+        raise Refused(f"not a plain ESP-relative path: {path!r}")
+    return parts
+
+
+def open_dir(root_fd, parts, create=False):
+    """The directory holding the last component, never following a symlink."""
+    fd = os.dup(root_fd)
+    try:
+        for part in parts:
+            try:
+                nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except FileNotFoundError:
+                if not create:
+                    raise
+                os.mkdir(part, 0o755, dir_fd=fd)
+                os.fsync(fd)
+                nfd = os.open(part, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError as e:
+                raise Refused(f"{part!r} is not a directory, or is a symlink: {e.strerror}")
+            os.close(fd)
+            fd = nfd
+        return fd
+    except BaseException:
+        os.close(fd)
+        raise
+
+
+def refuse_symlink(dir_fd, name):
+    try:
+        st = os.stat(name, dir_fd=dir_fd, follow_symlinks=False)
+    except FileNotFoundError:
+        return False
+    if stat.S_ISLNK(st.st_mode):
+        raise Refused(f"{name!r} on the ESP is a symlink")
+    return True
+
+
+def staged_file(plan_dir_fd, name, want):
+    if not STAGED.fullmatch(name):
+        raise Refused(f"not a staged file name: {name!r}")
+    fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=plan_dir_fd)
+    st = os.fstat(fd)
+    if not stat.S_ISREG(st.st_mode):
+        os.close(fd)
+        raise Refused(f"staged {name!r} is not a regular file")
+    digest = hashlib.sha256()
+    while chunk := os.read(fd, 1 << 20):
+        digest.update(chunk)
+    if digest.hexdigest() != want:
+        os.close(fd)
+        raise Refused(f"staged {name!r} does not match its SHA-256")
+    os.lseek(fd, 0, os.SEEK_SET)
+    return fd
+
+
+def apply(caller, op, root_fd, plan_dir_fd):
+    kind = op.get("op")
+    if kind == "mkdir":
+        allowed(caller, "mkdir", op["path"])
+        os.close(open_dir(root_fd, components(op["path"]), create=True))
+    elif kind == "rename":
+        allowed(caller, "rename", op["src"], op["dst"])
+        src, dst = components(op["src"]), components(op["dst"])
+        if src[:-1] != dst[:-1]:
+            raise Refused("a rename stays inside its directory")
+        dfd = open_dir(root_fd, src[:-1])
+        try:
+            if not refuse_symlink(dfd, src[-1]):
+                raise Refused(f"no {op['src']} to rename")
+            refuse_symlink(dfd, dst[-1])
+            os.rename(src[-1], dst[-1], src_dir_fd=dfd, dst_dir_fd=dfd)
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    elif kind == "install":
+        allowed(caller, "install", op["dst"])
+        dst = components(op["dst"])
+        sfd = staged_file(plan_dir_fd, op["file"], op["sha256"])
+        dfd = open_dir(root_fd, dst[:-1])
+        # No .efi suffix: an interrupted write in EFI/Linux must not become a
+        # boot menu entry. Leftovers of an earlier interruption go first.
+        tmp = f"{TMP_PREFIX}{os.getpid()}.tmp"
+        try:
+            for name in os.listdir(dfd):
+                if name.startswith(TMP_PREFIX) and refuse_symlink(dfd, name):
+                    os.unlink(name, dir_fd=dfd)
+            if not refuse_symlink(dfd, dst[-1]) and caller in REPLACE_ONLY:
+                raise Refused(f"{caller} may only replace {op['dst']}, which does not exist")
+            out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
+            try:
+                while chunk := os.read(sfd, 1 << 20):
+                    os.write(out, chunk)
+                os.fsync(out)
+            finally:
+                os.close(out)
+            os.rename(tmp, dst[-1], src_dir_fd=dfd, dst_dir_fd=dfd)
+            os.fsync(dfd)
+        except BaseException:
+            try:
+                os.unlink(tmp, dir_fd=dfd)
+            except FileNotFoundError:
+                pass
+            raise
+        finally:
+            os.close(sfd)
+            os.close(dfd)
+    elif kind == "remove":
+        allowed(caller, "remove", op["path"])
+        parts = components(op["path"])
+        try:
+            dfd = open_dir(root_fd, parts[:-1])
+        except FileNotFoundError:
+            return
+        try:
+            if refuse_symlink(dfd, parts[-1]):
+                os.unlink(parts[-1], dir_fd=dfd)
+                os.fsync(dfd)
+        finally:
+            os.close(dfd)
+    else:
+        raise Refused(f"unknown operation {kind!r}")
+
+
+def writable(root):
+    """Remount the ESP's mount read-write in this (private) namespace."""
+    if not os.statvfs(root).f_flag & os.ST_RDONLY:
+        return
+    if os.environ.get("TILO_ESP_WRITE_NO_REMOUNT") == "1":
+        raise Refused(f"{root} is read-only")
+    target = subprocess.run(["findmnt", "-no", "TARGET", "-T", root],
+                            check=True, capture_output=True, text=True).stdout.strip()
+    subprocess.run(["mount", "-o", "remount,rw", target], check=True)
+
+
+def main(argv):
+    if len(argv) != 2 or argv[1] not in POLICY:
+        print(f"usage: tilo-esp-write {{{'|'.join(POLICY)}}}", file=sys.stderr)
+        return 2
+    caller = argv[1]
+    plan_dir = os.path.join(PLAN_ROOT, caller)
+    plan_dir_fd = os.open(plan_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    st = os.fstat(plan_dir_fd)
+    if st.st_uid != int(os.environ.get("TILO_ESP_PLAN_OWNER", "0")) or st.st_mode & 0o077:
+        raise Refused(f"{plan_dir} must be root's alone (0700)")
+    crash_after = int(os.environ.get("TILO_ESP_WRITE_CRASH_AFTER", "-1"))
+    try:
+        pfd = os.open("plan.json", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=plan_dir_fd)
+        with os.fdopen(pfd) as f:
+            ops = json.load(f).get("ops")
+        if not isinstance(ops, list):
+            raise Refused("plan.json has no operation list")
+        root = esp_root(caller)
+        writable(root)
+        root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            for i, op in enumerate(ops):
+                if i == crash_after:
+                    os._exit(99)  # test hook: an interruption between operations
+                apply(caller, op, root_fd, plan_dir_fd)
+                log(f"caller={caller} {json.dumps(op, sort_keys=True)}")
+        finally:
+            os.close(root_fd)
+    finally:
+        for name in os.listdir(plan_dir_fd):
+            os.unlink(name, dir_fd=plan_dir_fd)
+        os.close(plan_dir_fd)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv))
+    except Refused as e:
+        print(f"tilo-esp-write: refused: {e}", file=sys.stderr)
+        sys.exit(1)

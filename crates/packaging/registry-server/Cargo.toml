@@ -22,7 +22,7 @@ path = "src/main.rs"
 
 [dependencies]
 advisory-lock = { path = "../../system/advisory-lock" }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
@@ -55,7 +55,7 @@ zeroize.workspace = true
 # bundle so newly issued public certificates do not depend on the root set
 # compiled into an older pinned application image.
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
