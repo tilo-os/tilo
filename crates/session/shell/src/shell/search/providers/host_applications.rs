@@ -40,6 +40,9 @@ pub struct HostApplicationsProvider {
 struct HostAppsSnapshot {
     source_generation: (u64, u64),
     apps: Vec<HostApp>,
+    /// Lower-cased ids of installed Tilo packages; a host app with one of
+    /// these ids is answered by the package instead.
+    installed_ids: HashSet<String>,
     /// Apps no Tilo package answers for, keyed by position in `apps`.
     index: SearchIndex,
 }
@@ -156,6 +159,7 @@ impl HostApplicationsProvider {
         HostAppsSnapshot {
             source_generation,
             apps,
+            installed_ids,
             index,
         }
     }
@@ -399,6 +403,27 @@ impl SearchProvider for HostApplicationsProvider {
         self.refresh_snapshot();
     }
 
+    /// An address is looked up in the whole snapshot. An empty query's first
+    /// page holds [`SearchBudget::PALETTE`] rows, fewer than a desktop has
+    /// host apps, so resolving through it left every later app unreachable
+    /// by id.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::HostApplication) {
+            return None;
+        }
+        let snapshot = self.snapshot()?;
+        snapshot
+            .apps
+            .iter()
+            .find(|app| {
+                app.desktop_id == id
+                    && !snapshot
+                        .installed_ids
+                        .contains(&app.desktop_id.to_ascii_lowercase())
+            })
+            .map(|app| self.row(app, score_for(ctx.needle, None)))
+    }
+
     fn search_revision(&self, _ctx: &SearchContext<'_>) -> String {
         let (host, installed) = self.source_generation();
         let ready = self
@@ -622,6 +647,85 @@ mod tests {
     }
 
     #[test]
+    fn every_host_app_is_addressable_past_the_first_palette_page() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let count = SearchBudget::PALETTE.max_results + 12;
+        let mut apps: Vec<HostApp> = (0..count)
+            .map(|index| {
+                app(
+                    &format!("org.fixture.App{index:03}"),
+                    &format!("App {index:03}"),
+                )
+            })
+            .collect();
+        apps.push(app("so.tilo.terminal", "Terminal"));
+        let source = HostAppsTestSource::new(apps, vec![installed("so.tilo.terminal", "Terminal")]);
+        let provider = Rc::new(HostApplicationsProvider::with_test_source(source));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                needle: "",
+                wanted: &[ResourceKind::HostApplication],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            let deadline = tilo_test_env::hang_deadline();
+            while !provider.search_revision(&ctx).starts_with("ready:") {
+                assert!(
+                    std::time::Instant::now() < deadline,
+                    "host-app index never became ready"
+                );
+                provider.refresh_search_index(&ctx);
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            assert!(
+                provider
+                    .query_page(ctx, None, SearchBudget::PALETTE)
+                    .results
+                    .len()
+                    < count,
+                "the fixture must not fit on the first page"
+            );
+        }
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let select = |id: &str| {
+            let resource = ResourceRef::new("host-applications", id);
+            ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string())
+        };
+        let last = format!("org.fixture.App{:03}", count - 1);
+        assert_eq!(
+            select(&last).as_deref(),
+            Some(format!("Open App {:03}", count - 1).as_str()),
+            "an app past the first page must still open by its address"
+        );
+        assert_eq!(
+            select("so.tilo.terminal"),
+            None,
+            "a host app an installed Tilo package answers for stays hidden"
+        );
+        assert_eq!(select("org.fixture.Missing"), None);
+    }
+
+    #[test]
     fn cold_and_warm_public_pages_never_rescan_a_hundred_thousand_host_apps() {
         let chrome = chrome_rc();
         let chrome = chrome.borrow();
@@ -661,6 +765,7 @@ mod tests {
         *provider.snapshot.borrow_mut() = Some(HostAppsSnapshot {
             source_generation: provider.source_generation(),
             apps,
+            installed_ids: HashSet::new(),
             index,
         });
         let page = provider.query_page(
