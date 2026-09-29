@@ -5503,9 +5503,10 @@ pub struct TerminalPerformer<'a> {
 /// other emulator action runs, or the feed ends.
 pub struct PrintBuf {
     line_obj: ObjId,
-    text_id: ObjId,
     text: String,
     attrs: Vec<u8>,
+    alternate: bool,
+    index: u32,
 }
 
 /// Name this emulator reports for itself in the XTVERSION reply
@@ -5537,6 +5538,9 @@ impl Perform for TerminalPerformer<'_> {
         }
 
         let y = self.absolute_y().min(self.active_len().saturating_sub(1));
+        let Some(index) = u32::try_from(y).ok() else {
+            return;
+        };
         let Some(line_obj) = self.active_line_id(y) else {
             return;
         };
@@ -5567,9 +5571,10 @@ impl Perform for TerminalPerformer<'_> {
             };
             self.print_buf = Some(PrintBuf {
                 line_obj,
-                text_id,
                 text,
                 attrs,
+                alternate: *self.alt_active,
+                index,
             });
         }
         // `need_load` above always leaves `print_buf` populated by this
@@ -6537,8 +6542,15 @@ impl TerminalPerformer<'_> {
     /// A no-op when nothing is buffered.
     pub(crate) fn flush_print_buf(&mut self) {
         if let Some(buf) = self.print_buf.take() {
-            ui::doc::splice_text_diffed(self.state, &buf.text_id, &buf.text);
-            let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::WriteLine {
+                    alternate: buf.alternate,
+                    index: buf.index,
+                    text: buf.text,
+                    attrs: buf.attrs,
+                },
+                self.state,
+            );
         }
     }
 

@@ -59,6 +59,13 @@ pub enum TerminalAction {
     EnsureLines { alternate: bool, min_len: u32 },
     /// Write the shared cursor after a feed.
     SetCursor { x: u64, y: u64 },
+    /// Replace one grid line's text and cell attributes after a print run.
+    WriteLine {
+        alternate: bool,
+        index: u32,
+        text: String,
+        attrs: Vec<u8>,
+    },
 }
 
 impl Action for TerminalAction {
@@ -166,6 +173,12 @@ impl Action for TerminalAction {
                 ensure_lines(doc, *alternate, *min_len)?;
             }
             Self::SetCursor { x, y } => set_cursor(doc, *x, *y)?,
+            Self::WriteLine {
+                alternate,
+                index,
+                text,
+                attrs,
+            } => write_line(doc, *alternate, *index, text, attrs)?,
         }
         Ok(())
     }
@@ -216,6 +229,39 @@ fn set_cursor(doc: &mut Doc, x: u64, y: u64) -> Result<(), ActionError> {
     let cursor = object_at(doc, "cursor", automerge::ObjType::Map)?;
     doc.put(&cursor, "x", x)?;
     doc.put(&cursor, "y", y)?;
+    Ok(())
+}
+
+fn write_line(
+    doc: &mut Doc,
+    alternate: bool,
+    index: u32,
+    text: &str,
+    attrs: &[u8],
+) -> Result<(), ActionError> {
+    if text.len() > 1024 * 1024 || attrs.len() > 1024 * 1024 {
+        return Err(ActionError::Refused("grid line is too large".into()));
+    }
+    let key = if alternate {
+        "terminal_grid_alt"
+    } else {
+        "terminal_grid"
+    };
+    let grid = object_at(doc, key, automerge::ObjType::List)?;
+    let index = index as usize;
+    if index >= doc.length(&grid) {
+        return Err(ActionError::Refused("grid line is missing".into()));
+    }
+    let line = match doc.get(&grid, index)? {
+        Some((Value::Object(automerge::ObjType::Map), id)) => id,
+        _ => return Err(ActionError::Refused("grid line is missing".into())),
+    };
+    let text_id = match doc.get(&line, "text")? {
+        Some((_, id)) => id,
+        None => doc.put_object(&line, "text", automerge::ObjType::Text)?,
+    };
+    ui::doc::splice_text_diffed(doc, &text_id, text);
+    doc.put(&line, "attrs", attrs.to_vec())?;
     Ok(())
 }
 
@@ -551,6 +597,17 @@ mod tests {
                 _ => None,
             });
         assert_eq!(x, Some(3));
+        TerminalAction::WriteLine {
+            alternate: false,
+            index: 0,
+            text: "Hi".into(),
+            attrs: vec![0, 1],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let line = doc.get(&grid, 0).unwrap().map(|(_, id)| id).unwrap();
+        let text_id = doc.get(&line, "text").unwrap().map(|(_, id)| id).unwrap();
+        assert_eq!(doc.text(&text_id).unwrap(), "Hi");
     }
 }
 
