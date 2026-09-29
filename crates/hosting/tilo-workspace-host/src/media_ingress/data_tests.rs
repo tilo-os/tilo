@@ -1019,65 +1019,86 @@ impl Harness {
             },
         };
         use tilo_peer_state::join::JoinTransportRequest as J;
-        let now = tilo_delivery_protocol::clock::now_ns();
         let origin = self.ingress.origin().to_owned();
         let body = postcard::to_stdvec(&inner).unwrap();
         let certificate = postcard::to_stdvec(&joiner.certificate).unwrap();
-        let mut request = OnboardingRequest {
-            version: 3,
-            operation: match inner {
-                J::Inspect { .. } => OnboardingOperation::Inspect,
-                J::Challenge(_) => OnboardingOperation::Challenge,
-                J::Complete(_) => OnboardingOperation::Complete,
-                J::MembershipChallenge(_) => OnboardingOperation::MembershipChallenge,
-                J::MembershipComplete(_) => OnboardingOperation::MembershipComplete,
-            },
-            scope: OnboardingScope {
-                origin: &origin,
-                host: self.f.owner.host_certificate().device_public_key,
-                workspace: self.f.owner.workspace_id(),
-                root: self.f.owner.peer().authority().user_public_key,
-                room: self.f.owner.peer().room().parse().unwrap(),
-            },
-            certificate: &certificate,
-            nonce: [nonce; 32],
-            issued_at_ns: now,
-            expires_at_ns: now + 60_000_000_000,
-            body_digest: *blake3::hash(&body).as_bytes(),
-            body: &body,
-            signature: [[0; 32]; 2],
-        };
-        request.signature = split_signature(
-            joiner
-                .device
-                .sign(&request.signing_digest().unwrap())
-                .to_bytes(),
-        );
-        let wire = request.encode().unwrap();
-        let (status, bytes) = {
-            let transport =
-                self.client
-                    .request_method("POST", request.operation.path(), wire, None);
-            let ingress = &mut self.ingress;
-            let owner = &mut self.f.owner;
-            tokio::pin!(transport);
-            loop {
-                tokio::select! {
-                    out = &mut transport => break out,
-                    incoming = ingress.recv() => {
-                        let incoming = incoming.unwrap();
-                        assert!(matches!(incoming.route(), Route::Onboarding(_)));
-                        ingress.onboard(owner, host, incoming).await;
+        // A host still reconciling its relay-retained room state defers
+        // onboarding; the browser retries it as a new signed request.
+        let mut deferral = Deferral::new();
+        let mut attempt = 0u8;
+        let (request, bytes) = loop {
+            let now = tilo_delivery_protocol::clock::now_ns();
+            let mut request = OnboardingRequest {
+                version: 3,
+                operation: match inner {
+                    J::Inspect { .. } => OnboardingOperation::Inspect,
+                    J::Challenge(_) => OnboardingOperation::Challenge,
+                    J::Complete(_) => OnboardingOperation::Complete,
+                    J::MembershipChallenge(_) => OnboardingOperation::MembershipChallenge,
+                    J::MembershipComplete(_) => OnboardingOperation::MembershipComplete,
+                },
+                scope: OnboardingScope {
+                    origin: &origin,
+                    host: self.f.owner.host_certificate().device_public_key,
+                    workspace: self.f.owner.workspace_id(),
+                    root: self.f.owner.peer().authority().user_public_key,
+                    room: self.f.owner.peer().room().parse().unwrap(),
+                },
+                certificate: &certificate,
+                nonce: {
+                    let mut value = [nonce; 32];
+                    value[31] = value[31].wrapping_add(attempt);
+                    value
+                },
+                issued_at_ns: now,
+                expires_at_ns: now + 60_000_000_000,
+                body_digest: *blake3::hash(&body).as_bytes(),
+                body: &body,
+                signature: [[0; 32]; 2],
+            };
+            request.signature = split_signature(
+                joiner
+                    .device
+                    .sign(&request.signing_digest().unwrap())
+                    .to_bytes(),
+            );
+            let wire = request.encode().unwrap();
+            let (status, bytes) = {
+                let transport =
+                    self.client
+                        .request_method("POST", request.operation.path(), wire, None);
+                let ingress = &mut self.ingress;
+                let owner = &mut self.f.owner;
+                tokio::pin!(transport);
+                loop {
+                    tokio::select! {
+                        out = &mut transport => break out,
+                        incoming = ingress.recv() => {
+                            let incoming = incoming.unwrap();
+                            assert!(matches!(incoming.route(), Route::Onboarding(_)));
+                            ingress.onboard(owner, host, incoming).await;
+                        }
                     }
                 }
+            };
+            if let Some(pause) = deferral.pause(status, &bytes) {
+                attempt += 1;
+                drive(
+                    &mut self.ingress,
+                    &mut self.f.owner,
+                    tokio::time::sleep(pause),
+                )
+                .await;
+                continue;
             }
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{}",
+                String::from_utf8_lossy(&bytes)
+            );
+            break (request, bytes);
         };
-        assert_eq!(
-            status,
-            StatusCode::OK,
-            "{}",
-            String::from_utf8_lossy(&bytes)
-        );
         let response = OnboardingResponse::decode(&bytes).unwrap();
         response
             .verify_host_signature(&request, tilo_delivery_protocol::clock::now_ns())
