@@ -12,6 +12,7 @@
         let pkgs = import nixpkgs { inherit system; };
         in {
           tilo-session = pkgs.callPackage ./dist/nix/package.nix { };
+          tilo-runtime = pkgs.callPackage ./dist/nix/runtime.nix { };
           default = self.packages.${system}.tilo-session;
         });
 
@@ -34,6 +35,21 @@
               };
               boot.loader.grub.devices = [ "nodev" ];
               services.tilo-session.enable = true;
+              system.stateVersion = "24.11";
+            }
+          ];
+        }).config.system.build.toplevel;
+        tilo-runtime-module = (nixpkgs.lib.nixosSystem {
+          inherit system;
+          modules = [
+            self.nixosModules.tilo-runtime
+            {
+              fileSystems."/" = {
+                device = "none";
+                fsType = "tmpfs";
+              };
+              boot.loader.grub.devices = [ "nodev" ];
+              services.tilo-runtime.enable = true;
               system.stateVersion = "24.11";
             }
           ];
@@ -64,6 +80,24 @@
               "${cfg.package}/share/pipewire/tilo-echo-cancel.conf";
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
+          };
+        };
+
+      nixosModules.tilo-runtime = { config, lib, pkgs, ... }:
+        let cfg = config.services.tilo-runtime;
+        in {
+          options.services.tilo-runtime = {
+            enable = lib.mkEnableOption "the Tilo runtime for running Tilo apps on this desktop";
+            package = lib.mkOption {
+              type = lib.types.package;
+              default = self.packages.${pkgs.system}.tilo-runtime;
+              description = "Tilo runtime package to install.";
+            };
+          };
+          config = lib.mkIf cfg.enable {
+            environment.systemPackages = [ cfg.package ];
+            systemd.packages = [ cfg.package ];
+            systemd.user.services.tilo-runtime.wantedBy = [ "default.target" ];
           };
         };
 

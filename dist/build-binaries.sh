@@ -13,6 +13,8 @@ fi
 cd "$repo_root"
 cargo build "${cargo_args[@]}" -p launcher -p tilo-unlock-helper
 cargo build "${cargo_args[@]}" -p imager --bin imager
+# The standalone runtime package: the runtime and the Store as the Tilo app.
+cargo build "${cargo_args[@]}" -p tilo-runtime --bin tilo-runtime -p store --bin store
 # The host package deliberately excludes the test-control socket. Video
 # codecs come from the distribution's GStreamer at runtime.
 # Package only the production compositor. Building the package without an

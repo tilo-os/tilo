@@ -30,6 +30,11 @@ for name in \
     tilo-session-0.1.5-1-x86_64.pkg.tar.zst \
     tilo-session-devel-0.1.5-1-x86_64.pkg.tar.zst \
     tilo-session-amd64.nar.gz \
+    tilo-runtime_0.1.5-1+ubuntu24.04_amd64.deb \
+    tilo-runtime_0.1.5-1+deb13_amd64.deb \
+    tilo-runtime-0.1.5-1.fc44.x86_64.rpm \
+    tilo-runtime-0.1.5-1-x86_64.pkg.tar.zst \
+    tilo-runtime-amd64.nar.gz \
     tilo-desktop-os-x86_64.tar.gz; do
     : > "$fixture/$name"
 done

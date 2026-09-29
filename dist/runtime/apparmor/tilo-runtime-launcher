@@ -1,0 +1,13 @@
+# Ubuntu 24.04+ refuses unprivileged user namespaces to unconfined programs
+# (kernel.apparmor_restrict_unprivileged_userns). Every Tilo app sandbox is a
+# bubblewrap user namespace that tilo-launcher starts, so the launcher gets an
+# unconfined profile that allows exactly that; bwrap inherits it across exec.
+# The sandbox's own seccomp filter still refuses nested namespaces to the app.
+abi <abi/4.0>,
+include <tunables/global>
+
+profile tilo-runtime-launcher /usr/libexec/tilo-runtime/tilo-launcher flags=(unconfined) {
+  userns,
+
+  include if exists <local/tilo-runtime-launcher>
+}

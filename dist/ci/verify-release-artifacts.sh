@@ -16,12 +16,12 @@ for tool in gpg rpmkeys; do
 done
 
 case $arches in
-    # Ten package artifacts plus the native OS payload pair, four public
-    # RPM-key trust artifacts, and the maintained verified repo definition.
-    # ARM adds its package/payload set, but only the x86 lane publishes the
-    # duplicate-free key and repo trust bundle.
-    amd64) expected_count=18 ;;
-    amd64,arm64) expected_count=26 ;;
+    # Fifteen package artifacts (ten session, five runtime) plus the native OS
+    # payload pair, four public RPM-key trust artifacts, and the maintained
+    # verified repo definition. ARM adds its package/payload set, but only the
+    # x86 lane publishes the duplicate-free key and repo trust bundle.
+    amd64) expected_count=23 ;;
+    amd64,arm64) expected_count=36 ;;
     *) echo "unsupported release architecture set: $arches" >&2; exit 2 ;;
 esac
 
@@ -41,11 +41,13 @@ expect_one() {
 for distro_revision in 1+ubuntu24.04 1+deb13; do
     expect_one "tilo-session_${version}-${distro_revision}_amd64.deb"
     expect_one "tilo-session-devel_${version}-${distro_revision}_all.deb"
+    expect_one "tilo-runtime_${version}-${distro_revision}_amd64.deb"
     if [[ $arches == amd64,arm64 ]]; then
         expect_one "tilo-session_${version}-${distro_revision}_arm64.deb"
+        expect_one "tilo-runtime_${version}-${distro_revision}_arm64.deb"
     fi
 done
-for name in tilo-session tilo-session-devel; do
+for name in tilo-session tilo-session-devel tilo-runtime; do
     expect_one "${name}-${version}-1.fc44.x86_64.rpm"
     expect_one "${name}-${version}-1-x86_64.pkg.tar.zst"
     if [[ $arches == amd64,arm64 ]]; then
@@ -54,12 +56,14 @@ for name in tilo-session tilo-session-devel; do
     fi
 done
 expect_one "tilo-session-amd64.nar.gz"
+expect_one "tilo-runtime-amd64.nar.gz"
 expect_one "tilo-session-apps-${version}-1.fc44.x86_64.rpm"
 if [[ $arches == amd64,arm64 ]]; then
     expect_one "tilo-session-apps-${version}-1.fc44.aarch64.rpm"
 fi
 if [[ $arches == amd64,arm64 ]]; then
     expect_one "tilo-session-arm64.nar.gz"
+    expect_one "tilo-runtime-arm64.nar.gz"
 fi
 for payload_arch in x86_64; do
     expect_one "tilo-desktop-os-${payload_arch}.tar.gz"

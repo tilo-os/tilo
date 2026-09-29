@@ -16,6 +16,8 @@ mkdir -p "$work/tilo-$version/dist/session" "$work/tilo-$version/.cargo"
 install -pm 0755 "$repo_root/dist/stage-payload.sh" "$work/tilo-$version/dist/stage-payload.sh"
 install -pm 0644 "$repo_root/dist/VERSION" "$work/tilo-$version/dist/VERSION"
 cp -a "$repo_root/dist/session/." "$work/tilo-$version/dist/session/"
+mkdir -p "$work/tilo-$version/dist/runtime"
+cp -a "$repo_root/dist/runtime/." "$work/tilo-$version/dist/runtime/"
 install -pm 0644 "$repo_root/.cargo/config.toml" "$work/tilo-$version/.cargo/config.toml"
 install -pm 0644 "$repo_root/Cargo.toml" "$repo_root/Cargo.lock" \
     "$repo_root/rust-toolchain.toml" "$work/tilo-$version/"

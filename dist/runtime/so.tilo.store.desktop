@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Tilo
+Comment=Find, open and share Tilo apps
+Exec=/usr/libexec/tilo-runtime/store
+TryExec=/usr/libexec/tilo-runtime/store
+Icon=so.tilo.store
+Terminal=false
+Categories=System;PackageManager;
+Keywords=apps;store;search;tilo;
+StartupWMClass=so.tilo.store

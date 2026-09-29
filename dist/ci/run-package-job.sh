@@ -343,8 +343,11 @@ ubuntu-24.04|debian-13)
     dist/debian/test-package.sh \
         dist/debian/build/tilo-session_[0-9]*.deb \
         dist/debian/build/tilo-session-devel_*.deb
+    stage=install-test-runtime-deb
+    dist/runtime/test-package.sh dist/debian/build/tilo-runtime_[0-9]*_"$arch".deb
     stage=collect-deb
     cp dist/debian/build/tilo-session_[0-9]*_"$arch".deb /artifacts/
+    cp dist/debian/build/tilo-runtime_[0-9]*_"$arch".deb /artifacts/
     if [[ $arch == amd64 ]]; then
         cp dist/debian/build/tilo-session-devel_*_all.deb /artifacts/
     fi
@@ -360,12 +363,13 @@ fedora-44)
     stage=build-rpm
     dist/rpm/build-rpm.sh
     stage=inspect-rpm
-    rpm -qip dist/rpm/build/RPMS/*/tilo-session-*.rpm
+    rpm -qip dist/rpm/build/RPMS/*/tilo-session-*.rpm dist/rpm/build/RPMS/*/tilo-runtime-*.rpm
     stage=lint-rpm
     rpmlint_log=$(mktemp)
     set +e
     rpmlint -r dist/rpm/tilo-session.rpmlintrc \
-        dist/rpm/build/RPMS/*/tilo-session-*.rpm 2>&1 | tee "$rpmlint_log"
+        dist/rpm/build/RPMS/*/tilo-session-*.rpm dist/rpm/build/RPMS/*/tilo-runtime-*.rpm \
+        2>&1 | tee "$rpmlint_log"
     rpmlint_status=${PIPESTATUS[0]}
     set -e
     # Fedora permits no-signature for local and branch-validation artifacts.
@@ -383,6 +387,8 @@ fedora-44)
     fi
     stage=install-test-rpm
     dist/rpm/test-package.sh dist/rpm/build/RPMS/*/tilo-session-*.rpm
+    stage=install-test-runtime-rpm
+    dist/runtime/test-package.sh dist/rpm/build/RPMS/*/tilo-runtime-[0-9]*.rpm
     stage=collect-rpm
     cp dist/rpm/build/RPMS/*/*.rpm /artifacts/
     if [[ ${TILO_RPM_SIGNING_ENABLED:-0} == 1 ]]; then
@@ -429,16 +435,19 @@ arch)
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'
     stage=inspect-arch
-    pacman -Qip dist/arch/build/tilo-session-*.pkg.tar.*
+    pacman -Qip dist/arch/build/tilo-session-*.pkg.tar.* dist/arch/build/tilo-runtime-*.pkg.tar.*
     stage=lint-arch
     namcap_log=$(mktemp)
-    namcap dist/arch/build/tilo-session-*.pkg.tar.* | tee "$namcap_log"
+    namcap dist/arch/build/tilo-session-*.pkg.tar.* dist/arch/build/tilo-runtime-*.pkg.tar.* \
+        | tee "$namcap_log"
     if grep -q ' E: ' "$namcap_log"; then
         echo "namcap reported a package error" >&2
         exit 1
     fi
     stage=install-test-arch
     dist/arch/test-package.sh dist/arch/build/tilo-session-*.pkg.tar.*
+    stage=install-test-runtime-arch
+    dist/runtime/test-package.sh dist/arch/build/tilo-runtime-[0-9]*.pkg.tar.zst
     stage=collect-arch
     cp dist/arch/build/*.pkg.tar.zst /artifacts/
     ;;
@@ -460,6 +469,11 @@ nix)
     nix build --print-build-logs .#tilo-session
     stage=inspect-nix
     dist/ci/verify-nix-result.sh result "$arch"
+    stage=build-nix-runtime
+    nix build --print-build-logs --out-link result-runtime .#tilo-runtime
+    stage=inspect-nix-runtime
+    dist/ci/verify-nix-runtime.sh result-runtime
+    stage=check-nix-flake
     nix flake check --no-build --all-systems
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
@@ -467,6 +481,9 @@ nix)
     # single-core level-9 compression tail on large ARM closures.
     nix-store --export "${requisites[@]}" \
         | gzip -1 > "/artifacts/tilo-session-$arch.nar.gz"
+    mapfile -t requisites < <(nix-store --query --requisites result-runtime)
+    nix-store --export "${requisites[@]}" \
+        | gzip -1 > "/artifacts/tilo-runtime-$arch.nar.gz"
     ;;
 *)
     echo "unknown package distribution: $distro" >&2

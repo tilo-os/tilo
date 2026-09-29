@@ -263,6 +263,46 @@ Tagged builds also publish an exact Nix store closure as a generic Forgejo
 package for disaster recovery; normal installations should use the flake so
 Nix can build or substitute the package declaratively.
 
+## The standalone runtime
+
+`tilo-runtime` runs Tilo apps on a desktop that is not Tilo: GNOME, KDE or any
+other session. It is built by the same pipeline, from the same version, into
+every format above (`tilo-runtime_*.deb`, `tilo-runtime-*.rpm`,
+`tilo-runtime-*.pkg.tar.zst`, `.#tilo-runtime` and `tilo-runtime-<arch>.nar.gz`)
+and installs beside `tilo-session` without sharing a file with it. It carries no
+compositor, login-manager entry or PAM policy.
+
+It installs the per-user runtime daemon, its own copy of the bubblewrap
+launcher, and **Tilo**, the visible app for finding and opening apps (the Store
+under that name), into one private directory: `/usr/libexec/tilo-runtime`, or
+`/usr/lib/tilo/runtime` on Arch. `/usr/bin/tilo-runtime` links to the daemon.
+A Tilo app started from the menu or a terminal attaches to the running daemon,
+starting it on demand; the systemd user unit keeps it running between apps,
+for example for an assistant connected over `tilo-runtime --connect`:
+
+```bash
+sudo apt install tilo-runtime     # dnf, pacman -U, or services.tilo-runtime.enable
+systemctl --user enable --now tilo-runtime.service
+```
+
+Every app sandbox is a bubblewrap user namespace, so the package depends on
+`bubblewrap`, `xdg-dbus-proxy` and `xdg-desktop-portal`. Ubuntu 24.04 and later
+refuse unprivileged user namespaces to unconfined programs; the Debian-family
+package installs and loads `/etc/apparmor.d/tilo-runtime-launcher`, which allows
+exactly that to the runtime's launcher. The profile is inert where AppArmor does
+not restrict namespaces (Debian 13).
+
+Updates arrive the same way as `tilo-session`: from the apt, RPM, pacman and Nix
+repositories each tagged release publishes to. Apps are not in the package and
+update through the app registry.
+
+Each distro lane installs the runtime package after the session packages and runs
+`dist/runtime/test-package.sh`: dependencies, a file list with no session
+files, the installed layout, and `dist/runtime/smoke-test.sh`, which starts the
+daemon as a throwaway user, attaches a process, lists MCP tools through
+`--connect`, and renders the Tilo app headless on the software Vulkan driver.
+The Nix lane runs the same smoke test against its result.
+
 ## CI and publishing
 
 `.forgejo/workflows/release-desktop.yml` is the release gate. Pull requests

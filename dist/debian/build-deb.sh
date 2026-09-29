@@ -42,6 +42,38 @@ mkdir -p "$dev"/{DEBIAN,usr/libexec,usr/share/wayland-sessions}
 install -pm 0755 "$stage/libexec/tilo-session-dev" "$dev/usr/libexec/"
 install -pm 0644 "$stage/wayland-sessions/tilo-app.desktop" "$dev/usr/share/wayland-sessions/"
 
+runtime_stage=$work/runtime-stage
+"$repo_root/dist/runtime/stage-payload.sh" "$bin_dir" "$runtime_stage"
+runtime=$work/tilo-runtime
+mkdir -p "$runtime"/{DEBIAN,usr/bin,usr/libexec/tilo-runtime,usr/lib/systemd/user,usr/share/applications,usr/share/icons/hicolor/scalable/apps,etc/apparmor.d,usr/share/doc/tilo-runtime}
+install -pm 0755 "$runtime_stage"/libexec/* "$runtime/usr/libexec/tilo-runtime/"
+ln -s ../libexec/tilo-runtime/tilo-runtime "$runtime/usr/bin/tilo-runtime"
+install -pm 0644 "$runtime_stage/systemd-user/tilo-runtime.service" "$runtime/usr/lib/systemd/user/"
+install -pm 0644 "$runtime_stage/applications/so.tilo.store.desktop" "$runtime/usr/share/applications/"
+install -pm 0644 "$runtime_stage/icons/so.tilo.store.svg" "$runtime/usr/share/icons/hicolor/scalable/apps/"
+install -pm 0644 "$runtime_stage/apparmor/tilo-runtime-launcher" "$runtime/etc/apparmor.d/"
+install -pm 0644 "$runtime_stage/license/LICENSE" "$runtime/usr/share/doc/tilo-runtime/copyright"
+# Load the launcher's user-namespace profile where AppArmor is active; Ubuntu
+# 24.04+ refuses bubblewrap's namespace to unconfined programs otherwise.
+cat > "$runtime/DEBIAN/postinst" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = configure ] && command -v apparmor_parser >/dev/null 2>&1 \
+    && aa-enabled --quiet 2>/dev/null; then
+    apparmor_parser --replace --write-cache /etc/apparmor.d/tilo-runtime-launcher || true
+fi
+EOF
+cat > "$runtime/DEBIAN/postrm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = remove ] && command -v apparmor_parser >/dev/null 2>&1 \
+    && aa-enabled --quiet 2>/dev/null; then
+    apparmor_parser --remove /etc/apparmor.d/tilo-runtime-launcher 2>/dev/null || true
+fi
+EOF
+chmod 0755 "$runtime/DEBIAN/postinst" "$runtime/DEBIAN/postrm"
+printf '/etc/apparmor.d/tilo-runtime-launcher\n' > "$runtime/DEBIAN/conffiles"
+
 installed_size() { du -sk "$1" | cut -f1; }
 mkdir -p "$work/debian"
 cat > "$work/debian/control" <<'EOF'
@@ -91,7 +123,35 @@ Description: developer session entry for Tilo
  ownership, permissions, and its developer-build marker.
 EOF
 
+runtime_shlib_line=$(
+    cd "$work"
+    dpkg-shlibdeps -O \
+        -e"$runtime/usr/libexec/tilo-runtime/tilo-runtime" \
+        -e"$runtime/usr/libexec/tilo-runtime/tilo-launcher" \
+        -e"$runtime/usr/libexec/tilo-runtime/store"
+)
+runtime_shlib_deps=${runtime_shlib_line#shlibs:Depends=}
+# The app's window and GPU stack is dlopen()ed, invisible to dpkg-shlibdeps.
+cat > "$runtime/DEBIAN/control" <<EOF
+Package: tilo-runtime
+Version: $version-$revision
+Section: utils
+Priority: optional
+Architecture: $arch
+Maintainer: Tilo contributors <tilo@code.tilo.so>
+Installed-Size: $(installed_size "$runtime")
+Depends: $runtime_shlib_deps, bubblewrap, xdg-desktop-portal, xdg-dbus-proxy, libvulkan1, libegl1, libwayland-client0, libxkbcommon0
+Recommends: mesa-vulkan-drivers, apparmor
+Description: Tilo runtime for running Tilo apps on this desktop
+ The per-user Tilo runtime: identity, collaboration and app services that
+ independently launched Tilo apps attach to, each confined by bubblewrap.
+ Includes the Tilo app for finding and opening apps. No compositor or login
+ session; install tilo-session for the full Tilo desktop.
+EOF
+
 "$repo_root/dist/verify-payload.sh" "$main"
+"$repo_root/dist/runtime/verify-payload.sh" "$runtime"
+dpkg-deb --build --root-owner-group "$runtime" "$out/tilo-runtime_${version}-${revision}_${arch}.deb"
 dpkg-deb --build --root-owner-group "$main" "$out/tilo-session_${version}-${revision}_${arch}.deb"
 dpkg-deb --build --root-owner-group "$dev" "$out/tilo-session-devel_${version}-${revision}_all.deb"
 printf '%s\n' "$out"/*.deb

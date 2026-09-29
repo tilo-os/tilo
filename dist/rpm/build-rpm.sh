@@ -30,6 +30,8 @@ if (( run_cargo )); then
         -p launcher -p tilo-unlock-helper -p tilo-app-package-cli -p install -p runtime-bundle \
         -p cli-shim -p app-host -p ush -p local-model-service -p tilo-model-gateway )
     ( cd "$repo_root" && cargo build --release --locked -p imager --bin imager )
+    ( cd "$repo_root" && cargo build --release --locked \
+        -p tilo-runtime --bin tilo-runtime -p store --bin store )
     say "cargo build --release (compositor, no default features)"
     # `shell` also owns developer tools such as `shots` and `tilo-control`.
     # Building the package without an explicit target compiles and LTO-links
@@ -45,7 +47,8 @@ target_dir=${CARGO_TARGET_DIR:-$repo_root/target}
 target_dir=$(realpath -m "$target_dir")
 rel=${TILO_BIN_DIR:-$target_dir/release}
 for bin in shell imager tilo-launcher tilo-unlock-helper tilo-install tilo-runtime-bundle \
-           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway; do
+           tilo-cli-shim tilo-app-host tilo-ush tilo-model-manager tilo-model-gateway \
+           tilo-runtime store; do
     [[ -x $rel/$bin ]] || { echo "missing $rel/$bin — run without --no-cargo" >&2; exit 1; }
 done
 
@@ -114,6 +117,9 @@ mkdir -p "$app_stage/profile.d"
 install -pm 0644 "$repo_root/os/etc/profile.d/tilo-apps.sh" \
     "$app_stage/profile.d/tilo-apps.sh"
 install -pm 0644 "$repo_root/LICENSE" "$app_stage/license/LICENSE"
+
+say "staging the standalone runtime"
+"$repo_root/dist/runtime/stage-payload.sh" "$rel" "$stage/runtime"
 
 tar -C "$out/stage" -czf "$out/SOURCES/$name-$version.tar.gz" "$name-$version"
 cp "$repo_root/dist/rpm/$name.spec" "$out/SPECS/"

@@ -73,6 +73,46 @@ if grep -Fq -- "-name 'tilo-session*.rpm'" "$overlay_helper"; then
     exit 1
 fi
 
+# The standalone runtime package: every builder ships it, its payload stages
+# from the shared binaries, and it never carries a session file.
+for builder in dist/build-binaries.sh dist/rpm/build-rpm.sh dist/arch/PKGBUILD dist/nix/runtime.nix; do
+    grep -Eq -- '-p"? "?tilo-runtime' "$repo_root/$builder" \
+        && grep -Eq -- '-p"? "?store' "$repo_root/$builder" || {
+        echo "$builder does not build the standalone runtime and its app" >&2
+        exit 1
+    }
+done
+runtime_bin=$work/runtime-bin
+mkdir -p "$runtime_bin"
+for binary in tilo-runtime tilo-launcher store; do
+    install -m755 "$true_bin" "$runtime_bin/$binary"
+done
+"$repo_root/dist/runtime/stage-payload.sh" "$runtime_bin" "$work/runtime-stage"
+runtime_root=$work/runtime-root
+rs=$work/runtime-stage
+install -Dm755 -t "$runtime_root/usr/libexec/tilo-runtime" "$rs"/libexec/*
+install -d "$runtime_root/usr/bin"
+ln -s ../libexec/tilo-runtime/tilo-runtime "$runtime_root/usr/bin/tilo-runtime"
+install -Dm644 -t "$runtime_root/usr/lib/systemd/user" "$rs/systemd-user/tilo-runtime.service"
+install -Dm644 -t "$runtime_root/usr/share/applications" "$rs/applications/so.tilo.store.desktop"
+install -Dm644 -t "$runtime_root/usr/share/icons/hicolor/scalable/apps" "$rs/icons/so.tilo.store.svg"
+install -Dm644 "$rs/license/LICENSE" "$runtime_root/usr/share/licenses/tilo-runtime/LICENSE"
+"$repo_root/dist/runtime/verify-payload.sh" "$runtime_root"
+rm "$runtime_root/usr/bin/tilo-runtime"
+ln -s /usr/libexec/tilo-runtime/tilo-runtime "$runtime_root/usr/bin/tilo-runtime"
+if "$repo_root/dist/runtime/verify-payload.sh" "$runtime_root" >/dev/null 2>&1; then
+    echo "runtime verifier accepted a /usr/bin/tilo-runtime that does not stay relative" >&2
+    exit 1
+fi
+printf '/usr/libexec/tilo-runtime/store\n/usr/bin/tilo-runtime\n' \
+    | "$repo_root/dist/runtime/refuse-session-files.sh"
+for session_file in /usr/bin/tilo-launcher /etc/pam.d/tilo-unlock ./usr/share/wayland-sessions/tilo.desktop; do
+    if printf '%s\n' "$session_file" | "$repo_root/dist/runtime/refuse-session-files.sh" >/dev/null 2>&1; then
+        echo "runtime file-list check accepted $session_file" >&2
+        exit 1
+    fi
+done
+
 fhs=$work/fhs
 mkdir -p "$fhs"/{usr/bin,usr/libexec,usr/lib/systemd/user,etc/pam.d,usr/share/wayland-sessions,usr/share/applications,usr/share/xdg-desktop-portal/portals,usr/share/pipewire,usr/share/licenses/tilo-session}
 for target in "$fhs/usr/bin/tilo-shell" "$fhs/usr/bin/tilo-launcher" "$fhs/usr/bin/tilo-import-folders" \

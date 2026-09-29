@@ -1,0 +1,13 @@
+[Unit]
+Description=Tilo runtime: identity, collaboration and app services for Tilo apps
+Documentation=https://code.tilo.so/tilo/tilo/src/branch/main/docs/packaging.md#the-standalone-runtime
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/tilo-runtime --daemon
+# A clean refusal (another daemon, perhaps started on demand by an app, already
+# owns the profile) exits with an error and must not restart in a loop.
+Restart=on-abnormal
+
+[Install]
+WantedBy=default.target

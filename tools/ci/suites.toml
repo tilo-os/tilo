@@ -846,6 +846,16 @@ reason = "needs a gpg-agent the ci-fast image cannot provide reliably; runs in t
 workflow = "release-desktop.yml"
 
 [[unrequired]]
+suite = "dist/runtime/smoke-test.sh"
+reason = "needs an installed tilo-runtime package; run by dist/runtime/test-package.sh"
+workflow = "release-desktop.yml"
+
+[[unrequired]]
+suite = "dist/runtime/test-package.sh"
+reason = "needs a built tilo-runtime package"
+workflow = "release-desktop.yml"
+
+[[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
 

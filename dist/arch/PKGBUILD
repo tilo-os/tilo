@@ -1,6 +1,6 @@
 # Maintainer: Tilo contributors <tilo@code.tilo.so>
 pkgbase=tilo-session
-pkgname=(tilo-session tilo-session-devel)
+pkgname=(tilo-session tilo-session-devel tilo-runtime)
 pkgver=0.1.12
 pkgrel=1
 pkgdesc='Tilo collaborative compositor as a Wayland session'
@@ -29,9 +29,11 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   cargo build --release --locked -p launcher -p tilo-unlock-helper
   cargo build --release --locked -p imager --bin imager
+  cargo build --release --locked -p tilo-runtime --bin tilo-runtime -p store --bin store
   export TILO_UNLOCK_HELPER_PATH=/usr/lib/tilo/tilo-unlock-helper
   cargo build --release --locked -p shell --bin shell --no-default-features
   ./dist/stage-payload.sh target/release "$srcdir/payload"
+  ./dist/runtime/stage-payload.sh target/release "$srcdir/runtime-payload"
 }
 
 package_tilo-session() {
@@ -74,4 +76,25 @@ package_tilo-session-devel() {
   install -Dm644 wayland-sessions/tilo-app.desktop -t "$pkgdir/usr/share/wayland-sessions"
   sed -i 's#/usr/libexec/tilo-session-dev#/usr/lib/tilo/tilo-session-dev#g' \
     "$pkgdir/usr/share/wayland-sessions/tilo-app.desktop"
+}
+
+package_tilo-runtime() {
+  pkgdesc='Tilo runtime for running Tilo apps on this desktop'
+  # The Tilo app's window and GPU stack is dlopen()ed, invisible to namcap.
+  depends=(
+    'glibc' 'gcc-libs' 'bubblewrap' 'xdg-desktop-portal' 'xdg-dbus-proxy'
+    'vulkan-icd-loader' 'libglvnd' 'wayland' 'libxkbcommon'
+  )
+  optdepends=('vulkan-driver: hardware-appropriate Vulkan ICD')
+  cd "$srcdir/runtime-payload"
+  install -Dm755 libexec/tilo-runtime libexec/tilo-launcher libexec/store \
+    -t "$pkgdir/usr/lib/tilo/runtime"
+  install -d "$pkgdir/usr/bin"
+  ln -s ../lib/tilo/runtime/tilo-runtime "$pkgdir/usr/bin/tilo-runtime"
+  install -Dm644 systemd-user/tilo-runtime.service -t "$pkgdir/usr/lib/systemd/user"
+  install -Dm644 applications/so.tilo.store.desktop -t "$pkgdir/usr/share/applications"
+  sed -i 's#/usr/libexec/tilo-runtime/#/usr/lib/tilo/runtime/#' \
+    "$pkgdir/usr/share/applications/so.tilo.store.desktop"
+  install -Dm644 icons/so.tilo.store.svg -t "$pkgdir/usr/share/icons/hicolor/scalable/apps"
+  install -Dm644 license/LICENSE "$pkgdir/usr/share/licenses/tilo-runtime/LICENSE"
 }

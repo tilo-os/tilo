@@ -173,6 +173,28 @@ to a sub-package precisely so that decision is visible in `rpm -q` and absent
 by default; see the header of /usr/libexec/tilo-session-dev for the checks it
 makes before it execs anything, and DEVELOPMENT.md for the threat model.
 
+%package -n tilo-runtime
+Summary:        Tilo runtime for running Tilo apps on this desktop
+# Independent of the session: the runtime is how Tilo apps run on GNOME, KDE
+# or any other desktop, and it installs beside tilo-session without sharing a
+# file with it (its launcher lives in its own private directory).
+Requires:       bubblewrap
+Requires:       xdg-desktop-portal
+Requires:       xdg-dbus-proxy
+# The Tilo app's window and GPU stack is dlopen()ed, invisible to the ELF scan.
+Requires:       vulkan-loader
+Requires:       libEGL.so.1()(64bit)
+Requires:       libwayland-client.so.0()(64bit)
+Requires:       libxkbcommon.so.0()(64bit)
+Recommends:     mesa-vulkan-drivers
+%{?systemd_requires}
+
+%description -n tilo-runtime
+The per-user Tilo runtime: identity, collaboration and app services that
+independently launched Tilo apps attach to, each confined by bubblewrap.
+Includes the Tilo app for finding and opening apps. No compositor or login
+session; install tilo-session for the full Tilo desktop.
+
 %prep
 %setup -q
 
@@ -241,6 +263,20 @@ install -Dpm 0644 apps/license/LICENSE \
 install -Dpm 0755 libexec/tilo-session-dev   %{buildroot}%{_libexecdir}/tilo-session-dev
 install -Dpm 0644 wayland-sessions/tilo-app.desktop \
                   %{buildroot}%{_datadir}/wayland-sessions/tilo-app.desktop
+
+for bin in tilo-runtime tilo-launcher store; do
+    install -Dpm 0755 runtime/libexec/$bin %{buildroot}%{_libexecdir}/tilo-runtime/$bin
+done
+install -d %{buildroot}%{_bindir}
+ln -s ../libexec/tilo-runtime/tilo-runtime %{buildroot}%{_bindir}/tilo-runtime
+install -Dpm 0644 runtime/systemd-user/tilo-runtime.service \
+                  %{buildroot}%{_userunitdir}/tilo-runtime.service
+install -Dpm 0644 runtime/applications/so.tilo.store.desktop \
+                  %{buildroot}%{_datadir}/applications/so.tilo.store.desktop
+install -Dpm 0644 runtime/icons/so.tilo.store.svg \
+                  %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/so.tilo.store.svg
+install -Dpm 0644 runtime/license/LICENSE \
+                  %{buildroot}%{_datadir}/licenses/tilo-runtime/LICENSE
 
 %check
 test -x %{buildroot}%{_bindir}/tilo-import-folders
@@ -343,6 +379,23 @@ done
 %files devel
 %{_libexecdir}/tilo-session-dev
 %{_datadir}/wayland-sessions/tilo-app.desktop
+
+%post -n tilo-runtime
+%systemd_user_post tilo-runtime.service
+
+%preun -n tilo-runtime
+%systemd_user_preun tilo-runtime.service
+
+%files -n tilo-runtime
+%{_bindir}/tilo-runtime
+%dir %{_libexecdir}/tilo-runtime
+%{_libexecdir}/tilo-runtime/tilo-runtime
+%{_libexecdir}/tilo-runtime/tilo-launcher
+%{_libexecdir}/tilo-runtime/store
+%{_userunitdir}/tilo-runtime.service
+%{_datadir}/applications/so.tilo.store.desktop
+%{_datadir}/icons/hicolor/scalable/apps/so.tilo.store.svg
+%license %{_datadir}/licenses/tilo-runtime/LICENSE
 
 %changelog
 * Tue Sep 08 2026 Tilo <tilo@code.tilo.so> - 0.1.9-1
