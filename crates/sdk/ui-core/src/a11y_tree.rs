@@ -755,6 +755,14 @@ struct Build<'a, const BOUND: bool> {
     duplicate_ids: Vec<SemanticId>,
 }
 
+/// The node a synthetic child hangs off: its id, and whether that id is
+/// durable (a keyed id is durable only under a durable parent).
+#[derive(Clone, Copy)]
+struct SyntheticParent<'a> {
+    id: &'a SemanticId,
+    durable: bool,
+}
+
 impl<const BOUND: bool> Build<'_, BOUND> {
     fn insert_node(&mut self, node: SemanticNode) {
         let id = node.id.clone();
@@ -807,8 +815,10 @@ impl<const BOUND: bool> Build<'_, BOUND> {
                 }
                 for (i, synth) in access.children.iter().enumerate() {
                     let child = self.visit_synthetic(
-                        &id,
-                        durable_identity,
+                        SyntheticParent {
+                            id: &id,
+                            durable: durable_identity,
+                        },
                         i,
                         synth,
                         taffy_id,
@@ -861,16 +871,14 @@ impl<const BOUND: bool> Build<'_, BOUND> {
     }
 
     /// A virtual row/cell — has no backing widget, but may carry geometry.
-    /// `parent_durable` is passed down rather than read from `self.nodes`:
-    /// a parent is stored only after its children are visited.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one recursive visit; bundling these would only rename them"
-    )]
+    /// The parent's durability is passed down rather than read from
+    /// `self.nodes`: a parent is stored only after its children are visited.
     fn visit_synthetic(
         &mut self,
-        parent: &SemanticId,
-        parent_durable: bool,
+        SyntheticParent {
+            id: parent,
+            durable: parent_durable,
+        }: SyntheticParent<'_>,
         index: usize,
         access: &AccessNode,
         owner: Option<TaffyNodeId>,
@@ -896,8 +904,10 @@ impl<const BOUND: bool> Build<'_, BOUND> {
             }
             for (i, child) in access.children.iter().enumerate() {
                 let c = self.visit_synthetic(
-                    &id,
-                    durable_identity,
+                    SyntheticParent {
+                        id: &id,
+                        durable: durable_identity,
+                    },
                     i,
                     child,
                     owner,

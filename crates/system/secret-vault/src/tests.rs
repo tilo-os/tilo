@@ -100,17 +100,17 @@ fn secret_service_keys_encode_canonically() {
         let short = encoded.get(..KEY_LEN * 2 - 1).unwrap();
         assert_eq!(
             decode_key(short).unwrap_err(),
-            "Secret Service key has the wrong length"
+            "stored vault key has the wrong length"
         );
         assert_eq!(
             decode_key(&format!("{short}g")).unwrap_err(),
-            "Secret Service key is not hexadecimal"
+            "stored vault key is not hexadecimal"
         );
         // A multi-byte character of the right byte length is not hex either.
         let shorter = encoded.get(..KEY_LEN * 2 - 2).unwrap();
         assert_eq!(
             decode_key(&format!("{shorter}é")).unwrap_err(),
-            "Secret Service key is not hexadecimal"
+            "stored vault key is not hexadecimal"
         );
     }
 }

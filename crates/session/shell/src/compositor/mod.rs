@@ -381,6 +381,12 @@ fn value_to_backend(value: &str) -> BackendKind {
     }
 }
 
+/// The chord that releases a held pointer or captured keys, as the on-screen
+/// display names it.
+pub fn release_chord_label() -> String {
+    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -623,10 +629,4 @@ mod tests {
             );
         }
     }
-}
-
-/// The chord that releases a held pointer or captured keys, as the on-screen
-/// display names it.
-pub fn release_chord_label() -> String {
-    ui::keycaps::active().chord(["Ctrl", "Alt"], "escape")
 }

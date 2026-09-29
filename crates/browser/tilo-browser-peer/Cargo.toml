@@ -54,7 +54,7 @@ tokio = { workspace = true, features = ["full"] }
 tempfile.workspace = true
 ed25519-dalek.workspace = true
 getrandom.workspace = true
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 serde_json.workspace = true
 
 [lints]

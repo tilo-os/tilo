@@ -6111,7 +6111,9 @@ impl FrameHarness {
         crate::collaboration::PresencePayload,
     )> {
         self.focused.and_then(|id| {
-            self.inspect_node(id, |widget| widget.presence_payload())
+            self.inspect_node(id, |widget| {
+                crate::presence::capability::presence_payload(widget)
+            })
                 .ok()
                 .flatten()
         })
