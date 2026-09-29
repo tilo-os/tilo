@@ -18,6 +18,12 @@ name: Release / OS
 #            installs, boots and publishes a dev disk.
 on:
   workflow_call:
+    inputs:
+      arches:
+        description: JSON list of the architectures a dev build builds
+        type: string
+        required: false
+        default: '["x86_64","aarch64"]'
   schedule:
     # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
     - cron: "0 2 * * *"
@@ -160,6 +166,7 @@ jobs:
           # channel fresh at bounded runner cost.
           CONTINUOUS_RELEASE: "0"
           REQUESTED_RELEASE: ${{ github.event.inputs.release }}
+          DEV_ARCHES: ${{ inputs.arches }}
           PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
           INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
           # Publication refuses to start without these protected inputs. Until
@@ -214,7 +221,9 @@ jobs:
           # Build / OS dev: both native lanes, no reproduction lane.
           if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
             [[ $profile == generic ]] || { echo '::error::dev builds are generic'; exit 1; }
-            matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"}]}'
+            matrix="$(jq -c '{include: [.[] | if . == "x86_64" then {arch: ., runner: "runner-large"}
+                                              elif . == "aarch64" then {arch: ., runner: "runner-large-arm64"}
+                                              else error("unknown architecture \(.)") end]}' <<< "${DEV_ARCHES:-[\"x86_64\",\"aarch64\"]}")"
           elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
