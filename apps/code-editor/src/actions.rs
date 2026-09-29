@@ -31,7 +31,8 @@
 //! operation and saving its collaborative buffer to disk is an effect. The
 //! language server, linter, and embedded terminal remain app-owned services.
 
-use automerge::AutoCommit;
+use automerge::transaction::Transactable;
+use automerge::{AutoCommit, ReadDoc};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
@@ -291,6 +292,8 @@ pub enum CodeEditorAction {
         kind: EntryKind,
         expected_revision: i64,
     },
+    /// Create the embedded terminal's object if this project does not have one.
+    EnsureTerminalPanel,
 }
 
 /// The durable tree entry type an action addresses. Serializing this enum
@@ -326,6 +329,7 @@ pub fn history_context(
         CodeEditorAction::MoveFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Move"),
         CodeEditorAction::SetFileLanguage { id, .. } => (id.as_str(), "file", "Set file language"),
         CodeEditorAction::DeleteFile { id, kind, .. } => (id.as_str(), kind.as_str(), "Delete"),
+        CodeEditorAction::EnsureTerminalPanel => ("terminal", "panel", "Open terminal panel"),
     };
     context.action_label = label.to_string();
     context.resource = Some(tilo_actions::ActionResource {
@@ -397,6 +401,23 @@ impl Action for CodeEditorAction {
                 kind,
                 expected_revision,
             } => apply_delete(doc, id, *kind, *expected_revision),
+            Self::EnsureTerminalPanel => {
+                if matches!(
+                    doc.get(automerge::ROOT, "terminal_panel")?,
+                    Some((automerge::Value::Object(automerge::ObjType::Map), _))
+                ) {
+                    return Ok(());
+                }
+                doc.put_object(automerge::ROOT, "terminal_panel", automerge::ObjType::Map)?;
+                Ok(())
+            }
+        }
+    }
+
+    fn change_kind(&self) -> tilo_actions::ChangeKind {
+        match self {
+            Self::EnsureTerminalPanel => tilo_actions::ChangeKind::Housekeeping,
+            _ => tilo_actions::ChangeKind::Content,
         }
     }
 
