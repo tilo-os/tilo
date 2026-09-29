@@ -1292,6 +1292,21 @@ sudo dist/rpm/usroverlay-install.sh --disarm-devel
 sudo dist/rpm/usroverlay-install.sh --uninstall
 ```
 
+To move an existing install to the current checkout, use the helper instead. It
+builds, names the packages after the commit (`tilo-session-0.1.12-0.202609271530.git5764267571`),
+refuses RPMs left over from another commit, and swaps whatever `tilo-session*`
+packages are layered in one `rpm-ostree` transaction, keeping `-devel` only if
+it was there:
+
+```bash
+dist/rpm/host-update.sh               # build HEAD and stage it for the next boot
+dist/rpm/host-update.sh --apply-live  # also make it the running /usr; just log out
+dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/release
+```
+
+`--apply-live` refuses while a Tilo session is running on the machine. Builds go
+through the `cargo` on your `PATH`, so any cargo drop-in on it is used.
+
 Either way, log **out** (not lock) afterwards: the greeter reads
 `/usr/share/wayland-sessions` when it starts, so a new entry appears at the next
 greeter, and "Tilo" shows up in the session menu next to your usual desktop.

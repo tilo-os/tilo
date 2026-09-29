@@ -14,22 +14,22 @@ name = "clocks"
 path = "src/main.rs"
 
 [dependencies]
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-process = { path = "../../crates/platform/tilo-process" }
 chrono = { workspace = true, features = ["clock", "serde"] }
 chrono-tz = "0.10"
 serde.workspace = true
 serde_json.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-atomic-file = { path = "../../crates/system/atomic-file" }
-private-fs = { path = "../../crates/system/private-fs" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 vello.workspace = true
 taffy.workspace = true
 automerge.workspace = true
 winit.workspace = true
 tilo-actions = { path = "../../crates/collab/actions" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-workspace-hack = { version = "0.1" }
 
 [features]
 thin = ["dep:runtime-dylib"]
@@ -40,3 +40,7 @@ workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

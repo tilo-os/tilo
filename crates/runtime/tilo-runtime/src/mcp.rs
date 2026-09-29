@@ -163,8 +163,15 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         }
         self.handles().full(&name)
     }
-    fn compact(&self, page: &CataloguePage) -> Value {
-        page::compact_page(page, &mut self.handles())
+    /// `page` compact. An app instance's resource ids are opaque and long,
+    /// and named by handles; the workspace's (`app.<app_id>`, its permission
+    /// roles) are names that partners' provisioning and prompts spell out.
+    fn compact(&self, page: &CataloguePage, workspace: bool) -> Value {
+        if workspace {
+            page::compact_page(page, None)
+        } else {
+            page::compact_page(page, Some(&mut self.handles()))
+        }
     }
     /// Offer the canonical `computer` tools, driving `computer`.
     #[must_use]
@@ -507,7 +514,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if workspace {
             offer_open_path(&mut page);
         }
-        let mut value = self.compact(&page);
+        let mut value = self.compact(&page, workspace);
         if partial && let Some(fields) = value.as_object_mut() {
             fields.insert("partial_match".into(), Value::Bool(true));
         }
@@ -937,7 +944,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 })
             }));
             let mut trial = self.handles().clone();
-            if page::compact_page(&grown, &mut trial).to_string().len() > DIRECTORY_BYTES {
+            if page::compact_page(&grown, Some(&mut trial))
+                .to_string()
+                .len()
+                > DIRECTORY_BYTES
+            {
                 truncated = true;
                 continue;
             }
@@ -953,7 +964,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
             page = grown;
         }
-        let mut value = self.compact(&page);
+        let mut value = self.compact(&page, false);
         if let Some(fields) = value.as_object_mut() {
             fields.remove("exhausted");
             if truncated {
@@ -1257,7 +1268,7 @@ fn tool_definitions() -> Vec<Value> {
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
         ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id and directory (its resources and all their actions, so no tilo_query is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). Long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). An app's long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),

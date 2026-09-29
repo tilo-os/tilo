@@ -345,10 +345,10 @@ pub fn spawn_render_thread(
         .name("ui-render".into())
         .spawn(move || {
             tilo_rt::mark_ui_thread();
-            // `QUICK_UI_PRESENT=1` logs per-frame encode/acquire/present timings
+            // `TILO_UI_PRESENT=1` logs per-frame encode/acquire/present timings
             // — a slow compositor/present path shows up as a large acquire or
             // present, invisible to offscreen benches. Off by default.
-            let present_dbg = std::env::var("QUICK_UI_PRESENT").is_ok();
+            let present_dbg = crate::env::var("TILO_UI_PRESENT").is_ok();
             let present_origin = present_dbg.then(crate::time::now);
             let mut frame_ix: u64 = 0;
             let presentation = crate::presentation_feedback::Observer::from_env();

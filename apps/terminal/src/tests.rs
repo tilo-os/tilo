@@ -825,8 +825,8 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let mut doc = AutoCommit::new();
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             widget.sync(&mut doc, &ROOT);
             if widget.is_disconnected() {
                 break;
@@ -2640,7 +2640,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // `feed` path must produce correct content and finish well under a bound the
     // quadratic path could never meet.
     {
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let mut doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
@@ -2657,7 +2657,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         );
         }
 
-        let start = Instant::now();
+        let start = ui::time::now();
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
         let elapsed = start.elapsed();
@@ -3690,8 +3690,8 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// replays bytes through vte into the CRDT grid) until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
-    let deadline = std::time::Instant::now() + HANG_BOUND;
-    while std::time::Instant::now() < deadline {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         w.sync(doc, &ROOT);
         if w.grid_text().contains(needle) {
             return true;
@@ -3771,8 +3771,8 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             fresh.sync(&mut doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
                 break;
@@ -5028,5 +5028,48 @@ fn a_desktop_entry_command_reaches_the_terminal_through_the_launch_context() {
     assert_eq!(
         exec_script(&["printf".into(), "it's %s".into()]),
         "exec 'printf' 'it'\\''s %s'"
+    );
+}
+
+#[test]
+fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
+    let (mut w, _rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    let batches: [&[u8]; 3] = [
+        b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1bP+q71756572792d6f732d6e616d65\x1b\\\x1b[?1049l\x1b[0c",
+        b"\rWillkommen in fish\r\nType \x1b[32mhelp\x1b[m for instructions\r\n\x1b]7;file://ush/var/tmp\x07\x1b]0;/v/tmp\x07\x1b[m\x1b]11;?\x1b\\\x1b[6n\x1b[0c",
+        b"\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\x1b]133;A;click_events=1\x1b\\\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[K\r\x1b[17C\x1b[?2004l\x1b[?2031l\x1b[>4;0m\x1b>\x1b]0;/v/tmp\x07\x1b[m\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\r\x1b]133;A;click_events=1\x07\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[J\r\x1b[17Cab",
+    ];
+    for batch in batches {
+        w.feed(&mut doc, &ROOT, batch);
+        w.sync(&mut doc, &ROOT);
+    }
+    assert!(
+        w.grid_row(2).starts_with("root@ush /v/tmp# ab"),
+        "prompt row: {:?}\n{}",
+        w.grid_row(2),
+        w.grid_text()
+    );
+}
+
+#[test]
+fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
+    let (mut w, _rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    w.feed(&mut doc, &ROOT, b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
+    w.sync(&mut doc, &ROOT);
+    assert_eq!(w.grid_row(0).trim_end(), "above");
+    assert_eq!(w.grid_row(1).trim_end(), "P#");
+    assert_eq!(w.grid_row(2).trim_end(), "");
+
+    w.feed(&mut doc, &ROOT, b"\x1b[2;3H\x1b[1J");
+    w.sync(&mut doc, &ROOT);
+    assert_eq!(w.grid_row(0).trim_end(), "");
+    assert!(
+        w.grid_row(1).starts_with("  "),
+        "row 1: {:?}",
+        w.grid_row(1)
     );
 }

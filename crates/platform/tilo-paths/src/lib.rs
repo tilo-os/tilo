@@ -61,10 +61,52 @@ use std::path::PathBuf;
 mod app;
 mod caps;
 mod location;
+pub mod session;
 
 pub use app::{AppPaths, DEFAULT_PROFILE, default_profile, set_default_profile};
 pub use caps::{Availability, CAPABILITIES, Feature, Unsupported, availability};
 pub use location::{InvalidVPath, Location, VPath, VirtualRoot};
+
+/// Where a Tilo Linux session mounts the collaborative workspace, and the
+/// root every collaborator's documents name workspace files under, whatever
+/// this device mounts. [`AppPaths::workspace_root`] says whether (and where)
+/// this process has one mounted.
+pub const WORKSPACE_MOUNT: &str = "/var/workspace";
+
+/// The collaborative workspace mounted for this process, as a native path
+/// ([`AppPaths::workspace_root`] for any app). `None` in a page and when no
+/// workspace is mounted.
+#[must_use]
+pub fn workspace_root() -> Option<PathBuf> {
+    let location = AppPaths::for_app("workspace").workspace_root().ok()?;
+    location
+        .native_path()
+        .ok()
+        .map(std::path::Path::to_path_buf)
+}
+
+/// Where Tilo apps kept their data before [`AppPaths`]: an absolute
+/// `$XDG_DATA_HOME`, else `%LOCALAPPDATA%` on Windows and `$HOME/.local/share`
+/// elsewhere (macOS included). For stores whose location is already on
+/// users' disks, and for migrating them; new stores use [`AppPaths`].
+#[must_use]
+pub fn legacy_data_home() -> Option<PathBuf> {
+    env_dir("XDG_DATA_HOME").or_else(legacy::data_home)
+}
+
+#[cfg(windows)]
+mod legacy {
+    pub fn data_home() -> Option<std::path::PathBuf> {
+        super::env_dir("LOCALAPPDATA")
+    }
+}
+
+#[cfg(not(windows))]
+mod legacy {
+    pub fn data_home() -> Option<std::path::PathBuf> {
+        Some(super::home()?.join(".local/share"))
+    }
+}
 
 /// The user's home directory: `$HOME` when set and non-empty, the account
 /// database's entry when `$HOME` is unset (on Unix), and `None` for an empty
@@ -368,6 +410,15 @@ pub fn cache_dir() -> Option<PathBuf> {
 #[must_use]
 pub fn runtime_dir() -> Option<PathBuf> {
     platform::runtime()
+}
+
+/// The system's shared temporary directory (`$TMPDIR` or `/tmp`,
+/// `%TEMP%`), and `None` where there is no native file system (the web),
+/// where `std::env::temp_dir` panics instead. For scratch files that must
+/// have a native path; an app's own scratch space is [`AppPaths::runtime`].
+#[must_use]
+pub fn temp_dir() -> Option<PathBuf> {
+    (availability(Feature::NativePaths) == Availability::Available).then(std::env::temp_dir)
 }
 
 /// Directories the system and the user install fonts into, most general
@@ -925,6 +976,11 @@ mod tests {
     #[cfg(unix)]
     fn home_is(path: &str) -> impl FnOnce() -> Option<PathBuf> + '_ {
         move || Some(PathBuf::from(path))
+    }
+
+    #[test]
+    fn a_native_target_has_the_system_temporary_directory() {
+        assert_eq!(temp_dir(), Some(std::env::temp_dir()));
     }
 
     #[cfg(unix)]

@@ -6,8 +6,7 @@
 //! returns canonical `LibraryPhoto` values for the normal action boundary to
 //! commit. It never invents dates, locations, labels, people, or descriptions.
 
-use std::fs;
-use std::io::{BufReader, Read};
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -136,19 +135,24 @@ where
     if !root.is_absolute() {
         return Err("Select an authorised absolute folder path".to_owned());
     }
+    let unavailable = || "The selected folder is unavailable".to_owned();
+    let (parent, root_name) = tilo_files::file_at(root).map_err(|_| unavailable())?;
     let root_meta =
-        fs::symlink_metadata(root).map_err(|_| "The selected folder is unavailable".to_owned())?;
-    if !root_meta.file_type().is_dir() || root_meta.file_type().is_symlink() {
+        tilo_files::blocking::metadata(&parent, &root_name).map_err(|_| unavailable())?;
+    if root_meta.kind != tilo_files::Kind::Dir || root_meta.symlink {
         return Err("Select a real folder, not a symbolic link".to_owned());
     }
+    let tree = tilo_files::Dir::open(tilo_files::Location::Native(root.to_path_buf()))
+        .map_err(|_| unavailable())?;
     let mut report = ImportReport::default();
-    let mut stack = vec![(root.to_path_buf(), 0_usize)];
-    while let Some((directory, depth)) = stack.pop() {
+    let mut stack = vec![(tilo_files::VPath::root(), 0_usize)];
+    while let Some((folder, depth)) = stack.pop() {
         if cancelled.load(Ordering::Acquire) {
             report.cancelled = true;
             break;
         }
-        let Ok(entries) = fs::read_dir(&directory) else {
+        let directory = root.join(folder.as_str());
+        let Ok(entries) = tilo_files::blocking::list(&tree, &folder) else {
             let failure = ImportFailure::new(directory, "Could not read this folder", true);
             report.failures.push(failure);
             continue;
@@ -158,31 +162,32 @@ where
                 report.cancelled = true;
                 break;
             }
-            let Ok(entry) = entry else {
+            let path = directory.join(&entry.name);
+            let Ok(child) = tilo_files::VPath::new(&entry.name).map(|name| folder.join(&name))
+            else {
                 let message = "Could not read one item in this folder";
                 report
                     .failures
                     .push(ImportFailure::new(directory.clone(), message, true));
                 continue;
             };
-            let path = entry.path();
-            let Ok(meta) = fs::symlink_metadata(&path) else {
+            let Ok(meta) = tilo_files::blocking::metadata(&tree, &child) else {
                 let failure = ImportFailure::new(path, "Could not inspect this item", true);
                 report.failures.push(failure);
                 continue;
             };
             // Refusing links closes traversal loops and avoids silently
             // importing an unrelated tree through a selected directory.
-            if meta.file_type().is_symlink() {
+            if meta.symlink {
                 let message = "Symbolic links are not followed during photo import";
                 report
                     .failures
                     .push(ImportFailure::new(path, message, false));
                 continue;
             }
-            if meta.is_dir() {
+            if meta.kind == tilo_files::Kind::Dir {
                 if depth < options.limits.max_depth {
-                    stack.push((path, depth + 1));
+                    stack.push((child, depth + 1));
                 } else {
                     let message = "This folder is deeper than the safe import limit";
                     report
@@ -191,7 +196,7 @@ where
                 }
                 continue;
             }
-            if !meta.is_file() || !supported_image(&path) {
+            if meta.kind != tilo_files::Kind::File || !supported_image(&path) {
                 continue;
             }
             if report.discovered >= options.limits.max_files {
@@ -248,8 +253,14 @@ pub fn index_file(
     if cancelled.load(Ordering::Acquire) {
         return Err("Import cancelled".to_owned());
     }
-    let meta = fs::metadata(path).map_err(|_| "Could not read this image".to_owned())?;
-    if !meta.is_file() || meta.len() == 0 || meta.len() > options.limits.max_encoded_bytes {
+    let (dir, name) =
+        tilo_files::file_at(path).map_err(|_| "Could not read this image".to_owned())?;
+    let meta = tilo_files::blocking::metadata(&dir, &name)
+        .map_err(|_| "Could not read this image".to_owned())?;
+    if meta.kind != tilo_files::Kind::File
+        || meta.len == 0
+        || meta.len > options.limits.max_encoded_bytes
+    {
         return Err("Image is empty or exceeds the import size limit".to_owned());
     }
     let exif = read_exif(path).unwrap_or_default();
@@ -292,12 +303,15 @@ pub fn index_file(
     })
 }
 
+/// The most of a file EXIF is read from; photographs past it have no EXIF.
+const EXIF_READ_LIMIT: u64 = 256 * 1024 * 1024;
+
 /// Read actual EXIF from a bounded-size image. Parsing failure is intentionally
 /// non-fatal: many valid PNG/WebP files simply have no EXIF container.
 #[must_use]
 pub fn read_exif(path: &Path) -> Option<ExifMetadata> {
-    let file = fs::File::open(path).ok()?;
-    let mut reader = BufReader::new(file);
+    let bytes = crate::files::read_native(path, EXIF_READ_LIMIT)?;
+    let mut reader = Cursor::new(bytes);
     let exif = exif::Reader::new().read_from_container(&mut reader).ok()?;
     let captured_at = [
         exif::Tag::DateTimeOriginal,
@@ -375,15 +389,8 @@ fn short_field(field: &exif::Field) -> Option<u16> {
 }
 
 fn read_bounded(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
-    let file = fs::File::open(path).map_err(|_| "Could not read this image".to_owned())?;
-    let mut bytes = Vec::new();
-    file.take(limit.saturating_add(1))
-        .read_to_end(&mut bytes)
-        .map_err(|_| "Could not read this image".to_owned())?;
-    if bytes.len() as u64 > limit {
-        return Err("Image exceeds the import size limit".to_owned());
-    }
-    Ok(bytes)
+    crate::files::read_native(path, limit)
+        .ok_or_else(|| "Could not read this image, or it exceeds the import size limit".to_owned())
 }
 
 fn supported_image(path: &Path) -> bool {
@@ -407,6 +414,7 @@ pub fn cancellation_token() -> Arc<AtomicBool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     fn jpeg_with_orientation(orientation: u16) -> Vec<u8> {
         use image::ImageEncoder as _;

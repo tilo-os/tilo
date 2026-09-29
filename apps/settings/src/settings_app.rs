@@ -511,6 +511,9 @@ impl SettingsApp {
             ),
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
+            Category::Notifications if self.deterministic_hardware_for_shot => {
+                Box::new(panes::notifications::NotificationsPane::for_shot())
+            }
             Category::Notifications => panes::notifications::build(),
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => Box::new(

@@ -372,6 +372,17 @@ def plan(args: argparse.Namespace) -> dict:
             + ", ".join(sorted(integrated))
         )
     features = cfg.get("features", {})
+    for name in selected:
+        cargo_manifest = args.root / "apps" / name / "Cargo.toml"
+        if not features.get(name) or not cargo_manifest.is_file():
+            continue
+        declared = tomllib.loads(cargo_manifest.read_text()).get("features", {})
+        undeclared = [feature for feature in features[name] if feature not in declared]
+        if undeclared:
+            raise ValueError(
+                f"{args.config.name} selects features {name} does not declare: "
+                + ", ".join(undeclared)
+            )
     cargo_features = [
         f"{catalog[name]['package']}/{feature}"
         for name in selected

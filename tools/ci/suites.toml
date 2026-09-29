@@ -290,6 +290,7 @@ suites = [
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
+  "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
 ]
 
@@ -503,10 +504,21 @@ package = "tilo-app-cli"
 # `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
-  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
+  ".cargo/config.toml",
   "examples/apps/", "examples/README.md", "docs/examples.md",
+  # The portability lint compiles in the policy gate's rules table, and the
+  # capability check the table of what each capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
+  # Standalone apps take the SDK's toolchain and lock file.
+  "rust-toolchain.toml", "Cargo.lock",
+  # The outside-repository test builds a generated app against the checkout.
+  "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
+readers = [
+  "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
+  "crates/dev/tilo-app-cli/src/capability_usage.rs",
+]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
@@ -613,9 +625,14 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "docs/shell-navigation-keyboard-map.md"]
+inputs = [
+  "crates/sdk/ui-core/assets/fonts/",
+  "dist/VERSION",
+  "docs/shell-navigation-keyboard-map.md",
+]
 readers = [
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
+  "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/notes_app.rs",
