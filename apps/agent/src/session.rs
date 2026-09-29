@@ -2866,7 +2866,8 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         },
         RichTextAction::SetPageMargins { .. }
         | RichTextAction::GenerateToc { .. }
-        | RichTextAction::ReplaceBody { .. } => tilo_actions::InteractionAnchor::Resource,
+        | RichTextAction::ReplaceBody { .. }
+        | RichTextAction::EnsureRegionBlock { .. } => tilo_actions::InteractionAnchor::Resource,
         RichTextAction::SetStyleProperty { style, .. }
         | RichTextAction::DeleteStyle { style, .. } => object_anchor(style),
         RichTextAction::EditTable { table, .. } => object_anchor(table),
