@@ -2667,7 +2667,6 @@ impl AppHandler {
             self.app.init_layout();
         }
         self.dev_reload_timing = Some(super::DevReloadTiming {
-            session: session.clone(),
             library: library.clone(),
             received,
             checkpoint: checkpointed,

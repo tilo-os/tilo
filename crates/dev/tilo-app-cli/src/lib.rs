@@ -7156,7 +7156,12 @@ fn remove_superseded_reload_libraries(dir: &Path, current: u64) {
         let name = entry.file_name();
         let superseded = name
             .to_str()
-            .and_then(|name| name.strip_prefix("reload-")?.strip_suffix(".so"))
+            .and_then(|name| {
+                let name = name.strip_prefix("reload-")?;
+                name.strip_suffix(dev_reload::APP_TIMINGS_SUFFIX)
+                    .unwrap_or(name)
+                    .strip_suffix(".so")
+            })
             .and_then(|seq| seq.parse::<u64>().ok())
             .is_some_and(|seq| seq.saturating_add(1) < current);
         if superseded {

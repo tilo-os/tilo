@@ -32,8 +32,9 @@ const CAPTURE_ENV: &str = "TILO_DEV_RUSTC_CAPTURE";
 /// The crate whose command is recorded. Every other rustc passes through.
 const CAPTURE_CRATE_ENV: &str = "TILO_DEV_RUSTC_CRATE";
 const CAPTURE_FILE: &str = "rustc-command.json";
-/// Written by the app once the reloaded code's first frame is presented.
-const APP_TIMINGS_FILE: &str = "reload-timings.jsonl";
+/// Appended to a staged library's path for the file the app writes once that
+/// library's first frame is presented.
+pub(crate) const APP_TIMINGS_SUFFIX: &str = ".timings.json";
 /// Set on a fast rebuild's rustc, which runs `tilo-app` as its linker: the
 /// linker to hand the link to.
 const LINKER_ENV: &str = "TILO_DEV_LINKER";
@@ -610,25 +611,19 @@ impl ReloadTimings {
 
     /// Fold in the app's own line for this library. Returns false until the
     /// app has written it.
-    fn join_app(&mut self, session: &Path) -> bool {
+    fn join_app(&mut self) -> bool {
         let (Some(library), Some(signalled)) = (&self.library, self.signalled) else {
             return false;
         };
-        let Ok(text) = std::fs::read_to_string(session.join(APP_TIMINGS_FILE)) else {
-            return false;
-        };
-        let Some(line) = text
-            .lines()
-            .rev()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .find(|line| {
-                line.get("library")
-                    .and_then(serde_json::Value::as_str)
-                    .is_some_and(|path| Path::new(path) == library)
-            })
+        let mut path = library.as_os_str().to_os_string();
+        path.push(APP_TIMINGS_SUFFIX);
+        let Some(line) = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
         else {
             return false;
         };
+        let _ = std::fs::remove_file(&path);
         let number = |key: &str| line.get(key).and_then(serde_json::Value::as_f64);
         let (Some(received), Some(submitted), Some(presented)) = (
             number("received_unix_ms"),
@@ -722,9 +717,6 @@ impl DevLoop {
         timings_enabled: bool,
         source_revision: Arc<AtomicU64>,
     ) -> Self {
-        if timings_enabled {
-            let _ = std::fs::remove_file(session.join(APP_TIMINGS_FILE));
-        }
         Self {
             session,
             timings_enabled,
@@ -754,11 +746,10 @@ impl DevLoop {
 
     /// Report every signalled reload the app has finished, or given up on.
     pub(crate) fn poll(&mut self) {
-        let session = self.session.clone();
         let now = SystemTime::now();
         let waiting = std::mem::take(&mut self.waiting);
         for (mut timings, since) in waiting {
-            let joined = timings.join_app(&session);
+            let joined = timings.join_app();
             let expired = now
                 .duration_since(since)
                 .is_ok_and(|waited| waited > APP_REPORT_DEADLINE);
