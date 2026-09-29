@@ -11409,10 +11409,15 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
             return Self::publish_catalogue_schema(self, doc);
         }
         // The framework root already publishes this document through
-        // `tilo_resource::publish`. A second tree from the widget would be
-        // another door.
+        // `tilo_resource::publish`. Keep only caret-bound extras.
         if self.source.hosted() {
-            return Vec::new();
+            if let Some(resource) = self.file_choice_resource() {
+                return vec![resource];
+            }
+            let Some(ctx) = self.wp_resource_ctx(doc) else {
+                return Vec::new();
+            };
+            return crate::actions::live_presentation_resources(&ctx, doc);
         }
         Self::publish_resources(self, doc)
     }
