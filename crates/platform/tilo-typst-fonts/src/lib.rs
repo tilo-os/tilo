@@ -64,7 +64,7 @@ mod tests {
 
     #[test]
     fn native_builds_embed_every_font_the_host_would_serve() {
-        assert!(EMBEDDED);
+        const { assert!(EMBEDDED) };
         assert_eq!(embedded().len(), HOST_FONTS.len());
     }
 }
