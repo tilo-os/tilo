@@ -6656,6 +6656,7 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-app-package",
  "tilo-clock",
+ "tilo-os-search",
  "tilo-rt",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
@@ -15659,6 +15660,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-os-search"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "serde",
+ "tempfile",
+ "tilo-actions",
+ "tilo-search",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-paths"
 version = "0.1.0"
 dependencies = [
@@ -16039,6 +16055,7 @@ dependencies = [
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",
+ "tilo-os-search",
  "tilo-peer-state",
  "tilo-relay",
  "tilo-relay-protocol",

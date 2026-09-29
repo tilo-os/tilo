@@ -671,6 +671,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         S::start_reporting(profile, &mut stage)?
     };
     let host = session.action_host()?;
+    crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
