@@ -66,6 +66,17 @@ pub async fn start_host(
     state: &Path,
     web_listen: SocketAddr,
 ) -> TestHost {
+    start_host_plain(root, host, state, web_listen, None).await
+}
+
+/// [`start_host`], also serving plain HTTP at `plain_listen`.
+pub async fn start_host_plain(
+    root: &SigningKey,
+    host: &Device,
+    state: &Path,
+    web_listen: SocketAddr,
+    plain_listen: Option<SocketAddr>,
+) -> TestHost {
     let user = root.verifying_key().to_bytes();
     let mut cfg = tilo_relay::RelayConfig {
         state_root: state.to_path_buf(),
@@ -98,6 +109,7 @@ pub async fn start_host(
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: Vec::new(),
+            plain_listen,
         })
         .await
         .unwrap();
