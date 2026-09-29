@@ -381,17 +381,70 @@ impl NativeLauncher {
     }
 }
 
+/// The launchable id of host application `desktop_id`, so the workspace's
+/// `app.<id>` open action can name an application no package provides.
+pub(crate) const HOST_APPLICATION_PREFIX: &str = "host:";
+
+/// Tilo packages first, then every host application no installed package
+/// answers for, marked unconfined.
+fn launchable_applications(
+    packages: Vec<super::launcher::InstalledApp>,
+    hosts: Vec<super::host_apps::HostApp>,
+) -> Vec<LaunchableApplication> {
+    let package_ids: std::collections::HashSet<String> = packages
+        .iter()
+        .map(|app| app.package_id.to_ascii_lowercase())
+        .collect();
+    let hosts = hosts
+        .into_iter()
+        .filter(|app| !package_ids.contains(&app.desktop_id.to_ascii_lowercase()))
+        .map(|app| LaunchableApplication {
+            package_id: format!("{HOST_APPLICATION_PREFIX}{}", app.desktop_id),
+            display_name: app.name,
+            unconfined: true,
+        });
+    packages
+        .into_iter()
+        .map(|app| LaunchableApplication {
+            package_id: app.package_id,
+            display_name: app.display_name,
+            unconfined: false,
+        })
+        .chain(hosts)
+        .collect()
+}
+
+/// Open host application `desktop_id` in `workspace`, where its X11 bridge,
+/// if it needs one, is that workspace's own.
+fn launch_host_application(
+    desktop_id: &str,
+    workspace: &tilo_desktop_model::Workspace,
+    content: LaunchContent<'_>,
+) -> Result<(), String> {
+    if !content.hash.is_empty() {
+        return Err("opening launch content in a host application is unsupported".into());
+    }
+    super::host_apps::launch(desktop_id, Some(workspace.room.to_string()))
+        .map(drop)
+        .map_err(|e| e.to_string())
+}
+
 impl LauncherServices for NativeLauncher {
     fn applications(&self) -> Vec<LaunchableApplication> {
-        super::launcher::gui_apps()
-            .into_iter()
-            .map(|app| LaunchableApplication {
-                package_id: app.package_id,
-                display_name: app.display_name,
-            })
-            .collect()
+        launchable_applications(super::launcher::gui_apps(), super::host_apps::host_apps())
     }
     fn launch(&self, app: &str, workspace: &tilo_desktop_model::Workspace) -> Result<(), String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            return launch_host_application(
+                desktop_id,
+                workspace,
+                LaunchContent {
+                    hash: "",
+                    caller: None,
+                    author: None,
+                },
+            );
+        }
         if let Some(opened) = self.open_through_governor(app, workspace) {
             return opened;
         }
@@ -405,6 +458,9 @@ impl LauncherServices for NativeLauncher {
         workspace: &tilo_desktop_model::Workspace,
         content: LaunchContent<'_>,
     ) -> Result<(), String> {
+        if let Some(desktop_id) = app.strip_prefix(HOST_APPLICATION_PREFIX) {
+            return launch_host_application(desktop_id, workspace, content);
+        }
         if content.hash.is_empty()
             && let Some(opened) = self.open_through_governor(app, workspace)
         {
@@ -1328,6 +1384,72 @@ mod tests {
                 Err("launch content is unavailable on this device".into())
             }
         }
+    }
+
+    #[test]
+    fn host_applications_are_launchable_unconfined_unless_a_package_answers_for_them() {
+        let package = |id: &str| crate::shell::launcher::InstalledApp {
+            package_id: id.into(),
+            display_name: "Writer".into(),
+            category: None,
+            version: "1".into(),
+            manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
+            payload_root: std::path::PathBuf::from("/x"),
+            has_gui: true,
+            opens_extensions: Vec::new(),
+            opens_mime_types: Vec::new(),
+            opens_uri_schemes: Vec::new(),
+        };
+        let host = |id: &str, name: &str| crate::shell::host_apps::HostApp {
+            desktop_id: id.into(),
+            name: name.into(),
+            source_label: "System",
+            categories: Vec::new(),
+            keywords: Vec::new(),
+            window_identities: vec![id.into()],
+            mime_types: Vec::new(),
+            terminal: false,
+            icon: None,
+        };
+        let apps = launchable_applications(
+            vec![package("so.tilo.word-processor")],
+            vec![
+                host("chromium-browser", "Chromium"),
+                host("SO.TILO.WORD-PROCESSOR", "Shadowed"),
+            ],
+        );
+        let listed: Vec<_> = apps
+            .iter()
+            .map(|app| (app.package_id.as_str(), app.unconfined))
+            .collect();
+        assert_eq!(
+            listed,
+            [
+                ("so.tilo.word-processor", false),
+                ("host:chromium-browser", true),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_host_application_refuses_launch_content_before_spawning() {
+        let workspace = crate::shell::state::Workspace::new(
+            crate::shell::state::WorkspaceId(3),
+            "host launch test",
+        );
+        let refused = NativeLauncher(None, None).launch_content(
+            "host:chromium-browser",
+            &workspace,
+            LaunchContent {
+                hash: "00",
+                caller: None,
+                author: None,
+            },
+        );
+        assert_eq!(
+            refused,
+            Err("opening launch content in a host application is unsupported".into())
+        );
     }
 
     /// A workspace owner opening an app makes it an author of the space,

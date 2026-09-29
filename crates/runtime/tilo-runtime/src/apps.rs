@@ -197,6 +197,7 @@ impl LauncherServices for Apps {
             .map(|app| LaunchableApplication {
                 package_id: app.package_id,
                 display_name: app.display_name,
+                unconfined: false,
             })
             .collect()
     }
