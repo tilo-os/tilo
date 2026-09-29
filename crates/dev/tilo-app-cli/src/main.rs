@@ -44,8 +44,11 @@ enum Command {
     Locale(LocaleArgs),
     /// Run saved headless interaction scenarios against isolated app state.
     Scenario(ScenarioArgs),
-    /// Diagnose app source, manifest, lifecycle, and toolkit wiring.
+    /// Diagnose app source, manifest, lifecycle, and toolkit wiring
+    /// (`--platform android`: the Android toolchain).
     Doctor(DoctorArgs),
+    /// Install the toolchain a platform's builds need (`setup android`).
+    Setup(SetupArgs),
     /// Run lints, structural checks, tests, and accessibility-audited scenarios.
     #[command(after_long_help = CHECK_EXAMPLES)]
     Check(CheckArgs),
@@ -350,6 +353,27 @@ struct PropertyEditArgs {
 struct DoctorArgs {
     /// App directory or a file/directory inside it. Defaults to the current directory.
     path: Option<PathBuf>,
+
+    /// Check the toolchain this platform's builds need instead of an app.
+    #[arg(long, value_enum)]
+    platform: Option<ToolchainArg>,
+}
+
+/// A platform with a toolchain of its own to check and install.
+#[derive(Clone, Copy, clap::ValueEnum)]
+enum ToolchainArg {
+    Android,
+}
+
+#[derive(clap::Args)]
+struct SetupArgs {
+    /// The platform whose toolchain to install.
+    #[arg(value_enum)]
+    platform: ToolchainArg,
+
+    /// Accept the Android SDK licences without showing each one.
+    #[arg(long)]
+    accept_licenses: bool,
 }
 
 const CHECK_EXAMPLES: &str = "\
@@ -451,12 +475,13 @@ struct AppTaskArgs {
 #[derive(clap::Args)]
 struct TargetArgs {
     /// The system to build for: Tilo OS, another Linux desktop, Windows,
-    /// macOS, or the web.
+    /// macOS, the web, or Android.
     #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
     platform: PlatformArg,
 
     /// CPU architecture to build for. Defaults to the host's; `wasm32` is the
-    /// web's only one.
+    /// web's only one. On Android, the device's for `run` and `dev`, else
+    /// `aarch64`.
     #[arg(long, value_enum)]
     arch: Option<ArchArg>,
 }
@@ -486,6 +511,12 @@ struct RunArgs {
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
 
+    /// The `adb` serial of the device or emulator to install on
+    /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
+    /// connected.
+    #[arg(long)]
+    device: Option<String>,
+
     /// Arguments forwarded to the app. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
     forwarded: Vec<OsString>,
@@ -513,6 +544,12 @@ struct DevArgs {
     /// Address the web page is served on (`--platform web`).
     #[arg(long, default_value = "127.0.0.1:4321")]
     bind: String,
+
+    /// The `adb` serial of the device or emulator to install on
+    /// (`--platform android`). Defaults to `$ANDROID_SERIAL`, else the one
+    /// connected.
+    #[arg(long)]
+    device: Option<String>,
 
     /// Arguments forwarded to the app. Write them after `--`.
     #[arg(last = true, allow_hyphen_values = true)]
@@ -633,8 +670,9 @@ struct PackageArgs {
     static_link: bool,
 
     /// The system to build for: a thin Tilo OS app, one self-contained
-    /// Linux, Windows or macOS executable with the toolkit linked in, or a
-    /// WebAssembly side module of the browser's toolkit core.
+    /// Linux, Windows or macOS executable with the toolkit linked in, a
+    /// WebAssembly side module of the browser's toolkit core, or a signed
+    /// Android APK (and bundle).
     #[arg(long, value_enum, default_value_t = PlatformArg::Tilo)]
     platform: PlatformArg,
 
@@ -658,6 +696,23 @@ struct PackageArgs {
     /// Replace an existing output package after the new package verifies successfully.
     #[arg(long)]
     force: bool,
+
+    #[command(flatten)]
+    android: AndroidPackageArgs,
+}
+
+/// `package --platform android`'s own options.
+#[derive(clap::Args)]
+struct AndroidPackageArgs {
+    /// The keystore that signs an Android release (`--platform android`).
+    /// Defaults to `$TILO_ANDROID_KEYSTORE`, else a release key kept beside
+    /// the publisher key.
+    #[arg(long)]
+    keystore: Option<PathBuf>,
+
+    /// Skip the Android App Bundle (`.aab`) beside the APK.
+    #[arg(long)]
+    no_bundle: bool,
 }
 
 #[derive(clap::Args)]
@@ -822,6 +877,7 @@ fn main() -> ExitCode {
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
         Command::Doctor(args) => run_doctor(args),
+        Command::Setup(args) => run_setup(&args),
         Command::Check(args) => run_check(args),
         Command::Certify(args) => run_certify(args),
         Command::Run(args) => run_run(args),
@@ -924,6 +980,7 @@ impl Command {
             Self::Locale(_) => "locale",
             Self::Scenario(_) => "scenario",
             Self::Doctor(_) => "doctor",
+            Self::Setup(_) => "setup",
             Self::Check(_) => "check",
             Self::Certify(_) => "certify",
             Self::Run(_) => "run",
@@ -1334,6 +1391,7 @@ enum PlatformArg {
     Windows,
     Macos,
     Web,
+    Android,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -1343,6 +1401,7 @@ enum CheckPlatformArg {
     Windows,
     Macos,
     Web,
+    Android,
     /// Every platform above.
     All,
 }
@@ -1387,6 +1446,7 @@ fn platform_and_arch(
             PlatformArg::Windows => tilo_app_cli::PackagePlatform::Windows,
             PlatformArg::Macos => tilo_app_cli::PackagePlatform::Macos,
             PlatformArg::Web => tilo_app_cli::PackagePlatform::Web,
+            PlatformArg::Android => tilo_app_cli::PackagePlatform::Android,
         },
         arch.and_then(|arch| match arch {
             ArchArg::X86_64 => Some(tilo_app_cli::PackageArch::X86_64),
@@ -1399,21 +1459,35 @@ fn platform_and_arch(
 fn run_package(args: PackageArgs) -> Result<Value> {
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let (platform, arch) = platform_and_arch(args.platform, args.arch)?;
-    let outcome = tilo_app_cli::package_app(
-        &path,
-        &tilo_app_cli::PackageRequest {
-            output: args.output,
-            identity: args.identity,
-            profile: args.profile,
-            static_link: args.static_link,
-            target: args.target,
-            platform,
-            arch,
-            features: args.features,
-            no_default_features: args.no_default_features,
-            force: args.force,
-        },
-    )?;
+    if platform != tilo_app_cli::PackagePlatform::Android
+        && (args.android.keystore.is_some() || args.android.no_bundle)
+    {
+        anyhow::bail!("--keystore and --no-bundle are for --platform android");
+    }
+    let request = tilo_app_cli::PackageRequest {
+        output: args.output,
+        identity: args.identity,
+        profile: args.profile,
+        static_link: args.static_link,
+        target: args.target,
+        platform,
+        arch,
+        features: args.features,
+        no_default_features: args.no_default_features,
+        force: args.force,
+    };
+    let outcome = if platform == tilo_app_cli::PackagePlatform::Android {
+        tilo_app_cli::android::package(
+            &path,
+            &request,
+            &tilo_app_cli::android::PackageOptions {
+                keystore: args.android.keystore,
+                bundle: args.android.no_bundle.then_some(false),
+            },
+        )?
+    } else {
+        tilo_app_cli::package_app(&path, &request)?
+    };
     Ok(outcome.to_json())
 }
 
@@ -1431,6 +1505,15 @@ fn run_dev(args: DevArgs) -> Result<Value> {
             &request,
             &tilo_app_cli::web::WebDevOptions { bind: args.bind },
         )?;
+    } else if platform == tilo_app_cli::PackagePlatform::Android {
+        tilo_app_cli::android::dev_on_device(
+            &path,
+            &request,
+            &tilo_app_cli::android::DeviceRequest {
+                device: args.device,
+                arch,
+            },
+        )?;
     } else {
         platform.ensure_runs_here(arch)?;
         tilo_app_cli::dev_app(&path, &request)?;
@@ -1445,6 +1528,19 @@ fn run_run(args: RunArgs) -> Result<Value> {
         tilo_app_cli::web::run_web(&path, &tilo_app_cli::web::WebDevOptions { bind: args.bind })?;
         return Ok(json!({"stopped": true}));
     }
+    if platform == tilo_app_cli::PackagePlatform::Android {
+        if !args.forwarded.is_empty() {
+            anyhow::bail!("an Android app takes no command-line arguments");
+        }
+        let build = tilo_app_cli::android::run_on_device(
+            &path,
+            &tilo_app_cli::android::DeviceRequest {
+                device: args.device,
+                arch,
+            },
+        )?;
+        return Ok(build.to_json());
+    }
     platform.ensure_runs_here(arch)?;
     let plan = tilo_app_cli::plan_app_task(&path, tilo_app_cli::AppTask::Run, &args.forwarded)?;
     plan.execute()?;
@@ -1454,6 +1550,9 @@ fn run_run(args: RunArgs) -> Result<Value> {
 fn run_build(args: BuildArgs) -> Result<Value> {
     let path = args.path.clone().map_or_else(std::env::current_dir, Ok)?;
     let (platform, arch) = args.target.resolve()?;
+    if platform == tilo_app_cli::PackagePlatform::Android {
+        return build_android(&path, &args, arch);
+    }
     if platform != tilo_app_cli::PackagePlatform::Web {
         return build_native(&path, &args, platform, arch);
     }
@@ -1476,6 +1575,61 @@ fn run_build(args: BuildArgs) -> Result<Value> {
         build.core_bytes
     );
     Ok(build.to_json())
+}
+
+/// A debug-signed APK under `target/android/`, copied to `--output`.
+fn build_android(
+    path: &Path,
+    args: &BuildArgs,
+    arch: Option<tilo_app_cli::PackageArch>,
+) -> Result<Value> {
+    if args.app_only || args.static_link {
+        anyhow::bail!("--app-only and --static are not for --platform android");
+    }
+    let build = tilo_app_cli::android::build(
+        path,
+        &tilo_app_cli::android::BuildRequest {
+            arch: arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64),
+            profile: args.profile.clone().unwrap_or_else(|| "dev".to_owned()),
+            signing: tilo_app_cli::android::Signing::Debug,
+            bundle: false,
+            features: Vec::new(),
+            no_default_features: false,
+        },
+    )?;
+    let mut json = build.to_json();
+    if let Some(output) = &args.output {
+        let output = if output.is_absolute() {
+            output.clone()
+        } else {
+            build.app_dir.join(output)
+        };
+        std::fs::create_dir_all(&output)
+            .with_context(|| format!("creating {}", output.display()))?;
+        let name = build
+            .apk
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("{} has no file name", build.apk.display()))?;
+        let destination = output.join(name);
+        std::fs::copy(&build.apk, &destination).with_context(|| {
+            format!(
+                "copying {} to {}",
+                build.apk.display(),
+                destination.display()
+            )
+        })?;
+        if let Some(fields) = json.as_object_mut() {
+            fields.insert("copied".to_owned(), json!([destination]));
+        }
+    }
+    eprintln!(
+        "[tilo-app] built {} for android ({}) in {:.1} s: {}",
+        build.metadata.application_id,
+        build.arch.android_abi(),
+        build.elapsed.as_secs_f64(),
+        build.apk.display()
+    );
+    Ok(json)
 }
 
 fn build_native(
@@ -1608,11 +1762,37 @@ fn run_app_task(args: AppTaskArgs, task: tilo_app_cli::AppTask) -> Result<Value>
 }
 
 fn run_doctor(args: DoctorArgs) -> Result<Value> {
+    if let Some(ToolchainArg::Android) = args.platform {
+        let report = tilo_app_cli::android::doctor();
+        println!("{}", report.summary());
+        if !report.is_ready() {
+            return Err(failed(
+                "the Android toolchain is incomplete",
+                report.to_json(),
+            ));
+        }
+        return Ok(report.to_json());
+    }
     let path = args.path.map_or_else(std::env::current_dir, Ok)?;
     let report = tilo_app_cli::doctor_app(&path)?;
     println!("{}", report.summary());
     if !report.is_ready() {
         return Err(failed("app checks failed", report.to_json()));
+    }
+    Ok(report.to_json())
+}
+
+fn run_setup(args: &SetupArgs) -> Result<Value> {
+    let ToolchainArg::Android = args.platform;
+    let report = tilo_app_cli::android::setup(tilo_app_cli::android::SetupOptions {
+        accept_licenses: args.accept_licenses,
+    })?;
+    println!("{}", report.summary());
+    if !report.is_ready() {
+        return Err(failed(
+            "the Android toolchain is still incomplete",
+            report.to_json(),
+        ));
     }
     Ok(report.to_json())
 }
@@ -1727,6 +1907,12 @@ fn check_other_platforms(
                 tilo_app_cli::web::build_web(path, &tilo_app_cli::web::WebBuildRequest::default())
                     .map(|_| ()),
             )
+        } else if platform == tilo_app_cli::PackagePlatform::Android {
+            let (_, arch) = platform_and_arch(PlatformArg::Android, arch)?;
+            let arch = arch.unwrap_or(tilo_app_cli::PackageArch::Aarch64);
+            let label = format!("Clippy for android ({})", arch.android_abi());
+            println!("[check] {label}");
+            (label, tilo_app_cli::android::clippy(path, arch))
         } else {
             let (_, arch) = platform_and_arch(PlatformArg::Tilo, arch)?;
             let Some(plan) = tilo_app_cli::plan_platform_clippy(path, platform, arch)? else {
@@ -1761,6 +1947,7 @@ fn check_platforms(requested: &[CheckPlatformArg]) -> Vec<tilo_app_cli::PackageP
                             | (CheckPlatformArg::Windows, PackagePlatform::Windows)
                             | (CheckPlatformArg::Macos, PackagePlatform::Macos)
                             | (CheckPlatformArg::Web, PackagePlatform::Web)
+                            | (CheckPlatformArg::Android, PackagePlatform::Android)
                     )
             })
         })
@@ -3236,5 +3423,106 @@ mod tests {
                     .contains("Recent projects")
             );
         }
+    }
+
+    /// Android is one more `--platform`: build, run, dev, package and check
+    /// take it, with a device for run and dev, signing and bundle options for
+    /// package, and doctor and setup for its toolchain.
+    #[test]
+    fn android_is_a_platform_of_every_command_and_of_the_toolchain_commands() {
+        use tilo_app_cli::{PackageArch, PackagePlatform};
+
+        let run = Cli::try_parse_from([
+            "tilo-app",
+            "run",
+            "--platform",
+            "android",
+            "--device",
+            "emulator-5554",
+        ])
+        .expect("run --platform android");
+        let Command::Run(run) = run.command else {
+            panic!("expected run command");
+        };
+        assert_eq!(
+            run.target.resolve().unwrap(),
+            (PackagePlatform::Android, None)
+        );
+        assert_eq!(run.device.as_deref(), Some("emulator-5554"));
+
+        let dev = Cli::try_parse_from([
+            "tilo-app",
+            "dev",
+            "--platform",
+            "android",
+            "--arch",
+            "x86_64",
+            "--device",
+            "R5CT",
+        ])
+        .expect("dev --platform android");
+        let Command::Dev(dev) = dev.command else {
+            panic!("expected dev command");
+        };
+        assert_eq!(
+            dev.target.resolve().unwrap(),
+            (PackagePlatform::Android, Some(PackageArch::X86_64))
+        );
+        assert_eq!(dev.device.as_deref(), Some("R5CT"));
+
+        let build = Cli::try_parse_from(["tilo-app", "build", "--platform", "android"])
+            .expect("build --platform android");
+        let Command::Build(build) = build.command else {
+            panic!("expected build command");
+        };
+        assert_eq!(
+            build.target.resolve().unwrap(),
+            (PackagePlatform::Android, None)
+        );
+        assert!(
+            platform_and_arch(PlatformArg::Android, Some(ArchArg::Wasm32)).is_err(),
+            "wasm32 is the web's architecture, not Android's"
+        );
+
+        let package = Cli::try_parse_from([
+            "tilo-app",
+            "package",
+            "--platform",
+            "android",
+            "--keystore",
+            "release.keystore",
+            "--no-bundle",
+        ])
+        .expect("package --platform android");
+        let Command::Package(package) = package.command else {
+            panic!("expected package command");
+        };
+        assert!(matches!(package.platform, PlatformArg::Android));
+        assert_eq!(
+            package.android.keystore,
+            Some(PathBuf::from("release.keystore"))
+        );
+        assert!(package.android.no_bundle);
+
+        let doctor = Cli::try_parse_from(["tilo-app", "doctor", "--platform", "android"])
+            .expect("doctor --platform android");
+        let Command::Doctor(doctor) = doctor.command else {
+            panic!("expected doctor command");
+        };
+        assert!(matches!(doctor.platform, Some(ToolchainArg::Android)));
+
+        let setup = Cli::try_parse_from(["tilo-app", "setup", "android", "--accept-licenses"])
+            .expect("setup android");
+        let Command::Setup(setup) = setup.command else {
+            panic!("expected setup command");
+        };
+        assert!(matches!(setup.platform, ToolchainArg::Android));
+        assert!(setup.accept_licenses);
+
+        assert_eq!(
+            check_platforms(&[CheckPlatformArg::Android]),
+            [PackagePlatform::Android]
+        );
+        assert!(check_platforms(&[CheckPlatformArg::All]).contains(&PackagePlatform::Android));
     }
 }

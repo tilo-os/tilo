@@ -379,30 +379,21 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 
 ### Android app host
 
-[`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
-cross-compiled with Android NDK r29. The Fedora 44
-development image (`dist/dev/Containerfile.fedora44`) carry it, with the
-`CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
-that point Cargo at its clang. Elsewhere, install the same release and set
-those variables as the image does, plus:
+`tilo-app build --platform android` ([docs/android.md](docs/android.md)) needs
+the Android SDK (build-tools 36.1.0, platform android-36, platform-tools), NDK
+r29 with the two Android Rust targets, a JDK 17 or newer and `zip`/`unzip`.
+`tilo-app doctor --platform android` names each missing piece with its fix,
+and `tilo-app setup android` installs the SDK side into `$ANDROID_HOME`
+(default `~/Android/Sdk`) and adds the Rust targets.
 
-```bash
-rustup target add aarch64-linux-android x86_64-linux-android
-```
-
-`tools/ci/install-android-ndk.sh` does both in a CI or image build.
-
-The Java side and the packaging use the Android SDK at `$ANDROID_HOME`
-(default `~/Android/Sdk`), a JDK 17 or newer for `javac` and `keytool`, and
-`zip`:
-
-```bash
-sdkmanager 'build-tools;36.1.0' 'platforms;android-36'
-```
-
-An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
-`llvm-strip` that drops DWARF from the packaged library. Testing needs `adb`
-(`platform-tools`) and an `x86_64` emulator image or a device.
+The builder image and the Fedora 44 development image
+(`dist/dev/Containerfile.fedora44`) carry the NDK at `/opt/android-ndk`, with
+the `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*`
+variables that point Cargo at its clang; `tools/ci/install-android-ndk.sh`
+does the same in a CI or image build. Elsewhere the CLI finds an NDK under
+`$ANDROID_NDK_HOME` or the SDK's `ndk/` and sets those variables itself.
+`rcargo` builds Android targets remotely like any other. Testing needs `adb`
+and an `x86_64` emulator image or a device.
 
 ### Native Windows development
 
