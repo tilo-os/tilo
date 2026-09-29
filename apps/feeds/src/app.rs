@@ -5989,8 +5989,6 @@ mod tests {
         // frame budget even when hundreds of articles land at once. Proves the
         // flush is bounded per frame rather than persisting everything in one go.
         {
-            use ui::time::Duration;
-
             let mut mounted = framed(app());
             let (a, st) = Framed::split(&mut mounted);
             let doc = &mut st.doc;
@@ -6036,10 +6034,11 @@ mod tests {
                 .unwrap();
             }
 
-            // The live drain folds everything into the store in one pass. This is
-            // pure in-memory work (no CRDT, no network) and must be cheap even for
-            // a big batch — it's what runs on the draw thread every frame.
-            let t_drain = ui::time::now();
+            // The live drain folds everything into the store in one pass. It is
+            // pure in-memory work: it persists nothing to the CRDT, which is what
+            // keeps it cheap on the draw thread even for a big batch. (A wall-clock
+            // bound here measures the shared test host, not the drain.)
+            let heads_before = doc.get_heads();
             a.drain_fetches_live();
             assert_eq!(
                 doc.get_heads(),
