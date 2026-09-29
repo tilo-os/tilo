@@ -66,8 +66,8 @@ pub trait Apply {
     ) -> Result<String, DaemonError>;
     fn release_seat(&mut self, slot: &str, seat: &str) -> Result<(), DaemonError>;
     /// Remove `user`'s desktop layout (`~/.config/tilo/state.json` and the
-    /// `state.automerge` document beside it). The session must be stopped,
-    /// or it writes the layout back.
+    /// document, meta and invocation records beside it). The session must
+    /// be stopped, or it writes the layout back.
     fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError>;
     /// The last `lines` journal entries matching any of `matches`
     /// (journalctl `FIELD=value` terms, `OR`ed).

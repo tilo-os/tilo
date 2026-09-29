@@ -335,9 +335,14 @@ impl Apply for SystemdApply {
     fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError> {
         let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
         let tilo = Path::new(&home).join(".config/tilo");
-        for file in ["state.json", "state.automerge"] {
-            let path = tilo.join(file);
-            match std::fs::remove_file(&path) {
+        for name in DESKTOP_STATE {
+            let path = tilo.join(name);
+            let removed = if path.is_dir() {
+                std::fs::remove_dir_all(&path)
+            } else {
+                std::fs::remove_file(&path)
+            };
+            match removed {
                 Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
                     return Err(DaemonError::io(format!("remove {}", path.display()))(error));
                 }
@@ -637,6 +642,15 @@ fn start_input_server(
         ),
     })
 }
+
+/// The desktop layout under `~/.config/tilo`: the tree, its document and
+/// the document's meta, and the action invocations recorded against it.
+const DESKTOP_STATE: [&str; 4] = [
+    "state.json",
+    "state.automerge",
+    "state.automerge.meta",
+    "state.json.invocations",
+];
 
 fn home_of(user: &str) -> Option<String> {
     let output = Command::new("getent")
