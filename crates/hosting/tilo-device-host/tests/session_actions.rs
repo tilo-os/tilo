@@ -2097,7 +2097,9 @@ async fn invoke_and_expect_closed_publication(
     pending.insert(directed.clone()).unwrap();
     client.send_action(EnvelopeV2::Directed(directed)).unwrap();
     let mut admitted = false;
-    let window = tokio::time::Instant::now() + Duration::from_secs(3);
+    // Admission may take up to the hang bound on a loaded host; once admitted,
+    // keep observing for three seconds to prove success is never reported.
+    let mut window = tokio::time::Instant::from_std(tilo_test_env::hang_deadline());
     while tokio::time::Instant::now() < window {
         tokio::select! {
             state = client.recv() => apply_state(remote, state.unwrap()),
@@ -2113,7 +2115,10 @@ async fn invoke_and_expect_closed_publication(
                             !matches!(update, Some(tilo_actions::InvocationUpdate::Succeeded { .. })),
                             "a closed native publication must never report success"
                         );
-                        admitted |= update.is_some();
+                        if update.is_some() && !admitted {
+                            admitted = true;
+                            window = tokio::time::Instant::now() + Duration::from_secs(3);
+                        }
                         request_id = uuid::Uuid::new_v4();
                         let status = DirectedAction {
                             room,
