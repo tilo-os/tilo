@@ -39,8 +39,9 @@ export function createDesktopNavigation({snapshot,revision,dispatch,active,insta
     }
     if(command.kind==='open'){
      if(typeof command.app!=='string'||!command.app)throw Error('Invalid application');
+     if('record' in command&&(typeof command.record!=='string'||!command.record))throw Error('Invalid record');
      // An app the page's core lacks is linked first; it opens under the id the link names.
-     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app}));refresh();});
+     return Promise.resolve(install(command.app)).then(app=>{check();if(command.generation!==value.generation)throw Error('Stale desktop surface');dispatch(JSON.stringify({kind:'open',generation:command.generation,app,...(command.record?{record:command.record}:{})}));refresh();});
     }
     dispatch(JSON.stringify(command));refresh();return Promise.resolve();
    }catch(error){return Promise.reject(error);}
