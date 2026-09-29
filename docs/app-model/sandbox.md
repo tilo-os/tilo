@@ -384,10 +384,25 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Container | Read and write, never exec: `~/Library/Application Support/Tilo/tilo-rooms/<room>/<package>`, which is also `HOME`, `XDG_*` and `TMPDIR` |
 | Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
+| Picked files | Read and write, never exec, of exactly what the person picked in a chooser the runtime showed (below) |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
 | Network: allowlist | Connect to one loopback port only: the egress gate the launcher runs for this launch, named by `HTTP(S)_PROXY` and `ALL_PROXY` |
 | Network: host | IP in and out, the system resolver, `trustd`. Filesystem sockets such as an `ssh-agent` stay closed |
 | Service descriptors | Inherited from the runtime at fixed numbers. Every other descriptor is closed by `POSIX_SPAWN_CLOEXEC_DEFAULT` |
+
+**Choosing files.** A panel the app opened itself would run inside its
+sandbox: it would show the disk, and the app could then open nothing it
+picked. So `tilo_dialogs::system_picker()` in a Seatbelt app asks the
+runtime instead, over a socket it inherits (`TILO_FILE_PICKER_FD`). The
+runtime shows `NSOpenPanel` or `NSSavePanel` in a helper process of its own,
+outside the sandbox, and answers each picked path with a sandbox extension:
+the kernel-signed token App Sandbox's own panels hand out. The app consumes
+it, and the profile's one extension rule then lets that path, and nothing
+else, through for the rest of the process's life. The app says what kind of
+chooser it wants and never names a path. A Save destination is created empty
+before it is granted, since only an existing file can be; an app that saves
+by writing a temporary file and renaming it over the destination cannot do
+that there. A grant does not outlive the process.
 
 The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
 It runs a preflight first, against a target that cannot exist. If the
@@ -406,7 +421,12 @@ nothing is ever started unsandboxed.
   pasteboard) are reachable IPC surface as well.
 - Device grants (camera, microphone) are not honoured under Seatbelt.
   macOS gates them through TCC, and the profile grants no TCC service,
-  so the app is denied rather than widened.
+  so the app is denied rather than widened. The least-privilege path is
+  the one the file chooser takes: the runtime, which holds the TCC grant,
+  captures on the app's behalf once the person consents and the app's
+  grant names the device, and streams frames over an inherited
+  descriptor. The standalone runtime has no device-grant store or capture
+  service yet, so neither device is brokered.
 - An allowlisted network under Seatbelt has no empty namespace behind it,
   so the gate listens on a loopback TCP port instead of a Unix socket, and
   the profile admits that one port. Any local process can reach the port;

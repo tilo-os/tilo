@@ -7594,6 +7594,7 @@ dependencies = [
  "libc",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-dialogs",
  "tracing",
  "workspace-hack",
 ]
@@ -16184,6 +16185,7 @@ dependencies = [
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
+ "tilo-dialogs",
  "tilo-identity-host",
  "tilo-installed-apps",
  "tilo-joined-room",

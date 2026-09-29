@@ -34,6 +34,10 @@ libc.workspace = true
 [dev-dependencies]
 tempfile.workspace = true
 
+# Issues the extension a picked path is granted with, as the runtime does.
+[target.'cfg(target_os = "macos")'.dev-dependencies]
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+
 [[test]]
 name = "it"
 path = "tests/it.rs"

@@ -109,6 +109,84 @@ fn show(
     request: &PickRequest,
     done: impl FnOnce(Result<Vec<url::Url>, PortalFailure>) + 'static,
 ) {
+    let panel = panel(mtm, request);
+    let is_open = !matches!(request.kind, PickKind::Save { .. });
+    let held = panel.clone();
+    let done = std::cell::Cell::new(Some(done));
+    let handler = RcBlock::new(move |response: NSModalResponse| {
+        let Some(done) = done.take() else {
+            return;
+        };
+        done(picked(&held, is_open, response));
+    });
+    panel.beginWithCompletionHandler(&handler);
+}
+
+/// Show `request`'s panel modally in a process of its own, which becomes a
+/// foreground app for as long as it shows: the runtime's chooser for a
+/// confined app. The picked local paths, or `None` when cancelled.
+///
+/// # Errors
+///
+/// Not on the main thread, or the panel returned something that is not a
+/// local file.
+pub(crate) fn show_modal(request: &PickRequest) -> Result<Option<Vec<std::path::PathBuf>>, String> {
+    use objc2_app_kit::{NSApplication, NSApplicationActivationPolicy};
+    let mtm = MainThreadMarker::new().ok_or("the file panel must run on the main thread")?;
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    #[allow(
+        deprecated,
+        reason = "a helper process has no other app to cooperate with"
+    )]
+    app.activateIgnoringOtherApps(true);
+    let panel = panel(mtm, request);
+    let response = panel.runModal();
+    match picked(
+        &panel,
+        !matches!(request.kind, PickKind::Save { .. }),
+        response,
+    ) {
+        Ok(uris) => uris
+            .iter()
+            .map(|uri| {
+                crate::portal::to_local_path(uri).ok_or_else(|| format!("not a local file: {uri}"))
+            })
+            .collect::<Result<Vec<_>, _>>()
+            .map(Some),
+        Err(PortalFailure::Cancelled) => Ok(None),
+        Err(PortalFailure::Failed(reason)) => Err(reason),
+    }
+}
+
+/// What `panel` answered with `response`.
+fn picked(
+    panel: &NSSavePanel,
+    is_open: bool,
+    response: NSModalResponse,
+) -> Result<Vec<url::Url>, PortalFailure> {
+    if response != NSModalResponseOK {
+        return Err(PortalFailure::Cancelled);
+    }
+    let urls: Vec<Retained<NSURL>> = if is_open {
+        match panel.downcast_ref::<NSOpenPanel>() {
+            Some(open) => open.URLs().to_vec(),
+            None => Vec::new(),
+        }
+    } else {
+        panel.URL().into_iter().collect()
+    };
+    urls.iter()
+        .filter_map(|url| url.absoluteString())
+        .map(|text| url::Url::parse(&text.to_string()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            PortalFailure::Failed(format!("the panel returned a malformed URL: {error}"))
+        })
+}
+
+/// The panel `request` describes.
+fn panel(mtm: MainThreadMarker, request: &PickRequest) -> Retained<NSSavePanel> {
     let title = NSString::from_str(&request.title);
     let prompt = NSString::from_str(&request.accept_label);
     let panel: Retained<NSSavePanel> = match &request.kind {
@@ -148,37 +226,7 @@ fn show(
         )]
         panel.setAllowedFileTypes(Some(&NSArray::from_retained_slice(&types)));
     }
-
-    let is_open = !matches!(request.kind, PickKind::Save { .. });
-    let held = panel.clone();
-    let done = std::cell::Cell::new(Some(done));
-    let handler = RcBlock::new(move |response: NSModalResponse| {
-        let Some(done) = done.take() else {
-            return;
-        };
-        if response != NSModalResponseOK {
-            done(Err(PortalFailure::Cancelled));
-            return;
-        }
-        let urls: Vec<Retained<NSURL>> = if is_open {
-            match held.downcast_ref::<NSOpenPanel>() {
-                Some(open) => open.URLs().to_vec(),
-                None => Vec::new(),
-            }
-        } else {
-            held.URL().into_iter().collect()
-        };
-        done(
-            urls.iter()
-                .filter_map(|url| url.absoluteString())
-                .map(|text| url::Url::parse(&text.to_string()))
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| {
-                    PortalFailure::Failed(format!("the panel returned a malformed URL: {error}"))
-                }),
-        );
-    });
-    panel.beginWithCompletionHandler(&handler);
+    panel
 }
 
 /// The extensions an `NSSavePanel` may restrict to, or `None` for any file:
