@@ -41,7 +41,7 @@ managed-tree-test = []
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 clap.workspace = true
 serde.workspace = true
 # Also how `gpu.rs` reads an EGL vendor / Vulkan ICD manifest's

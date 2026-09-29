@@ -158,6 +158,50 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     assert!(history.captures_input());
 }
 
+/// Runners keep raw pointers into the admitted composition between frames.
+/// Replacing the toolbar, or swapping which children are presented, must
+/// report structure dirty until the next build admits the new widgets.
+#[test]
+fn replacing_admitted_history_controls_reports_structure_dirty() {
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "existing document").unwrap();
+    state.commit_action(None, None);
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    history.set_width(900.0);
+    let build = |history: &mut host::HistoryHost, live: &mut Column| {
+        let mut tree = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        history.build_composition(live, &mut tree, &Theme::dark(), &mut nodes);
+    };
+    build(&mut history, &mut live);
+    assert!(
+        !history.take_structure_dirty(),
+        "an admitted composition is clean"
+    );
+
+    history.set_sync_status(Some("Syncing".into()));
+    assert!(
+        history.take_structure_dirty(),
+        "the admitted toolbar was replaced"
+    );
+    assert!(
+        history.take_structure_dirty(),
+        "stale maps stay reported until a build admits the new toolbar"
+    );
+    build(&mut history, &mut live);
+    assert!(!history.take_structure_dirty());
+
+    assert!(history.request_open());
+    history.refresh(&state.doc);
+    assert!(
+        history.take_structure_dirty(),
+        "opening presents other children"
+    );
+    build(&mut history, &mut live);
+    assert!(!history.take_structure_dirty());
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,

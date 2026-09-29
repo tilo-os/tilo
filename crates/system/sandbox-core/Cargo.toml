@@ -2,9 +2,11 @@
 name = "sandbox-core"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Landlock ruleset construction and seccomp-bpf deny-list compilation shared by every Tilo confinement path."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "sandbox_core"

@@ -2,9 +2,11 @@
 name = "tilo-headless-schema"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Shared wire schema for Tilo headless app scenarios"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 serde_json.workspace = true

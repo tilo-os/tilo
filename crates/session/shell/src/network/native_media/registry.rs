@@ -329,7 +329,7 @@ fn advance(
                 media_wire::BootstrapResponse::decode(body).map_err(|error| error.to_string())?;
             // Correlation exists only during this exact synchronous opaque
             // finish. A revoke during network await never enters this window.
-            finish_owner_bootstrap(ticket, *pending, &response)?;
+            finish_owner_bootstrap(ticket, *pending, &response, SystemTime::now())?;
             ticket.owner.with_current(ticket.room, |view| {
                 let anchor = Instant::now();
                 let now = now_ns()?;
@@ -470,6 +470,7 @@ pub(super) fn finish_owner_bootstrap(
     ticket: &Arc<Ticket>,
     pending: NativeBootstrap,
     response: &media_wire::BootstrapResponse,
+    now: SystemTime,
 ) -> Result<(), String> {
     ticket.live()?;
     let expected = ticket.owner.with_current(ticket.room, |view| {
@@ -494,9 +495,7 @@ pub(super) fn finish_owner_bootstrap(
         ticket.own_continuity.store(expected, Ordering::SeqCst);
         ticket.own_bootstrap.store(true, Ordering::SeqCst);
     }
-    let result = ticket
-        .owner
-        .finish_bootstrap(pending, response, SystemTime::now());
+    let result = ticket.owner.finish_bootstrap(pending, response, now);
     ticket.own_bootstrap.store(false, Ordering::SeqCst);
     result?;
     let count = ticket.fences.load(Ordering::SeqCst).saturating_sub(before);

@@ -112,6 +112,17 @@ impl HistoryEntry {
         self.redaction.is_none()
             && op_class_is_revertible(self.op_class)
             && !self.is_effect_receipt()
+            && !self.is_genesis()
+    }
+
+    /// Whether this row is the document's genesis: the version it was
+    /// created as. It stays restorable, but nobody made it and its time is
+    /// not when anyone did, so it is shown without an author or a time and
+    /// never offered as a recent change.
+    pub fn is_genesis(&self) -> bool {
+        self.context
+            .as_ref()
+            .is_some_and(|context| context.facets.contains(&genesis_facet()))
     }
 
     /// Whether this row is a durable effect receipt: external work recorded
@@ -126,6 +137,11 @@ impl HistoryEntry {
 /// The facet an effect receipt carries.
 fn is_effect_receipt_facet(facet: &ActionFacet) -> bool {
     facet.key == "tilo.receipt" && facet.value == "effect"
+}
+
+/// Marks the row a history source makes for a document's genesis.
+pub(crate) fn genesis_facet() -> ActionFacet {
+    ActionFacet::new("tilo.history", "genesis")
 }
 
 /// Empty fields are "match everything" so a freshly-constructed filter

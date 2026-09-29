@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
@@ -779,6 +779,43 @@ impl WorkspaceTree {
             ws.effect_receipts = receipts;
         }
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
+    }
+
+    /// In a room another device governs, a window its owner placed for an
+    /// in-process app kind is opened here as that app's own instance (see
+    /// `peer_windows`), on the records the owner created for it.
+    fn open_governed_placeholders_here(&mut self, room: RoomId) -> bool {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for tab in ws
+            .strips
+            .iter_mut()
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+        {
+            if let TileContent::AppPlaceholder { kind, label } = &tab.tile {
+                tracing::debug!(%room, tab = ?tab.id, app = %kind.app_id(), "opening a governed room's window as its app");
+                tab.tile = TileContent::PeerWindow {
+                    app_id: kind.app_id(),
+                    label: label.clone(),
+                    note: String::new(),
+                };
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The record the room document names for `tab` of `room`, if any.
+    pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
+        tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
     }
 
     /// Set the process-wide peer salt `next_id` stamps into the high
@@ -1711,12 +1748,29 @@ impl WorkspaceTree {
             return false;
         };
         let replicated = projection::contents_of(doc);
-        projection::merge_room_contents(
+        let changed = projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
-        )
+        );
+        if self.requires_native_owner(room) {
+            let profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(doc);
+            let mut reprofiled = false;
+            if let Some(ws) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.room == room)
+                && ws.permission_profiles != profiles
+            {
+                ws.permission_profiles = profiles;
+                reprofiled = true;
+            }
+            self.open_governed_placeholders_here(room) || reprofiled || changed
+        } else {
+            changed
+        }
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
@@ -3931,104 +3985,18 @@ impl WorkspaceTree {
         strip_id: StripId,
         topology: &[ui::widget::GroupTopology],
     ) -> bool {
-        let Some((ws_idx, strip_idx)) = self.desktop.strip_position(strip_id) else {
+        let shape: Vec<tilo_desktop_model::GroupShape> = topology
+            .iter()
+            .map(|group| tilo_desktop_model::GroupShape {
+                id: group.id,
+                tab_ids: group.tab_ids.clone(),
+                active_tab: group.active_tab,
+                width: group.width,
+            })
+            .collect();
+        let Some(persisted) = self.desktop.reconcile_strip_topology(strip_id, &shape) else {
             return false;
         };
-        let Some(strip) = self
-            .desktop
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.strips.get(strip_idx))
-        else {
-            return false;
-        };
-
-        let old_tab_ids: HashSet<u64> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-            .collect();
-        let new_tab_ids: Vec<u64> = topology
-            .iter()
-            .flat_map(|group| group.tab_ids.iter().copied())
-            .collect();
-        let new_tab_set: HashSet<u64> = new_tab_ids.iter().copied().collect();
-        let group_ids: HashSet<u64> = topology.iter().map(|group| group.id).collect();
-        if topology
-            .iter()
-            .any(|group| group.tab_ids.is_empty() || !group.tab_ids.contains(&group.active_tab))
-            || new_tab_ids.len() != new_tab_set.len()
-            || topology.len() != group_ids.len()
-            || old_tab_ids != new_tab_set
-        {
-            return false;
-        }
-
-        let mut tabs: HashMap<u64, Tab> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().cloned())
-            .map(|tab| (tab.id, tab))
-            .collect();
-        let old_groups: HashMap<u64, &WindowGroup> = strip
-            .window_groups
-            .iter()
-            .map(|group| (group.id, group))
-            .collect();
-        let mut rebuilt = Vec::with_capacity(topology.len());
-        for live in topology {
-            let group_tabs: Vec<Tab> = live
-                .tab_ids
-                .iter()
-                .filter_map(|tab_id| tabs.remove(tab_id))
-                .collect();
-            if group_tabs.len() != live.tab_ids.len() {
-                return false;
-            }
-            rebuilt.push(WindowGroup {
-                id: live.id,
-                tabs: group_tabs,
-                active_tab: live.active_tab,
-                width: live.width,
-                maximized: old_groups
-                    .get(&live.id)
-                    .is_some_and(|group| group.maximized),
-            });
-        }
-        let unchanged = rebuilt.len() == strip.window_groups.len()
-            && rebuilt.iter().zip(&strip.window_groups).all(|(new, old)| {
-                new.id == old.id
-                    && new.active_tab == old.active_tab
-                    && new.width == old.width
-                    && new.maximized == old.maximized
-                    && new
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.id)
-                        .eq(old.tabs.iter().map(|tab| tab.id))
-            });
-        if unchanged {
-            return false;
-        }
-        let Some(target) = self
-            .desktop
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.strips.get_mut(strip_idx))
-        else {
-            return false;
-        };
-        target.window_groups = rebuilt;
-        let persisted = target.window_groups.clone();
-        if self
-            .desktop
-            .active_group
-            .get(&strip_id)
-            .is_none_or(|active| !group_ids.contains(active))
-            && let Some(first) = persisted.first()
-        {
-            self.desktop.active_group.insert(strip_id, first.id);
-        }
         self.doc_rewrite_strip_groups(strip_id, &persisted);
         // Same-strip drag/split changes are user-visible layout state. Keep
         // the local restart snapshot in step with the cache and room doc;

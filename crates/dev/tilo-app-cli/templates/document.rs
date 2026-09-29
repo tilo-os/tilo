@@ -1,7 +1,8 @@
+use ui::i18n::I18nManager;
 use ui::prelude::*;
 
-/// A durable document. Text fields are collaborative text: two people typing
-/// in the same field merge character by character.
+/// One document. Its text fields are collaborative text: two people typing in
+/// the same field merge character by character.
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Document {
     pub title: String,
@@ -22,7 +23,7 @@ impl Document {
         self.body = body;
     }
 
-    /// Set the document content.
+    /// Replace the title and body in one undo step.
     #[action]
     pub fn set_content(
         &mut self,
@@ -33,17 +34,14 @@ impl Document {
         self.body = body;
     }
 
-    /// Clear the document.
+    /// Erase the document. Declared destructive, so every surface that
+    /// invokes it asks for confirmation first.
     #[action(destructive)]
     pub fn clear(&mut self) {
         *self = Self::default();
     }
 }
 
-/// The app: two editors and a live preview of the same document.
-///
-/// The preview reads the fields the inputs edit, so it follows every edit —
-/// local, a collaborator's, an undo — with no notification code.
 pub struct App;
 
 impl ResourceApp for App {
@@ -51,9 +49,10 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
+    /// The name the palette, search and history show for the open document.
     fn label(document: &Document) -> String {
-        if document.title.is_empty() {
-            String::from("Document")
+        if document.title.trim().is_empty() {
+            I18nManager::lookup_plain("document-untitled")
         } else {
             document.title.clone()
         }
@@ -70,16 +69,21 @@ impl ResourceApp for App {
             .with_id("document-body-input")
             .with_placeholder("document-body-placeholder")
             .multiline(true);
+        // The preview reads the fields the inputs edit, so it follows every
+        // edit, local or remote, with no notification code.
+        let preview_title = cx
+            .text(|document| document.title.clone())
+            .with_role(TextRole::Heading)
+            .with_id("document-title-preview");
+        let preview_body = cx
+            .text(|document| document.body.clone())
+            .with_id("document-body-preview");
         Box::new(ui::column![
-            Text::new("document-heading").with_role(TextRole::Title),
             labeled_field("document-title-label", title),
             labeled_field("document-body-label", body),
-            Text::new("document-preview-heading").with_role(TextRole::Heading),
-            cx.text(|document| document.title.clone())
-                .with_role(TextRole::Heading)
-                .with_id("document-title-preview"),
-            cx.text(|document| document.body.clone())
-                .with_id("document-body-preview"),
+            Text::new("document-preview-heading").with_role(TextRole::Caption),
+            preview_title,
+            preview_body,
         ])
     }
 }

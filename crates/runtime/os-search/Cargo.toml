@@ -1,0 +1,46 @@
+[package]
+name = "tilo-os-search"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The resources a Tilo runtime admits, in the host operating system's search: Spotlight, GNOME Shell and KRunner."
+
+[lib]
+name = "tilo_os_search"
+path = "src/lib.rs"
+
+[dependencies]
+# Result ids the host search holds: opaque, stable per app and resource.
+blake3.workspace = true
+# The one door every caller browses and opens resources through.
+tilo-actions = { path = "../../collab/actions" }
+# The palette's folding and ranking, for the hosts that ask us to match.
+tilo-search = { path = "../../sdk/search" }
+# Bounds how long one action host answer may take.
+tokio = { workspace = true, features = ["time"] }
+tracing.workspace = true
+workspace-hack = { version = "0.1" }
+
+# GNOME Shell and KRunner ask over the session bus.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+zbus = { workspace = true, features = ["tokio"] }
+
+# Spotlight indexes for the app bundle.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-core-spotlight = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-uniform-type-identifiers", "CSSearchableIndex", "CSSearchableItem", "CSSearchableItemAttributeSet", "CSSearchableItemAttributeSet_Documents", "CSSearchableItemAttributeSet_General"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSError", "NSObject", "NSString"] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTCoreTypes", "UTType"] }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# The providers are tested on a private session bus (dbus-daemon).
+[target.'cfg(all(unix, not(target_os = "macos")))'.dev-dependencies]
+serde.workspace = true
+
+[lints]
+workspace = true

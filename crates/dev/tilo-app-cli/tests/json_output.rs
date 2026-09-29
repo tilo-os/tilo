@@ -61,6 +61,64 @@ fn new_dry_run_lists_every_planned_file_in_both_modes() {
 }
 
 #[test]
+fn templates_are_listed_in_both_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let human = tilo_app(dir.path(), &["new", "--list-templates"]);
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("starter"), "{human}");
+    assert!(human.contains("(default)"), "{human}");
+
+    let output = tilo_app(dir.path(), &["new", "--list-templates", "--json"]);
+    assert!(output.status.success());
+    let report = document(&output);
+    assert_eq!(report["ok"], true);
+    let names: Vec<_> = report["result"]["templates"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|template| template["name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["starter", "document", "collection", "graph"]);
+}
+
+#[test]
+fn examples_are_listed_in_both_modes() {
+    let dir = tempfile::tempdir().unwrap();
+    let human = tilo_app(dir.path(), &["examples"]);
+    assert!(human.status.success());
+    let human = String::from_utf8(human.stdout).unwrap();
+    assert!(human.contains("shared-checklist"), "{human}");
+    assert!(human.contains("--from-example"), "{human}");
+
+    let output = tilo_app(dir.path(), &["examples", "--json"]);
+    assert!(output.status.success());
+    let report = document(&output);
+    assert_eq!(report["ok"], true);
+    let examples = report["result"]["examples"].as_array().unwrap();
+    assert_eq!(examples[0]["name"], "counter");
+    assert_eq!(examples[0]["path"], "examples/apps/counter");
+    assert!(examples.iter().all(|example| example["web"].is_boolean()));
+
+    let refused = tilo_app(
+        dir.path(),
+        &[
+            "new",
+            "notes",
+            "--from-example",
+            "no-such-example",
+            "--json",
+        ],
+    );
+    assert!(!refused.status.success());
+    let report = document(&refused);
+    assert!(
+        report["error"].as_str().unwrap().contains("counter"),
+        "the error names the examples there are: {report}"
+    );
+}
+
+#[test]
 fn json_never_prompts_and_reports_failures_as_documents() {
     let dir = tempfile::tempdir().unwrap();
     let output = tilo_app(dir.path(), &["new", "--json"]);
