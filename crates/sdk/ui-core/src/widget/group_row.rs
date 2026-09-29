@@ -1362,7 +1362,8 @@ impl GroupRow {
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
         let before = self.groups.len();
         if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
-            self.close_reports.extend(group.close_components());
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(group));
         }
         self.groups.retain(|g| g.id != id);
         let removed = self.groups.len() != before;
@@ -2407,7 +2408,8 @@ impl FloatingSurfaceProvider for GroupRow {
 impl Widget for GroupRow {
     crate::provides!(
         dyn crate::widget::FloatingSurfaceProvider,
-        dyn crate::collaboration::participants::CollaborationTopology
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::component_lifecycle::ComponentLifecycle
     );
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
@@ -2502,19 +2504,6 @@ impl Widget for GroupRow {
             child.visit_components(request)?;
         }
         Ok(())
-    }
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        for child in &mut self.groups {
-            self.close_reports.extend(child.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        for child in &mut self.groups {
-            reports.extend(child.take_component_close_reports());
-        }
-        reports
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -3227,6 +3216,22 @@ impl Widget for GroupRow {
     }
 }
 
+impl crate::component_lifecycle::ComponentLifecycle for GroupRow {
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in &mut self.groups {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in &mut self.groups {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+}
+
 impl crate::collaboration::participants::CollaborationTopology for GroupRow {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.groups
@@ -3665,7 +3670,8 @@ impl GroupRow {
         prune.sort_unstable_by(|a, b| b.cmp(a));
         for i in prune {
             let mut group = self.groups.remove(i);
-            self.close_reports.extend(group.close_components());
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(&mut group));
         }
         debug_assert_eq!(
             self.node_ids.len(),

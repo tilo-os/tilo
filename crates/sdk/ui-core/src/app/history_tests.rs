@@ -3583,7 +3583,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     // references survive the supported close/rebind operation.
     unsafe {
         if close {
-            (*pointer).close_components();
+            crate::component_lifecycle::close_components(&mut (*pointer));
         } else {
             (*pointer).bind_record(second.clone(), checkout.clone());
         }
@@ -6130,7 +6130,8 @@ struct CustodyControlsRoot {
 impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::record::capability::RecordScoped
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -6164,11 +6165,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     // that enclosing boundary, not a second independent document owner.
     fn has_separate_document_owner(&self) -> bool {
         false
-    }
-    fn record_intent(&self) -> Option<crate::RecordCheckout> {
-        self.record
-            .as_ref()
-            .and_then(|record| record.borrow().clone())
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -6241,6 +6237,14 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::record::capability::RecordScoped for CustodyControlsRoot {
+    fn record_intent(&self) -> Option<crate::RecordCheckout> {
+        self.record
+            .as_ref()
+            .and_then(|record| record.borrow().clone())
     }
 }
 
