@@ -55,7 +55,7 @@ ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default
 tilo-resource = { version = "0.1.0", path = "../tilo-resource" }
 tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 # The default search provider over a resource's entries.
-tilo-search = { path = "../search" }
+tilo-search = { version = "0.1.0", path = "../search" }
 # Merging a collaborator's change in tests, the way sync does.
 tilo-automerge.workspace = true
 # Files for apps: the portable replacement for `std::fs`, re-exported as `ui::files`.
