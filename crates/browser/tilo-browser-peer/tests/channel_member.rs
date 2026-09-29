@@ -9,7 +9,9 @@
     clippy::expect_used,
     clippy::indexing_slicing,
     clippy::panic,
-    reason = "in a test these are the assertion, not a hazard"
+    clippy::too_many_lines,
+    clippy::significant_drop_tightening,
+    reason = "in a test these are the assertion, not a hazard; each test is one transcript between a steward and a browser"
 )]
 
 mod support;
@@ -22,11 +24,13 @@ use collab_types::{
     OpClass, SignedOp, document_artifact_id, document_attestation_id, document_channel_id,
 };
 use neighbour_wire::NeighbourMsg;
-use tilo_browser_peer::{Host, PeerEvent};
+use tilo_browser_peer::{Host, PeerEvent, PeerStore as _};
 use tilo_relay::{Inbound, RelayClient, RelayCoeditSession};
 use tilo_user_identity::{DeviceCapabilities, RevocationList, UserIdentity};
 
-use support::{ROOM, enrol, ready, route, start_host, start_peer, wait_for, workspace};
+use support::{
+    ROOM, enrol, ready, route, start_host, start_peer, start_peer_with_store, wait_for, workspace,
+};
 
 /// A native steward's side of the room, driven by hand: publish a message
 /// through the host the way a shell does.
@@ -227,5 +231,148 @@ async fn a_browser_joins_a_native_stewarded_channel_and_edits_its_sealed_record(
     .await;
     assert_eq!(opened, vec!["from the laptop", "after the welcome"]);
     peer.close();
+    host.relay.shutdown().await;
+}
+
+/// An edit the browser wrote before the steward admitted it survives a
+/// page reload: the reloaded page keeps it with its channel state and seals
+/// and commits it once admitted.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_edit_held_for_the_keys_survives_a_reload() {
+    let (root, _) = UserIdentity::generate("Ada", 1);
+    let host_device = enrol(&root, "home-server", DeviceCapabilities::host());
+    let laptop = enrol(&root, "laptop", DeviceCapabilities::primary());
+    let browser = enrol(&root, "browser", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_host(
+        &root,
+        &host_device,
+        state.path(),
+        "127.0.0.1:0".parse().unwrap(),
+    )
+    .await;
+    let route = route();
+    let channel = document_channel_id(&route.app_id, &route.cluster_id, &route.record);
+    let artifact = document_artifact_id(&route.app_id, &route.cluster_id, &route.record);
+    let vault = VaultKey::new([7; 32]);
+    let steward_dir = tempfile::tempdir().unwrap();
+    let mut steward =
+        ChannelSteward::open_or_create(steward_dir.path(), channel, laptop.key.clone(), &vault)
+            .unwrap();
+    let endpoint = iroh::endpoint::Endpoint::builder(iroh::endpoint::presets::Minimal)
+        .bind()
+        .await
+        .unwrap();
+    let client = RelayClient::connect(
+        endpoint,
+        host.relay.node_addr(),
+        root.verifying_key().to_bytes(),
+        laptop.cert.clone(),
+        laptop.key.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    let laptop_device = laptop.key.verifying_key().to_bytes();
+    let session = RelayCoeditSession::join(client, workspace(), laptop_device).unwrap();
+    publish(
+        &session,
+        &NeighbourMsg::IdentityHello {
+            cert: Box::new(laptop.cert.clone()),
+            revocations: Vec::new(),
+        },
+    );
+    publish(
+        &session,
+        &NeighbourMsg::MlsGovernance {
+            room: ROOM.into(),
+            frame: Box::new(steward.journal().frames()[0].clone()),
+            delivery: 1,
+        },
+    );
+
+    let store = std::sync::Arc::new(tilo_browser_peer::MemoryPeerStore::default());
+    let start = || {
+        start_peer_with_store(
+            Host::Https(host.https()),
+            browser.cert.clone(),
+            host_device.cert.clone(),
+            browser.key.clone(),
+            store.clone(),
+        )
+    };
+    let first = start();
+    first.join(workspace()).unwrap();
+    first.open_route(route.clone()).unwrap();
+    ready(&[&first]).await;
+    first
+        .publish(
+            route.clone(),
+            &DocumentMutation::Incremental(b"before the reload".to_vec()),
+        )
+        .unwrap();
+    wait_for("the held edit to be stored", || {
+        let stored = store.load_channels().is_some_and(|bytes| {
+            bytes
+                .windows(b"before the reload".len())
+                .any(|window| window == b"before the reload")
+        });
+        async move { stored.then_some(()) }
+    })
+    .await;
+    first.close();
+
+    let reloaded = start();
+    reloaded.join(workspace()).unwrap();
+    reloaded.open_route(route.clone()).unwrap();
+    let browser_device = Ed25519PublicKey::from_bytes(browser.key.verifying_key().to_bytes());
+    let allowed = BTreeSet::from([Ed25519PublicKey::from_bytes(laptop_device), browser_device]);
+    let mut requests: BTreeMap<Ed25519PublicKey, MlsAccessRequestV1> = BTreeMap::new();
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
+    let edit = loop {
+        let inbound = tokio::time::timeout_at(deadline, session.recv())
+            .await
+            .expect("the held edit after the reload")
+            .expect("host session open");
+        let Inbound::Delta { data, .. } = inbound else {
+            continue;
+        };
+        match postcard::from_bytes::<NeighbourMsg>(&data) {
+            Ok(NeighbourMsg::MlsAccessRequest { request, .. }) => {
+                requests.insert(request.device, *request);
+                steward.reconcile(&allowed, &requests, &vault).unwrap();
+                for outgoing in steward.outbox() {
+                    for frame in outgoing.frames {
+                        publish(
+                            &session,
+                            &NeighbourMsg::MlsGovernance {
+                                room: ROOM.into(),
+                                frame: Box::new(frame),
+                                delivery: 2,
+                            },
+                        );
+                    }
+                }
+            }
+            Ok(NeighbourMsg::MlsGovernanceAck { ack, .. }) => {
+                steward.acknowledge(&ack).unwrap();
+            }
+            Ok(NeighbourMsg::AppDocument { envelope, .. }) => {
+                let metadata = envelope.encryption.expect("sealed");
+                break steward
+                    .content_keys()
+                    .unwrap()
+                    .open_content(artifact, &metadata, &envelope.payload)
+                    .unwrap()
+                    .to_vec();
+            }
+            _ => {}
+        }
+    };
+    assert_eq!(
+        DocumentFrame::decode(&edit).unwrap(),
+        DocumentFrame::Whole(DocumentMutation::Incremental(b"before the reload".to_vec()))
+    );
+    reloaded.close();
     host.relay.shutdown().await;
 }

@@ -136,6 +136,8 @@ const PEER_PACKAGE: &str = "so.tilo.browser-peer";
 struct DurablePeerStore {
     store: Rc<durable_store::MemoryStore>,
     key: durable_store::StorageKey,
+    /// Channel membership and the edits held for it, beside the record.
+    channels_key: durable_store::StorageKey,
 }
 
 thread_local! {
@@ -159,6 +161,11 @@ impl DurablePeerStore {
                 crate::storage::PROFILE_WORKSPACE,
                 hex::encode(user_public_key),
             ),
+            channels_key: durable_store::StorageKey::record(
+                PEER_PACKAGE,
+                crate::storage::PROFILE_WORKSPACE,
+                format!("{}.channels", hex::encode(user_public_key)),
+            ),
         })
     }
 }
@@ -175,6 +182,23 @@ impl PeerStore for DurablePeerStore {
         let bytes = postcard::to_stdvec(record).map_err(|error| error.to_string())?;
         self.store
             .write(&self.key, durable_store::WriteOp::Replace(bytes), None)
+            .map(drop)
+            .map_err(|error| error.to_string())
+    }
+
+    fn load_channels(&self) -> Option<Vec<u8>> {
+        use durable_store::DurableStore as _;
+        Some(self.store.read(&self.channels_key).ok()??.bytes)
+    }
+
+    fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
+        use durable_store::DurableStore as _;
+        self.store
+            .write(
+                &self.channels_key,
+                durable_store::WriteOp::Replace(bytes.to_vec()),
+                None,
+            )
             .map(drop)
             .map_err(|error| error.to_string())
     }
