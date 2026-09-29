@@ -154,6 +154,33 @@ pub enum DesktopCommand {
     ClaimNamespace {
         salt: u16,
     },
+    /// Save a workspace permission profile, replacing the one with the same
+    /// name. The profile travels as its JSON. Only a native owner applies it,
+    /// with the caller's authority over workspace governance. Appended last:
+    /// existing encodings are unchanged.
+    SavePermissionProfile {
+        profile_json: String,
+    },
+    /// Assign the saved permission profile `profile` to a `person`, `app` or
+    /// `agent` `subject` until `expires_unix` (`0` never expires), as the
+    /// capabilities it expands to. Only a native owner applies it, as for
+    /// [`Self::SavePermissionProfile`]. Appended last: existing encodings are
+    /// unchanged.
+    AssignPermissionProfile {
+        profile: String,
+        subject_kind: String,
+        subject: String,
+        expires_unix: u64,
+    },
+    /// Record the effect receipt of an invocation that a member's app served
+    /// in this room, as the redacted
+    /// [`WorkspaceEffectReceipt`](crate::WorkspaceEffectReceipt) JSON the
+    /// member's broker produced. Only a native owner applies it; a receipt,
+    /// once recorded, never changes. Appended last: existing encodings are
+    /// unchanged.
+    RecordEffectReceipt {
+        receipt_json: String,
+    },
     /// Move window group `group`, whole, from whichever strip of the
     /// workspace holds it into strip `strip`, before group `before` or at
     /// the end. A move within one strip is a reorder. Appended last:
@@ -163,6 +190,57 @@ pub enum DesktopCommand {
         strip: u64,
         before: Option<u64>,
     },
+}
+
+impl DesktopCommand {
+    /// Whether the owner applies this against its own current desktop, so it
+    /// needs no source revision: an [`Self::OpenApp`] it places itself, a
+    /// namespace claim that changes only the registry, or a governance or
+    /// receipt command that touches no topology.
+    pub fn is_placement_independent(&self) -> bool {
+        matches!(
+            self,
+            Self::OpenApp { .. }
+                | Self::ClaimNamespace { .. }
+                | Self::SavePermissionProfile { .. }
+                | Self::AssignPermissionProfile { .. }
+                | Self::RecordEffectReceipt { .. }
+        )
+    }
+}
+
+/// The profile a [`DesktopCommand::SavePermissionProfile`] carries.
+///
+/// # Errors
+///
+/// Why the JSON is not a valid permission profile.
+pub fn decode_permission_profile(json: &str) -> Result<collab_types::PermissionProfile, String> {
+    let profile: collab_types::PermissionProfile =
+        serde_json::from_str(json).map_err(|error| format!("not a permission profile: {error}"))?;
+    profile.validate().map_err(|error| error.to_string())?;
+    Ok(profile)
+}
+
+/// The subject and expiry a [`DesktopCommand::AssignPermissionProfile`] names.
+///
+/// # Errors
+///
+/// When `kind` is not `person`, `app` or `agent`.
+pub fn permission_assignment(
+    kind: &str,
+    subject: &str,
+    expires_unix: u64,
+) -> Result<(collab_types::Subject, collab_types::Expiry), String> {
+    let subject = match kind.trim().to_ascii_lowercase().as_str() {
+        "person" => collab_types::Subject::person(subject.trim()),
+        "app" => collab_types::Subject::app(subject.trim()),
+        "agent" => collab_types::Subject::agent(subject.trim()),
+        _ => return Err("subject_kind must be person, app, or agent".into()),
+    };
+    let expiry = (expires_unix > 0)
+        .then_some(expires_unix)
+        .map_or(collab_types::Expiry::Never, collab_types::Expiry::AtUnix);
+    Ok((subject, expiry))
 }
 
 /// The shortcut a [`DesktopCommand::SaveShortcut`] carries.
@@ -790,6 +868,11 @@ pub fn apply_command(
     match command {
         DesktopCommand::SaveShortcut { .. } | DesktopCommand::DeleteShortcut { .. } => {
             apply_shortcut_command(workspace, command)?;
+        }
+        DesktopCommand::SavePermissionProfile { .. }
+        | DesktopCommand::AssignPermissionProfile { .. }
+        | DesktopCommand::RecordEffectReceipt { .. } => {
+            return Err("only the workspace's native owner applies this command".into());
         }
         DesktopCommand::OpenApp { .. } => {
             let resolved = resolve_open_app(workspace, command.clone(), |_| true)?;

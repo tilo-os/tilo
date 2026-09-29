@@ -781,6 +781,43 @@ impl WorkspaceTree {
         self.desktop.room_epoch = self.desktop.room_epoch.wrapping_add(1);
     }
 
+    /// In a room another device governs, a window its owner placed for an
+    /// in-process app kind is opened here as that app's own instance (see
+    /// `peer_windows`), on the records the owner created for it.
+    fn open_governed_placeholders_here(&mut self, room: RoomId) -> bool {
+        let Some(ws) = self
+            .desktop
+            .workspaces
+            .iter_mut()
+            .find(|ws| ws.room == room)
+        else {
+            return false;
+        };
+        let mut changed = false;
+        for tab in ws
+            .strips
+            .iter_mut()
+            .flat_map(|strip| &mut strip.window_groups)
+            .flat_map(|group| &mut group.tabs)
+        {
+            if let TileContent::AppPlaceholder { kind, label } = &tab.tile {
+                tracing::debug!(%room, tab = ?tab.id, app = %kind.app_id(), "opening a governed room's window as its app");
+                tab.tile = TileContent::PeerWindow {
+                    app_id: kind.app_id(),
+                    label: label.clone(),
+                    note: String::new(),
+                };
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// The record the room document names for `tab` of `room`, if any.
+    pub(crate) fn room_tab_record(&self, room: RoomId, tab: TabId) -> Option<String> {
+        tilo_desktop_model::apps::record_routes(self.room_docs.get(&room)?).remove(&tab)
+    }
+
     /// Set the process-wide peer salt `next_id` stamps into the high
     /// 16 bits of every freshly-allocated id. Default `0` keeps
     /// `WorkspaceId(1)`-style test literals working; two peers under
@@ -1711,12 +1748,29 @@ impl WorkspaceTree {
             return false;
         };
         let replicated = projection::contents_of(doc);
-        projection::merge_room_contents(
+        let changed = projection::merge_room_contents(
             &mut self.desktop,
             room,
             replicated,
             projection::Reader::Owner(local_salt),
-        )
+        );
+        if self.requires_native_owner(room) {
+            let profiles = tilo_desktop_model::projection::workspace_permission_profiles_of(doc);
+            let mut reprofiled = false;
+            if let Some(ws) = self
+                .desktop
+                .workspaces
+                .iter_mut()
+                .find(|ws| ws.room == room)
+                && ws.permission_profiles != profiles
+            {
+                ws.permission_profiles = profiles;
+                reprofiled = true;
+            }
+            self.open_governed_placeholders_here(room) || reprofiled || changed
+        } else {
+            changed
+        }
     }
 
     /// Tell the tree which records `room`'s index holds. Returns whether
