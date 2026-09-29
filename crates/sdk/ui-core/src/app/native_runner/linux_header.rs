@@ -192,6 +192,8 @@ impl LiveHeader {
             | WindowEvent::MouseInput { .. }
             | WindowEvent::MouseWheel { .. }
                 if self.bar.claims(self.pointer) => {}
+            // An open History menu has the keyboard: arrows, Enter, Escape.
+            WindowEvent::KeyboardInput { .. } if self.bar.modal_capture().is_some() => {}
             _ => return routed,
         }
         let mut handled = false;
