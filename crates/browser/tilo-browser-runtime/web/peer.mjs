@@ -16,7 +16,8 @@
  * `getSnapshot()` returns `PeerSnapshot` with `SessionHealth` v1.
  */
 import {createPresencePublisher, createRemotePresence} from './live-presence.mjs';
-import {createLiveCarriers} from './live-fallback.mjs';
+import {createFallbackTransport, createLiveCarriers} from './live-fallback.mjs';
+import {createSpeakers} from './live-speakers.mjs';
 import {createLiveTransport, LIVE_PATH, LIVE_ROOT} from './live-transport.mjs';
 import {WEBKIT_WEBGPU_REFUSAL} from './webgpu-safety.mjs';
 
@@ -96,11 +97,17 @@ const recordKey = record => `${record.app}\u0000${record.record}`;
 const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 const hexKey = key => (typeof key === 'string' ? key : Array.from(key ?? [], byte => byte.toString(16).padStart(2, '0')).join(''));
 
-/** `post(path, session, body)` over `fetch` to the host origin. */
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
+/** A host served over plain HTTP on this machine (`tilo-relay room --web-plain`). */
+const isLoopbackHttp = url => url.protocol === 'http:' && LOOPBACK.has(url.hostname);
+
+/** `post(path, session, body)` over `fetch` to the host origin: https, or
+ * loopback http for local review (no certificate exception needed). */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
-  if (base.protocol !== 'https:' || base.pathname !== '/' || base.search || base.hash) {
-    throw new TypeError('host origin must be an https origin');
+  const secure = base.protocol === 'https:' || isLoopbackHttp(base);
+  if (!secure || base.pathname !== '/' || base.search || base.hash) {
+    throw new TypeError('host origin must be an https (or loopback http) origin');
   }
   return async (path, session, body) => {
     const headers = {'content-type': 'application/octet-stream'};
@@ -113,25 +120,46 @@ export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...arg
 }
 
 /**
+ * Where a room's live plane is reached from `origin`: its `/moq/live`, both
+ * for WebTransport and the HTTPS stream fallback. A room on a loopback
+ * `http:` origin (local review) serves WebTransport only on its TLS port
+ * (`host.webtransportPort`, pinned by `certificateSha256`); its fallback
+ * stays on the plain origin.
+ */
+export function liveEndpoints(origin, host = {}) {
+  const base = new URL(origin);
+  const fallback = new URL(LIVE_PATH, base).href;
+  if (!isLoopbackHttp(base) || !host.webtransportPort) return {endpoint: fallback, fallback};
+  return {endpoint: new URL(LIVE_PATH, `https://${base.hostname}:${host.webtransportPort}`).href, fallback};
+}
+
+/**
  * The live layer of one room — the interface the desktop mount consumes.
  * `peer` is the wasm `WasmPeer`, `runtime` the wasm module (live codec).
+ * `participant` (`{label, color}`) is published with this device's
+ * presence. With `agent`, the layer publishes as that agent of this device,
+ * under its own namespace (`tilo_relay_protocol::web::agent_publisher`),
+ * with an agent participant. The grant is asked for once `ready` resolves:
+ * the room refuses it until it admitted the device.
  */
 export function createLiveLayer(peer, runtime, room, {
-  origin, carriers, participant, now = () => performance.now(), wallNow = () => Date.now(),
+  origin, endpoint = new URL(LIVE_PATH, origin).href, carriers, participant, agent, ready = Promise.resolve(),
+  now = () => performance.now(), wallNow = () => Date.now(),
   setTimer = (callback, delay) => globalThis.setTimeout(callback, delay),
   clearTimer = handle => globalThis.clearTimeout(handle),
 } = {}) {
-  const endpoint = new URL(LIVE_PATH, origin).href;
   const remotes = new Map();
+  const participants = new Map();
   const previews = new Map();
   const members = new Set();
   const watched = new Map(); // record key -> record
   const subscriptions = new Map(); // `${publisher}\u0000${track}` -> cleanup
-  const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set()};
-  const emit = (kind, value) => { for (const listener of listeners[kind]) { try { listener(value); } catch {} } };
+  const listeners = {presence: new Set(), preview: new Set(), member: new Set(), durable: new Set(), state: new Set(), publish: new Set(), agentActivity: new Set()};
+  const emit = (kind, value) => { for (const listener of [...listeners[kind]]) { try { listener(value); } catch {} } };
   const on = kind => listener => { listeners[kind].add(listener); return () => listeners[kind].delete(listener); };
   let session;
   let state = 'connecting';
+  let publisherId;
   let stopped = false;
   let retry = 0;
   let renewTimer;
@@ -143,16 +171,25 @@ export function createLiveLayer(peer, runtime, room, {
     send: bytes => session?.publishPresence(bytes) ?? false,
     now,
     wallNow,
+    onPublish: value => emit('publish', value),
   });
 
-  function onPresence(publisherId, payload, receivedAtMs) {
+  function onPresence(from, payload, receivedAtMs) {
     let decoded;
     try { decoded = JSON.parse(runtime.decodeLiveFrame(payload)); } catch { return; }
     if (decoded.kind !== 'presence') return;
-    let remote = remotes.get(publisherId);
-    if (!remote) { remote = createRemotePresence(); remotes.set(publisherId, remote); }
-    if (remote.accept(decoded.frame, receivedAtMs)) {
-      emit('presence', {publisher: publisherId, frame: decoded.frame, receivedAtMs});
+    let remote = remotes.get(from);
+    if (!remote) { remote = createRemotePresence(); remotes.set(from, remote); }
+    if (!remote.accept(decoded.frame, receivedAtMs)) return;
+    const {participant: named} = decoded.frame;
+    const renamed = named && participants.get(from)?.label !== named.label;
+    if (named) participants.set(from, named);
+    if (decoded.frame.focus) watchRecord(decoded.frame.focus);
+    emit('presence', {publisher: from, frame: decoded.frame, receivedAtMs});
+    // A member's name arrives with its presence, after the member itself.
+    if (renamed) emit('member', {publisher: from, active: true});
+    if (renamed && named.kind === 'agent') {
+      emit('agentActivity', {publisher: from, agentId: named.label, name: named.label, expired: false});
     }
   }
   function onOps(publisherId, payload) {
@@ -205,12 +242,18 @@ export function createLiveLayer(peer, runtime, room, {
     }
     emit('member', {publisher: publisherId, active});
   }
+  function watchRecord(record) {
+    const key = recordKey(record);
+    if (watched.has(key)) return;
+    watched.set(key, {app: record.app, record: record.record});
+    for (const publisherId of members) subscribeRecord(publisherId, record);
+  }
 
   async function connect() {
     if (stopped) return;
     setState(retry === 0 ? 'connecting' : 'reconnecting');
     try {
-      const grant = JSON.parse(await peer.liveGrant(room));
+      const grant = JSON.parse(agent === undefined ? await peer.liveGrant(room) : await peer.liveGrant(room, agent));
       const opened = await carriers.connect({
         endpoint,
         authorization: unhex(grant.token),
@@ -219,10 +262,11 @@ export function createLiveLayer(peer, runtime, room, {
       });
       if (stopped) { opened.close(); return; }
       session = opened;
+      publisherId = grant.publisher;
       retry = 0;
       setState('live');
       session.watchMembers({onMember});
-      if (participant) publisher.update({participant});
+      if (participant) publisher.update({participant: {kind: agent === undefined ? 'person' : 'agent', activity: null, ...participant}});
       publisher.start();
       const renewIn = Math.max(1000, grant.expiresAtNs / 1e6 - wallNow() - GRANT_RENEW_MS);
       renewTimer = setTimer(() => rotate(), renewIn);
@@ -266,11 +310,19 @@ export function createLiveLayer(peer, runtime, room, {
     emit('durable', {record});
   }
 
-  connect();
+  ready.then(() => connect(), () => { if (!stopped) setState('unavailable'); });
+
+  const isAgent = from => participants.get(from)?.kind === 'agent';
 
   return {
     room,
     get state() { return state; },
+    get available() { return state === 'live'; },
+    /** This layer's publisher in the room (the device, or its agent), once live. */
+    get publisherId() { return publisherId; },
+    get memberCount() { return members.size; },
+    /** The agent this layer publishes as, or `undefined` for the device. */
+    agent,
     /** Merge presence fields (`null` clears): focus, pointer, selection, drag. */
     publishPresence: partial => publisher.update(partial),
     /** Ephemeral text preview operations for a record. */
@@ -289,10 +341,10 @@ export function createLiveLayer(peer, runtime, room, {
       session.closeOps(track);
       previewSeq.delete(recordKey(record));
     },
-    /** Receive previews for a record from every member. */
+    /** Receive previews for a record from every member (also once a
+     * member's presence focuses it). */
     watchRecord(record) {
-      watched.set(recordKey(record), record);
-      for (const publisherId of members) subscribeRecord(publisherId, record);
+      watchRecord(record);
       return () => watched.delete(recordKey(record));
     },
     /** A durable change for the record landed: drop previews and snap drags. */
@@ -307,14 +359,31 @@ export function createLiveLayer(peer, runtime, room, {
       })).filter(value => value.seq !== undefined);
     },
     members: () => [...members],
+    /** `[{device, name, color}]` of the people whose presence named them;
+     * agents are in `agents()`. */
+    people: () => [...members].filter(from => !isAgent(from)).map(from => ({
+      device: from, name: participants.get(from)?.label ?? '', color: participants.get(from)?.color,
+    })),
+    /** Agents present in the room (their presence names them as agents). */
+    agents: () => [...members].filter(isAgent).map(from => ({
+      publisher: from, agentId: participants.get(from).label, name: participants.get(from).label,
+    })),
     onPresence: on('presence'),
+    /** `presence` under the name `live-overlay` consumers use. */
+    onRemotePresence: on('presence'),
     onPreview: on('preview'),
     onMember: on('member'),
     onDurable: on('durable'),
     onState: on('state'),
-    /** Apply durable events from the session (called on every peer change). */
-    pump() {
-      for (const event of JSON.parse(peer.takeDurableEvents())) {
+    /** Each presence frame this layer sent. */
+    onPublish: on('publish'),
+    /** An agent member named itself (`{publisher, agentId, name, expired}`). */
+    onAgentActivity: on('agentActivity'),
+    stats: () => ({state, members: members.size, agent: agent ?? null, carrier: carriers.state?.().last ?? null}),
+    /** Apply durable events from the session (called on every peer change);
+     * pass `events` when several layers share one peer. */
+    pump(events = JSON.parse(peer.takeDurableEvents())) {
+      for (const event of events) {
         if (event.kind === 'durable') durableChanged(event.record);
       }
     },
@@ -347,12 +416,13 @@ export function createLiveLayer(peer, runtime, room, {
  * @param options.fetch          defaults to `globalThis.fetch`
  * @param options.liveCarriers   defaults to WebTransport with HTTPS fallback
  * @param options.desktop        `{mountDesktop(target, options)}`; defaults to `host.mjs`
+ * @param options.live           `false`: join no live plane
  * @param options.onPairingCode  shown while an approver decides
  */
 export async function connectPeer({
   origin, userPublicKey, label = 'Browser', room, custody, store, runtime,
   profile, device = 'tilo-browser-device', displayName = '',
-  fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode,
+  fetch: fetcher, liveCarriers, desktop, signal, onStatus, onPairingCode, live: liveEnabled = true,
 }) {
   if (!origin || !userPublicKey || !custody || !(store || profile) || !runtime) {
     throw new TypeError('origin, userPublicKey, custody, store or profile, and runtime are required');
@@ -369,19 +439,32 @@ export async function connectPeer({
   const post = httpsPost(origin, fetcher);
   const custodyForWasm = custody.kind === 'sealed-seed' ? await custody.unseal() : custody;
   const custodyKeyHex = () => [...(custodyForWasm.publicKey ?? [])].map(b => b.toString(16).padStart(2, '0')).join('');
-  const carriersFor = info => liveCarriers ?? createLiveCarriers({
-    fetch: fetcher,
-    webtransport: createLiveTransport({
-      serverCertificateHashes: info.certificateSha256
-        ? [{algorithm: 'sha-256', value: unhex(info.certificateSha256)}]
-        : undefined,
-    }),
-  });
+  const carriersFor = info => {
+    if (liveCarriers) return liveCarriers;
+    const fallbackEndpoint = liveEndpoints(origin, info).fallback;
+    const fallback = createFallbackTransport({fetch: fetcher});
+    return createLiveCarriers({
+      fetch: fetcher,
+      webtransport: createLiveTransport({
+        serverCertificateHashes: info.certificateSha256
+          ? [{algorithm: 'sha-256', value: unhex(info.certificateSha256)}]
+          : undefined,
+      }),
+      fallback: {connect: options => fallback.connect({...options, endpoint: fallbackEndpoint})},
+    });
+  };
   let host = JSON.parse(await runtime.hostInfo(post));
   let carriers = carriersFor(host);
   const listeners = new Set();
   let peer;
   let live;
+  // Agents this page runs publish under their own namespaces: one layer each.
+  const agentLayers = new Map();
+  const layers = () => [...(live ? [live] : []), ...agentLayers.values()];
+  let admitted;
+  let ready;
+  const resetReady = () => { ready = new Promise(resolve => { admitted = resolve; }); };
+  resetReady();
   let disposed = false;
   let snapshot = {phase: 'authenticating', records: []};
   // Desktop surfaces mounted through this peer, by surface id: their failures
@@ -392,8 +475,12 @@ export async function connectPeer({
   const publish = () => {
     if (!peer) return;
     snapshot = JSON.parse(peer.snapshot());
-    live?.pump();
-    for (const listener of listeners) listener(snapshot);
+    if (snapshot.phase === 'ready') admitted();
+    if (live) {
+      const events = JSON.parse(peer.takeDurableEvents());
+      for (const layer of layers()) layer.pump(events);
+    }
+    for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
   };
   const untilSnapshot = (settled, timeoutMs, timeoutMessage) => new Promise((resolve, reject) => {
@@ -513,12 +600,47 @@ export async function connectPeer({
     peer.subscribe(publish);
     if (room) {
       peer.joinRoom(room);
-      live = createLiveLayer(peer, runtime, room, {origin, carriers, participant: {
-        kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
-      }});
+      if (liveEnabled) {
+        live = createLiveLayer(peer, runtime, room, {origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, participant: {
+          kind: 'person', label: (displayName || label).slice(0, 32), color: colorOf(custodyKeyHex()), activity: null,
+        }});
+      }
     }
     publish();
   }
+  /** The live layer of agent `agent` this page runs, created on first use. */
+  function agentLive(agent) {
+    let layer = agentLayers.get(agent);
+    if (!layer && live) {
+      layer = createLiveLayer(peer, runtime, room, {
+        origin, endpoint: liveEndpoints(origin, host).endpoint, carriers, ready, agent,
+        participant: {label: agent.slice(0, 32), color: colorOf(`agent:${agent}`)},
+      });
+      agentLayers.set(agent, layer);
+    }
+    return layer;
+  }
+  function stopLive() {
+    for (const layer of layers()) layer.stop();
+    agentLayers.clear();
+  }
+  // Every mount publishes through its own view of a layer, so the mount
+  // acted in last speaks for the person (or the agent), never an idle one.
+  const speakers = createSpeakers();
+  function mountLive(target, options) {
+    const speaker = speakers.mount();
+    const layer = () => (typeof options.agent === 'string' && options.agent ? agentLive(options.agent) : live);
+    const input = new AbortController();
+    for (const type of ['pointerdown', 'keydown', 'focusin']) {
+      target?.addEventListener?.(type, () => { const current = layer(); if (current) speaker.claim(current); },
+        {capture: true, passive: true, signal: input.signal});
+    }
+    return {
+      live: () => { const current = layer(); return current && speaker.view(current); },
+      release() { input.abort(); speaker.release(); },
+    };
+  }
+  const hasRecord = (app, record) => Boolean(peer?.hasRecord?.(app, record));
 
   try {
     await start();
@@ -532,7 +654,7 @@ export async function connectPeer({
     disposed = true;
     for (const entry of [...surfaces.values()]) dropSurface(entry);
     unsubscribeStorage?.();
-    live?.stop();
+    stopLive();
     peer?.dispose();
     listeners.clear();
     await storage?.release();
@@ -561,23 +683,58 @@ export async function connectPeer({
       if (surfaces.has(surfaceId)) throw new Error(`desktop surface ${surfaceId} is already mounted`);
       const entry = {id: surfaceId, mount: undefined, generation: 0, presented: false, waiters: new Set(), recovering: undefined};
       surfaces.set(surfaceId, entry);
+      const presence = mountLive(target, rest);
       let mount;
       try {
-        mount = await surface.mountDesktop(target, {...scope, ...rest, peer: certifiedPeer, onStatus: status => {
+        mount = await surface.mountDesktop(target, {...scope, ...rest, peer: certifiedPeer, live: presence.live, onStatus: status => {
           observeSurface(entry, status);
           forward?.(status);
         }});
       } catch (error) {
+        presence.release();
         dropSurface(entry);
         throw error;
       }
-      if (surfaces.get(surfaceId) !== entry) return mount;
+      if (surfaces.get(surfaceId) !== entry) { presence.release(); return mount; }
       entry.mount = mount;
       mount.surfaceId = surfaceId;
       const cleanup = mount.cleanup;
-      if (typeof cleanup === 'function') mount.cleanup = async () => { dropSurface(entry); return cleanup(); };
+      mount.cleanup = async () => { presence.release(); dropSurface(entry); return cleanup?.(); };
       return mount;
     },
+    /** Resolves once the host admitted the room (`phase === 'ready'`);
+     * rejects when it refused this device. */
+    whenReady() {
+      return new Promise((resolve, reject) => {
+        const check = current => {
+          if (current.phase === 'ready') { listeners.delete(check); resolve(current); }
+          else if (current.phase === 'failed') { listeners.delete(check); reject(new Error(current.error ?? 'the host refused this device')); }
+        };
+        listeners.add(check);
+        check(snapshot);
+      });
+    },
+    /** The room's records this page holds, open in a mount or received:
+     * `[{app, record}]` (a package's room document has record `''`). */
+    records: () => JSON.parse(peer?.roomRecords?.() ?? '[]'),
+    /** Whether this page holds the room's record `record` of `app`. */
+    hasRecord,
+    /** Resolves once the room's record `record` of `app` reached this page. */
+    whenRecord(app, record, {timeoutMs = 30_000} = {}) {
+      return new Promise((resolve, reject) => {
+        if (hasRecord(app, record)) { resolve(); return; }
+        const check = () => {
+          if (!hasRecord(app, record)) return;
+          clearTimeout(timer); listeners.delete(check); resolve();
+        };
+        const timer = setTimeout(() => { listeners.delete(check); reject(new Error(`the room sent no ${app} record ${record}`)); }, timeoutMs);
+        listeners.add(check);
+      });
+    },
+    /** The live layer of agent `agent` this page runs (created on first use;
+     * a mount with `agent` publishes through it), or `undefined` without a
+     * live plane. */
+    agentLive,
     /** Resolves once every published change is durable on the host and the
      * peer's own state is durable in the profile. */
     flush: async () => { await peer.flush(); await storage?.flush(); },
@@ -598,8 +755,9 @@ export async function connectPeer({
         return {operationId: `retry-asset:${request.surfaceId}:${request.assetId}`};
       }
       if (request?.kind === 'reauthenticate') {
-        live?.stop();
+        stopLive();
         peer.dispose();
+        resetReady();
         await store.delete(CERTIFICATE);
         // The host may be another one now (a new certificate, a new user
         // root): what the page learnt of it at load is stale too.

@@ -1,11 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {connectPeer, httpsPost, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
+import {connectPeer, httpsPost, liveEndpoints, rendererFailureCode, statusAsset, storageFailureCode} from './peer.mjs';
 
 const ROOM = '6f1d3a52-1c7e-4b8e-9d2a-0f4a8c3e5b71';
 const ROOM_HEX = 'aa'.repeat(32);
 const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
+const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
 
 function memoryStore() {
@@ -42,8 +43,8 @@ function fakeCarriers() {
   return carriers;
 }
 
-function fakeRuntime() {
-  const calls = {certify: [], started: [], grants: 0};
+function fakeRuntime({phase = 'ready'} = {}) {
+  const calls = {certify: [], started: [], grants: 0, grantAgents: []};
   let peer;
   const runtime = {
     calls,
@@ -68,14 +69,21 @@ function fakeRuntime() {
         const durable = [];
         peer = {
           config: JSON.parse(config), custody, namespace, record, save, post, disposed: false, reconnects: 0,
-          phase: 'authenticating',
+          phase,
+          records: [],
           admission: 'ready',
           failures: [],
           refreshes: 0,
           snapshot: () => JSON.stringify({phase: peer.phase, deviceId: 'dd', outgoingPending: 0, health: {version: 1, admission: {phase: peer.admission, pendingPrerequisites: peer.admission === 'ready' ? 0 : 1}}}),
           subscribe: listener => listeners.push(listener),
           joinRoom: room => { peer.room = room; },
-          liveGrant: async room => { calls.grants++; return JSON.stringify({token: '0102', room: ROOM_HEX, publisher: SELF, expiresAtNs: (Date.now() + 600_000) * 1e6}); },
+          liveGrant: async (room, ...agent) => {
+            calls.grants++;
+            calls.grantAgents.push(agent);
+            return JSON.stringify({token: '0102', room: ROOM_HEX, publisher: agent.length ? AGENT : SELF, expiresAtNs: (Date.now() + 600_000) * 1e6});
+          },
+          roomRecords: () => JSON.stringify(peer.records),
+          hasRecord: (app, record) => peer.records.some(row => row.app === app && row.record === record),
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
           takeRemoteActionEvents: () => '[]',
           sendRemoteAction: () => {},
@@ -416,5 +424,150 @@ test('refresh-checkpoint subscribes the room again and resolves once the host ad
   await tick();
   assert.equal(settled, false, 'the earlier admission is not evidence of the refresh');
   assert.equal((await refreshing).operationId, 'refresh-checkpoint');
+  await peer.dispose();
+});
+
+test('httpsPost and the live plane accept a loopback http room for local review', () => {
+  assert.doesNotThrow(() => httpsPost('http://localhost:9764'));
+  assert.doesNotThrow(() => httpsPost('http://127.0.0.1:9764'));
+  assert.throws(() => httpsPost('http://10.0.0.2:9764'), TypeError);
+  assert.deepEqual(liveEndpoints('http://localhost:9764', {webtransportPort: 9700}), {
+    endpoint: 'https://localhost:9700/moq/live', fallback: 'http://localhost:9764/moq/live',
+  });
+  assert.deepEqual(liveEndpoints('https://host.example:8443', {webtransportPort: 9700}), {
+    endpoint: 'https://host.example:8443/moq/live', fallback: 'https://host.example:8443/moq/live',
+  });
+});
+
+test('the live grant waits until the room admitted the device', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const liveCarriers = fakeCarriers();
+  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
+  await tick();
+  assert.equal(runtime.calls.grants, 0, 'the relay refuses a grant before admission');
+  assert.equal(peer.live.available, false);
+  const ready = peer.whenReady();
+  runtime.peer.emit('ready');
+  assert.equal((await ready).phase, 'ready');
+  await tick();
+  assert.equal(runtime.calls.grants, 1);
+  assert.equal(peer.live.state, 'live');
+  assert.equal(peer.live.publisherId, SELF);
+  const sent = JSON.parse(new TextDecoder().decode(liveCarriers.connects[0].presence.at(-1) ?? new Uint8Array()) || 'null');
+  assert.equal(sent?.participant?.kind ?? 'person', 'person');
+  await peer.dispose();
+});
+
+test('whenReady rejects when the host refuses the device', async () => {
+  const runtime = fakeRuntime({phase: 'admitting'});
+  const peer = await connectPeer(options(runtime, memoryStore()));
+  const ready = peer.whenReady();
+  runtime.peer.emit('failed');
+  await assert.rejects(ready, /refused/);
+  await peer.dispose();
+});
+
+test('an agent layer publishes under the agent grant, and agents are told apart from people', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
+  const agent = peer.agentLive('Reading agent');
+  assert.equal(peer.agentLive('Reading agent'), agent, 'one layer per agent');
+  await tick();
+  assert.deepEqual(runtime.calls.grantAgents, [[], ['Reading agent']]);
+  const agentSession = liveCarriers.connects.find(session => session.options.namespace[2] === AGENT);
+  assert.ok(agentSession, 'the agent layer joins under its own namespace');
+  assert.equal(agent.agent, 'Reading agent');
+  agent.publishPresence({selection: {anchor: '03', head: '03'}});
+  await tick();
+  const sent = JSON.parse(new TextDecoder().decode(agentSession.presence.at(-1)));
+  assert.deepEqual(sent.participant, {kind: 'agent', activity: null, label: 'Reading agent', color: sent.participant.color});
+
+  // The person's layer names the agent as an agent, and people by their label.
+  const [session] = liveCarriers.connects;
+  const activity = [];
+  const members = [];
+  peer.live.onAgentActivity(value => activity.push(value));
+  peer.live.onMember(value => members.push(value));
+  const presence = (from, participant) => session.presenceSubscribers.get(from)(new TextEncoder().encode(JSON.stringify({
+    seq: 1, sentAtMs: Date.now(), focus: null, pointer: null, selection: null, drag: null, participant,
+  })), performance.now());
+  session.memberWatcher(AGENT, true);
+  session.memberWatcher(OTHER, true);
+  presence(AGENT, {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: null});
+  presence(OTHER, {kind: 'person', label: 'Visitor', color: '#e5484d', activity: null});
+  assert.deepEqual(peer.live.agents(), [{publisher: AGENT, agentId: 'Reading agent', name: 'Reading agent'}]);
+  assert.deepEqual(peer.live.people(), [{device: OTHER, name: 'Visitor', color: '#e5484d'}]);
+  assert.equal(activity[0].name, 'Reading agent');
+  assert.deepEqual(members.at(-1), {publisher: OTHER, active: true}, 'a name that arrives is announced');
+  await peer.dispose();
+  assert.equal(agent.state, 'closed');
+});
+
+test('a member focusing a record subscribes its typing previews there', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
+  await tick();
+  const [session] = liveCarriers.connects;
+  session.memberWatcher(OTHER, true);
+  const record = {app: 'so.tilo.word-processor', record: 'main'};
+  session.presenceSubscribers.get(OTHER)(new TextEncoder().encode(JSON.stringify({
+    seq: 1, sentAtMs: Date.now(), focus: record, pointer: null, selection: null, drag: null,
+  })), performance.now());
+  assert.ok(session.opsSubscribers.has(`${OTHER}/${runtime.liveRecordTrack(JSON.stringify(record))}`));
+  await peer.dispose();
+});
+
+test('mounts publish through their own view: the one acted in speaks, and an agent mount as its agent', async () => {
+  const runtime = fakeRuntime();
+  const liveCarriers = fakeCarriers();
+  const desktop = fakeDesktop();
+  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers, desktop}));
+  await tick();
+  const target = () => {
+    const handlers = new Map();
+    return {handlers, addEventListener: (type, handler) => handlers.set(type, handler), fire: type => handlers.get(type)()};
+  };
+  const writerTarget = target();
+  const helperTarget = target();
+  const writer = await peer.mountDesktop(writerTarget, {app: 'so.tilo.word-processor'});
+  const helper = await peer.mountDesktop(helperTarget, {app: 'so.tilo.chat'});
+  const agentMount = await peer.mountDesktop(target(), {app: 'so.tilo.word-processor', agent: 'Reading agent'});
+  await tick();
+  const [session] = liveCarriers.connects;
+  const selections = () => session.presence.map(bytes => JSON.parse(new TextDecoder().decode(bytes)).selection?.anchor ?? null);
+  writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
+  await tick();
+  // A hidden helper's caret never overwrites the person's.
+  helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}});
+  await tick();
+  assert.equal(selections().at(-1), 'w1');
+  helperTarget.fire('pointerdown');
+  helper.options.live().publishPresence({selection: {anchor: 'h2', head: 'h2'}});
+  await tick();
+  assert.equal(selections().at(-1), 'h2');
+  // Back in the writer: its unchanged caret is said again.
+  writerTarget.fire('keydown');
+  await tick();
+  assert.equal(selections().at(-1), 'w1');
+  // The agent's mount publishes on the agent's own layer.
+  assert.equal(agentMount.options.live().agent, 'Reading agent');
+  assert.equal(writer.options.live().agent, undefined);
+  await helper.cleanup();
+  await peer.dispose();
+});
+
+test('the room\'s records this page holds, and waiting for one', async () => {
+  const runtime = fakeRuntime();
+  const peer = await connectPeer(options(runtime, memoryStore()));
+  assert.deepEqual(peer.records(), []);
+  const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: 1000});
+  runtime.peer.records.push({app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'});
+  runtime.peer.emit();
+  await arrived;
+  assert.equal(peer.hasRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000'), true);
+  assert.deepEqual(peer.records(), [{app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'}]);
+  await assert.rejects(peer.whenRecord('so.tilo.notes', 'missing', {timeoutMs: 20}), /no so.tilo.notes record missing/);
   await peer.dispose();
 });
