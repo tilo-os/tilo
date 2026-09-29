@@ -35,6 +35,16 @@ impl Resource for Vpn {
         Ok(VpnDoc::read_vault(doc))
     }
 
+    fn bound_actions(state: &Vault) -> Vec<ActionSpec> {
+        // Global Tor follows the saved preference. Import stays on
+        // `local_operations`.
+        crate::actions::provide_resources(state)
+            .into_iter()
+            .flat_map(|root| root.actions)
+            .filter(|spec| spec.kind == OperationKind::Document)
+            .collect()
+    }
+
     fn local_operations() -> Vec<ActionSpec> {
         // Import is a host Effect (file → validated profile → later document
         // add). There is no outbox queue today: the shared profile lands via a
