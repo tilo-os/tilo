@@ -369,6 +369,12 @@ pub enum RichTextAction {
     /// Remove `blocks` (an image, or every cell of a table). Ids are sorted
     /// before removal so replicas emit the identical op sequence.
     RemoveBlocks { blocks: Vec<String> },
+    /// Tombstone `blocks` in a header or footer. Body removal stays
+    /// [`Self::RemoveBlocks`].
+    RemoveRegionBlocks {
+        region: RegionKind,
+        blocks: Vec<String>,
+    },
     /// Move body paragraphs `blocks`, in the order given, to directly after
     /// `after`, or to the start of the body when `after` is `None`: a
     /// dragged paragraph, or a run of them. Each keeps its id, text and
@@ -433,6 +439,7 @@ impl RichTextAction {
             | Self::AppendParagraph { .. }
             | Self::ContinueParagraph { .. }
             | Self::RemoveBlocks { .. }
+            | Self::RemoveRegionBlocks { .. }
             | Self::ReplaceBody { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
@@ -780,6 +787,10 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::RemoveBlocks { blocks } => {
                 self.unique_existing(RegionKind::Body, blocks)
+            }
+            RichTextAction::RemoveRegionBlocks { region, blocks } => {
+                matches!(region, RegionKind::Header | RegionKind::Footer)
+                    && self.unique_existing(*region, blocks)
             }
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
             _ => false,
@@ -1785,10 +1796,14 @@ fn apply_continue_paragraph(dm: &mut DocMut, text: &str) {
 }
 
 fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
+    apply_remove_region_blocks(dm, Region::Body, blocks);
+}
+
+fn apply_remove_region_blocks(dm: &mut DocMut, region: Region, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
     for block in &sorted {
-        dm.tombstone_block_in(Region::Body, block);
+        dm.tombstone_block_in(region, block);
     }
 }
 
@@ -1950,6 +1965,9 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         RichTextAction::AppendParagraph { text } => apply_append_paragraph(dm, text),
         RichTextAction::ContinueParagraph { text } => apply_continue_paragraph(dm, text),
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
+        RichTextAction::RemoveRegionBlocks { region, blocks } => {
+            apply_remove_region_blocks(dm, region.to_region(), blocks);
+        }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         _ => {}
     }

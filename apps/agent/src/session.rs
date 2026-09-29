@@ -2860,6 +2860,7 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         | RichTextAction::SetBlockAttr { blocks, .. }
         | RichTextAction::ClearBlockAttr { blocks, .. }
         | RichTextAction::RemoveBlocks { blocks }
+        | RichTextAction::RemoveRegionBlocks { blocks, .. }
         | RichTextAction::MoveBlocks { blocks, .. } => tilo_actions::InteractionAnchor::Objects {
             ids: blocks.clone(),
         },
