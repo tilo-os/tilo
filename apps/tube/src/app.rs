@@ -2987,11 +2987,20 @@ impl ui::search::capability::SearchSource for TubeApp {
 }
 
 impl ui::resources::PublishesResources for TubeApp {
-    /// Publish the open-resource tree (the playing video + its comments) so the
-    /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// navigation, queue, subscriptions and settings — keep only live catalogue,
+    /// watch context, history/search and device-sync extras.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            #[cfg(feature = "grayjay-sync")]
+            let device = self.device_sync_view();
+            #[cfg(not(feature = "grayjay-sync"))]
+            let device_default = crate::sync::SyncView::default();
+            #[cfg(not(feature = "grayjay-sync"))]
+            let device = &device_default;
+            return crate::actions::live_presentation_resources(self.model_ref(), device);
+        }
         self.publish_resources(doc)
     }
 }

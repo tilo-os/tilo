@@ -781,6 +781,67 @@ fn comment_resource(
     ))
 }
 
+/// Shared-document door for [`tilo_resource::publish`]: navigation, queue,
+/// subscriptions, downloads placeholder and settings. Fetched catalogues,
+/// the open watch page, history and device sync stay on the widget when hosted.
+pub(crate) fn document_children(shared: &crate::resource::TubeShared) -> Vec<Resource> {
+    let model = shared.as_model_projection();
+    vec![
+        navigation_resource(),
+        Resource::new("tube.library", "tube.library", "Known library")
+            .with_child(subscriptions_resource(&model))
+            .with_child(queue_resource(&model))
+            .with_child(Resource::new(
+                "tube.downloads",
+                "tube.collection",
+                "Downloads (none available)",
+            )),
+        settings_resource(&model),
+    ]
+}
+
+/// Live presentation beside the framework root: current watch context, fetched
+/// catalogues, owner-local history/search hits, and Grayjay device sync.
+pub(crate) fn live_presentation_resources(
+    model: &TubeModel,
+    device: &crate::sync::SyncView,
+) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    if let Route::Watch(id) = &model.route
+        && let Some(mut current) = video_resource(model, id, true)
+    {
+        current.id.0 = format!("tube.current:{id}");
+        if let Some(play) = view_spec(
+            "play-pause",
+            "Play or pause",
+            &TubeOperation::TogglePlayback,
+        ) {
+            current = current.with_action(play);
+        }
+        extras.push(current);
+    }
+    if let Some(app) = provide_resources(model).into_iter().next() {
+        for child in app.children {
+            if child.id.0 == "tube.library" {
+                for nested in child.children {
+                    if matches!(
+                        nested.id.0.as_str(),
+                        "tube.videos"
+                            | "tube.creators"
+                            | "tube.playlists"
+                            | "tube.history"
+                            | "tube.search-results"
+                    ) {
+                        extras.push(nested);
+                    }
+                }
+            }
+        }
+    }
+    extras.push(provide_device_resources(device));
+    extras
+}
+
 /// Publish one stable app root with bounded, hierarchical library and current
 /// view resources. Search/history/agents can therefore navigate Tube even when
 /// the watch page is not open, without materialising an unbounded catalogue.
@@ -1286,6 +1347,68 @@ mod tests {
         let n_comments = v.comments.len();
         model.route = Route::Watch(vid.clone());
         (TubeApp::new().with_model_for_test(model), vid, n_comments)
+    }
+
+    #[test]
+    fn resource_publish_owns_shared_door_and_live_extras_stay_separate() {
+        let (app, vid, _) = watching();
+        let mut shared = crate::resource::TubeShared::default();
+        shared.queue.insert(vid.clone(), true);
+        shared.settings = app.model_ref().settings.clone();
+        let published =
+            ui::tilo_resource::publish::<crate::resource::Tube>("tube.app", "Tube", &shared);
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.id.0 == "tube.navigation"),
+            "navigation is on the resource door"
+        );
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.id.0 == "tube.settings"),
+            "settings are on the resource door"
+        );
+        let library = published
+            .children
+            .iter()
+            .find(|child| child.id.0 == "tube.library")
+            .expect("shared library collections");
+        assert!(
+            library
+                .children
+                .iter()
+                .any(|child| child.id.0 == "tube.queue")
+        );
+        assert!(
+            !library
+                .children
+                .iter()
+                .any(|child| child.id.0 == "tube.videos"),
+            "fetched catalogue must not duplicate under publish"
+        );
+
+        let extras =
+            live_presentation_resources(app.model_ref(), &crate::sync::SyncView::default());
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.id.0 == format!("tube.current:{vid}"))
+        );
+        assert!(extras.iter().any(|resource| resource.id.0 == "tube.videos"));
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.id.0 == "tube.device-sync")
+        );
+        assert!(
+            !extras
+                .iter()
+                .any(|resource| resource.id.0 == "tube.app" || resource.kind == "tube.application"),
+            "hosted extras must not republish the application root"
+        );
     }
 
     #[test]

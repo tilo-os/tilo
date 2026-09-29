@@ -1219,7 +1219,19 @@ impl MusicApp {
     }
 
     /// Show the shared library, keeping this device's cache.
+    /// An empty projection does not wipe a library that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Library) {
+        if state.tracks.is_empty()
+            && state.albums.is_empty()
+            && state.artists.is_empty()
+            && state.playlists.is_empty()
+            && (!self.lib.tracks.is_empty()
+                || !self.lib.albums.is_empty()
+                || !self.lib.artists.is_empty()
+                || !self.lib.playlists.is_empty())
+        {
+            return;
+        }
         let searchable = self.lib.tracks != state.tracks
             || self.lib.albums != state.albums
             || self.lib.artists != state.artists
