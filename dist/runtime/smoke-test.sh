@@ -20,6 +20,7 @@ test -x "$runtime"
 test -x "$app"
 
 work=$(mktemp -d)
+profile=$work/home/.local/state/tilo/runtime
 smoke_user=tilort$$
 daemon_pid=
 cleanup() {
@@ -36,6 +37,12 @@ fail() {
         echo "--- $log.log ---" >&2
         cat "$work/$log.log" >&2
     done
+    if [[ -e $profile/startup.stages ]]; then
+        echo "--- startup stages ---" >&2
+        cat "$profile/startup.stages" >&2
+    fi
+    echo "--- profile path ---" >&2
+    namei -l "$profile" >&2 || true
     exit 1
 }
 
@@ -62,7 +69,8 @@ current)
     ;;
 *) echo "TILO_RUNTIME_SMOKE_USER must be throwaway or current" >&2; exit 2 ;;
 esac
-profile=$work/home/.local/state/tilo/runtime
+# A working directory the smoke user may enter, as a login session has.
+cd "$work/home"
 
 # The daemon the systemd user unit starts, on the default profile.
 as_user "$runtime" --daemon >"$work/daemon.log" 2>&1 &
