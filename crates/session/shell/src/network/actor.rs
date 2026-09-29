@@ -5443,6 +5443,10 @@ mod tests {
     /// record created at launch, during the first session's replacement)
     /// reaches the host once a session starts: every later change of the
     /// record depends on it.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "a host, two members and a session replaced mid-publication in one scenario"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn a_document_published_before_a_host_session_reaches_the_host() {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));

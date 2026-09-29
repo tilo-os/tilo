@@ -1190,8 +1190,11 @@ fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
     );
 }
 
+/// Each built tab and the window a panic hook would name while building it.
+type ScopedTabs = Rc<std::cell::RefCell<Vec<(u64, Option<u64>)>>>;
+
 /// Records the window a panic hook would name while each tab is built.
-struct Scoped(Rc<std::cell::RefCell<Vec<(u64, Option<u64>)>>>);
+struct Scoped(ScopedTabs);
 
 impl TileSource for Scoped {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
