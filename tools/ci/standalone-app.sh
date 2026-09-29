@@ -102,8 +102,8 @@ fi
 step "tilo-app check"
 tilo-app check
 
-step "tilo-app package --static"
-tilo-app package --static
+step "tilo-app package --platform linux"
+tilo-app package --platform linux
 ls -l dist
 
 # The one library an app cannot avoid: a thin Tilo OS package links the

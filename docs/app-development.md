@@ -104,7 +104,7 @@ you package the app.
 
 ### System libraries
 
-`new`, `check`, `test`, `dev` and `package --static` need no system
+`new`, `check`, `test`, `dev` and `package --platform linux` need no system
 development packages. Wayland, X11 and xkbcommon are loaded when the app
 starts, and fonts are found without fontconfig's C library. The first Cargo
 command inside the app installs the compiler its `rust-toolchain.toml` pins,
@@ -123,9 +123,11 @@ sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel                #
 sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev          # Debian, Ubuntu
 ```
 
-Without them, `tilo-app package --static` builds a larger package that links
-its own toolkit, and `tilo-app dev` restarts the app after each build
-instead of reloading it in its windows. The CI that `tilo-app add ci` writes
+Without them, `tilo-app package --platform linux` still builds a desktop
+package, which links its own toolkit, and `tilo-app dev` restarts the app
+after each build instead of reloading it in its windows. `--static` does not
+help here: a static Tilo OS package lands far over the application size
+limit. The CI that `tilo-app add ci` writes
 builds in Tilo's builder image, which has them.
 
 The CLI installs from git rather than crates.io. `cargo install --git` builds
