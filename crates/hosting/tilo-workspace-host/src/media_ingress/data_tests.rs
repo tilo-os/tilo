@@ -318,6 +318,29 @@ impl Harness {
         self.call(method, target, body, Some(proof)).await
     }
 
+    /// [`Self::signed`] on a route the browser re-issues in place (state
+    /// chunks, snapshot manifests and chunks), following its [`Deferral`].
+    pub(super) async fn retrying(
+        &mut self,
+        method: &str,
+        target: &str,
+        body: Vec<u8>,
+    ) -> (StatusCode, Vec<u8>) {
+        let mut deferral = Deferral::new();
+        loop {
+            let (status, bytes) = self.signed(method, target, body.clone()).await;
+            let Some(pause) = deferral.pause(status, &bytes) else {
+                return (status, bytes);
+            };
+            drive(
+                &mut self.ingress,
+                &mut self.f.owner,
+                tokio::time::sleep(pause),
+            )
+            .await;
+        }
+    }
+
     /// One `POST /peer/v3/state` request carrying the given exact range.
     pub(super) async fn chunk(
         &mut self,
@@ -334,26 +357,13 @@ impl Harness {
         )
         .unwrap();
         let body = frame(MessageType::StateItemChunk, &chunk.encode().unwrap());
-        let mut deferral = Deferral::new();
-        let bytes = loop {
-            let (status, bytes) = self.signed("POST", "/peer/v3/state", body.clone()).await;
-            if let Some(pause) = deferral.pause(status, &bytes) {
-                drive(
-                    &mut self.ingress,
-                    &mut self.f.owner,
-                    tokio::time::sleep(pause),
-                )
-                .await;
-                continue;
-            }
-            assert_eq!(
-                status,
-                StatusCode::OK,
-                "{}",
-                String::from_utf8_lossy(&bytes)
-            );
-            break bytes;
-        };
+        let (status, bytes) = self.retrying("POST", "/peer/v3/state", body).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "{}",
+            String::from_utf8_lossy(&bytes)
+        );
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert!(rest.is_empty());
         (kind, payload.to_vec())
@@ -715,7 +725,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // Baseline: one signed manifest scoped to this consumer and the head cut.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Baseline),
@@ -751,7 +761,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
             "/peer/v3/snapshots/{}/chunks/{index}",
             hex::encode(issue.pin)
         );
-        let (status, bytes) = h.signed("GET", &target, vec![]).await;
+        let (status, bytes) = h.retrying("GET", &target, vec![]).await;
         assert_eq!(status, StatusCode::OK);
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert_eq!(kind, MessageType::SnapshotChunk);
@@ -790,7 +800,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // Renewal of the live pin keeps every immutable claim.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {
@@ -811,7 +821,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
 
     // An unknown pin (e.g. after a host restart) requires a fresh snapshot.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {
@@ -838,7 +848,7 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
         previous = Some(boundary);
     };
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::ReplayAfter {
@@ -1525,7 +1535,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     let large = native_edit(&h.f.owner, "restart-large", value);
     let (second, _) = h.upload([2; 16], &large).await;
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Baseline),
@@ -1552,7 +1562,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
         })
     };
     let (status, bytes) = h
-        .signed("POST", "/peer/v3/snapshots", renew(manifest.digest()))
+        .retrying("POST", "/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(status, StatusCode::OK);
     let (kind, payload, _) = framing::decode_frame_prefix(&bytes).unwrap();
@@ -1574,7 +1584,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
             "/peer/v3/snapshots/{}/chunks/{index}",
             hex::encode(issue.pin)
         );
-        let (status, bytes) = h.signed("GET", &target, vec![]).await;
+        let (status, bytes) = h.retrying("GET", &target, vec![]).await;
         assert_eq!(status, StatusCode::OK);
         let (kind, payload, rest) = framing::decode_frame_prefix(&bytes).unwrap();
         assert_eq!(kind, MessageType::SnapshotChunk);
@@ -1590,7 +1600,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     assert_eq!(boundary.unwrap().committed(), &issue.scope.committed);
     // The pre-restart digest remains the previous anchor for a lost reply.
     let (status, bytes) = h
-        .signed("POST", "/peer/v3/snapshots", renew(manifest.digest()))
+        .retrying("POST", "/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(
@@ -1599,7 +1609,7 @@ async fn installed_https_snapshot_pin_renews_after_actual_host_restart() {
     );
     // A pin never issued still requires a fresh snapshot.
     let (status, bytes) = h
-        .signed(
+        .retrying(
             "POST",
             "/peer/v3/snapshots",
             snapshot_body(SnapshotOperation::Renew {
