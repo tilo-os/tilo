@@ -4,9 +4,11 @@ autotests = false
 name = "tilo-doc"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Rich-text and spreadsheet document resources for Tilo"
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 # Hooks for tests that compare the bulk import path with the op-by-op reference.
@@ -18,15 +20,16 @@ tilo-automerge.workspace = true
 blake3.workspace = true
 # Binary inputs (images, binary package parts) are referenced by content address; the bytes live
 # in the caller's content store.
-tilo-content = { path = "../../system/content", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 # Ordering keys, history, batched writes and diffs shared by every resource.
-tilo-resource = { path = "../../sdk/tilo-resource" }
+tilo-resource = { version = "0.1.0", path = "../../sdk/tilo-resource" }
 # WorkbookDoc's Action enum.
-tilo-actions = { path = "../../collab/actions" }
+tilo-actions = { version = "0.1.0", path = "../../collab/actions" }
 
 [[test]]
 name = "it"

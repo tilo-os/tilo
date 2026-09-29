@@ -285,11 +285,7 @@ impl<R: Resource> ActionDecl<R> {
 /// origin, when an action is built; never inside `apply`.
 #[must_use]
 pub fn origin_now_ms() -> i64 {
-    web_time::SystemTime::now()
-        .duration_since(web_time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX)
-        })
+    i64::try_from(tilo_clock::unix_now_ms()).unwrap_or(i64::MAX)
 }
 
 /// Encode a resource action under its registry type id.

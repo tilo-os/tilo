@@ -19,9 +19,9 @@
 
 use std::path::Path;
 
-use smithay::input::keyboard::keysyms;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey, NativeKey};
+use xkeysym::key as keysyms;
 
 use crate::shell::osd::{Osd, Transport};
 use crate::shell::quick_settings::actions::QsActions;
@@ -180,12 +180,12 @@ fn classify_named(named: NamedKey) -> Option<MediaKey> {
 
 fn classify_keysym(raw: u32) -> Option<MediaKey> {
     Some(match raw {
-        keysyms::KEY_XF86KbdBrightnessUp => MediaKey::KeyboardBacklightUp,
-        keysyms::KEY_XF86KbdBrightnessDown => MediaKey::KeyboardBacklightDown,
-        keysyms::KEY_XF86KbdLightOnOff => MediaKey::KeyboardBacklightToggle,
-        keysyms::KEY_XF86WLAN | KEY_XF86_RFKILL => MediaKey::Wireless,
-        keysyms::KEY_XF86Display => MediaKey::DisplayMode,
-        keysyms::KEY_XF86TouchpadToggle => MediaKey::TouchpadToggle,
+        keysyms::XF86_KbdBrightnessUp => MediaKey::KeyboardBacklightUp,
+        keysyms::XF86_KbdBrightnessDown => MediaKey::KeyboardBacklightDown,
+        keysyms::XF86_KbdLightOnOff => MediaKey::KeyboardBacklightToggle,
+        keysyms::XF86_WLAN | KEY_XF86_RFKILL => MediaKey::Wireless,
+        keysyms::XF86_Display => MediaKey::DisplayMode,
+        keysyms::XF86_TouchpadToggle => MediaKey::TouchpadToggle,
         _ => return None,
     })
 }
@@ -519,22 +519,19 @@ mod tests {
                 );
             }
             let raw = [
+                (keysyms::XF86_KbdBrightnessUp, MediaKey::KeyboardBacklightUp),
                 (
-                    keysyms::KEY_XF86KbdBrightnessUp,
-                    MediaKey::KeyboardBacklightUp,
-                ),
-                (
-                    keysyms::KEY_XF86KbdBrightnessDown,
+                    keysyms::XF86_KbdBrightnessDown,
                     MediaKey::KeyboardBacklightDown,
                 ),
                 (
-                    keysyms::KEY_XF86KbdLightOnOff,
+                    keysyms::XF86_KbdLightOnOff,
                     MediaKey::KeyboardBacklightToggle,
                 ),
-                (keysyms::KEY_XF86WLAN, MediaKey::Wireless),
+                (keysyms::XF86_WLAN, MediaKey::Wireless),
                 (KEY_XF86_RFKILL, MediaKey::Wireless),
-                (keysyms::KEY_XF86Display, MediaKey::DisplayMode),
-                (keysyms::KEY_XF86TouchpadToggle, MediaKey::TouchpadToggle),
+                (keysyms::XF86_Display, MediaKey::DisplayMode),
+                (keysyms::XF86_TouchpadToggle, MediaKey::TouchpadToggle),
             ];
             for (keysym, want) in raw {
                 assert_eq!(

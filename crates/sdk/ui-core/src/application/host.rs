@@ -597,6 +597,31 @@ impl ApplicationHost {
         /// retires one, so this only bounds a pathological history.
         const MAX_SUCCESSORS: usize = 64;
         let records = self.records_for(definition)?;
+        if definition.keeps_room_record() {
+            let target = definition.unsaved_target(&records);
+            let context = HostContext::prepare(
+                definition,
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
+                &target,
+            )?;
+            let restore = initial_view.map_or(RestoreInput::None, |application| {
+                RestoreInput::Local(context.envelope(View::default(), Some(application)))
+            });
+            return Ok(PreparedComponentInputs {
+                context,
+                target,
+                restore,
+                runner_inputs,
+            });
+        }
         let mut checkout = self
             .saved_record(definition, instance_id)?
             .unwrap_or(default);

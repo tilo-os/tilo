@@ -19,6 +19,7 @@ use objc2_app_kit::{
 use objc2_foundation::{NSArray, NSProcessInfo, NSString, ns_string};
 use tilo_actions::ControlInvocation;
 
+use super::menus::{self, Entry, MenuKind};
 use super::model::{CommandGroup, HostCommand};
 use crate::i18n::I18nManager;
 use crate::platform::Shortcut;
@@ -215,12 +216,20 @@ impl MacChrome {
             Some(sel!(performClose:)),
             Some(("w", NSEventModifierFlags::Command)),
         ));
-        let edit = submenu(mtm, &menu_bar, &I18nManager::lookup_plain("host-menu-edit"));
-        let view = submenu(mtm, &menu_bar, &I18nManager::lookup_plain("host-menu-view"));
+        let edit = submenu(
+            mtm,
+            &menu_bar,
+            &I18nManager::lookup_plain(MenuKind::Edit.title_key()),
+        );
+        let view = submenu(
+            mtm,
+            &menu_bar,
+            &I18nManager::lookup_plain(MenuKind::View.title_key()),
+        );
         let history = submenu(
             mtm,
             &menu_bar,
-            &I18nManager::lookup_plain("host-menu-history"),
+            &I18nManager::lookup_plain(MenuKind::History.title_key()),
         );
         // The item just added, hidden while the app has no History to show.
         let history_item = menu_bar.itemAtIndex(menu_bar.numberOfItems() - 1);
@@ -316,39 +325,39 @@ impl MacChrome {
             menu.removeAllItems();
         }
         let commands = self.target.ivars().commands.borrow();
-        let mut previous: Option<CommandGroup> = None;
-        for (index, command) in commands.iter().enumerate() {
-            let menu = match command.group {
-                CommandGroup::Undo | CommandGroup::Search | CommandGroup::AppActions => &self.edit,
-                CommandGroup::AppViews => &self.view,
-                CommandGroup::History | CommandGroup::RecentChanges => &self.history,
-            };
-            if previous.is_some_and(|group| group != command.group) && menu.numberOfItems() > 0 {
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
+        for (kind, menu) in MenuKind::ALL
+            .into_iter()
+            .zip([&self.edit, &self.view, &self.history])
+        {
+            for entry in menus::entries(&commands, kind) {
+                let Entry::Command(index) = entry else {
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                    continue;
+                };
+                let command = &commands[index];
+                let key = command.shortcut.as_ref().map(|shortcut| {
+                    let mut flags = NSEventModifierFlags::Command;
+                    if shortcut.has_shift() {
+                        flags |= NSEventModifierFlags::Shift;
+                    }
+                    if shortcut.has_alt() {
+                        flags |= NSEventModifierFlags::Option;
+                    }
+                    (shortcut.key().to_lowercase(), flags)
+                });
+                let item = item(
+                    mtm,
+                    &command.label,
+                    Some(sel!(performHostCommand:)),
+                    key.as_ref().map(|(key, flags)| (key.as_str(), *flags)),
+                );
+                item.setTag(isize::try_from(index).unwrap_or(isize::MAX));
+                // SAFETY: `Target` implements `performHostCommand:` and
+                // outlives the menus, which `MacChrome` owns alongside it.
+                let target: &AnyObject = &self.target;
+                unsafe { item.setTarget(Some(target)) };
+                menu.addItem(&item);
             }
-            previous = Some(command.group);
-            let key = command.shortcut.as_ref().map(|shortcut| {
-                let mut flags = NSEventModifierFlags::Command;
-                if shortcut.has_shift() {
-                    flags |= NSEventModifierFlags::Shift;
-                }
-                if shortcut.has_alt() {
-                    flags |= NSEventModifierFlags::Option;
-                }
-                (shortcut.key().to_lowercase(), flags)
-            });
-            let entry = item(
-                mtm,
-                &command.label,
-                Some(sel!(performHostCommand:)),
-                key.as_ref().map(|(key, flags)| (key.as_str(), *flags)),
-            );
-            entry.setTag(isize::try_from(index).unwrap_or(isize::MAX));
-            // SAFETY: `Target` implements `performHostCommand:` and outlives
-            // the menus, which `MacChrome` owns alongside it.
-            let target: &AnyObject = &self.target;
-            unsafe { entry.setTarget(Some(target)) };
-            menu.addItem(&entry);
         }
         if let Some(item) = &self.history_item {
             item.setHidden(self.history.numberOfItems() == 0);

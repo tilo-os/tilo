@@ -76,6 +76,8 @@ pub enum Icon {
     Trash2,
     Pencil,
     Square,
+    /// A window's minimize control.
+    Minus,
     FolderPlus,
     FilePlus,
     List,
@@ -599,6 +601,7 @@ pub(crate) fn icon_subpaths(icon: Icon) -> Vec<BezPath> {
             path_from_d("m15 5 4 4"),
         ],
         Icon::Square => vec![rect_path(3.0, 3.0, 18.0, 18.0, 2.0)],
+        Icon::Minus => vec![path_from_d("M5 12h14")],
         Icon::FolderPlus => vec![
             path_from_d("M12 10v6"),
             path_from_d("M9 13h6"),

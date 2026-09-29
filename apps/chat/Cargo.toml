@@ -35,7 +35,7 @@ live-media = [
 fnv.workspace = true
 hex.workspace = true
 emoji = { path = "../../crates/text/emoji" }
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo action model: the serializable, replayable unit of CRDT mutation
 # behind Ctrl+K and cross-peer collaboration. Chat's messages/channels/reactions
@@ -79,7 +79,7 @@ workspace = true
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 tilo-content = { path = "../../crates/system/content", features = ["dir", "device"] }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
-media = { path = "../../crates/media/core", default-features = false }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media", default-features = false }
 # The Tilo runtime user-identity loader (TILO_USER_IDENTITY) — the canonical
 # per-peer identity the collab layer signs with. Chat uses its public key +
 # display name so every running instance is a distinct participant.

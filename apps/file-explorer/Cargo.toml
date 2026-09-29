@@ -24,7 +24,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 atomic-file = { path = "../../crates/system/atomic-file" }
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }

@@ -31,7 +31,7 @@ relay = ["dep:tilo-browser-peer", "dep:tilo-automerge", "dep:tokio"]
 dylink = []
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 hex.workspace = true
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-delivery-protocol = { path = "../../hosting/tilo-delivery-protocol" }

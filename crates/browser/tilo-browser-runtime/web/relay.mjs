@@ -23,7 +23,7 @@
  */
 import {coreRuntime, mountDesktop} from './host.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
-import {colorOf, createRelayLive, relayLiveCarriers} from './relay-live.mjs';
+import {colorOf, createRelayLive, createSpeakers, relayLiveCarriers} from './relay-live.mjs';
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
@@ -161,46 +161,24 @@ export async function connectRelayPeer({
       for (const member of workspace?.members ?? []) if (member?.agent && typeof member.name === 'string') agentNames.add(member.name);
     }
   };
-  // One presence per layer: of the mounts sharing it, the one the person
-  // (or the agent) acted in last publishes; idle or hidden mounts never
-  // overwrite it.
-  const speaker = new Map();
+  const speakers = createSpeakers();
   const mountLive = (target, options) => {
-    const token = {};
-    const views = new Map();
+    const speaker = speakers.mount();
     const current = () => {
       const agent = typeof options.agent === 'string' && options.agent ? options.agent
         : agentNames.has(options.author) ? options.author : undefined;
       return agent ? agentLive(agent) : live;
     };
-    const speaks = layer => {
-      if ((speaker.get(layer) ?? token) !== token) return false;
-      speaker.set(layer, token);
-      return true;
-    };
-    const view = layer => {
-      let found = views.get(layer);
-      if (!found) {
-        found = Object.create(layer.api, {
-          publishPresence: {value: partial => speaks(layer) && layer.api.publishPresence(partial)},
-          publishPreview: {value: (record, ops) => speaks(layer) && layer.api.publishPreview(record, ops)},
-        });
-        views.set(layer, found);
-      }
-      return found;
-    };
-    const claim = () => speaker.set(current(), token);
-    const release = () => { for (const layer of layers()) if (speaker.get(layer) === token) speaker.delete(layer); };
     const input = new AbortController();
     for (const type of ['pointerdown', 'keydown', 'focusin']) {
-      target.addEventListener(type, claim, {capture: true, passive: true, signal: input.signal});
+      target.addEventListener(type, () => speaker.claim(current()), {capture: true, passive: true, signal: input.signal});
     }
     return {
-      options: {live: () => view(current()), liveMembers: () => JSON.stringify(current().members())},
+      options: {live: () => speaker.view(current()), liveMembers: () => JSON.stringify(current().members())},
       adopt(mount) {
         const {invokeAction, cleanup} = mount;
-        mount.invokeAction = (...args) => { claim(); return invokeAction(...args); };
-        mount.cleanup = async (...args) => { input.abort(); release(); return cleanup(...args); };
+        mount.invokeAction = (...args) => { speaker.acted(); return invokeAction(...args); };
+        mount.cleanup = async (...args) => { input.abort(); speaker.release(); return cleanup(...args); };
         return mount;
       },
     };

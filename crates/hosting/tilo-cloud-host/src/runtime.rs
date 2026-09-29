@@ -1442,7 +1442,7 @@ mod durability_runtime_tests {
             || {
                 runtime.block_on(async {
                     publish(&browser, &StoredPublication::mutation(message).unwrap()).unwrap();
-                    tokio::time::timeout(Duration::from_secs(2), &mut daemon).await
+                    tokio::time::timeout(tilo_test_env::hang_bound(), &mut daemon).await
                 })
             },
         );

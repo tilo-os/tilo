@@ -11,7 +11,11 @@ use std::{
 use tilo_delivery_protocol::delivery_v3::live_wire::*;
 use tokio::time::timeout;
 
-const T: Duration = Duration::from_secs(10);
+/// Bound for things that must eventually happen: the shared hang bound, so a
+/// loaded runner is not mistaken for a missing forward or close.
+fn t() -> Duration {
+    tilo_test_env::hang_bound()
+}
 
 fn http() -> reqwest::Client {
     tilo_net::http::client()
@@ -41,7 +45,7 @@ fn wanted(client: &Client, root: &Path, participation: u8, publish: bool) -> Liv
 }
 async fn grant(client: &Client, wanted: &LiveGrantRequest) -> (reqwest::StatusCode, Vec<u8>) {
     client
-        .post(LIVE_GRANT_TARGET, wanted.encode().unwrap())
+        .post_retrying(LIVE_GRANT_TARGET, wanted.encode().unwrap())
         .await
 }
 fn host_key(root: &Path) -> ed25519_dalek::VerifyingKey {
@@ -184,7 +188,7 @@ async fn live_connect(
     let wt = web_transport_quinn::ClientBuilder::new()
         .with_server_certificates(vec![certificate.clone()])?;
     let transport = timeout(
-        T,
+        t(),
         wt.connect(
             web_transport_quinn::proto::ConnectRequest::new(
                 format!("{origin}{LIVE_WEBTRANSPORT_PATH}").parse::<url::Url>()?,
@@ -193,12 +197,12 @@ async fn live_connect(
         ),
     )
     .await??;
-    timeout(T, LiveClient::start(transport, &token, Some(own)))
+    timeout(t(), LiveClient::start(transport, &token, Some(own)))
         .await?
         .map_err(anyhow::Error::from)
 }
 async fn announced(client: &LiveClient, path: &str) -> moq_net::broadcast::Consumer {
-    timeout(T, client.member(path))
+    timeout(t(), client.member(path))
         .await
         .expect("announce deadline")
         .expect("announced")
@@ -245,7 +249,7 @@ async fn first_presence(
     at: &mut moq_net::track::Subscriber,
     seq: &mut u64,
 ) -> u64 {
-    timeout(T, async {
+    timeout(t(), async {
         loop {
             *seq += 1;
             assert!(from.publish_presence(&presence(*seq)));
@@ -323,7 +327,7 @@ async fn forwarded(
     delivery: &mut u8,
 ) -> (Vec<Vec<u8>>, Vec<u8>) {
     let mut uploaded = Vec::new();
-    let frame = timeout(T, async {
+    let frame = timeout(t(), async {
         loop {
             *delivery += 1;
             uploaded.push(upload(author, root, *delivery).await);
@@ -440,7 +444,7 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
 
     // Forged tokens are refused before any origin is attached.
     if let Ok(forged) = live_connect(&origin, &certificate, &owner_path, b"forged".to_vec()).await {
-        timeout(T, forged.session().closed())
+        timeout(t(), forged.session().closed())
             .await
             .expect("forged token closes");
     }
@@ -581,7 +585,7 @@ async fn cloud_live_relays_presence_between_two_native_clients_and_forwards_sign
     let guest_at_a = announced(&a, &guest_path).await;
     drop(ops);
     drop(b);
-    timeout(T, guest_at_a.closed())
+    timeout(t(), guest_at_a.closed())
         .await
         .expect("guest namespace withdrawn");
     delivery += 1;
@@ -690,7 +694,7 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
         }),
     )
     .await;
-    timeout(T, async {
+    timeout(t(), async {
         tokio::select! {
             _ = demoted_at_v.closed() => {}
             _ = async { while let Ok(Some(_)) = d_at_v.recv_datagram().await {} } => {}
@@ -729,7 +733,7 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
     )
     .await;
     let committed = removed.elapsed();
-    timeout(T, async {
+    timeout(t(), async {
         tokio::select! {
             _ = editor_at_v.closed() => {}
             _ = async { while let Ok(Some(_)) = e_at_v.recv_datagram().await {} } => {}
@@ -741,7 +745,7 @@ async fn cloud_live_viewer_subscribes_only_and_revocation_aborts_only_that_publi
         "CLOUD_LIVE_REVOCATION commit={committed:?} tracks_ended={:?}",
         removed.elapsed()
     );
-    timeout(T, e.session().closed())
+    timeout(t(), e.session().closed())
         .await
         .expect("revoked session closes");
     assert!(

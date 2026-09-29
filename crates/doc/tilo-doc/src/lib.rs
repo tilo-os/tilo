@@ -33,6 +33,7 @@
 pub mod diff;
 pub mod document;
 pub mod export;
+pub mod history;
 pub mod model;
 pub mod schema;
 pub mod semantic_read;

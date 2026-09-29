@@ -59,14 +59,21 @@ containerfile="$repo/os/Containerfile"
 # tilo-identity.service user unit (a one-shot chain-v1 repair) is gone; the
 # compositor verifies and repairs identity at startup. The session flight
 # recorder and tilo-session-report (through desktop-binaries) are deliberate
-# additions: the image's tilo-session now records each login.
+# additions: the image's tilo-session now records each login. The
+# systemd-boot-random-seed drop-in, which skips the seed refresh on a
+# read-only /boot, is a deliberate addition. The rootfs
+# takes its build outputs from native-builder-payload, the builder's outputs
+# copied unchanged, so it no longer needs the compile stage's intermediate
+# cache.
+# tilo-esp-write and its unit, the only writer of the read-only ESP, are
+# deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=c7ba57f4be333ea5d9c41d0565e5deb4b8f94ea8c93650e6a613b3af8dd891ac
+expected_contract=e17ce8194539352f9f6fcb1f8ffc7f853ff99b0f46f2bf2be93cde60712ea0b6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
@@ -103,9 +110,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
-# Keep the current 149-instruction bound exact and reviewed.
-[ "$instructions" -le 149 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 149)" >&2
+# Pinning the unpacked base's directory times to the epoch adds one RUN.
+# Keep the current 150-instruction bound exact and reviewed.
+[ "$instructions" -le 150 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 150)" >&2
   exit 1
 }
 

@@ -9,7 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
   workflow_dispatch:
 
 concurrency:
@@ -72,12 +75,6 @@ jobs:
 
       - name: Repository policy suite
         run: bash tools/policy/run.sh
-
-      - name: Use the compiler cache
-        uses: ./.forgejo/actions/compiler-cache
-        env:
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
       # The lint app developers run locally: an app that adds platform code
       # without moving it into a platform crate or declaring itself native

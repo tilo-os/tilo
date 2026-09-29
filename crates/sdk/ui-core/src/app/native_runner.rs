@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod linux_header;
+
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
@@ -82,9 +85,15 @@ struct AppHandler {
     /// The menu bar and title-bar search field, when the host draws them.
     #[cfg(target_os = "macos")]
     host_chrome: Option<crate::host_chrome::macos::MacChrome>,
+    /// The menu bar and Jump List, when the host draws them.
+    #[cfg(windows)]
+    host_chrome: Option<crate::host_chrome::windows::WindowsChrome>,
     /// What the host chrome last presented, to skip unchanged refreshes.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     host_commands_key: Option<super::host_commands::HostCommandsKey>,
+    /// Who decorates the window, and the header bar when the app does.
+    #[cfg(target_os = "linux")]
+    decorations: linux_header::Decorations,
 }
 
 #[cfg(target_os = "macos")]
@@ -123,7 +132,10 @@ impl AppHandler {
         self.host_chrome = Some(chrome);
         self.host_commands_key = None;
     }
+}
 
+#[cfg(any(target_os = "macos", windows))]
+impl AppHandler {
     /// Hand the host chrome fresh commands when anything they show changed.
     fn refresh_host_chrome(&mut self) {
         if let Some(chrome) = &self.host_chrome {
@@ -133,6 +145,38 @@ impl AppHandler {
                 chrome.update(self.app.host_commands(true));
             }
         }
+    }
+}
+
+#[cfg(windows)]
+impl AppHandler {
+    /// Put History, Search and Undo into the window's menu bar and the Jump
+    /// List, and run the command a Jump List task launched this process with.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let proxy = self.a11y_proxy.clone();
+        if let Some(invocation) = crate::host_chrome::windows::take_startup_command() {
+            let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+        }
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+        self.host_chrome = Some(crate::host_chrome::windows::WindowsChrome::install(
+            hwnd,
+            move |invocation| {
+                let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+            },
+        ));
+        self.host_commands_key = None;
     }
 }
 
@@ -1529,6 +1573,8 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
+        #[cfg(target_os = "linux")]
+        self.decorations.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1681,6 +1727,8 @@ impl AppHandler {
         crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        #[cfg(target_os = "linux")]
+        self.decorations.draw(app, &mut scene, transform);
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -2884,10 +2932,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        #[cfg(target_os = "linux")]
-        {
-            crate::host::native::attach_display(event_loop);
-        }
+        crate::host::native::attach_display(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -2999,7 +3044,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.install_host_chrome(&window);
         // Honour system/presentation roots before the first visible configure.
         // The normal reconcile path still owns output selection and later changes.
@@ -3104,7 +3149,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
@@ -3519,6 +3564,16 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let routed = self.decorations.route(&mut self.app, window, &event);
+            if routed.close {
+                self.close_primary_window(event_loop, window);
+            }
+            if routed.consumed {
+                return;
+            }
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
@@ -3758,10 +3813,12 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host_chrome: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host_commands_key: None,
+            #[cfg(target_os = "linux")]
+            decorations: linux_header::Decorations::Unsettled,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
