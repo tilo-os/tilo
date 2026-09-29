@@ -192,6 +192,11 @@ impl DataRoutes {
             }
             _ => {}
         }
+        // Every remaining route has effects: take it on, so the front waits for
+        // its answer instead of timing it out (polls are held, not started).
+        if request.route() != Route::EventsPoll && !request.start() {
+            return Dispatched::Responded;
+        }
         // Snapshot manifests own their request: the snapshot module may answer
         // now or hand hashing/staging off the owner loop and answer from pump().
         if request.route() == Route::Snapshot {
