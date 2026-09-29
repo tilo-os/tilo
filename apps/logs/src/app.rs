@@ -2467,7 +2467,8 @@ impl Widget for LogsApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
     );
 
     fn measure(
@@ -2849,12 +2850,6 @@ impl Widget for LogsApp {
         }
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-    }
     fn needs_redraw(&self) -> bool {
         self.dirty
     }
@@ -2871,6 +2866,15 @@ impl Widget for LogsApp {
         // Keep pumping frames while the push slide eases into place, or
         // while live tail is on.
         self.push.is_animating() || (self.allow_live && self.live_tail) || self.export_rx.is_some()
+    }
+}
+
+impl ui::undo::UndoPoints for LogsApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
     }
 }
 

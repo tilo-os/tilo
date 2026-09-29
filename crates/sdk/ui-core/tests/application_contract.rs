@@ -1591,7 +1591,10 @@ mod paired_local {
     thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
-        tilo_ui::provides!(dyn tilo_ui::view::capability::ViewState);
+        tilo_ui::provides!(
+            dyn tilo_ui::view::capability::ViewState,
+            dyn tilo_ui::undo::UndoPoints
+        );
 
         fn build_layout(
             &mut self,
@@ -1632,6 +1635,9 @@ mod paired_local {
         fn set_focus(&mut self, focused: bool) {
             self.0.borrow_mut().focused = focused;
         }
+    }
+
+    impl tilo_ui::undo::UndoPoints for LocalRoot {
         fn get_state(&self) -> Option<String> {
             Some("current caret".into())
         }

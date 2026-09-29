@@ -24,7 +24,7 @@ jobs:
   quality:
     needs: builder
     runs-on: runner
-    timeout-minutes: 240
+    timeout-minutes: 180
     container:
       image: ${{ needs.builder.outputs.image }}
     env:

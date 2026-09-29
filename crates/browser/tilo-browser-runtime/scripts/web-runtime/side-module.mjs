@@ -15,7 +15,7 @@ import {execFileSync} from 'node:child_process';
 import {copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync} from 'node:fs';
 import {extname, join, relative} from 'node:path';
 import {fileURLToPath} from 'node:url';
-import {CORE_PACKAGE, abiId, abiInputs, cargoArtifacts, cargoMessages, isTargetUnit, packageKey} from './abi.mjs';
+import {CORE_PACKAGE, abiId, abiInputs, abiPackages, cargoArtifacts, cargoMessages, isTargetUnit, packageKey} from './abi.mjs';
 
 const unitKey = artifact => `${artifact.package_id} ${artifact.target.name}`;
 const rlibOf = artifact => artifact.filenames.find(name => name.endsWith('.rlib'));
@@ -91,7 +91,7 @@ export function plan({coreJson, coreGraph, appJson, appGraph, packageName, crate
     .filter(m => m.reason === 'build-script-executed' && appPackages.has(packageKey(m.package_id)) && !corePackages.has(packageKey(m.package_id)) && m.linked_libs?.length)
     .map(m => `${m.package_id}: ${m.linked_libs.join(' ')}`);
   if (nativeLibraries.length) throw Error(`side modules cannot link native libraries:\n  ${nativeLibraries.join('\n  ')}`);
-  const seenAbi = abiId(abiInputs({cargoJson: appJson, repo, runtime, rustflags, packages: corePackages}));
+  const seenAbi = abiId(abiInputs({cargoJson: appJson, repo, runtime, rustflags, packages: abiPackages(coreGraph)}));
   if (seenAbi !== coreAbi) {
     throw Error(`the core's crates changed since the core was built (its ABI ${coreAbi}, now ${seenAbi}); rebuild the core first`);
   }

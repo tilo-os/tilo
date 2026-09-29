@@ -109,7 +109,7 @@ impl Widget for RebuildHarness {
 fn caret(app: &App) -> Option<String> {
     let id = app.focused_node?;
     let w = *app.layout.node_map.get(&id)?;
-    unsafe { (*w).get_state() }
+    unsafe { crate::undo::get_state(&(*w)) }
 }
 
 #[test]
@@ -124,7 +124,7 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
 
         let id = app.focused_node.expect("input focused at startup");
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
         }
         assert_eq!(caret(&app).as_deref(), Some("3"));
 
@@ -159,7 +159,7 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
 
         let id = app.focused_node.unwrap();
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
         }
 
         let mut tmp = AutoCommit::new();

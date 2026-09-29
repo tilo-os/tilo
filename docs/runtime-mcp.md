@@ -87,7 +87,11 @@ share: `screenshot`, the click family, `mouse_move`, `left_click_drag`,
 `left_mouse_down`/`up`, `scroll`, `type`, `key` and `hold_key` (xdotool names
 such as `ctrl+s`), `wait`, `zoom` and `cursor_position`. They exist for
 windows that publish no typed action; tool descriptions steer models to the
-typed tools first.
+typed tools first. Such legacy applications (a browser, an office suite) are
+started like any other: `tilo_query` with `workspace: true` lists each
+installed desktop application as `app.host:<desktop-id>` (kind
+`applications.host-app`), and its `open` action launches it unconfined into
+the workspace.
 
 Each action returns its post-action screenshot (JPEG by default, `format: png`
 on request) and a text block with `frame_id`, `width` and `height`.

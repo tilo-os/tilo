@@ -6052,6 +6052,55 @@ fn build_backend(kind: BackendKind) -> Box<dyn Backend> {
 /// Clamped rather than wrapped: a client-visible fullscreen target derived
 /// from a bogus size is far less harmful than the sign flip a bare `as`
 /// cast would produce, and no real display size comes anywhere near `i32::MAX`.
+/// A headless session has no seat anyone sits at: blanking, locking or
+/// suspending it on idle protects nothing, and a lock strands the agents
+/// driving it, since nobody there can type the unlock password. Explicit
+/// locking stays available.
+fn idle_policy_for_backend(
+    policy: tilo_power_mgmt::PowerPolicy,
+    headless: bool,
+) -> tilo_power_mgmt::PowerPolicy {
+    if !headless {
+        return policy;
+    }
+    tilo_power_mgmt::PowerPolicy {
+        idle_blank: None,
+        idle_lock: None,
+        idle_suspend: None,
+        ..policy
+    }
+}
+
+#[cfg(test)]
+mod idle_policy_tests {
+    use super::idle_policy_for_backend;
+    use std::time::Duration;
+
+    #[test]
+    fn only_a_headless_session_drops_idle_blank_lock_and_suspend() {
+        let configured = tilo_power_mgmt::PowerPolicy {
+            idle_blank: Some(Duration::from_secs(60)),
+            idle_lock: Some(Duration::from_secs(300)),
+            idle_suspend: Some(Duration::from_secs(900)),
+            ..tilo_power_mgmt::config::default_policy()
+        };
+        let seated = idle_policy_for_backend(configured, false);
+        assert_eq!(seated.idle_lock, configured.idle_lock);
+        assert_eq!(seated.idle_blank, configured.idle_blank);
+        assert_eq!(seated.idle_suspend, configured.idle_suspend);
+        let headless = idle_policy_for_backend(configured, true);
+        assert_eq!(
+            (
+                headless.idle_blank,
+                headless.idle_lock,
+                headless.idle_suspend
+            ),
+            (None, None, None)
+        );
+        assert_eq!(headless.lid_close_action, configured.lid_close_action);
+    }
+}
+
 fn size_to_signed(size: (u32, u32)) -> (i32, i32) {
     (
         i32::try_from(size.0).unwrap_or(i32::MAX),
@@ -6807,7 +6856,9 @@ pub fn run() {
     // lock-overlay paints. The power policy from `settings.json` owns the
     // blank and suspend timeouts at startup and on live reload; environment
     // values only seed the headless/default config before that policy applies.
-    let mut power_policy = tilo_power_mgmt::config::load_policy();
+    let headless = backend_kind == BackendKind::Headless;
+    let mut power_policy =
+        idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
     let idle_config = if crate::compositor::dev_env::DEV_ENV_OVERRIDES
         && (std::env::var_os(crate::compositor::idle::BLANK_SECS_ENV).is_some()
             || std::env::var_os(crate::compositor::idle::LOCK_SECS_ENV).is_some()
@@ -8134,7 +8185,7 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
-            let policy = tilo_power_mgmt::config::load_policy();
+            let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
             session.set_lock_timeout(policy.idle_lock);
@@ -8383,6 +8434,7 @@ pub fn run() {
                     session_changed = true;
                 }
                 tilo_power_mgmt::PowerSignal::IdleSuspendChanged(timeout) => {
+                    let timeout = timeout.filter(|_| !headless);
                     session.set_suspend_timeout(timeout);
                     tracing::info!(target: "tilo::power", ?timeout, "live idle-suspend timeout updated");
                 }

@@ -1223,7 +1223,8 @@ impl Widget for CalculatorApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
     );
 
     fn is_focusable(&self) -> bool {
@@ -1866,20 +1867,6 @@ impl Widget for CalculatorApp {
         }
     }
 
-    /// Seal a burst of edits into one undo checkpoint after a short pause, so
-    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
-    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
-    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
-    /// bespoke stack.
-    fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1892,6 +1879,21 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::undo::UndoPoints for CalculatorApp {
+    /// Seal a burst of edits into one undo checkpoint after a short pause, so
+    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
+    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
+    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
+    /// bespoke stack.
+    fn needs_commit(&self) -> bool {
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
     }
 }
 
@@ -3019,6 +3021,7 @@ mod tests {
     /// commit. Fresh app + state per phase.
     #[test]
     fn formula_edits_sync_through_crdt_and_framework_undo() {
+        use ui::undo::needs_commit;
         // phase undo_redo_of_formula_edit_routes_through_ui_state
         {
             // Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
@@ -3117,7 +3120,7 @@ mod tests {
             app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.relayout();
             app.layout_active();
-            assert!(!app.needs_commit(), "no edit yet → nothing to commit");
+            assert!(!needs_commit(&app), "no edit yet → nothing to commit");
             let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
             tap(&mut app, &mut st, five);
             assert_eq!(app.model.expr, "5", "seal: tapped 5");
@@ -3126,7 +3129,7 @@ mod tests {
                 "an edit must arm the coalescing timer"
             );
             assert!(
-                !app.needs_commit(),
+                !needs_commit(&app),
                 "a just-made edit must not seal a checkpoint mid-burst"
             );
             // Once the coalesce window has elapsed the widget asks to checkpoint.
@@ -3136,12 +3139,12 @@ mod tests {
                     .unwrap(),
             );
             assert!(
-                app.needs_commit(),
+                needs_commit(&app),
                 "after the pause the edit must seal into a checkpoint"
             );
             // The App calls on_commit after snapshotting; that clears the pending edit.
-            app.on_commit();
-            assert!(!app.needs_commit(), "seal: on_commit clears needs_commit");
+            ui::undo::on_commit(&mut app);
+            assert!(!needs_commit(&app), "seal: on_commit clears needs_commit");
             assert!(
                 app.last_edit_time.is_none(),
                 "seal: on_commit clears the timer"

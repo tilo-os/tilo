@@ -157,7 +157,7 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual(1, sum(len(values) for values in classified.values()))
             # Non-input prose and an unrelated CI helper must not become fleet rebuilds.
             self.assertEqual([], app_release.apps_from_changes(
-                ['docs/architecture.md', 'tools/ci/queue_coalesce.py'], CATALOG))
+                ['docs/architecture.md', 'tools/ci/timing_report.py'], CATALOG))
         with self.subTest(phase='check scheduling is not an app release dependency'):
             paths = ['tools/ci/affected_packages.py', 'tools/tests/test_ci_select.py',
                      'docs/ci-performance.md']
