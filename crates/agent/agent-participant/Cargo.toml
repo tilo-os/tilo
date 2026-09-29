@@ -100,12 +100,13 @@ tokio-rustls.workspace = true
 rustls.workspace = true
 sha2.workspace = true
 bytes.workspace = true
+tilo-test-env = { path = "../../dev/test-env" }
 tokio = { workspace = true, features = ["full"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
 
 [package.metadata.cargo-machete]
 # Used by tilo-browser-peer's test support, which the tests include by path.
-ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tokio-rustls"]
+ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tilo-test-env", "tokio-rustls"]
 
 [lints]
 workspace = true
