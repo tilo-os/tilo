@@ -242,6 +242,7 @@ members = [
     "crates/runtime/runtime-portal",
     "crates/runtime/runtime-portal-xdg",
     "crates/runtime/os-search",
+    "crates/runtime/tilo-file-provider",
     "crates/runtime/tilo-identity-host",
     "crates/runtime/tilo-runtime",
     "crates/runtime/ush",
