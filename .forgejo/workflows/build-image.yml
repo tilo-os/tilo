@@ -1097,24 +1097,28 @@ jobs:
           # shell on aarch64 in run 48581).
           # The job count never reaches the image, so the two lanes of a
           # release may differ.
-          # Without LTO a rustc or mold link still peaks near 2.5 GiB; at one
-          # job per GiB the dev lane drove its slot into swap and starved the
-          # host's disk path for every other slot.
+          # Without LTO the release binaries at 16 jobs peaked at 10.4 GiB
+          # together (shell 7.2 GiB, tilo-ui 5.7, the rest under 3; measured on
+          # a 247 GiB builder), so a dev lane takes 16 jobs where 1.5 GiB each
+          # fits. At one job per GiB it had driven its slot into swap and
+          # starved the host's disk path for every other slot.
           # The job's own limit (cgroup), else the VM's memory.
           memory_mib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 ))
           limit="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
           [[ $limit == max ]] || (( limit / 1048576 >= memory_mib )) || memory_mib=$(( limit / 1048576 ))
           memory_mib=$(( memory_mib - 4096 ))
-          per_job_mib=2560
+          per_job_mib=1536
           [[ $publish != true ]] || per_job_mib=8192
           jobs=$(( memory_mib / per_job_mib ))
           memory_gib=$(( memory_mib / 1024 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
+          [[ $publish == true ]] || (( jobs <= 16 )) || jobs=16
           # The ARM shell thin-LTO link was OOM-killed with five cargo jobs on
           # the 35 GiB release slot (#48581). Keep at most two overlapping
           # release links there, even when the host advertises more memory
           # than the job can safely use alongside BuildKit and other slots.
-          if [[ $publish == true && '${{ matrix.arch }}' == aarch64 && $jobs -gt 2 ]]; then
+          # The release class (128 GiB) keeps the memory-derived count.
+          if [[ $publish == true && '${{ matrix.arch }}' == aarch64 && $jobs -gt 2 && $memory_mib -lt 65536 ]]; then
             jobs=2
           fi
           (( jobs < 1 )) && jobs=1
