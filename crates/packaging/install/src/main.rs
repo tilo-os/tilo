@@ -888,7 +888,7 @@ fn install(
     Ok(())
 }
 
-/// Let GNOME Shell and KRunner search the resources the runtime beside this
+/// Let GNOME Shell and `KRunner` search the resources the runtime beside this
 /// binary admits. Best effort: an app installs and runs without it.
 #[cfg(all(unix, not(target_os = "macos")))]
 fn register_search_providers() {

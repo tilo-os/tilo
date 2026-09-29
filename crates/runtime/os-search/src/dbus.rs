@@ -1,4 +1,4 @@
-//! GNOME Shell and KRunner search over the session bus.
+//! GNOME Shell and `KRunner` search over the session bus.
 //!
 //! Both ask this runtime to match what a person types and hand back only an
 //! entry id to open; neither ever sees more than the catalogue offered the
@@ -17,12 +17,12 @@ use crate::{OsSearch, SearchEntry};
 pub const BUS_NAME: &str = "so.tilo.Runtime";
 /// Where GNOME Shell finds `org.gnome.Shell.SearchProvider2`.
 pub const GNOME_PATH: &str = "/so/tilo/Runtime/SearchProvider";
-/// Where KRunner finds `org.kde.krunner1`.
+/// Where `KRunner` finds `org.kde.krunner1`.
 pub const KRUNNER_PATH: &str = "/so/tilo/Runtime/KRunner";
 
 /// Results one query answers at most; a host shows a handful.
 const RESULTS: usize = 20;
-/// KRunner's category relevance for a match that may be what was meant.
+/// `KRunner`'s category relevance for a match that may be what was meant.
 const POSSIBLE_MATCH: i32 = 30;
 
 /// A result's properties, as both hosts read them (`a{sv}`).
@@ -84,6 +84,7 @@ struct GnomeShell {
 
 #[allow(
     clippy::unused_self,
+    clippy::needless_pass_by_value,
     reason = "the D-Bus interface fixes these signatures, including methods with nothing to do"
 )]
 #[interface(name = "org.gnome.Shell.SearchProvider2")]

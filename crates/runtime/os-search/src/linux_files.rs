@@ -1,5 +1,5 @@
 //! The files that register the runtime's search providers with GNOME Shell
-//! and KRunner, under a user's `$XDG_DATA_HOME`.
+//! and `KRunner`, under a user's `$XDG_DATA_HOME`.
 //!
 //! Both hosts find a provider through a file naming its bus name and object
 //! path, and D-Bus starts the runtime for either when it is not running.
