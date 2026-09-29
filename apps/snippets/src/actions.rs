@@ -629,7 +629,12 @@ mod tests {
             assert_eq!(lib.kind, "snippets.library");
             let lib_actions: Vec<&str> = lib.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(lib_actions.contains(&"new-snippet"), "{lib_actions:?}");
-            assert!(lib.children.is_empty(), "the contextual root stays bounded");
+            assert!(
+                lib.children
+                    .iter()
+                    .any(|child| child.kind == "snippets.snippet"),
+                "published snippets ride the library door"
+            );
             let snippet = first_snippet(&doc);
             let resource_id = snippet_resource_id(snippet.id);
             let snip =
