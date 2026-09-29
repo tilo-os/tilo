@@ -2,9 +2,10 @@
 //! Resources). The system stats are treated as **content**, not navigation —
 //! there is no sidebar. The Processes tab is a full-width process table under
 //! a compact horizontal summary strip; the Resources tab is a reflowing
-//! dashboard of gauges and charts. View-level state (sort, filter, selection,
-//! active tab, scroll) and device-observation preferences live locally in the
-//! widget; no monitoring view or safety preference enters the shared CRDT.
+//! dashboard of gauges and charts. Shared view preferences (tab, sort, tree
+//! mode, filter, selection) live on [`crate::resource::Monitor`] via
+//! [`tilo_resource::publish`]; the live process snapshot and device-observation
+//! prefs ([`crate::prefs::Prefs`]) stay host-local.
 //!
 //! The widget owns its own geometry: `build_layout` is a single
 //! full-bleed leaf, and `draw` lays out every region by hand and renders
@@ -173,6 +174,20 @@ impl Tab {
             Self::Resources => Icon::BarChart,
         }
     }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Processes => "processes",
+            Self::Resources => "resources",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Self {
+        match s {
+            "resources" => Self::Resources,
+            _ => Self::Processes,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -190,6 +205,28 @@ impl SortKey {
     /// columns default to ascending.
     fn default_desc(self) -> bool {
         !matches!(self, SortKey::Name | SortKey::User)
+    }
+
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Pid => "pid",
+            Self::Name => "name",
+            Self::User => "user",
+            Self::Cpu => "cpu",
+            Self::Mem => "mem",
+            Self::Threads => "threads",
+        }
+    }
+
+    pub(crate) fn parse(s: &str) -> Self {
+        match s {
+            "pid" => Self::Pid,
+            "name" => Self::Name,
+            "user" => Self::User,
+            "mem" => Self::Mem,
+            "threads" => Self::Threads,
+            _ => Self::Cpu,
+        }
     }
 }
 
@@ -847,6 +884,9 @@ pub struct MonitorApp {
     /// 200% text reflows into additional rows instead of overlapping gauges.
     layout_text_scale: f64,
     hit: Hit,
+    /// Document actions: local host for standalone / `--shots` / unit tests;
+    /// framework dispatcher when [`crate::resource::Monitor`] hosts the surface.
+    actions: crate::resource::ActionSink,
 }
 
 impl Default for MonitorApp {
@@ -949,6 +989,7 @@ impl MonitorApp {
             table_cols_w: 0.0,
             layout_text_scale: 1.0,
             hit: Hit::new(),
+            actions: crate::resource::ActionSink::default(),
         }
     }
 
@@ -1184,13 +1225,127 @@ impl MonitorApp {
         })
     }
 
-    fn set_sort(&mut self, key: SortKey) {
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Monitor>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local process catalogue.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::MonitorState) {
+        self.tab = Tab::parse(&state.tab);
+        self.sort_key = SortKey::parse(&state.sort_key);
+        self.sort_desc = state.sort_desc;
+        self.tree_mode = state.tree_mode;
+        if self.search_input.value() != state.search {
+            self.search_input.set_text(&state.search);
+        }
+        self.selected_pid = state.selected_pid;
+    }
+
+    pub(crate) fn commit_view(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::MonitorAction,
+    ) {
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn model_process_count(&self) -> usize {
+        self.model.processes.len()
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live process children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Monitor::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Monitor>(
+            "processes",
+            "Processes",
+            &state,
+        );
+        root.children = self.live_process_extras();
+        vec![root]
+    }
+
+    /// Live process rows without a `monitor.processes` root.
+    pub(crate) fn live_process_extras(&self) -> Vec<Resource> {
+        self.model
+            .processes
+            .iter()
+            .take(MAX_CONTEXT_PROCESS_RESOURCES)
+            .map(monitor_process_resource)
+            .collect()
+    }
+
+    fn commit_tab(&mut self, doc: &mut AutoCommit, tab: Tab) {
+        if self.tab == tab {
+            return;
+        }
+        self.tab = tab;
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetTab {
+                tab: tab.as_str().into(),
+            },
+        );
+    }
+
+    fn commit_tree_mode(&mut self, doc: &mut AutoCommit, tree: bool) {
+        if self.tree_mode == tree {
+            return;
+        }
+        self.tree_mode = tree;
+        self.scroll_off = 0.0;
+        self.commit_view(doc, &crate::resource::MonitorAction::SetTreeMode { tree });
+        self.clamp_scroll();
+    }
+
+    fn commit_selected(&mut self, doc: &mut AutoCommit, pid: Option<u32>) {
+        if self.selected_pid == pid {
+            return;
+        }
+        self.selected_pid = pid;
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetSelected {
+                pid: pid.map(u64::from),
+            },
+        );
+    }
+
+    fn set_sort(&mut self, doc: &mut AutoCommit, key: SortKey) {
         if self.sort_key == key {
             self.sort_desc = !self.sort_desc;
         } else {
             self.sort_key = key;
             self.sort_desc = key.default_desc();
         }
+        self.commit_view(
+            doc,
+            &crate::resource::MonitorAction::SetSort {
+                key: key.as_str().into(),
+                desc: self.sort_desc,
+            },
+        );
     }
 
     /// Queue the exact resource address every visible process control uses.
@@ -1390,6 +1545,7 @@ impl MonitorApp {
         menu.open_anchored(Rect::from_origin_size(pos, (0.0, 0.0)), self.rect);
         self.context = menu;
         self.context_pid = Some(pid);
+        // Selection is committed by the right-click caller that has the doc.
         self.selected_pid = Some(pid);
     }
 
@@ -1498,13 +1654,13 @@ impl MonitorApp {
     /// writes the pid to the real OS clipboard via [`ui::clipboard_copy`] (a
     /// silent no-op in a headless/locked-down session) and records it so the
     /// transient toast and tests can observe the action.
-    fn apply_action(&mut self, action: ProcAction, _doc: &mut AutoCommit, _path: &ObjId) {
+    fn apply_action(&mut self, action: ProcAction, doc: &mut AutoCommit, _path: &ObjId) {
         match action {
             ProcAction::Stop(pid) => self.request_process_control(pid, "stop"),
             ProcAction::Kill(pid) => self.request_process_control(pid, "kill"),
             ProcAction::CopyPid(pid) => self.request_process_control(pid, "copy-pid"),
             ProcAction::ShowDetails(pid) => {
-                self.selected_pid = Some(pid);
+                self.commit_selected(doc, Some(pid));
                 if self.is_narrow() {
                     self.proc_push.show_detail();
                 }
@@ -4718,7 +4874,7 @@ impl MonitorApp {
     /// Non-tab-specific chrome: the detail-pane Back affordance, a
     /// summary-strip cell jump, the tab pills, and starting the interval
     /// pill's press-and-hold timer. Returns whether the click was consumed.
-    fn click_nav_chrome(&mut self, p: Point, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn click_nav_chrome(&mut self, p: Point, doc: &mut AutoCommit, _path: &ObjId) -> bool {
         // Back affordance in the narrow pushed detail pane → return to table.
         if self.hit.detail_back.contains(p) {
             self.proc_push.show_master();
@@ -4731,7 +4887,7 @@ impl MonitorApp {
         // at the top.
         for (i, cell) in self.hit.summary_cells.clone().into_iter().enumerate() {
             if cell.contains(p) {
-                self.tab = Tab::Resources;
+                self.commit_tab(doc, Tab::Resources);
                 let (body_w, viewport_h) = self.body_metrics();
                 self.view_scroll_y = self.resources_scroll_for_stat(i, body_w, viewport_h);
                 return true;
@@ -4742,14 +4898,14 @@ impl MonitorApp {
             if self.tab != Tab::Processes {
                 self.view_scroll_y = 0.0;
             }
-            self.tab = Tab::Processes;
+            self.commit_tab(doc, Tab::Processes);
             return true;
         }
         if self.hit.tab_res.contains(p) {
             if self.tab != Tab::Resources {
                 self.view_scroll_y = 0.0;
             }
-            self.tab = Tab::Resources;
+            self.commit_tab(doc, Tab::Resources);
             return true;
         }
         if self.hit.refresh.contains(p) {
@@ -4789,7 +4945,7 @@ impl MonitorApp {
         &mut self,
         p: Point,
         clicked_search: bool,
-        _doc: &mut AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> bool {
         if clicked_search {
@@ -4808,9 +4964,7 @@ impl MonitorApp {
         }
         // Tree/Flat view toggle.
         if self.hit.tree_toggle.contains(p) {
-            self.tree_mode = !self.tree_mode;
-            self.scroll_off = 0.0;
-            self.clamp_scroll();
+            self.commit_tree_mode(doc, !self.tree_mode);
             return true;
         }
         // Sum subtree / Per-process toggle (tree mode only).
@@ -4820,7 +4974,7 @@ impl MonitorApp {
         }
         for (key, rect) in self.hit.sort_headers.clone() {
             if rect.contains(p) {
-                self.set_sort(key);
+                self.set_sort(doc, key);
                 return true;
             }
         }
@@ -4846,7 +5000,7 @@ impl MonitorApp {
         }
         for (pid, rect) in self.hit.rows.clone() {
             if rect.contains(p) {
-                self.selected_pid = Some(pid);
+                self.commit_selected(doc, Some(pid));
                 // On narrow windows the detail is its own pushed pane;
                 // selecting a row slides it in.
                 if self.is_narrow() {
@@ -4877,6 +5031,7 @@ impl MonitorApp {
         }
         for (pid, rect) in self.hit.rows.clone() {
             if rect.contains(p) {
+                self.commit_selected(_doc, Some(pid));
                 self.open_context_menu(pid, p);
                 *handled = true;
                 return;
@@ -4884,7 +5039,7 @@ impl MonitorApp {
         }
     }
 
-    fn move_selection(&mut self, delta: i32) {
+    fn move_selection(&mut self, doc: &mut AutoCommit, delta: i32) {
         let procs = self.visible_rows();
         if procs.is_empty() {
             return;
@@ -4905,7 +5060,7 @@ impl MonitorApp {
         let Some(next_row) = procs.get(next) else {
             return;
         };
-        self.selected_pid = Some(next_row.pid);
+        self.commit_selected(doc, Some(next_row.pid));
         // Keep the selection in view.
         let next_f = next as f32;
         if next_f < self.scroll_off {
@@ -4998,11 +5153,11 @@ impl MonitorApp {
                 }
             }
             Key::Named(NamedKey::ArrowUp) if self.tab == Tab::Processes => {
-                self.move_selection(-1);
+                self.move_selection(doc, -1);
                 *handled = true;
             }
             Key::Named(NamedKey::ArrowDown) if self.tab == Tab::Processes => {
-                self.move_selection(1);
+                self.move_selection(doc, 1);
                 *handled = true;
             }
             // Right/Left expand/collapse the selected tree node (when it has
@@ -5041,18 +5196,18 @@ impl MonitorApp {
     /// Single-character keyboard shortcuts: tab switch, search focus, sort
     /// keys, Stop, and the tree/sum toggles. Returns whether the character
     /// was recognised.
-    fn key_character_shortcut(&mut self, s: &str, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn key_character_shortcut(&mut self, s: &str, doc: &mut AutoCommit, _path: &ObjId) -> bool {
         match s {
-            "1" => self.tab = Tab::Processes,
-            "2" => self.tab = Tab::Resources,
+            "1" => self.commit_tab(doc, Tab::Processes),
+            "2" => self.commit_tab(doc, Tab::Resources),
             "/" => {
-                self.tab = Tab::Processes;
+                self.commit_tab(doc, Tab::Processes);
                 self.search_input.set_focus(true);
             }
-            "c" | "C" => self.set_sort(SortKey::Cpu),
-            "m" | "M" => self.set_sort(SortKey::Mem),
-            "p" | "P" => self.set_sort(SortKey::Pid),
-            "n" | "N" => self.set_sort(SortKey::Name),
+            "c" | "C" => self.set_sort(doc, SortKey::Cpu),
+            "m" | "M" => self.set_sort(doc, SortKey::Mem),
+            "p" | "P" => self.set_sort(doc, SortKey::Pid),
+            "n" | "N" => self.set_sort(doc, SortKey::Name),
             "r" | "R" => self.request_monitor_control("refresh"),
             "a" | "A" => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
@@ -5074,11 +5229,7 @@ impl MonitorApp {
                     self.sum_mode = self.sum_mode.toggled();
                 }
             }
-            "t" | "T" => {
-                self.tree_mode = !self.tree_mode;
-                self.scroll_off = 0.0;
-                self.clamp_scroll();
-            }
+            "t" | "T" => self.commit_tree_mode(doc, !self.tree_mode),
             _ => return false,
         }
         true
@@ -5394,7 +5545,7 @@ impl MonitorApp {
         kind: OperationKind,
         type_id: &str,
         payload: &[u8],
-        _doc: &AutoCommit,
+        doc: &mut AutoCommit,
         _path: &ObjId,
     ) -> Result<bool, String> {
         if type_id != MONITOR_OPERATION_TYPE {
@@ -5412,6 +5563,21 @@ impl MonitorApp {
             return Err("Monitor operation kind does not match its payload".into());
         }
         self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
+        if let MonitorOperation::Inspect { pid, .. } | MonitorOperation::CopyPid { pid, .. } =
+            &operation
+        {
+            // perform_operation already updated the local selection; publish it.
+            let selected = Some(*pid);
+            if self.selected_pid != selected {
+                self.selected_pid = selected;
+            }
+            self.commit_view(
+                doc,
+                &crate::resource::MonitorAction::SetSelected {
+                    pid: Some(u64::from(*pid)),
+                },
+            );
+        }
         Ok(true)
     }
 }
@@ -5645,8 +5811,8 @@ impl Widget for MonitorApp {
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {
             "monitor.search" => return self.search_input.perform_action(action, state, path),
-            "monitor.tab.processes" if activated => self.tab = Tab::Processes,
-            "monitor.tab.resources" if activated => self.tab = Tab::Resources,
+            "monitor.tab.processes" if activated => self.commit_tab(state, Tab::Processes),
+            "monitor.tab.resources" if activated => self.commit_tab(state, Tab::Resources),
             "monitor.detail-back" if activated => self.proc_push.show_master(),
             "monitor.interval" if matches!(action, Action::Activate | Action::Expand) => {
                 self.open_interval_popover();
@@ -5667,9 +5833,7 @@ impl Widget for MonitorApp {
                 self.clamp_scroll();
             }
             "monitor.tree-mode" if activated => {
-                self.tree_mode = !self.tree_mode;
-                self.scroll_off = 0.0;
-                self.clamp_scroll();
+                self.commit_tree_mode(state, !self.tree_mode);
             }
             "monitor.sum-mode" if activated && self.tree_mode => {
                 self.sum_mode = self.sum_mode.toggled();
@@ -5683,7 +5847,7 @@ impl Widget for MonitorApp {
                         return false;
                     };
                     if activated && index < 4 {
-                        self.tab = Tab::Resources;
+                        self.commit_tab(state, Tab::Resources);
                         let (body_w, viewport_h) = self.body_metrics();
                         self.view_scroll_y =
                             self.resources_scroll_for_stat(index, body_w, viewport_h);
@@ -5750,7 +5914,7 @@ impl Widget for MonitorApp {
                         _ => return false,
                     };
                     if activated {
-                        self.set_sort(sort);
+                        self.set_sort(state, sort);
                         return true;
                     }
                     return false;
@@ -5788,11 +5952,11 @@ impl Widget for MonitorApp {
                 }
                 match (command, action) {
                     (None, Action::Focus | Action::ScrollIntoView) => {
-                        self.selected_pid = Some(pid);
+                        self.commit_selected(state, Some(pid));
                         return true;
                     }
                     (None, Action::Activate) => {
-                        self.selected_pid = Some(pid);
+                        self.commit_selected(state, Some(pid));
                         if self.is_narrow() {
                             self.proc_push.show_detail();
                         }
@@ -5879,16 +6043,14 @@ impl ui::search::capability::SearchSource for MonitorApp {
 }
 
 impl ui::resources::PublishesResources for MonitorApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = monitor_process_root_resource();
-        root.children.extend(
-            self.model
-                .processes
-                .iter()
-                .take(MAX_CONTEXT_PROCESS_RESOURCES)
-                .map(monitor_process_resource),
-        );
-        vec![root]
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the processes door — keep only live process rows.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
     fn action_directory_resource_page(
         &self,
@@ -5910,9 +6072,12 @@ impl ui::resources::PublishesResources for MonitorApp {
             exhausted: true,
         })
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
         if id == "processes" {
-            return Some(monitor_process_root_resource());
+            if self.is_hosted() {
+                return None;
+            }
+            return self.publish_resources(doc).into_iter().next();
         }
         let (pid, started_at) = parse_process_resource_id(id)?;
         self.model
@@ -6205,6 +6370,16 @@ impl MonitorApp {
         if self.search_input.take_dirty().is_some() {
             self.scroll_off = 0.0;
             self.clear_selection_if_filtered_out();
+            let (doc, _) = ui::doc::document(ctx.state, ctx.path);
+            let query = self.search_input.value().to_string();
+            self.commit_view(doc, &crate::resource::MonitorAction::SetSearch { query });
+            // Keep the shared selection aligned when the filter drops the row.
+            self.commit_view(
+                doc,
+                &crate::resource::MonitorAction::SetSelected {
+                    pid: self.selected_pid.map(u64::from),
+                },
+            );
             input_handled = true;
         }
         if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
@@ -6595,9 +6770,9 @@ mod tests {
         // Phase `toggling_sort_key_flips_direction_on_repeat`.
         {
             let mut a = app();
-            a.set_sort(SortKey::Name); // text → ascending
+            a.set_sort(&mut AutoCommit::new(), SortKey::Name); // text → ascending
             assert!(!a.sort_desc);
-            a.set_sort(SortKey::Name); // repeat → flip
+            a.set_sort(&mut AutoCommit::new(), SortKey::Name); // repeat → flip
             assert!(a.sort_desc);
         }
 
@@ -6705,9 +6880,9 @@ mod tests {
             a.rows_per_page = 10;
             let v = a.visible_rows();
             a.selected_pid = Some(v[0].pid);
-            a.move_selection(1);
+            a.move_selection(&mut AutoCommit::new(), 1);
             assert_eq!(a.selected_pid, Some(v[1].pid));
-            a.move_selection(-1);
+            a.move_selection(&mut AutoCommit::new(), -1);
             assert_eq!(a.selected_pid, Some(v[0].pid));
         }
 
@@ -8775,13 +8950,15 @@ mod tests {
                 &mut doc,
                 &root,
             ));
-            // Presentation state: filter, sort, tree, and selection.
+            // Uncommitted widget fields (and device prefs) must not enter the
+            // shared document via sync. Collaborative view prefs only move
+            // through MonitorAction / present().
             first.search_input.set_text("shell");
-            first.set_sort(SortKey::Name);
+            first.set_sort(&mut AutoCommit::new(), SortKey::Name);
             first.tree_mode = false;
             first.selected_pid = first.model.processes.last().map(|process| process.pid);
 
-            // A shared-document sync must not import first's local settings.
+            // A shared-document sync must not import first's uncommitted fields.
             second.sync(&mut doc, &root);
             assert_eq!(second.prefs, Prefs::default());
             assert!(second.search_input.value().is_empty());
@@ -8791,7 +8968,7 @@ mod tests {
             assert_eq!(
                 doc.get_heads(),
                 heads_before,
-                "no local state enters history"
+                "uncommitted widget state must not enter history"
             );
         }
     }
