@@ -66,6 +66,13 @@ pub enum TerminalAction {
         text: String,
         attrs: Vec<u8>,
     },
+    /// Insert one blank grid line at `index`.
+    InsertBlankLine {
+        alternate: bool,
+        index: u32,
+        text: String,
+        attrs: Vec<u8>,
+    },
 }
 
 impl Action for TerminalAction {
@@ -179,6 +186,12 @@ impl Action for TerminalAction {
                 text,
                 attrs,
             } => write_line(doc, *alternate, *index, text, attrs)?,
+            Self::InsertBlankLine {
+                alternate,
+                index,
+                text,
+                attrs,
+            } => insert_blank_line(doc, *alternate, *index, text, attrs)?,
         }
         Ok(())
     }
@@ -232,6 +245,10 @@ fn set_cursor(doc: &mut Doc, x: u64, y: u64) -> Result<(), ActionError> {
     Ok(())
 }
 
+fn line_payload_too_large(text: &str, attrs: &[u8]) -> bool {
+    text.len() > 1024 * 1024 || attrs.len() > 1024 * 1024
+}
+
 fn write_line(
     doc: &mut Doc,
     alternate: bool,
@@ -239,7 +256,7 @@ fn write_line(
     text: &str,
     attrs: &[u8],
 ) -> Result<(), ActionError> {
-    if text.len() > 1024 * 1024 || attrs.len() > 1024 * 1024 {
+    if line_payload_too_large(text, attrs) {
         return Err(ActionError::Refused("grid line is too large".into()));
     }
     let key = if alternate {
@@ -263,6 +280,30 @@ fn write_line(
     ui::doc::splice_text_diffed(doc, &text_id, text);
     doc.put(&line, "attrs", attrs.to_vec())?;
     Ok(())
+}
+
+fn insert_blank_line(
+    doc: &mut Doc,
+    alternate: bool,
+    index: u32,
+    text: &str,
+    attrs: &[u8],
+) -> Result<(), ActionError> {
+    if line_payload_too_large(text, attrs) {
+        return Err(ActionError::Refused("grid line is too large".into()));
+    }
+    let key = if alternate {
+        "terminal_grid_alt"
+    } else {
+        "terminal_grid"
+    };
+    let grid = object_at(doc, key, automerge::ObjType::List)?;
+    let at = index as usize;
+    if at > doc.length(&grid) {
+        return Err(ActionError::Refused("grid line is missing".into()));
+    }
+    doc.insert_object(&grid, at, automerge::ObjType::Map)?;
+    write_line(doc, alternate, index, text, attrs)
 }
 
 /// The terminal session resource.
@@ -608,6 +649,15 @@ mod tests {
         let line = doc.get(&grid, 0).unwrap().map(|(_, id)| id).unwrap();
         let text_id = doc.get(&line, "text").unwrap().map(|(_, id)| id).unwrap();
         assert_eq!(doc.text(&text_id).unwrap(), "Hi");
+        TerminalAction::InsertBlankLine {
+            alternate: false,
+            index: 1,
+            text: " ".into(),
+            attrs: vec![0],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(doc.length(&grid), 3);
     }
 }
 
