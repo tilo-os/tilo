@@ -2906,13 +2906,13 @@ mod tests {
 
     impl StatusHeartbeat {
         fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
-            fs::full_replica::save_status(path, status).unwrap();
+            publish_status(path, status);
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
             let beat = std::thread::spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(250));
-                    fs::full_replica::save_status(&path, &status).unwrap();
+                    publish_status(&path, &status);
                 }
             });
             Self {
@@ -2920,6 +2920,17 @@ mod tests {
                 beat: Some(beat),
             }
         }
+    }
+
+    /// Replace the status file with a freshly stamped record. Not fsynced: a
+    /// durable write stalled on a slow disk would age the record past the
+    /// relay's 5 s freshness bound, and these tests only read it.
+    fn publish_status(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) {
+        let mut status = status.clone();
+        status.updated_at_ms = tilo_clock::unix_now_ms();
+        let staged = path.with_extension("staged");
+        std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
+        std::fs::rename(&staged, path).unwrap();
     }
 
     impl Drop for StatusHeartbeat {

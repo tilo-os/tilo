@@ -134,6 +134,21 @@ pub fn configured_font_system() -> FontSystem {
     crate::font_catalog::fixture_font_system()
 }
 
+/// The font database a host built for this process, when its fonts do not
+/// come from the system: a browser page has no system fonts, so a renderer
+/// made without one would shape with none. Set by
+/// [`TextRenderer::with_browser_font_system`] and each optional font it
+/// installs.
+static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb::Database)>> =
+    std::sync::RwLock::new(None);
+
+fn share_host_font_database(font_system: &FontSystem) {
+    *HOST_FONT_DATABASE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((font_system.locale().to_owned(), font_system.db().clone()));
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
@@ -153,6 +168,13 @@ pub fn configured_font_system() -> FontSystem {
         crate::font_catalog::android_font_system(crate::i18n::I18nManager::current_locale())
     {
         return font_system;
+    }
+    let host = HOST_FONT_DATABASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((locale, database)) = host {
+        return crate::font_catalog::system_over(locale, database);
     }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
@@ -1531,7 +1553,7 @@ pub struct TextRenderer {
     /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, ShapedText>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
+    /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
     /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,
@@ -1653,6 +1675,7 @@ impl TextRenderer {
 
     /// Construct a renderer over the verified browser startup catalog.
     pub fn with_browser_font_system(font_system: FontSystem) -> Self {
+        share_host_font_database(&font_system);
         let mut renderer = Self::with_font_system(font_system);
         renderer.browser_font_demands = Some(BTreeSet::new());
         renderer
@@ -1689,6 +1712,7 @@ impl TextRenderer {
         let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
         self.browser_font_assets.insert(name.to_owned());
         if changed {
+            share_host_font_database(&self.font_system);
             self.bump_generation();
         }
         Ok(changed)

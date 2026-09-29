@@ -201,7 +201,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID => {
+        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
+        | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
             contract = quick_settings_contract();
         }
         DISPLAY_EXTEND_ID
@@ -1601,6 +1602,8 @@ impl SharedQsDispatcher {
             QS_WIFI_ID => available.wifi,
             QS_POWER_ID => available.power_profile,
             QS_VPN_ID => available.vpn,
+            QS_BLUETOOTH_ID => available.bluetooth,
+            QS_AIRPLANE_ID => available.airplane_mode,
             _ => false,
         }
     }
@@ -1613,6 +1616,8 @@ pub(crate) const QS_VOLUME_ID: &str = "quick-settings.volume.set";
 pub(crate) const QS_WIFI_ID: &str = "quick-settings.wifi.set-enabled";
 pub(crate) const QS_POWER_ID: &str = "quick-settings.power-profile.set";
 pub(crate) const QS_VPN_ID: &str = "quick-settings.vpn.set-enabled";
+pub(crate) const QS_BLUETOOTH_ID: &str = "quick-settings.bluetooth.set-enabled";
+pub(crate) const QS_AIRPLANE_ID: &str = "quick-settings.airplane-mode.set-enabled";
 
 fn quick_settings_params(id: &str) -> Vec<ActionParam> {
     let percent = || {
@@ -1639,6 +1644,16 @@ fn quick_settings_params(id: &str) -> Vec<ActionParam> {
             "enabled",
             ParamType::Boolean,
             "Whether the Wi-Fi radio should be enabled.",
+        )],
+        QS_BLUETOOTH_ID => vec![ActionParam::required_owned(
+            "enabled",
+            ParamType::Boolean,
+            "Whether the Bluetooth radio should be powered.",
+        )],
+        QS_AIRPLANE_ID => vec![ActionParam::required_owned(
+            "enabled",
+            ParamType::Boolean,
+            "Whether airplane mode should turn the wireless radios off.",
         )],
         QS_POWER_ID => vec![
             ActionParam::required_owned("profile", ParamType::Text, "The host power profile.")
@@ -1681,6 +1696,8 @@ fn apply_quick_settings_effect(
         },
         QS_VOLUME_ID => actions.set_volume(validated_percent(args)),
         QS_WIFI_ID => actions.set_wifi(args.boolean("enabled").unwrap_or(false)),
+        QS_BLUETOOTH_ID => actions.set_bluetooth(args.boolean("enabled").unwrap_or(false)),
+        QS_AIRPLANE_ID => actions.set_airplane_mode(args.boolean("enabled").unwrap_or(false)),
         QS_POWER_ID => {
             let profile = match args.text("profile") {
                 Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
@@ -1702,7 +1719,7 @@ fn apply_quick_settings_effect(
 }
 
 /// UI adapter for the callable Quick Settings slice. The root panel and its
-/// drill-ins still own presentation state, while these five effects bind the
+/// drill-ins still own presentation state, while these effects bind the
 /// same typed parameters and call the same provider path as external action
 /// invocation. Operations outside this slice pass through unchanged.
 pub(crate) struct ValidatedQsActions<'a> {
@@ -1811,7 +1828,13 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
     }
 
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_bluetooth(enabled)
+        self.dispatch(
+            QS_BLUETOOTH_ID,
+            [(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(enabled),
+            )],
+        )
     }
 
     fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
@@ -1827,7 +1850,13 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
     }
 
     fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_airplane_mode(enabled)
+        self.dispatch(
+            QS_AIRPLANE_ID,
+            [(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(enabled),
+            )],
+        )
     }
 
     fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
@@ -2070,6 +2099,16 @@ impl SearchProvider for ActionsProvider {
                 "search-action-quick-settings-vpn-set-enabled",
                 "search-action-quick-settings-vpn-set-enabled-subtitle",
             ),
+            (
+                QS_BLUETOOTH_ID,
+                "search-action-quick-settings-bluetooth-set-enabled",
+                "search-action-quick-settings-bluetooth-set-enabled-subtitle",
+            ),
+            (
+                QS_AIRPLANE_ID,
+                "search-action-quick-settings-airplane-mode-set-enabled",
+                "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
+            ),
         ];
         if !ctx.wanted.contains(&ResourceKind::Action) {
             return Vec::new();
@@ -2271,11 +2310,11 @@ impl SearchProvider for ActionsProvider {
             &ctx.chrome.tree().desktop,
             true,
         );
-        let view_keywords = t("search-action-workspace-view-keywords").to_lowercase();
         for descriptor in descriptors {
+            let (subtitle, keywords) = workspace_view_copy(&descriptor.request);
             candidates.record(
                 &descriptor.label.to_lowercase(),
-                &view_keywords,
+                &format!("{subtitle} {keywords}").to_lowercase(),
                 &descriptor.id,
             );
             let score = 0;
@@ -2286,7 +2325,7 @@ impl SearchProvider for ActionsProvider {
                 provider_id: self.id().into(),
                 id: descriptor.id,
                 title: descriptor.label,
-                subtitle: Some(t("search-action-workspace-view-subtitle")),
+                subtitle: Some(subtitle),
                 badge: None,
                 score,
                 params: vec![],
@@ -2349,6 +2388,13 @@ impl SearchProvider for ActionsProvider {
                         }
                         QS_WIFI_ID => {
                             state.quick_settings.wifi = args.boolean("enabled") == Some(true);
+                        }
+                        QS_BLUETOOTH_ID => {
+                            state.quick_settings.bluetooth = args.boolean("enabled") == Some(true);
+                        }
+                        QS_AIRPLANE_ID => {
+                            state.quick_settings.radios.airplane_mode =
+                                args.boolean("enabled") == Some(true);
                         }
                         QS_POWER_ID => {
                             state.quick_settings.power_profile = match args.text("profile") {
@@ -2520,7 +2566,9 @@ impl SearchProvider for ActionsProvider {
                     on_begin_invoke: None,
                 });
             }
-            if let Some(catalog) = &self.provider_catalog {
+            if let Some(catalog) = &self.provider_catalog
+                && asks_about_search_sources(ctx.needle)
+            {
                 for (provider_id, provider_name) in catalog.borrow().iter() {
                     if provider_id == "actions" {
                         continue;
@@ -2541,10 +2589,12 @@ impl SearchProvider for ActionsProvider {
                             t_args("search-action-provider-enable-subtitle", source),
                         )
                     };
+                    let id = format!("search.provider.toggle:{provider_id}");
                     candidates.record(
                         &label.to_lowercase(),
-                        &subtitle.to_lowercase(),
-                        "search.provider.toggle",
+                        &format!("{subtitle} {}", t("search-action-provider-keywords"))
+                            .to_lowercase(),
+                        &id,
                     );
                     let score = 0;
                     let preferences = Rc::clone(preferences);
@@ -2553,7 +2603,7 @@ impl SearchProvider for ActionsProvider {
                         kind: ResourceKind::Action,
                         operation_kind: tilo_actions::OperationKind::Effect,
                         provider_id: self.id().to_string(),
-                        id: format!("search.provider.toggle:{provider_id}"),
+                        id,
                         title: label,
                         subtitle: Some(subtitle),
                         badge: Some(if enabled {
@@ -2679,6 +2729,53 @@ impl SearchProvider for ActionsProvider {
             }
         }
         crate::shell::search::rank_rows(&self.ranker, ctx.needle, out, &candidates.0)
+    }
+}
+
+/// Whether a query is about search itself, so a per-source on/off switch is
+/// an answer to it. "notes" looks for notes, not for hiding them; an empty
+/// listing and an exact `search.provider.toggle:…` address still see every
+/// switch.
+fn asks_about_search_sources(needle: &str) -> bool {
+    let needle = needle.trim().to_lowercase();
+    if needle.is_empty() || needle.starts_with("search.provider.") {
+        return true;
+    }
+    let keywords = t("search-action-provider-keywords").to_lowercase();
+    needle
+        .split_whitespace()
+        .filter(|word| word.chars().count() >= 3)
+        .any(|word| {
+            keywords
+                .split_whitespace()
+                .any(|keyword| keyword.starts_with(word))
+        })
+}
+
+/// A workspace view's subtitle and the extra words it answers to. Switching
+/// to a workspace is not an answer to "history", and each Activity view says
+/// what it shows rather than that it is a view.
+fn workspace_view_copy(
+    request: &tilo_desktop::activity::view_actions::WorkspaceViewRequest,
+) -> (String, String) {
+    use tilo_desktop::activity::ActivityView;
+    use tilo_desktop::activity::view_actions::WorkspaceViewRequest;
+    let activity = |view: ActivityView| {
+        let subtitle = match view {
+            ActivityView::CatchUp => "search-action-activity-catch-up-subtitle",
+            ActivityView::Tasks => "search-action-activity-tasks-subtitle",
+            ActivityView::Explore => "search-action-activity-explore-subtitle",
+            ActivityView::Replay => "search-action-activity-replay-subtitle",
+        };
+        (t(subtitle), t("search-action-activity-keywords"))
+    };
+    match request {
+        WorkspaceViewRequest::Select { .. } => (
+            t("search-action-workspace-switch-subtitle"),
+            t("search-action-workspace-switch-keywords"),
+        ),
+        WorkspaceViewRequest::OpenActivity { view, .. } => activity(*view),
+        WorkspaceViewRequest::CloseActivity { .. } => activity(ActivityView::CatchUp),
     }
 }
 
@@ -3172,6 +3269,91 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    #[test]
+    fn history_finds_activity_views_and_not_a_workspace_switch() {
+        let provider = ActionsProvider::new();
+        let chrome = chrome_with_room();
+        let doc = AutoCommit::new();
+        let state = chrome.borrow();
+        let query = |needle| {
+            provider.query(SearchContext {
+                needle,
+                wanted: &[ResourceKind::Action],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            })
+        };
+
+        let history = query("history");
+        let explore = history
+            .iter()
+            .find(|row| row.id == "room.activity.explore")
+            .expect("history names the full timeline");
+        assert_eq!(
+            explore.subtitle.as_deref(),
+            Some("Every change here, by person, app and time")
+        );
+        assert!(
+            history
+                .iter()
+                .all(|row| !row.id.starts_with("workspace.select.")),
+            "switching workspace is not an answer to “history”: {:?}",
+            history.iter().map(|row| &row.title).collect::<Vec<_>>()
+        );
+
+        let switch = query("switch");
+        let row = switch
+            .iter()
+            .find(|row| row.id.starts_with("workspace.select."))
+            .expect("a workspace is still reachable by switching to it");
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("Go to this workspace and its windows")
+        );
+    }
+
+    #[test]
+    fn a_search_for_a_source_finds_it_not_its_off_switch() {
+        let preferences = Rc::new(std::cell::RefCell::new(
+            crate::shell::search::SearchPreferences::default(),
+        ));
+        let catalog = Rc::new(std::cell::RefCell::new(vec![(
+            "notes".to_string(),
+            "Notes".to_string(),
+        )]));
+        let provider = ActionsProvider::with_preferences_and_catalog(preferences, catalog);
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let switch = |needle| {
+            provider
+                .query(SearchContext {
+                    needle,
+                    wanted: &[ResourceKind::Action],
+                    chrome: &chrome.borrow(),
+                    doc: &doc,
+                    doc_root: &automerge::ROOT,
+                })
+                .into_iter()
+                .find(|row| row.id == "search.provider.toggle:notes")
+        };
+
+        assert!(switch("notes").is_none(), "“notes” looks for notes");
+        let row = switch("disable notes").expect("asking to disable it finds the switch");
+        assert_eq!(
+            row.subtitle.as_deref(),
+            Some("Hide Notes results from search and agent discovery")
+        );
+        assert!(
+            switch("").is_some(),
+            "a complete listing keeps every switch"
+        );
+        assert!(
+            switch("search.provider.toggle:notes").is_some(),
+            "an exact address still resolves"
+        );
     }
 
     #[test]
@@ -3808,6 +3990,8 @@ mod tests {
                 QS_WIFI_ID,
                 QS_POWER_ID,
                 QS_VPN_ID,
+                QS_BLUETOOTH_ID,
+                QS_AIRPLANE_ID,
             ] {
                 let result = results
                     .iter()
@@ -3859,6 +4043,8 @@ mod tests {
                 wifi: false,
                 power_profile: true,
                 vpn: false,
+                bluetooth: true,
+                airplane_mode: false,
             };
             let provider = ActionsProvider::with_shared_qs_actions(Rc::new(
                 SharedQsDispatcher::new(dispatcher, availability),
@@ -3878,6 +4064,8 @@ mod tests {
                 (QS_WIFI_ID, false),
                 (QS_POWER_ID, true),
                 (QS_VPN_ID, false),
+                (QS_BLUETOOTH_ID, true),
+                (QS_AIRPLANE_ID, false),
             ] {
                 let contract = results
                     .iter()
@@ -3920,7 +4108,13 @@ mod tests {
             self.result()
         }
 
-        fn set_bluetooth(&self, _enabled: bool) -> Result<(), String> {
+        fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("bluetooth:{enabled}"));
+            self.result()
+        }
+
+        fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("airplane:{enabled}"));
             self.result()
         }
 
@@ -4032,6 +4226,20 @@ mod tests {
                         ),
                     ],
                 ),
+                (
+                    QS_BLUETOOTH_ID,
+                    vec![(
+                        "enabled".into(),
+                        crate::shell::search::action_api::ArgValue::Boolean(true),
+                    )],
+                ),
+                (
+                    QS_AIRPLANE_ID,
+                    vec![(
+                        "enabled".into(),
+                        crate::shell::search::action_api::ArgValue::Boolean(true),
+                    )],
+                ),
             ];
             for (id, supplied) in cases {
                 let result = results.iter().find(|result| result.id == id).expect(id);
@@ -4047,8 +4255,13 @@ mod tests {
                     "wifi:true",
                     "power:Saver",
                     "vpn:Work:false",
+                    "bluetooth:true",
+                    "airplane:true",
                 ]
             );
+            let state = chrome.borrow();
+            assert!(state.quick_settings.bluetooth);
+            assert!(state.quick_settings.radios.airplane_mode);
         }
 
         // Phase `invalid_quick_settings_values_never_dispatch_and_provider_failures_propagate`.
@@ -4145,6 +4358,14 @@ mod tests {
                     ),
                 ],
             );
+            ui.set_bluetooth(true).expect("valid UI value dispatches");
+            external(
+                QS_BLUETOOTH_ID,
+                vec![(
+                    "enabled".into(),
+                    crate::shell::search::action_api::ArgValue::Boolean(true),
+                )],
+            );
             assert_eq!(
                 recorder.calls.borrow().as_slice(),
                 [
@@ -4158,6 +4379,8 @@ mod tests {
                     "power:Saver",
                     "vpn:Work:false",
                     "vpn:Work:false",
+                    "bluetooth:true",
+                    "bluetooth:true",
                 ],
                 "every callable UI/external pair reaches the same provider with the same validated value"
             );
@@ -4165,7 +4388,7 @@ mod tests {
             assert!(ui.set_brightness(101.0).is_err());
             assert_eq!(
                 recorder.calls.borrow().len(),
-                10,
+                12,
                 "invalid UI value never dispatches"
             );
             recorder.fail.set(true);

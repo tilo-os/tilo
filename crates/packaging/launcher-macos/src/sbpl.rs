@@ -28,8 +28,12 @@ use crate::policy::{SeatbeltNetwork, SeatbeltPolicy};
 pub const PAYLOAD_PARAM: &str = "PAYLOAD_DIR";
 pub const RUNTIME_PARAM: &str = "RUNTIME_DIR";
 pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
-pub const GATE_PARAM: &str = "NET_GATE";
+pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
+pub const GATE_PORT_PARAM: &str = "NET_GATE_PORT";
 pub const READ_PARAM_PREFIX: &str = "READ_";
+/// The sandbox-extension class the runtime's chooser issues for a picked
+/// path (App Sandbox's user-selected read-write).
+pub const USER_SELECTED_EXTENSION: &str = "com.apple.app-sandbox.read-write";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
 
 /// Mach services an `AppKit` window needs beyond `system.sb`: `WindowServer`
@@ -120,6 +124,12 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
     out.rule(&format!(
         "(allow file-read* file-write* (subpath (param \"{container}\")))"
     ));
+    if let Some(dir) = &policy.darwin_cache {
+        let cache = out.param(DARWIN_CACHE_PARAM.to_string(), dir);
+        out.rule(&format!(
+            "(allow file-read* file-write* (subpath (param \"{cache}\")))"
+        ));
+    }
     for (index, path) in policy.read_only.iter().enumerate() {
         let name = out.param(format!("{READ_PARAM_PREFIX}{index}"), path);
         out.rule(&format!("(allow file-read* (subpath (param \"{name}\")))"));
@@ -130,6 +140,12 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
             "(allow file-read* file-write* (subpath (param \"{name}\")))"
         ));
     }
+    // What the person picked in a chooser the runtime showed: a
+    // kernel-signed extension per path, consumed by the app.
+    out.rule(&format!(
+        "(allow file-read* file-write* (extension {}))",
+        quote(USER_SELECTED_EXTENSION)
+    ));
     // Path resolution stats every ancestor of a granted directory; the
     // metadata of those directories, not their listings, is what that needs.
     let roots: Vec<String> = out.params.iter().map(|(name, _)| name.clone()).collect();
@@ -210,10 +226,13 @@ impl Builder {
     fn network(&mut self, network: &SeatbeltNetwork) {
         match network {
             SeatbeltNetwork::Denied => {}
-            SeatbeltNetwork::Gate(socket) => {
-                let name = self.param(GATE_PARAM.to_string(), socket);
+            SeatbeltNetwork::Gate(port) => {
+                self.params
+                    .push((GATE_PORT_PARAM.to_string(), port.to_string()));
+                self.text
+                    .push_str("(allow system-socket (socket-domain AF_INET AF_INET6))\n");
                 self.rule(&format!(
-                    "(allow network-outbound (literal (param \"{name}\")))"
+                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"{GATE_PORT_PARAM}\"))))"
                 ));
             }
             SeatbeltNetwork::Unrestricted => {
@@ -256,6 +275,9 @@ mod tests {
             container: PathBuf::from(
                 "/Users/u/Library/Application Support/Tilo/tilo-rooms/personal/so.tilo.notes",
             ),
+            darwin_cache: Some(PathBuf::from(
+                "/private/var/folders/xy/abc/C/so.tilo+personal+so.tilo.notes",
+            )),
             read_only: vec![PathBuf::from("/Users/u/Music")],
             read_write: vec![PathBuf::from("/Users/u/Documents/\"quoted\" (dir)")],
             network,
@@ -282,6 +304,7 @@ mod tests {
                 "PAYLOAD_DIR",
                 "RUNTIME_DIR",
                 "CONTAINER_DIR",
+                "DARWIN_CACHE_DIR",
                 "READ_0",
                 "WRITE_0"
             ]
@@ -292,7 +315,7 @@ mod tests {
     fn it_denies_by_default_and_carries_paths_only_as_parameters() {
         for network in [
             SeatbeltNetwork::Denied,
-            SeatbeltNetwork::Gate(PathBuf::from("/run/gate.sock")),
+            SeatbeltNetwork::Gate(9050),
             SeatbeltNetwork::Unrestricted,
         ] {
             let p = policy(network);
@@ -303,7 +326,13 @@ mod tests {
             assert!(!profile.text.contains("(allow default)"));
             assert!(!profile.text.contains("(allow file-read*)\n"));
             assert!(!profile.text.contains("(allow file-write*)\n"));
-            for path in [&p.payload, &p.container, &p.read_only[0], &p.read_write[0]] {
+            for path in [
+                &p.payload,
+                &p.container,
+                p.darwin_cache.as_ref().unwrap(),
+                &p.read_only[0],
+                &p.read_write[0],
+            ] {
                 assert!(
                     !profile.text.contains(&*path.to_string_lossy()),
                     "{} was spliced into the text",
@@ -358,20 +387,22 @@ mod tests {
         assert!(!offline.text.contains("AF_INET"));
         assert!(!offline.text.contains("(system-network)"));
 
-        let gated = render(&policy(SeatbeltNetwork::Gate(PathBuf::from(
-            "/run/gate.sock",
-        ))));
+        let gated = render(&policy(SeatbeltNetwork::Gate(9050)));
         let outbound: Vec<&str> = gated
             .text
             .lines()
             .filter(|l| l.contains("network"))
             .collect();
+        // One loopback port, no filesystem socket, no other address.
         assert_eq!(
             outbound,
-            ["(allow network-outbound (literal (param \"NET_GATE\")))"]
+            [
+                "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"NET_GATE_PORT\"))))"
+            ]
         );
-        assert_eq!(param(&gated, GATE_PARAM), "/run/gate.sock");
-        assert!(!gated.text.contains("AF_INET"));
+        assert_eq!(param(&gated, GATE_PORT_PARAM), "9050");
+        assert!(!gated.text.contains("(system-network)"));
+        assert!(!gated.text.contains("network-bind"));
 
         let open = render(&policy(SeatbeltNetwork::Unrestricted));
         assert!(open.text.contains("(system-network)"));

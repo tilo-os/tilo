@@ -810,3 +810,28 @@ fn the_vault_keeps_secrets_sealed_and_wpa_passphrases_roam() {
     vault.forget_connection("uuid-eap").expect("forgotten");
     assert_eq!(vault.load(&eap), None);
 }
+
+/// The session serves the agent from its multi-thread runtime; choosing the
+/// vault's custody there probes the secret store over blocking D-Bus, which
+/// once aborted the whole session at startup.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn serving_from_the_session_runtime_never_blocks_a_runtime_thread() {
+    let config = tempfile::tempdir().expect("config dir");
+    let mut env = tilo_test_env::ScopedEnv::new();
+    env.set("XDG_CONFIG_HOME", config.path());
+    env.set(
+        "DBUS_SESSION_BUS_ADDRESS",
+        "unix:path=/nonexistent/session-bus",
+    );
+    env.set(
+        "DBUS_SYSTEM_BUS_ADDRESS",
+        "unix:path=/nonexistent/system-bus",
+    );
+    let served = tokio::time::timeout(
+        HANG_BOUND,
+        service::serve(PortalDialogQueue::default(), RoamingWifiSlot::default()),
+    )
+    .await
+    .expect("serve answers");
+    assert!(served.is_err(), "no system bus to serve on");
+}

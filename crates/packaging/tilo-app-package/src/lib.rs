@@ -67,9 +67,10 @@ pub use blobs::{
 };
 pub use id::{Kind, PackageId, ParsePackageIdError};
 pub use manifest::{
-    Cli, Entrypoint, EntrypointType, Manifest, ManifestParseError, NetMode, Package, PathPattern,
-    Platform, Providers, Publisher, Requirement, Sandbox, SandboxFs, SandboxNet, ServiceReq,
-    ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust, TrustAttestation,
+    Capabilities, Cli, DEFAULT_PLATFORMS, Entrypoint, EntrypointType, Manifest, ManifestParseError,
+    NetMode, Package, PathPattern, Platform, Providers, Publisher, Requirement, Sandbox, SandboxFs,
+    SandboxNet, ServiceReq, ServiceReqParseError, SplashSegment, SplashSegmentError, Target, Trust,
+    TrustAttestation,
 };
 pub use pack::{PackError, Packed, SigningIdentity, pack, pack_with_signature};
 pub use package::{MetaError, PackageMeta, is_safe_path};
@@ -119,7 +120,7 @@ pub const MAX_APP_TAPP_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 /// cannot turn a tiny tapp into an arbitrarily large install.
 pub const MAX_APP_UNPACKED_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
-/// Wire size limit of a Linux, Windows or macOS build. Those systems ship no Tilo
+/// Wire size limit of a Linux, Windows, macOS or Android build. Those systems ship no Tilo
 /// toolkit, so the executable links it in; the limit is a distribution
 /// policy, not a design target.
 pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
@@ -135,26 +136,63 @@ pub fn tapp_size_allowed(kind: Kind, size: u64) -> bool {
     kind != Kind::App || size <= MAX_APP_TAPP_BYTES
 }
 
+/// The wire and materialized size limit of an application built for the
+/// registry `platform` (`registry_types::TILO_OS_PLATFORM`, `"linux"`,
+/// `"android"`, …): [`MAX_DESKTOP_APP_TAPP_BYTES`] for a build that links the
+/// toolkit in, [`MAX_APP_TAPP_BYTES`] otherwise. The registry enforces it and
+/// `tilo-app package` reports against it.
+#[must_use]
+pub fn platform_size_limit(platform: &str) -> u64 {
+    if registry_types::DESKTOP_PLATFORMS.contains(&platform) {
+        MAX_DESKTOP_APP_TAPP_BYTES
+    } else {
+        MAX_APP_TAPP_BYTES
+    }
+}
+
 /// The wire and materialized size limit of the application `manifest`
-/// describes: [`MAX_DESKTOP_APP_TAPP_BYTES`] for a desktop build,
-/// [`MAX_APP_TAPP_BYTES`] otherwise. `None` for non-app bundles.
+/// describes: its `[target]` platform's [`platform_size_limit`], or the
+/// thin-app limit without one. `None` for non-app bundles.
 pub fn app_size_limit(manifest: &Manifest) -> Option<u64> {
     if manifest.package.kind != Kind::App {
         return None;
     }
-    let desktop = manifest.target.as_ref().is_some_and(|target| {
-        registry_types::DESKTOP_PLATFORMS.contains(&target.platform.as_str())
-    });
-    Some(if desktop {
-        MAX_DESKTOP_APP_TAPP_BYTES
-    } else {
-        MAX_APP_TAPP_BYTES
-    })
+    Some(
+        manifest
+            .target
+            .as_ref()
+            .map_or(MAX_APP_TAPP_BYTES, |target| {
+                platform_size_limit(&target.platform)
+            }),
+    )
 }
 
 #[cfg(test)]
 mod size_tests {
     use super::*;
+
+    #[test]
+    fn builds_that_link_the_toolkit_in_get_the_desktop_limit() {
+        for platform in [
+            "linux",
+            "windows",
+            "macos",
+            registry_types::ANDROID_PLATFORM,
+        ] {
+            assert_eq!(
+                platform_size_limit(platform),
+                MAX_DESKTOP_APP_TAPP_BYTES,
+                "{platform}"
+            );
+        }
+        for platform in [registry_types::TILO_OS_PLATFORM, "web", "unknown"] {
+            assert_eq!(
+                platform_size_limit(platform),
+                MAX_APP_TAPP_BYTES,
+                "{platform}"
+            );
+        }
+    }
 
     #[test]
     fn app_limit_is_eight_mib_and_runtime_bundles_are_separate() {

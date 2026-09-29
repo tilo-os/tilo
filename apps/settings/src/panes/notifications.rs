@@ -237,10 +237,32 @@ impl NotificationsPane {
         Self::with_prefs(SystemPrefs::load().notifications)
     }
 
-    /// Construct from explicit preferences — used by tests and the
-    /// deterministic `--shots` render.
+    /// Construct from explicit preferences over the machine's installed
+    /// apps.
     pub fn with_prefs(prefs: NotificationPrefs) -> Self {
         let apps = installed_notification_apps(&prefs.per_app);
+        Self::with_prefs_and_apps(prefs, apps)
+    }
+
+    /// The `--shots` pane: default policy over a fixed app list, so a capture
+    /// shows the same per-app cards on every machine rather than one per
+    /// desktop entry the host happens to have.
+    pub fn for_shot() -> Self {
+        let apps = [
+            ("so.tilo.calendar", "Calendar"),
+            ("so.tilo.chat", "Chat"),
+            ("so.tilo.mail", "Mail"),
+        ]
+        .into_iter()
+        .map(|(id, name)| InstalledNotificationApp {
+            id: id.to_string(),
+            name: name.to_string(),
+        })
+        .collect();
+        Self::with_prefs_and_apps(NotificationPrefs::default(), apps)
+    }
+
+    fn with_prefs_and_apps(prefs: NotificationPrefs, apps: Vec<InstalledNotificationApp>) -> Self {
         let now = unix_now_i64();
         let mute_labels = apps
             .iter()

@@ -22,6 +22,11 @@ on:
     branches: [main]
     paths:
       - "os/**"
+      # Unit tests and docs never enter the image.
+      - "!os/tests/test_*.py"
+      - "!os/dev/test_*.py"
+      - "!os/docs/**"
+      - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"

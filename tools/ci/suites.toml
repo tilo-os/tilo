@@ -60,6 +60,10 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
+  "os/tests/test_esp_write.py",
+  "os/tests/test_local_image_epoch.py",
+  "os/tests/security_audit_kconfig.sh",
+  "os/tests/boot_chain_source.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
@@ -136,6 +140,7 @@ suites = [
   "os/tests/test_supervised_disk.py",
   "os/tests/test_supervised_install_lane.py",
   "os/tests/test_tls_registry_fixture.py",
+  "os/tests/test_verify_rpm_files.py",
   "os/tests/test_vm_bootc_copy_cache.py",
   "os/tests/test_vm_install_image_proof.py",
   "os/tests/test_probe_kvm.py",
@@ -169,7 +174,7 @@ name = "pipewire-echo-cancel"
 # name the session uses for it, and the image COPY that installs it.
 inputs = [
   "os/usr/share/pipewire/", "os/Containerfile",
-  "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
+  "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
@@ -344,6 +349,24 @@ suites = [
 ]
 
 [[group]]
+name = "platform-web"
+# The portal crates' browser modules behind their wasm32 backends.
+inputs = [
+  "crates/platform/tilo-clipboard/web/",
+  "crates/platform/tilo-dialogs/web/",
+  "crates/platform/tilo-location/web/",
+  "crates/platform/tilo-notify/web/",
+  "crates/platform/tilo-secrets/web/",
+]
+suites = [
+  "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
+  "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
+  "crates/platform/tilo-location/web/location.test.mjs",
+  "crates/platform/tilo-notify/web/notify.test.mjs",
+  "crates/platform/tilo-secrets/web/secrets.test.mjs",
+]
+
+[[group]]
 name = "browser-runtime-web"
 # The browser runtime's JavaScript: the web host, its loaders and bridges,
 # and the scripts that assemble the web core. app-installer reads the Rust
@@ -477,11 +500,24 @@ readers = ["crates/dev/tilo-vmd/tests/jobs.rs"]
 package = "tilo-app-cli"
 # Scaffolding and the dev loop locate the SDK and the UI builder in the tree;
 # standalone scaffolds embed the workspace's lock, patches, profiles and toolchain.
+# `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
-  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
+  ".cargo/config.toml",
+  "examples/apps/", "examples/README.md", "docs/examples.md",
+  # The portability lint compiles in the policy gate's rules table, and the
+  # capability check the table of what each capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
+  # Standalone apps take the SDK's toolchain and lock file.
+  "rust-toolchain.toml", "Cargo.lock",
+  # The outside-repository test builds a generated app against the checkout.
+  "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
+readers = [
+  "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
+  "crates/dev/tilo-app-cli/src/capability_usage.rs",
+]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
@@ -561,7 +597,7 @@ readers = ["crates/sdk/font-catalog/src/lib.rs"]
 [[cargo]]
 package = "pdf-viewer"
 # The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/doc/pdf/tests/fixtures/"]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
 readers = [
   "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
   "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",

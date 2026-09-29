@@ -1,5 +1,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used, reason = "test assertions")]
 
+#[path = "support/native_fixture.rs"]
+mod native_fixture;
+
+use native_fixture::seed_native_fixture;
 use scratchpad::Scratchpad;
 use ui::prelude::*;
 
@@ -11,7 +15,7 @@ fn snapshot(app: &mut HeadlessApp<Scratchpad>) -> serde_json::Value {
 fn native_fixture_reloads_production_storage_and_refuses_overwrite() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("note");
-    let manifest = scratchpad::seed_native_fixture(&path).unwrap();
+    let manifest = seed_native_fixture(&path).unwrap();
     {
         let mut app = HeadlessApp::<Scratchpad>::open_data_dir(&path).unwrap();
         let body = app.state().body;
@@ -31,7 +35,7 @@ fn native_fixture_reloads_production_storage_and_refuses_overwrite() {
         assert!(observed.get("body").is_none());
         assert_eq!(snapshot(&mut app), observed);
     }
-    assert!(scratchpad::seed_native_fixture(&path).is_err());
+    assert!(seed_native_fixture(&path).is_err());
     let app = HeadlessApp::<Scratchpad>::open_data_dir(&path).unwrap();
     assert_eq!(app.state().body.lines().count(), 1000);
 }
@@ -40,7 +44,7 @@ fn native_fixture_reloads_production_storage_and_refuses_overwrite() {
 fn native_editor_click_home_matches_fixture_hash_then_backspace_restores_it() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("note");
-    let manifest = scratchpad::seed_native_fixture(&path).unwrap();
+    let manifest = seed_native_fixture(&path).unwrap();
     {
         let mut app = HeadlessApp::<Scratchpad>::open_data_dir(&path).unwrap();
         let editor = *app.harness().targets().get("note-editor").unwrap();
@@ -65,7 +69,7 @@ fn native_editor_click_home_matches_fixture_hash_then_backspace_restores_it() {
 fn native_snapshot_observes_real_scroll_and_focused_edit_without_body_text() {
     let parent = tempfile::tempdir().unwrap();
     let path = parent.path().join("note");
-    let manifest = scratchpad::seed_native_fixture(&path).unwrap();
+    let manifest = seed_native_fixture(&path).unwrap();
     let mut app = HeadlessApp::<Scratchpad>::open_data_dir(&path).unwrap();
     app.harness().profile_frame();
     let rect = snapshot(&mut app)["scroll_rect"]

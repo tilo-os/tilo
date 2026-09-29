@@ -27,20 +27,20 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual(
                         app_release.architecture_matrix(ref, event),
                         {"include": [
-                            {"arch": "aarch64", "runner": "runner-arm64"},
-                            {"arch": "x86_64", "runner": "runner"},
+                            {"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"},
+                            {"arch": "x86_64", "runner": "runner", "build_runner": "runner-large"},
                         ]},
                     )
         with self.subTest(phase='manual build can explicitly select one architecture'):
             self.assertEqual(
                 app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
-                {"include": [{"arch": "aarch64", "runner": "runner-arm64"}]},
+                {"include": [{"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"}]},
             )
         with self.subTest(phase='main architecture switch and tags cover both'):
             both = {
                 "include": [
-                    {"arch": "aarch64", "runner": "runner-arm64"},
-                    {"arch": "x86_64", "runner": "runner"},
+                    {"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"},
+                    {"arch": "x86_64", "runner": "runner", "build_runner": "runner-large"},
                 ]
             }
             self.assertEqual(
@@ -99,17 +99,21 @@ class AppReleaseTests(unittest.TestCase):
             selection = workflow.split(
                 "- name: Select only the affected apps or requested collection", 1
             )[1].split(
-                "python3 -I tools/ci/python.py tools/apps/app_release.py", 1
+                'python3 -I tools/ci/python.py tools/apps/app_release.py "${args[@]}"', 1
             )[0]
             push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
             self.assertIn("    branches: [main]", push)
             self.assertNotIn("refs/heads/main", selection)
-            self.assertIn("github.event.before", selection)
+            # Superseded queued runs must not drop their changes: select
+            # relative to the published collection, else rebuild it all.
+            self.assertNotIn("github.event.before", workflow)
+            self.assertIn("COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}", selection)
             self.assertIn(
-                "if [[ -z $base || $base == "
-                "0000000000000000000000000000000000000000 ]]",
+                'if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then\n'
+                "              args+=(--collection default)",
                 selection,
             )
+            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"', workflow)
             self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
@@ -474,6 +478,43 @@ dependencies = ["markdown-parser 1.1.0"]
                     ),
                     sorted(CATALOG),
                 )
+
+    def test_a_builder_change_forces_a_full_collection_and_publication_reuses_the_planned_one(self):
+        source = "a" * 40
+        builder = "registry.tilo.so/tilo/tilo-builder@sha256:" + "1" * 64
+        other = "registry.tilo.so/tilo/tilo-builder@sha256:" + "2" * 64
+        with self.subTest(phase="same builder keeps partial reuse"):
+            self.assertEqual(app_release.prior_collection_base(source, builder, builder), source)
+        with self.subTest(phase="a new builder changes the shared runtime: rebuild all"):
+            self.assertIsNone(app_release.prior_collection_base(source, other, builder))
+        with self.subTest(phase="an unrecorded builder or source rebuilds all"):
+            self.assertIsNone(app_release.prior_collection_base(source, "", builder))
+            self.assertIsNone(app_release.prior_collection_base(source, builder, ""))
+            self.assertIsNone(app_release.prior_collection_base("", builder, builder))
+            self.assertIsNone(app_release.prior_collection_base("main", builder, builder))
+        with self.subTest(phase="the CLI prints the base or nothing"):
+            for recorded, expected in ((builder, source), (other, "")):
+                result = subprocess.run(
+                    [sys.executable, str(ROOT / "tools/apps/app_release.py"),
+                     "--prior-collection-base", "--collection-source", source,
+                     "--collection-builder", recorded, "--builder", builder],
+                    capture_output=True, text=True, check=True,
+                )
+                self.assertEqual(result.stdout.strip(), expected)
+        with self.subTest(phase="the workflow plans and publishes against one collection"):
+            workflow = (ROOT / ".forgejo/workflows/release-apps.yml").read_text(encoding="utf-8")
+            selection = workflow.split(
+                "- name: Select only the affected apps or requested collection", 1
+            )[1].split("python3 -I tools/ci/python.py tools/apps/app_release.py \"${args[@]}\"", 1)[0]
+            self.assertIn("COLLECTION_BUILDER: ${{ vars.TILO_APP_COLLECTION_BUILDER }}", selection)
+            self.assertIn("BUILDER: ${{ steps.builder.outputs.image }}", selection)
+            self.assertIn("--prior-collection-base", selection)
+            self.assertIn('echo "prior_x86_url=${PRIOR_X86_URL:-}"', selection)
+            publish = workflow.split("- name: Publish reusable tapps and assemble immutable collections", 1)[1]
+            self.assertIn("PRIOR_X86_URL: ${{ needs.plan.outputs.prior_x86_url }}", publish)
+            self.assertIn("PRIOR_ARM64_SHA256: ${{ needs.plan.outputs.prior_arm64_sha256 }}", publish)
+            self.assertNotIn("vars.TILO_APP_COLLECTION_URL", publish.split("run: |", 1)[0])
+            self.assertIn('update_variable TILO_APP_COLLECTION_BUILDER "$BUILDER_IMAGE"', publish)
 
 
 if __name__ == "__main__":

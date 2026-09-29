@@ -82,15 +82,22 @@ fn parse(name: &CStr) -> Result<([u8; 16], bool), HostWorkFailure> {
     }
     Ok((pin, pending))
 }
+#[cfg(test)]
 pub(super) fn open_root(root: &File) -> Result<File, HostWorkFailure> {
+    let directory = create_root(root)?;
+    // Also repair a prior mkdir + uncertain parent barrier on EEXIST retry.
+    directory_barrier(root)?;
+    Ok(directory)
+}
+/// [`open_root`] without its parent barrier, for a caller that takes one
+/// barrier over several entries it creates in `root`.
+pub(super) fn create_root(root: &File) -> Result<File, HostWorkFailure> {
     let created = unsafe { libc::mkdirat(root.as_raw_fd(), c"snapshots-v1".as_ptr(), 0o700) } == 0;
     if !created && std::io::Error::last_os_error().kind() != std::io::ErrorKind::AlreadyExists {
         return Err(HostWorkFailure::Unavailable);
     }
     let directory = open_at(root, c"snapshots-v1", libc::O_RDONLY | libc::O_DIRECTORY)?;
     private(&directory, true)?;
-    // Also repair a prior mkdir + uncertain parent barrier on EEXIST retry.
-    directory_barrier(root)?;
     Ok(directory)
 }
 /// Every recognized file, including an interrupted partial pending, retains a
@@ -167,11 +174,11 @@ impl HostWorkInventory {
         root: &File,
         workspace: u64,
     ) -> Result<SnapshotDirectory, HostWorkFailure> {
-        let staging = self.staging_directory(root, workspace)?;
+        let (staging, directory) = self.reconciled_directories(root, workspace)?;
         drop(staging);
         let metadata = root.metadata().map_err(io)?;
         Ok(SnapshotDirectory {
-            directory: open_root(root)?,
+            directory,
             key: DirectoryKey {
                 device: metadata.dev(),
                 inode: metadata.ino(),

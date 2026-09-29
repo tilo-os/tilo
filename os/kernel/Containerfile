@@ -202,9 +202,11 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
 # secrets, never to a layer or build argument. KBUILD_BUILD_TIMESTAMP reaches
 # only the version objects, so a new source epoch still reuses everything else.
 ARG TILO_REQUIRE_COMPILER_CACHE=0
-# `off` is for publications: every CI job can write the shared compiler cache,
-# so a published kernel compiles without a launcher and refuses to receive
-# compiler-cache credentials or settings at all.
+# A published kernel never reads the cache: pull requests can write their own
+# scope, and main's scope is what a publication would read. `populate` is for
+# publications: every object is compiled here (SCCACHE_RECACHE) and then
+# written, so pull requests start from main's objects. `off` compiles without
+# a launcher and refuses to receive compiler-cache settings at all.
 ARG TILO_COMPILER_CACHE=shared
 
 # Build vmlinuz + modules directly and stage into a rootfs image tree.
@@ -223,8 +225,9 @@ RUN --mount=type=secret,id=actions_cache_url \
       SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1 SCCACHE_IDLE_TIMEOUT=0; \
     case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
       shared:0|off:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 ;; \
+      populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;; \
       shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
-      *) echo "TILO_COMPILER_CACHE must be shared or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 when off)" >&2; exit 1 ;; \
+      *) echo "TILO_COMPILER_CACHE must be shared, populate or off, TILO_REQUIRE_COMPILER_CACHE 0 or 1 (0 unless shared)" >&2; exit 1 ;; \
     esac; \
     TILO_KERNEL_CC_LAUNCHER=; \
     if [ "$TILO_COMPILER_CACHE" = off ]; then \

@@ -12,7 +12,7 @@ use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use super::efi::GLOBAL_GUID;
 use super::linux_parse::{self, MountSource, PowerSupply};
@@ -421,7 +421,7 @@ impl Platform for LinuxPlatform {
             .find(|p| super::same_guid(&p.guid, &guid))
             .ok_or("the new partition did not appear in the table")?;
         let _ = run(Command::new("partx").arg("-u").arg(&self.disk));
-        let deadline = Instant::now() + Duration::from_secs(10);
+        let deadline = ui::time::now() + Duration::from_secs(10);
         let mut added = false;
         while self.partition_node(&guid, p.number).is_err() {
             if !added {
@@ -431,7 +431,7 @@ impl Platform for LinuxPlatform {
                 added = true;
             }
             self.settle();
-            if Instant::now() > deadline {
+            if ui::time::now() > deadline {
                 return Err("the kernel did not expose the new partition".into());
             }
             std::thread::sleep(Duration::from_millis(100));

@@ -137,7 +137,16 @@ struct Harness {
 impl Harness {
     fn new() -> Self {
         let (tree, strip, groups, tabs) = strip_tree();
-        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(&tree);
+        Self::with_tree(&tree, strip, groups, tabs)
+    }
+
+    fn with_tree(
+        tree: &WorkspaceTree,
+        strip: StripId,
+        groups: Vec<GroupId>,
+        tabs: Vec<[u64; 2]>,
+    ) -> Self {
+        let (mut host, chrome) = build_tilo_overlay_host_with_chrome(tree);
         // This fixture minted the tabs, so it explicitly creates their
         // documents before presentation attempts existing-only admission.
         let (records, rendered_tabs) = {
@@ -395,6 +404,105 @@ impl Harness {
             .expect("the active group in the tree");
         (gid, g.active_tab)
     }
+}
+
+/// Super+Up/Down moves focus between strips and Super+Shift+Up/Down carries
+/// the focused group the same way, whole, into the durable tree; Super+Up no
+/// longer maximizes.
+#[test]
+fn shift_arrows_carry_the_focused_group_between_strips() {
+    let (mut tree, upper, groups, tabs) = strip_tree();
+    let lower = StripId::new();
+    let resident: GroupId = 2001;
+    tree.desktop.workspaces[0].strips.push(Strip {
+        id: lower,
+        name: "Below".into(),
+        window_groups: vec![WindowGroup {
+            id: resident,
+            tabs: [91, 92]
+                .into_iter()
+                .map(|id| Tab {
+                    id,
+                    title: format!("Below {id}"),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Other("Test".into()),
+                        label: format!("Below {id}"),
+                    },
+                })
+                .collect(),
+            active_tab: 91,
+            width: WindowWidth::Fraction(GROUP_WIDTH_PERMILLE),
+            maximized: false,
+        }],
+    });
+    tree.desktop.active_group.insert(lower, resident);
+    tree.seed_doc_from_cache();
+    let mut h = Harness::with_tree(&tree, upper, groups.clone(), tabs);
+    let layout = |h: &Harness| {
+        let st = h.chrome.borrow();
+        let tree = st.tree();
+        let active_strip = tree.desktop.active_strip[&tree.desktop.active];
+        let strips = tree.desktop.workspaces[0]
+            .strips
+            .iter()
+            .map(|strip| {
+                (
+                    strip.id,
+                    strip.window_groups.iter().map(|g| g.id).collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let focused = tree.desktop.active_group_for(active_strip);
+        (strips, active_strip, focused)
+    };
+    let upper_maximized = |h: &mut Harness| {
+        h.host
+            .group_row_mut_for_tests(upper)
+            .expect("the upper strip is live")
+            .groups
+            .iter()
+            .any(|group| group.maximized)
+    };
+
+    h.key(
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    let (strips, active, focused) = layout(&h);
+    assert_eq!(strips[0], (upper, groups[1..].to_vec()));
+    assert_eq!(
+        strips[1],
+        (lower, vec![resident, groups[0]]),
+        "the carried group lands after the destination's focused group"
+    );
+    assert_eq!(active, lower, "focus follows the carried group");
+    assert_eq!(focused, Some(groups[0]));
+
+    h.key(
+        Key::Named(NamedKey::ArrowDown),
+        ModifiersState::SUPER | ModifiersState::SHIFT,
+    );
+    assert_eq!(
+        layout(&h).0,
+        strips,
+        "carrying past the last strip clamps rather than creating one"
+    );
+
+    h.key(Key::Named(NamedKey::ArrowUp), ModifiersState::SUPER);
+    let (after_up, active, focused) = layout(&h);
+    assert_eq!(after_up, strips, "Super+Up moves focus, not windows");
+    assert_eq!(active, upper);
+    assert_eq!(
+        focused,
+        Some(groups[1]),
+        "the strip a group left keeps focus on its neighbour"
+    );
+    assert!(!upper_maximized(&mut h), "Super+Up no longer maximizes");
+    h.key(Key::Character("m".into()), ModifiersState::SUPER);
+    assert!(
+        upper_maximized(&mut h),
+        "Super+M maximizes the focused group"
+    );
 }
 
 #[test]

@@ -31,7 +31,7 @@ runtime-identity = { path = "../runtime-identity" }
 serde.workspace = true
 serde_json.workspace = true
 threshold-identity = { path = "../../collab/threshold-identity" }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

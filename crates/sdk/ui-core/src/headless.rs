@@ -26,7 +26,10 @@
 //! second loads the store and dumps the document as JSON. Diffing the two
 //! dumps is the persistence proof for the app's document.
 
+mod controls;
 mod document_history;
+
+pub use controls::{CONTROL_RESOURCE_PREFIX, Control, ControlInput};
 
 use std::collections::{HashMap, HashSet};
 
@@ -451,9 +454,14 @@ use crate::history_mode::frame::FrameworkInputFrame;
 /// the same pass ordering documented by [`Self::relayout`].
 /// Borrowed renderer input plus semantic output from the same real widget frame.
 /// Cheap wake demand; deliberately excludes accessibility and inspection trees.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSchedule {
     pub needs_redraw: bool,
+    /// The part of `needs_redraw` that is queued work: a component wake, a
+    /// pending invocation or a presence change. Widget dirtiness is left
+    /// out (leaves default to dirty), so a host that takes frames only for
+    /// input and this work stays idle while nothing happens.
+    pub queued_work: bool,
     pub needs_animation_frame: bool,
     pub next_wake_deadline: Option<crate::time::Instant>,
 }
@@ -572,7 +580,7 @@ pub struct FrameHarness {
     /// re-solve in place. False until the first successful build and after
     /// every path that discards the raw maps, so the next frame rebuilds.
     layout_built: bool,
-    /// Test override for the `QUICK_UI_FULL_RELAYOUT` safety valve: `Some`
+    /// Test override for the `TILO_UI_FULL_RELAYOUT` safety valve: `Some`
     /// wins over the environment.
     full_relayout_override: Option<bool>,
     /// What the most recent completed relayout did; see [`RelayoutStats`].
@@ -618,14 +626,14 @@ pub struct RelayoutStats {
     pub marked_leaves: usize,
 }
 
-/// `QUICK_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
+/// `TILO_UI_FULL_RELAYOUT=1` forces the headless host to rebuild its layout
 /// tree on every frame, as it did before retained relayout — a safety valve if
 /// a widget ever changes size without reporting `is_layout_dirty`, mirroring
-/// `App`'s `QUICK_UI_NO_SCROLL_OPT`.
+/// `App`'s `TILO_UI_NO_SCROLL_OPT`.
 fn full_relayout_forced() -> bool {
     use std::sync::OnceLock;
     static FLAG: OnceLock<bool> = OnceLock::new();
-    *FLAG.get_or_init(|| std::env::var("QUICK_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
+    *FLAG.get_or_init(|| crate::env::var("TILO_UI_FULL_RELAYOUT").is_ok_and(|s| !s.is_empty()))
 }
 
 /// Backwards-compatible name for the input-driving use of [`FrameHarness`].
@@ -883,6 +891,17 @@ impl FrameHarness {
         self.bindings.clear();
         self.node_map.clear();
         self.layout_built = false;
+    }
+
+    /// The app root's structure flag, and framework History's: it is laid
+    /// out as a separate root, so its replaced controls are not the app's.
+    fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
     }
 
     /// Replace the whole root control of this harness. `node_map` holds raw
@@ -1880,20 +1899,21 @@ impl FrameHarness {
     /// Read wake demand without materializing document text or semantic nodes.
     pub fn frame_schedule(&self) -> FrameSchedule {
         self.drain_component_wakes();
+        let queued_work = self.presence_redraw
+            || !self.bound_invocations.is_empty()
+            || !self.pending_control_invocations.is_empty()
+            || self
+                .component_wake
+                .as_ref()
+                .is_some_and(|wake| wake.dirty.get());
         let schedule = |roots: Vec<&dyn Widget>| FrameSchedule {
             needs_animation_frame: roots.iter().any(|root| root.needs_animation_frame()),
             next_wake_deadline: roots
                 .iter()
                 .filter_map(|root| root.next_wake_deadline())
                 .min(),
-            needs_redraw: roots.iter().any(|root| root.needs_redraw())
-                || self.presence_redraw
-                || !self.bound_invocations.is_empty()
-                || !self.pending_control_invocations.is_empty()
-                || self
-                    .component_wake
-                    .as_ref()
-                    .is_some_and(|wake| wake.dirty.get()),
+            needs_redraw: roots.iter().any(|root| root.needs_redraw()) || queued_work,
+            queued_work,
         };
         if self.history_layout.is_some() && self.system_search_presentation().is_none() {
             return self.presentation(|history, _| {
@@ -2044,29 +2064,28 @@ impl FrameHarness {
     /// Rasterise the most recently laid-out frame to a PNG.
     ///
     /// `new`, input delivery, and `set_theme` all finish with `relayout`, so
-    /// this never runs a separate screenshot-only widget pipeline.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// this never runs a separate screenshot-only widget pipeline. A browser
+    /// page cannot read a frame back synchronously: there nothing is written.
     pub fn render_png(&self, out: &std::path::Path) {
         self.render_png_on(out, vello::peniko::Color::TRANSPARENT);
     }
 
     /// Capture the composited native-window appearance, including its theme
-    /// background. Use this for rendered contrast measurements.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// background. Use this for rendered contrast measurements. Nothing is
+    /// written in a browser page, as for [`FrameHarness::render_png`].
     pub fn render_window_png(&self, out: &std::path::Path) {
         self.render_png_on(out, self.theme.bg_app);
     }
 
     /// Rasterise the most recently laid-out frame over a transparent
     /// background, as tightly packed RGBA8 rows `viewport.0` pixels wide.
-    #[cfg(not(target_arch = "wasm32"))]
+    /// Empty in a browser page, which cannot read a frame back synchronously.
     pub fn render_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(vello::peniko::Color::TRANSPARENT)
     }
 
     /// [`FrameHarness::render_rgba`] over the theme background, as the
     /// native window composites it.
-    #[cfg(not(target_arch = "wasm32"))]
     pub fn render_window_rgba(&self) -> Vec<u8> {
         self.render_rgba_on(self.theme.bg_app)
     }
@@ -2076,6 +2095,17 @@ impl FrameHarness {
         self.drain_component_wakes();
         let (w, h) = self.viewport;
         crate::offscreen::OffscreenRenderer::new(w, h).render_resilient(&self.scene, background)
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_rgba_on(&self, _background: vello::peniko::Color) -> Vec<u8> {
+        tracing::warn!("a browser page has no offscreen renderer; the frame is empty");
+        Vec::new()
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    fn render_png_on(&self, out: &std::path::Path, _background: vello::peniko::Color) {
+        tracing::warn!(path = %out.display(), "a browser page has no offscreen renderer; no PNG written");
     }
 
     #[cfg(not(target_arch = "wasm32"))]
@@ -2238,7 +2268,7 @@ impl FrameHarness {
         // Event dispatch may replace controls before this frame starts. Old
         // node pointers are invalid in that case; retained controls carry their
         // own focus until the fresh map below recovers it.
-        let structure_changed = self.root.take_structure_dirty();
+        let structure_changed = self.take_composition_dirty();
         let focus = if self.node_map.is_empty() {
             // The first frame has no previous layout focus to transfer. A
             // component's restored application view owns its initial focus.
@@ -2285,17 +2315,20 @@ impl FrameHarness {
             .as_ref()
             .is_some_and(|history| history.captures_input());
         // A refresh may replace managed History controls. Discard every raw
-        // layout map before refreshing so no stale callback target survives.
-        if self.history.as_ref().is_some_and(|history| {
+        // layout map before refreshing so no stale callback target survives,
+        // and refresh only then: the History source changes on other threads,
+        // so a refresh after a negative check could still replace controls.
+        let refresh_history = self.history.as_ref().is_some_and(|history| {
             history.validate_root(self.root.as_ref()).is_err()
                 || history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
-        }) {
+        });
+        if refresh_history {
             self.discard_layout_tree();
             history_invalidated = true;
-        }
-        if let Some(history) = &mut self.history {
-            history.set_width(f64::from(self.viewport.0));
-            history.refresh(&self.state.doc);
+            if let Some(history) = &mut self.history {
+                history.set_width(f64::from(self.viewport.0));
+                history.refresh(&self.state.doc);
+            }
         }
         let returning_live = self
             .history
@@ -2331,7 +2364,7 @@ impl FrameHarness {
         // reports structure dirty, a history owner was invalidated, the
         // viewport moved, or nothing has been built yet); re-solve sizes in
         // place only when some widget reports it needs measuring; otherwise
-        // just re-apply positions. `QUICK_UI_FULL_RELAYOUT` forces the
+        // just re-apply positions. `TILO_UI_FULL_RELAYOUT` forces the
         // rebuild path on every frame.
         let history_width = f64::from(self.viewport.0);
         let structure = self.full_relayout_forced_now()
@@ -2340,7 +2373,7 @@ impl FrameHarness {
             || structure_changed
             || history_invalidated
             || standalone_history_topology_changed
-            || self.root.take_structure_dirty()
+            || self.take_composition_dirty()
             || crate::history_mode::embedded::needs_refresh(
                 self.root.as_ref(),
                 &self.state.doc,
@@ -2391,7 +2424,7 @@ impl FrameHarness {
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&mut self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
-                if self.root.take_structure_dirty() || history_invalidated {
+                if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
                     return Ok((None, true));
                 }
@@ -2515,7 +2548,7 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
             }
             let history_invalidated = self.invalidate_unsupported_history_owner();
-            let dirty = self.root.take_structure_dirty() || history_invalidated;
+            let dirty = self.take_composition_dirty() || history_invalidated;
             let geometry = if viewport_changed {
                 composition_geometry(&self.taffy, self.root_node)?
             } else {
@@ -6093,6 +6126,30 @@ impl FrameHarness {
         Ok(())
     }
 
+    /// What the focused widget publishes as presence (its caret or
+    /// selection), for a live host to send to peers.
+    pub fn focus_presence(
+        &self,
+    ) -> Option<(
+        crate::presence::PresenceKey,
+        crate::collaboration::PresencePayload,
+    )> {
+        self.focused.and_then(|id| {
+            self.inspect_node(id, |widget| {
+                crate::presence::capability::presence_payload(widget)
+            })
+            .ok()
+            .flatten()
+        })
+    }
+
+    /// The collaborator state the draw pass renders (remote carets,
+    /// selections, names), for a live host applying peers' presence. Takes
+    /// effect in the next relayout.
+    pub fn presence_mut(&mut self) -> &mut PresenceCtx {
+        &mut self.presence
+    }
+
     /// Replace the host-projected collaborator state used by the real draw pass.
     /// Capture and integration hosts use this to exercise the same presence
     /// rendering that a live broker frame supplies, without a broker process.
@@ -6177,14 +6234,14 @@ impl FrameHarness {
     // -- Retained relayout diagnostics -------------------------------------
 
     /// Whether this frame must rebuild the layout tree regardless of what the
-    /// widgets report: the test override first, then `QUICK_UI_FULL_RELAYOUT`.
+    /// widgets report: the test override first, then `TILO_UI_FULL_RELAYOUT`.
     fn full_relayout_forced_now(&self) -> bool {
         self.full_relayout_override
             .unwrap_or_else(full_relayout_forced)
     }
 
     /// Force (`Some(true)`) or forbid (`Some(false)`) the full-rebuild path
-    /// for every following frame, overriding `QUICK_UI_FULL_RELAYOUT`; `None`
+    /// for every following frame, overriding `TILO_UI_FULL_RELAYOUT`; `None`
     /// returns to the environment's choice. Benchmarks use this to compare
     /// both paths inside one process.
     pub fn set_full_relayout(&mut self, forced: Option<bool>) {
@@ -6485,7 +6542,11 @@ impl FrameHarness {
                 return Err(tilo_actions::DoorError::ConfirmationRequired);
             }
         };
-        let result = self.invoke_address(address, arguments, confirmed);
+        let result = if controls::is_control_operation(spec) {
+            self.invoke_control_action(address, arguments)
+        } else {
+            self.invoke_address(address, arguments, confirmed)
+        };
         self.host_tick();
         self.relayout();
         result
@@ -10451,6 +10512,7 @@ mod a11y_driver_tests {
             Some(
                 AccessNode::new(Role::Canvas)
                     .with_name("Strip")
+                    .with_semantic_key("strip")
                     .with_state(AccessState::new().focusable(true).focused(self.focused))
                     .with_children(
                         self.items
@@ -10680,6 +10742,61 @@ mod a11y_driver_tests {
             assert!(err.contains("no accessibility node"), "got {err}");
             assert!(activated.borrow().is_empty());
         }
+    }
+
+    fn control_named(d: &Driver, name: &str) -> Control {
+        d.controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some(name))
+            .unwrap_or_else(|| panic!("no control named {name}"))
+    }
+
+    #[test]
+    fn every_on_screen_control_is_listed_with_what_it_answers() {
+        let (d, _a) = driver();
+        let beta = control_named(&d, "beta");
+        assert_eq!(beta.role, accesskit::Role::Button);
+        assert!(beta.verbs.iter().any(|verb| verb == "activate"), "{beta:?}");
+        assert!(beta.verbs.iter().any(|verb| verb == "focus"), "{beta:?}");
+        assert_eq!(
+            beta.id,
+            d.a11y_node_named("beta").unwrap().0.to_string(),
+            "a control is named by its exported node"
+        );
+    }
+
+    #[test]
+    fn pressing_and_focusing_a_control_reaches_the_element_inside_a_canvas() {
+        let (mut d, activated) = driver();
+        let gamma = control_named(&d, "gamma");
+        d.operate_control(&gamma.id, &ControlInput::Press).unwrap();
+        assert_eq!(*activated.borrow(), vec!["gamma".to_string()]);
+        let alpha = control_named(&d, "alpha");
+        d.operate_control(&alpha.id, &ControlInput::Focus).unwrap();
+        assert_eq!(*activated.borrow(), vec!["gamma".to_string()]);
+        assert!(
+            d.operate_control(&alpha.id, &ControlInput::SetValue("x".into()))
+                .is_err(),
+            "a button takes no value"
+        );
+        assert!(d.operate_control("nope", &ControlInput::Press).is_err());
+    }
+
+    #[test]
+    fn a_projected_control_action_runs_through_the_door() {
+        let (mut d, activated) = driver();
+        let resource = d
+            .resources()
+            .into_iter()
+            .find(|resource| {
+                resource.id.as_str().starts_with(CONTROL_RESOURCE_PREFIX)
+                    && resource.label == "beta"
+            })
+            .expect("the keyed element inside the canvas is published");
+        let address = tilo_actions::ActionAddress::new(resource.id.as_str(), "activate");
+        d.invoke_action(&address, &serde_json::Map::new(), false, None)
+            .unwrap();
+        assert_eq!(*activated.borrow(), vec!["beta".to_string()]);
     }
 }
 

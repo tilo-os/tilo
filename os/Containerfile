@@ -310,10 +310,13 @@ COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
+COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
+COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
+    os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
     os/scripts/browser-runtime-launcher.c \
@@ -329,7 +332,7 @@ COPY os/app-runtime /build/os/app-runtime
 # copy. Builder and final share BASE_REF, so their glibc matches by
 # construction. Bump deliberately: re-run `mirror-base`, commit the new
 # BASE_REF, re-run `snapshot-rpms`.
-FROM ${BASE_REF} AS builder
+FROM ${BASE_REF} AS builder-base
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -481,6 +484,11 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
     bash /run/tilo-check-wpe-runtime.sh "the builder stage's dnf list (and its mirror, builder-packages.txt)"
 
+# Everything above is the build toolchain: it changes with packages, the pinned
+# tools and the browser engine, not with the workspace, and CI caches it on its
+# own (the compile below goes through the compiler cache instead).
+FROM builder-base AS builder
+
 # Copy the frequently changing workspace only after the large, stable WPE
 # overlay. This keeps source-only iterations from re-importing the browser
 # engine before Cargo can reach its cache mounts. The sources arrive as one
@@ -580,6 +588,8 @@ ARG TILO_CARGO_BUILD_JOBS=4
 # either way): the profile's line tables by default; 0 skips them, which only
 # makes a dev build compile faster.
 ARG TILO_RUST_DEBUGINFO=line-tables-only
+# 1 prints where each cargo build spent its time (cargo --timings).
+ARG TILO_CARGO_TIMINGS=
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `shared` compiles through sccache: CI's runner cache when the build passes
 # the actions_cache_url and actions_runtime_token secrets (the Actions cache
@@ -594,8 +604,12 @@ ARG TILO_REQUIRE_COMPILER_CACHE=0
 ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
+# Names the target cache, so builds that compile differently (os/dev/build-image.sh
+# hashes the settings into it) keep separate target directories instead of
+# rebuilding each other's artifacts. The cargo home and sccache are shared.
+ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
@@ -664,7 +678,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
        fi \
     && THIN_EXCLUDES="browser" \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
@@ -674,13 +688,17 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
     && build_phase rust-release \
+    # Without LTO nothing merges the units again, so a dev build splits the
+    # large crates (shell's library alone ran 180 s at eight) further.
+    && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
@@ -773,7 +791,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
+         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
+         EXTRA_CARGO_ARGS="${TILO_CARGO_TIMINGS:+--timings}" \
            /build/os/scripts/build-thin-apps.sh \
+         && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
               b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -1002,7 +1023,7 @@ FROM ${BASE_REF} AS component-files
 ARG SOURCE_DATE_EPOCH=0
 COPY os/components.toml os/scripts/install-components.py /tilo-components/
 RUN --network=none \
-    --mount=type=bind,from=builder,source=/out,target=/out,ro \
+    --mount=type=bind,from=native-builder-payload,source=/out,target=/out,ro \
     python3 /tilo-components/install-components.py \
       --manifest /tilo-components/components.toml \
       --from /out --from /out/optional \
@@ -1052,6 +1073,7 @@ FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
 COPY --chmod=0755 \
     os/usr/libexec/tilo-deployment \
+    os/usr/libexec/tilo-esp-write \
     os/usr/libexec/tilo-system-extension-activate \
     os/usr/libexec/tilo-system-extension-dispatch \
     os/usr/libexec/tilo-boot-health \
@@ -1065,6 +1087,7 @@ COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator 
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
     os/usr/lib/systemd/system/tilo-repair.target \
     os/usr/lib/systemd/system/tilo-repair@.service \
@@ -1123,8 +1146,19 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 # kernel moved out of this tree and into a Unified Kernel Image, and the UKI has
 # to be built over the *finished* rootfs (its composefs digest is the digest of
 # what will actually be mounted). See the split/uki/final stages at the end.
-FROM ${BASE_REF} AS rootfs
+FROM ${BASE_REF} AS rootfs-base
 ARG SOURCE_DATE_EPOCH=0
+
+# ---- Directory times independent of the builder ------------------------------
+# The base's chunked layers carry entries for few parent directories, so an
+# unpacked base has most directory times from when the builder unpacked it. A
+# later layer that touches such a directory's metadata copies it up with that
+# time, and a time older than SOURCE_DATE_EPOCH escapes the export's clamp: a
+# builder that unpacked the base before the commit (a seeded one) produced
+# different layers than a fresh one (run 49265). Pin every directory to the
+# epoch before anything else runs.
+RUN --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/run/tilo-pin-directory-times.py \
+    python3 -B /run/tilo-pin-directory-times.py / "${SOURCE_DATE_EPOCH}"
 
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
@@ -1273,7 +1307,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \
-    && gst-inspect-1.0 rtpstreampay >/dev/null
+    && gst-inspect-1.0 rtpstreampay >/dev/null \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).  The same
@@ -1507,7 +1542,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
                /usr/share/fonts/tilo/*) ;; \
                *) echo "fontconfig does not resolve $generic from the catalog" >&2; exit 1 ;; \
            esac; \
-       done
+       done \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # The frozen snapshot already resolves these development specs and their exact
 # runtime library closure. Erase the header/pkg-config payloads in the same
@@ -1585,7 +1621,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
     && gst-inspect-1.0 aacparse >/dev/null \
-    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above"
+    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above" \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -1628,6 +1665,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rpm -e --nodeps bootupd \
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}
+
+# The fedora-bootc base ships the NFS client and server stack. The Tilo kernel
+# has no NFS or rpc_pipefs (os/kernel/config-fragments/tilo.config: remote
+# storage is the userspace QuickFS protocol), so its units could only fail at
+# every boot (var-lib-nfs-rpc_pipefs.mount: "unknown filesystem type
+# 'rpc_pipefs'"). Remove the packages rather than their units; rpm -e without
+# --nodeps fails the build if anything else comes to need them.
+RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils \
+        nfs-common-utils rpcbind \
+    && ${FINALIZE_RPMDB}
 
 # Keep encrypted-root unlock in the same visual path as the UKI splash.
 # Assets are generated at build time so the source remains reviewable and the
@@ -1733,6 +1780,8 @@ ARG TILO_WINDOWS_ARCH
 # appliance's domain uses, and libvirt the KVM daemon set without the
 # `qemu-kvm`/`libvirt-daemon-kvm` metapackages: those add QEMU's GTK and SDL
 # front ends and network block drivers no Tilo path opens.
+# libvirt's storage drivers recommend the NFS client stack, which would undo the
+# removal above: the kernel has no NFS, so its units only fail at boot.
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     test "$(uname -m)" = "$TILO_WINDOWS_ARCH" && \
     case "$(uname -m)" in \
@@ -1743,6 +1792,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --exclude=dosbox-staging \
     --exclude=libcanberra-gtk3 \
     --exclude=xdg-desktop-portal-gtk \
+    --exclude=nfs-utils --exclude=nfs-client-utils --exclude=nfs-common-utils \
+    --exclude=nfsv3-client-utils --exclude=nfsv4-client-utils --exclude=rpcbind \
     $windows_packages \
     qemu-kvm-core \
     qemu-ui-spice-core \
@@ -2036,6 +2087,8 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
+# The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
+COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -2572,7 +2625,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
     install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
-    python3 /run/tilo-prepare-hardware-profile.py \
+    # -B: the script imports hardware_profile from /run, and its bytecode
+    # (which records the checkout's mtime) would otherwise stay in the layer.
+    python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
@@ -2755,6 +2810,12 @@ RUN case "${TILO_GENERATION}" in \
 # ---------------------------------------------------------------------------
 # The Tilo build outputs, last
 # ---------------------------------------------------------------------------
+# rootfs-base is everything above, built and cached on its own in CI: it
+# changes only with os/ inputs, packages and the kernel. This stage adds what
+# changes with almost every commit.
+FROM rootfs-base AS rootfs
+# The build-only dnf/rpm wrappers need it for the removals below.
+ARG SOURCE_DATE_EPOCH=0
 # Everything above changes only with os/ inputs, packages or the kernel. The
 # compiled binaries, the baked runtime and the app store change with almost
 # every commit, so they are copied here, after the RPM transactions,
@@ -2786,8 +2847,8 @@ COPY --from=component-files /image/windows/ /
 # Trust list read by the launcher — one hex pubkey per line, `#` for
 # comments. The baked publisher is the only entry by default; operators
 # can extend it via `echo <hex> >> /etc/tilo/runtime-bundle-trusted-publishers.txt`.
-COPY --from=builder /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
-COPY --from=builder \
+COPY --from=native-builder-payload /usr/lib/tilo-runtime/ /usr/lib/tilo-runtime/
+COPY --from=native-builder-payload \
     /out/runtime-bundle-publisher.hex \
     /out/browser-runtime-publisher.hex \
     /usr/share/tilo/
@@ -2807,8 +2868,8 @@ COPY --from=builder \
 # trust is the user's `~/.config/tilo/trusted-attestors.toml`, and this key is
 # deliberately absent from it — a preinstalled package is self-signed by the
 # image build, and claims nothing more.
-COPY --from=builder /usr/share/tilo-apps/ /usr/share/tilo-apps/
-COPY --from=builder /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
+COPY --from=native-builder-payload /usr/share/tilo-apps/ /usr/share/tilo-apps/
+COPY --from=native-builder-payload /out/app-publisher.hex /usr/share/tilo/app-publisher.hex
 # Browser and shell are compiled in one Cargo invocation. The browser's WPE
 # feature can therefore affect shell's dynamic link closure. Check it only
 # after both the WPE files and their runtime RPM dependencies are present.
@@ -2883,6 +2944,8 @@ RUN chmod 0755 /usr/bin/tilo-relay /usr/bin/tilo-relay-admin /usr/bin/tilo-enrol
 RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /etc/resolv.conf
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
+    --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
+    --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2912,8 +2975,17 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
+    # The system font cache, written once here: fontconfig records each font
+    # directory's time, so those are pinned to the epoch first, the time the
+    # image carries, and the cache is the same in every build and valid on
+    # the booted system.
+    && for fonts in /usr/share/fonts /usr/share/X11/fonts /usr/local/share/fonts; do \
+         if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
+       done \
+    && HOME=/root fc-cache -s -f \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
+    && sh /usr/local/libexec/tilo-verify-rpm-files.sh \
     && bootc container lint
 
 # COPY is a separate build operation, with no DNS mount in /run. Copy the
@@ -2957,6 +3029,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
+# Nothing ships from this stage. It gathers the image's small tool stages, which
+# change with neither the Rust build nor the rootfs, into one target that CI
+# caches with its intermediate steps: the image build then neither repeats
+# their dnf transactions nor pulls the RPM snapshot to run them.
+FROM scratch AS image-tool-stages
+COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
+COPY --from=doubletake-builder /out/ /doubletake/
+COPY --from=fluxcast-builder /src/src/ /fluxcast/
+COPY --from=joycond-builder /out/ /joycond/
+
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
@@ -2972,10 +3054,13 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
+# The rootfs mounts are writable (writes are discarded): BuildKit keys a
+# read-only mount by a content hash of everything under it, which for the whole
+# rootfs took two minutes of every build before this step could start.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target \
-    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
     bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to
