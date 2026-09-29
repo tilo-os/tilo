@@ -11194,94 +11194,7 @@ impl ShellOverlayHost {
             .into_iter()
             .find(|action| shortcut_pressed(*action))
         {
-            match action {
-                ShortcutAction::PreviousTab => {
-                    let _ = self.cycle_focused_tab(-1);
-                }
-                ShortcutAction::NextTab => {
-                    let _ = self.cycle_focused_tab(1);
-                }
-                ShortcutAction::ToggleMaximize => {
-                    if !repeat {
-                        let _ = self.toggle_focused_group_maximized();
-                    }
-                }
-                ShortcutAction::DetachTab => {
-                    if !repeat {
-                        let _ = self.detach_focused_tab();
-                    }
-                }
-                ShortcutAction::AttachTabLeft => {
-                    if !repeat {
-                        let _ = self.attach_focused_tab(-1);
-                    }
-                }
-                ShortcutAction::AttachTabRight => {
-                    if !repeat {
-                        let _ = self.attach_focused_tab(1);
-                    }
-                }
-                ShortcutAction::ReopenClosedTab => {
-                    if !repeat && let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().reopen_closed_tab();
-                    }
-                }
-                ShortcutAction::ResizeNarrower => {
-                    let _ = self.resize_focused_group(-50);
-                }
-                ShortcutAction::ResizeWider => {
-                    let _ = self.resize_focused_group(50);
-                }
-                ShortcutAction::MoveGroupLeft => {
-                    let _ = self.reorder_focused_group(-1);
-                }
-                ShortcutAction::MoveGroupRight => {
-                    let _ = self.reorder_focused_group(1);
-                }
-                ShortcutAction::MoveGroupToPreviousStrip => {
-                    let _ = self.move_focused_group_to_strip(-1);
-                }
-                ShortcutAction::MoveGroupToNextStrip => {
-                    let _ = self.move_focused_group_to_strip(1);
-                }
-                ShortcutAction::MoveGroupToPreviousDisplay => {
-                    if !repeat {
-                        let _ = self.move_focused_group_to_display(-1);
-                    }
-                }
-                ShortcutAction::MoveGroupToNextDisplay => {
-                    if !repeat {
-                        let _ = self.move_focused_group_to_display(1);
-                    }
-                }
-                ShortcutAction::FocusPreviousWindow => {
-                    let _ = self.step_focus_along_strip(-1);
-                }
-                ShortcutAction::FocusNextWindow => {
-                    let _ = self.step_focus_along_strip(1);
-                }
-                ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
-                    let direction = if action == ShortcutAction::PreviousStrip {
-                        -1
-                    } else {
-                        1
-                    };
-                    if let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().switch_strip(direction);
-                    }
-                }
-                ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
-                    let direction = if action == ShortcutAction::PreviousWorkspace {
-                        -1
-                    } else {
-                        1
-                    };
-                    if let Some(chrome) = self.chrome.clone() {
-                        let _ = chrome.borrow_mut().switch_workspace(direction);
-                    }
-                }
-                _ => {}
-            }
+            self.run_navigation_shortcut(action, repeat);
             *handled = true;
             return true;
         }
@@ -11318,6 +11231,133 @@ impl ShellOverlayHost {
             return true;
         }
         false
+    }
+
+    /// Run one editable navigation or window shortcut. `false` when
+    /// `action` is not one of them.
+    fn run_navigation_shortcut(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+        repeat: bool,
+    ) -> bool {
+        use settings_store::hardware::ShortcutAction;
+        match action {
+            ShortcutAction::PreviousTab => {
+                let _ = self.cycle_focused_tab(-1);
+            }
+            ShortcutAction::NextTab => {
+                let _ = self.cycle_focused_tab(1);
+            }
+            ShortcutAction::ToggleMaximize => {
+                if !repeat {
+                    let _ = self.toggle_focused_group_maximized();
+                }
+            }
+            ShortcutAction::DetachTab => {
+                if !repeat {
+                    let _ = self.detach_focused_tab();
+                }
+            }
+            ShortcutAction::AttachTabLeft => {
+                if !repeat {
+                    let _ = self.attach_focused_tab(-1);
+                }
+            }
+            ShortcutAction::AttachTabRight => {
+                if !repeat {
+                    let _ = self.attach_focused_tab(1);
+                }
+            }
+            ShortcutAction::ReopenClosedTab => {
+                if !repeat && let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().reopen_closed_tab();
+                }
+            }
+            ShortcutAction::ResizeNarrower => {
+                let _ = self.resize_focused_group(-50);
+            }
+            ShortcutAction::ResizeWider => {
+                let _ = self.resize_focused_group(50);
+            }
+            ShortcutAction::MoveGroupLeft => {
+                let _ = self.reorder_focused_group(-1);
+            }
+            ShortcutAction::MoveGroupRight => {
+                let _ = self.reorder_focused_group(1);
+            }
+            ShortcutAction::MoveGroupToPreviousStrip => {
+                let _ = self.move_focused_group_to_strip(-1);
+            }
+            ShortcutAction::MoveGroupToNextStrip => {
+                let _ = self.move_focused_group_to_strip(1);
+            }
+            ShortcutAction::MoveGroupToPreviousDisplay => {
+                if !repeat {
+                    let _ = self.move_focused_group_to_display(-1);
+                }
+            }
+            ShortcutAction::MoveGroupToNextDisplay => {
+                if !repeat {
+                    let _ = self.move_focused_group_to_display(1);
+                }
+            }
+            ShortcutAction::FocusPreviousWindow => {
+                let _ = self.step_focus_along_strip(-1);
+            }
+            ShortcutAction::FocusNextWindow => {
+                let _ = self.step_focus_along_strip(1);
+            }
+            ShortcutAction::PreviousStrip | ShortcutAction::NextStrip => {
+                let direction = if action == ShortcutAction::PreviousStrip {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().switch_strip(direction);
+                }
+            }
+            ShortcutAction::PreviousWorkspace | ShortcutAction::NextWorkspace => {
+                let direction = if action == ShortcutAction::PreviousWorkspace {
+                    -1
+                } else {
+                    1
+                };
+                if let Some(chrome) = self.chrome.clone() {
+                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                }
+            }
+            _ => return false,
+        }
+        true
+    }
+
+    /// Run every window operation the action door queued on the chrome
+    /// ([`ChromeState::request_shortcut_action`]), in order. The shell
+    /// runs this each update, before splicing tree changes into the rows.
+    ///
+    /// [`ChromeState::request_shortcut_action`]: crate::shell::chrome_state::ChromeState::request_shortcut_action
+    pub fn run_requested_shortcut_actions(&mut self) {
+        let requested = self
+            .chrome
+            .as_ref()
+            .map(|chrome| chrome.borrow_mut().take_shortcut_action_requests())
+            .unwrap_or_default();
+        for action in requested {
+            if !self.run_shortcut_action(action) {
+                tracing::warn!(?action, "requested shortcut action has no desktop handler");
+            }
+        }
+    }
+
+    /// Run `action` once, as its chord does; for the action door, which
+    /// has no key event. `false` when it is not a desktop shortcut the
+    /// host runs.
+    pub(crate) fn run_shortcut_action(
+        &mut self,
+        action: settings_store::hardware::ShortcutAction,
+    ) -> bool {
+        self.run_navigation_shortcut(action, false) || self.handle_desktop_chord(action, false)
     }
 
     /// The conventional desktop chords (Super+1…9, Super+E, Ctrl+Alt+T,
@@ -15632,6 +15672,8 @@ impl Widget for ShellOverlayHost {
                         doc_root: path,
                     });
         }
+        // Before the resync, so what an action moved is spliced this frame.
+        self.run_requested_shortcut_actions();
         // Workspace switch before anything walking `group_row_ptrs` (it
         // replaces the whole row set), then splice the tree's structural
         // changes into the rows — both before the children's own `update`
