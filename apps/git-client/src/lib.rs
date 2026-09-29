@@ -18,11 +18,9 @@
 //! is theme-driven; durable UI preferences live in the CRDT via
 //! [`settings`].
 //!
-//! Every git operation is **external** — it mutates the on-disk repository
-//! through libgit2, not a shared document. The client's only shared-CRDT state
-//! is those durable view preferences, and it exports each as a replayable
-//! [`actions::GitClientAction`] so the shell's Ctrl+K palette and the on-screen
-//! controls dispatch one and the same action. See [`actions`] for the split.
+//! Git mutations against the on-disk repository are Effects. Shared CRDT state
+//! is durable view preferences plus a repository projection (branches, commits,
+//! remotes); working-tree status stays live. See [`actions`] and [`resource`].
 
 // Apps run in isolated processes, so app-local arithmetic checks are relaxed.
 // Panic-producing lints remain denied; shared crates retain the full lint set
@@ -55,6 +53,7 @@ pub mod app;
 pub mod changes;
 pub mod diff;
 pub mod diffview;
+mod doc;
 pub mod draw;
 pub mod graph;
 pub mod history;
