@@ -111,7 +111,7 @@ if [ -L "$(at /etc/systemd/system/systemd-growfs-root.service)" ] \
   die "systemd-growfs-root.service is masked; its composefs layout drop-in cannot apply"
 fi
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ConditionPathIsMountPoint=/sysroot"
-require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot"
+require_line /usr/lib/systemd/system/tilo-growfs-sysroot.service "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "Unit=tilo-growfs-sysroot.service"
 require_line /usr/lib/systemd/system/tilo-growfs-sysroot.timer "OnBootSec=5s"
 require_line /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf "ConditionPathIsMountPoint=!/sysroot"
