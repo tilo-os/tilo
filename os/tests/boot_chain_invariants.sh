@@ -242,5 +242,18 @@ else
   bad "tilo-growfs-sysroot.timer is not enabled — the filesystem is never grown"
 fi
 
+# The kernel has no NFS (os/kernel/config-fragments/tilo.config), so the NFS
+# userspace could only fail at every boot. A later package transaction pulling it
+# back in (libvirt recommends it) must fail the build, not the boot.
+if [ "$source_tree" = 1 ]; then
+  :
+elif command -v rpm >/dev/null 2>&1 \
+     && nfs="$(rpm --root "$OS_ROOT" -qa --qf '%{NAME}\n' 2>/dev/null | grep -Ex 'nfs-utils|nfs(v[34])?-(client|common)-utils|rpcbind' || true)" \
+     && [ -n "$nfs" ]; then
+  bad "the image ships NFS userspace the kernel cannot serve: $(echo $nfs)"
+else
+  ok "no NFS userspace"
+fi
+
 [ "$fail" -eq 0 ] && printf '\nall boot-chain invariants hold\n'
 exit "$fail"
