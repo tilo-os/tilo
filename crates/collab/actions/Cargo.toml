@@ -18,7 +18,7 @@ path = "src/lib.rs"
 # `winit`, or rendering dependencies.
 
 [dependencies]
-tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 hex.workspace = true
 automerge.workspace = true
 tilo-automerge.workspace = true

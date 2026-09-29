@@ -91,13 +91,13 @@ tilo-paths = { version = "0.1.0", path = "../tilo-paths" }
 gstreamer = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-app = { workspace = true, optional = true, features = ["v1_24"] }
 gstreamer-video = { workspace = true, optional = true, features = ["v1_24"] }
-tilo-test-env = { path = "../../dev/test-env", optional = true }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env", optional = true }
 
 # Native audio streams — only linked under `--features pipewire`. Same pin as
 # the shell's screen-cast producer so one copy resolves; `v0_3_50` exposes the
 # graph's requested frame count and the resampler's buffered frames, which the
 # playback timing needs.
-bounded-command = { path = "../../system/bounded-command" }
+bounded-command = { version = "0.1.0", path = "../../system/bounded-command" }
 libc.workspace = true
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
@@ -122,7 +122,7 @@ js-sys = "=0.3.85"
 # The decode probe example prints pipeline diagnostics; the same subscriber the
 # rest of the workspace uses, so log filtering behaves identically.
 tracing-subscriber.workspace = true
-tilo-test-env = { path = "../../dev/test-env" }
+tilo-test-env = { version = "0.1.0", path = "../../dev/test-env" }
 tempfile.workspace = true
 advisory-lock = { path = "../../system/advisory-lock" }
 
