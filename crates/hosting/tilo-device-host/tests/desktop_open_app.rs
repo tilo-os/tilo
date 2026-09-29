@@ -88,6 +88,10 @@ fn open_app_places_a_new_window_and_creates_the_checked_record() {
     let record = ui::record::RecordId::for_tab(tab).to_string();
     let mut expected = existing.clone();
     expected.push(record.clone());
+    if !existing.iter().any(String::is_empty) {
+        // A native app process opens the package primary before any window.
+        expected.push(String::new());
+    }
     expected.sort();
     let mut actual = notes_records(&owner);
     actual.sort();
@@ -127,7 +131,8 @@ fn open_app_is_placement_independent_of_the_source_revision() {
             stale,
         ))
         .unwrap();
-    assert_eq!(notes_records(&owner).len(), existing + 1);
+    // The window's record, and the package primary the first open creates.
+    assert_eq!(notes_records(&owner).len(), existing + 2);
 }
 
 #[test]
@@ -169,7 +174,8 @@ fn open_app_needs_no_source_heads() {
         .unwrap()
         .validate_for(&opening)
         .unwrap();
-    assert_eq!(notes_records(&owner).len(), existing + 1);
+    // The window's record, and the package primary the first open creates.
+    assert_eq!(notes_records(&owner).len(), existing + 2);
     // Positional commands still need their source revision.
     assert!(
         owner
@@ -180,4 +186,45 @@ fn open_app_needs_no_source_heads() {
             ))
             .is_err()
     );
+}
+
+#[test]
+fn the_first_open_of_an_app_also_creates_its_package_primary() {
+    let root = tempfile::tempdir().unwrap();
+    let mut owner =
+        SessionOwner::initialize_workspace(&root.path().join("owner"), "Guest").unwrap();
+    let records = |owner: &SessionOwner| {
+        let mut records = owner
+            .peer()
+            .rows()
+            .into_iter()
+            .filter(|row| row.app_id == "so.tilo.word-processor")
+            .map(|row| row.record_id)
+            .collect::<Vec<_>>();
+        records.sort();
+        records
+    };
+    assert!(records(&owner).is_empty());
+    for _ in 0..2 {
+        let opening = request(
+            &owner,
+            DesktopCommand::OpenApp {
+                app: "so.tilo.word-processor".into(),
+            },
+            heads(&owner),
+        );
+        owner
+            .commit_desktop_command(&opening)
+            .unwrap()
+            .validate_for(&opening)
+            .unwrap();
+    }
+    let records = records(&owner);
+    assert_eq!(
+        records.len(),
+        3,
+        "one primary and two window records: {records:?}"
+    );
+    assert_eq!(records[0], "", "the package primary");
+    assert!(records[1..].iter().all(|record| record.starts_with("tab:")));
 }

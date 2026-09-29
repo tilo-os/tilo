@@ -101,14 +101,7 @@ impl OwnerCommitRequest {
                 caller,
                 command,
             } => {
-                // OpenApp is placement-independent: the owner places it
-                // against its current desktop, so it needs no source heads.
-                // A namespace claim changes only the registry.
-                let placement_independent = matches!(
-                    command.command,
-                    crate::desktop_command::DesktopCommand::OpenApp { .. }
-                        | crate::desktop_command::DesktopCommand::ClaimNamespace { .. }
-                );
+                let placement_independent = command.command.is_placement_independent();
                 if invocation.is_nil()
                     || command.source.room != self.room
                     || (command.source.heads.is_empty() && !placement_independent)

@@ -665,6 +665,18 @@ impl SessionOwner {
             .map_err(anyhow::Error::msg)?;
         Ok(candidate)
     }
+    pub(crate) fn prepare_member_administrator(
+        &self,
+        user_public_key: [u8; 32],
+        now: SystemTime,
+    ) -> Result<StatePeer> {
+        self.require_owner_resource_scope()?;
+        let mut candidate = self.peer.clone();
+        candidate
+            .set_member_administrator(user_public_key, &self.identity.native, now)
+            .map_err(anyhow::Error::msg)?;
+        Ok(candidate)
+    }
     pub(crate) fn prepare_member_removal(
         &self,
         user_public_key: [u8; 32],
