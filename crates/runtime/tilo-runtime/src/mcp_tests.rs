@@ -203,7 +203,7 @@ fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
         next_cursor: b"tilo-dir-7".to_vec(),
         ..CataloguePage::default()
     };
-    let compact = page::compact_page(&page, &mut page::Handles::default());
+    let compact = page::compact_page(&page, Some(&mut page::Handles::default()));
     assert_eq!(
         compact,
         json!({
