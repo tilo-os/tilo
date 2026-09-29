@@ -65,6 +65,8 @@ enum TargetPlatform {
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
     Macos,
+    /// Android package, an APK or AAB (`aarch64` or `x86_64`).
+    Android,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -82,6 +84,7 @@ impl From<TargetPlatform> for registry_client::Platform {
             TargetPlatform::Linux => Self::Linux,
             TargetPlatform::Windows => Self::Windows,
             TargetPlatform::Macos => Self::Macos,
+            TargetPlatform::Android => Self::Android,
         }
     }
 }
