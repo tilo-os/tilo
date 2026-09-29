@@ -73,6 +73,9 @@ pub(crate) struct Shared {
     pub images: Rc<RefCell<Vec<ui::image_store::HostImageLoader>>>,
     /// Set by any tab component's wake; the host relayouts before drawing.
     pub woken: Arc<AtomicBool>,
+    /// The applications whose components woke the mount since it last
+    /// looked, for the frame metrics.
+    wakers: Arc<std::sync::Mutex<Vec<&'static str>>>,
     /// The record each tab shows, once its component created or opened it.
     records: Rc<RefCell<HashMap<TabId, RecordCheckout>>>,
     /// A tab bound a record since the desktop was last saved.
@@ -103,6 +106,16 @@ impl Shared {
 
     pub fn take_wake(&self) -> bool {
         self.woken.swap(false, Ordering::AcqRel)
+    }
+
+    /// The applications whose components woke the mount since the last call.
+    pub fn take_wakers(&self) -> Vec<&'static str> {
+        std::mem::take(
+            &mut *self
+                .wakers
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
     }
 
     /// The record `tab` shows, once its component bound one.
@@ -186,10 +199,19 @@ impl Tiles {
         )
         .map_err(|error| error.to_string())?;
         let woken = Arc::clone(&self.shared.woken);
+        let wakers = Arc::clone(&self.shared.wakers);
         let notify = Arc::clone(&self.notify);
+        let app_id = definition.app_id;
         component
             .mount(move |_| {
                 woken.store(true, Ordering::Release);
+                let mut wakers = wakers
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                if !wakers.contains(&app_id) {
+                    wakers.push(app_id);
+                }
+                drop(wakers);
                 notify();
             })
             .map_err(|error| error.to_string())?;
