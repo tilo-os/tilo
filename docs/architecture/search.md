@@ -85,6 +85,9 @@ Both surfaces share one overlay component + the per-type result renderers; only
 scope + aggregation differ. Fuzzy match over label + description + resource
 content.
 
+What the palette shows for an empty query, how rows rank and group, and what a
+row may say are in [search-and-history-views.md](../search-and-history-views.md).
+
 ## Bundle model
 
 - **As a qapp** (on Tilo): the search UI lives in the **shell**, not the bundle.
