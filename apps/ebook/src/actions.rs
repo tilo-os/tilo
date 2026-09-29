@@ -1567,7 +1567,8 @@ fn go_to_operation(book_id: String, chapter: usize) -> ActionSpec {
 
 /// The open book's annotations as resources: one per highlight (its comments
 /// beneath it), note and bookmark, with the ids search resolves, each opening
-/// its passage.
+/// its passage and carrying the Document mutations the palette/agent door
+/// must reach through [`tilo_resource::publish`].
 fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
     let open = |annotation: &Annotation| {
         operation(
@@ -1630,11 +1631,11 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             existing.label = format!("{} {}", existing.label, label(annotation));
             continue;
         }
-        resources.push(
-            Resource::new(id, kind, label(annotation))
-                .with_presentation(presentation(annotation))
-                .with_action(open(annotation)),
-        );
+        let mut resource = Resource::new(id, kind, label(annotation))
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+        resource = with_annotation_document_actions(resource, annotation, false);
+        resources.push(resource);
     }
     for annotation in annotations {
         if annotation.kind != AnnoKind::Note || annotation.group == annotation.id {
@@ -1645,18 +1646,112 @@ fn annotation_resources(annotations: &[Annotation]) -> Vec<Resource> {
             .iter_mut()
             .find(|resource| resource.id.as_str() == parent)
         {
-            highlight.children.push(
-                Resource::new(
-                    format!("ebook.comment:{}", annotation.id),
-                    "ebook.comment",
-                    label(annotation),
-                )
-                .with_presentation(presentation(annotation))
-                .with_action(open(annotation)),
-            );
+            let mut comment = Resource::new(
+                format!("ebook.comment:{}", annotation.id),
+                "ebook.comment",
+                label(annotation),
+            )
+            .with_presentation(presentation(annotation))
+            .with_action(open(annotation));
+            comment = with_annotation_document_actions(comment, annotation, true);
+            highlight.children.push(comment);
         }
     }
     resources
+}
+
+/// Document mutations on one annotation row (or comment). Views stay on the
+/// resource separately; this only attaches CRDT-backed ops.
+fn with_annotation_document_actions(
+    mut resource: Resource,
+    annotation: &Annotation,
+    comment: bool,
+) -> Resource {
+    match annotation.kind {
+        AnnoKind::Highlight => {
+            let group = annotation.group;
+            resource = resource.with_action(ActionSpec::prompted(
+                "change-color",
+                "Change colour",
+                "Colour",
+                "yellow, green, blue, pink, purple",
+                ExecutionLocus::ClientLocal,
+                move |name| encode(&change_color_action(group, HiColor::from_str(name.trim()))),
+            ));
+            resource = resource.with_action(encode_spec(
+                "delete-highlight",
+                "Delete highlight",
+                &delete_highlight_action(annotation.group),
+            ));
+            let book_id = annotation.doc_id.clone();
+            let anchor = AnnotationAnchor {
+                chapter: annotation.chapter,
+                block: annotation.block,
+                start: annotation.start,
+                end: annotation.end,
+                excerpt: annotation.excerpt.clone(),
+            };
+            let color = annotation.color;
+            resource = resource.with_action(ActionSpec::prompted(
+                "add-comment",
+                "Add comment",
+                "Comment",
+                "your comment…",
+                ExecutionLocus::ClientLocal,
+                move |text| {
+                    encode(
+                        &CommentDraft {
+                            group,
+                            note: NoteDraft {
+                                book_id: book_id.clone(),
+                                id: Uuid::new_v4(),
+                                anchor: anchor.clone(),
+                                color,
+                                text: text.to_string(),
+                            },
+                        }
+                        .into_action(),
+                    )
+                },
+            ));
+        }
+        AnnoKind::Bookmark => {
+            resource = resource.with_action(encode_spec(
+                "delete",
+                "Delete bookmark",
+                &delete_annotation_action(annotation.id),
+            ));
+        }
+        AnnoKind::Note => {
+            let id = annotation.id;
+            let edit_id = if comment { "edit-comment" } else { "edit" };
+            let edit_label = if comment { "Edit comment" } else { "Edit note" };
+            let delete_id = if comment { "delete-comment" } else { "delete" };
+            let delete_label = if comment {
+                "Delete comment"
+            } else {
+                "Delete note"
+            };
+            resource = resource.with_action(ActionSpec::prompted(
+                edit_id,
+                edit_label,
+                if comment { "Comment" } else { "Note" },
+                if comment {
+                    "edit the comment…"
+                } else {
+                    "edit the note…"
+                },
+                ExecutionLocus::ClientLocal,
+                move |text| encode(&edit_note_action(id, text)),
+            ));
+            resource = resource.with_action(encode_spec(
+                delete_id,
+                delete_label,
+                &delete_annotation_action(id),
+            ));
+        }
+    }
+    resource
 }
 
 // Same infallibility as `encode` above: `ActionSpec::immediate` can only fail
@@ -1760,8 +1855,47 @@ pub(crate) fn current_book_actions(mut resource: Resource, ctx: &BookResourceCtx
     resource
 }
 
-fn settings_resource(doc: &AutoCommit) -> Resource {
-    let settings = BooksDoc::read_settings(doc);
+/// Effect ops on the library root (portal import). Document mutations live on
+/// [`bound_library_document_actions`] / [`publish_document_children`].
+pub(crate) fn library_effect_specs() -> Vec<ActionSpec> {
+    vec![open_book_operation()]
+}
+
+/// Shelf Document ops whose payloads bind from live library preferences.
+pub(crate) fn bound_library_document_actions(prefs: LibraryPrefs) -> Vec<ActionSpec> {
+    let mut actions = Vec::new();
+    let mut toggled = prefs;
+    toggled.hide_read = !toggled.hide_read;
+    actions.push(encode_spec(
+        "toggle-hide-read",
+        if prefs.hide_read {
+            "Show read books"
+        } else {
+            "Hide read books"
+        },
+        &set_library_preferences_action(prefs, toggled),
+    ));
+    for sort in LibrarySort::ALL {
+        let mut next = prefs;
+        next.sort = sort;
+        actions.push(encode_spec(
+            &format!("sort-{}", sort.as_str()),
+            &format!("Sort by {}", sort.label()),
+            &set_library_preferences_action(prefs, next),
+        ));
+    }
+    actions
+}
+
+/// Reading-settings Document resource (mode / composition / theme / fonts /
+/// schemes). Shared CRDT state — published under the library via
+/// [`publish_document_children`], never as a second hosted root beside
+/// [`tilo_resource::publish`].
+pub(crate) fn settings_document_resource(
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Resource {
     let mut root = Resource::new("ebook.settings", "ebook.settings", "Reading settings")
         .with_action(operation(
             "open",
@@ -1797,13 +1931,12 @@ fn settings_resource(doc: &AutoCommit) -> Resource {
             &set_reading_settings_action(settings.clone(), next),
         ));
     }
-
-    root = font_resources(root, doc);
-    scheme_resources(root, doc)
+    root = font_document_children(root, fonts);
+    scheme_document_children(root, schemes)
 }
 
-fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for font in BooksDoc::read_fonts(doc) {
+fn font_document_children(mut root: Resource, fonts: &[FontEntry]) -> Resource {
+    for font in fonts {
         let id = font.id.clone();
         let mut child = Resource::new(format!("ebook.font:{id}"), "ebook.font", font.name.clone())
             .with_action(operation(
@@ -1853,8 +1986,8 @@ fn font_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
-fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
-    for scheme in BooksDoc::read_schemes(doc) {
+fn scheme_document_children(mut root: Resource, schemes: &[ColorScheme]) -> Resource {
+    for scheme in schemes {
         let id = scheme.id.clone();
         let mut child = Resource::new(
             format!("ebook.scheme:{id}"),
@@ -1909,36 +2042,123 @@ fn scheme_resources(mut root: Resource, doc: &AutoCommit) -> Resource {
     root
 }
 
+fn settings_resource(doc: &AutoCommit) -> Resource {
+    settings_document_resource(
+        &BooksDoc::read_settings(doc),
+        &BooksDoc::read_fonts(doc),
+        &BooksDoc::read_schemes(doc),
+    )
+}
+
 fn library_preference_actions(mut library: Resource, doc: &AutoCommit) -> Resource {
-    let prefs = BooksDoc::read_library_prefs(doc);
-    let mut toggled = prefs;
-    toggled.hide_read = !toggled.hide_read;
-    library = library.with_action(encode_spec(
-        "toggle-hide-read",
-        if prefs.hide_read {
-            "Show read books"
-        } else {
-            "Hide read books"
-        },
-        &set_library_preferences_action(prefs, toggled),
-    ));
-    for sort in LibrarySort::ALL {
-        let mut next = prefs;
-        next.sort = sort;
-        library = library.with_action(encode_spec(
-            &format!("sort-{}", sort.as_str()),
-            &format!("Sort by {}", sort.label()),
-            &set_library_preferences_action(prefs, next),
-        ));
+    for spec in bound_library_document_actions(BooksDoc::read_library_prefs(doc)) {
+        library = library.with_action(spec);
     }
     library
 }
 
+/// One shelf book with membership Document ops and its annotation Document
+/// children. Share / hydrate Effects stay for the palette; remove is Document.
+pub(crate) fn library_book_document_resource(
+    entry: &LibraryEntry,
+    annotations: &[Annotation],
+) -> Resource {
+    let book_id = entry.id.clone();
+    let mut resource = Resource::new(
+        format!("ebook.book:{book_id}"),
+        "ebook.book",
+        entry.title.clone(),
+    );
+    if entry.shared && entry.content.is_none() {
+        resource = resource.with_action(
+            operation(
+                "open",
+                "Download and open",
+                OperationKind::Effect,
+                EbookOperation::HydrateSharedBook {
+                    book_id: book_id.clone(),
+                },
+            )
+            .with_contract(tilo_actions::ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "hydrate".into()],
+                ..tilo_actions::ActionContract::default()
+            }),
+        );
+    } else {
+        resource = resource.with_action(
+            operation(
+                "share",
+                "Share with workspace",
+                OperationKind::Effect,
+                EbookOperation::ShareBook {
+                    book_id: book_id.clone(),
+                },
+            )
+            .with_contract(tilo_actions::ActionContract {
+                risk: RiskLevel::Low,
+                retry: RetryPolicy::Idempotent,
+                execution: ExecutionMode::Background { cancellable: true },
+                result: ResultSpec::Job,
+                tags: vec!["workspace".into(), "materialize".into()],
+                ..tilo_actions::ActionContract::default()
+            }),
+        );
+    }
+    resource = resource.with_action(
+        encode_spec(
+            "remove-from-library",
+            "Remove from library",
+            &remove_library_book_action(&book_id),
+        )
+        .with_contract(tilo_actions::ActionContract {
+            risk: RiskLevel::Destructive,
+            confirmation: ConfirmationPolicy::Confirm,
+            retry: RetryPolicy::Idempotent,
+            reversible: true,
+            tags: vec!["library".into(), "tombstone".into()],
+            ..tilo_actions::ActionContract::default()
+        }),
+    );
+    let book_annotations: Vec<Annotation> = annotations
+        .iter()
+        .filter(|annotation| annotation.doc_id == book_id)
+        .cloned()
+        .collect();
+    resource.children = annotation_resources(&book_annotations);
+    resource
+}
+
+/// Nested Document resources under the library: books (with annotations) and
+/// reading settings. Hosted [`PublishesResources`] must not republish these.
+pub(crate) fn publish_document_children(
+    entries: &[LibraryEntry],
+    annotations: &[Annotation],
+    settings: &Settings,
+    fonts: &[FontEntry],
+    schemes: &[ColorScheme],
+) -> Vec<Resource> {
+    let mut children: Vec<Resource> = entries
+        .iter()
+        .take(64)
+        .map(|entry| library_book_document_resource(entry, annotations))
+        .collect();
+    children.push(settings_document_resource(settings, fonts, schemes));
+    children
+}
+
 /// Build the bounded canonical directory root. Exact book, chapter, and
 /// annotation resources are deliberately lazy through [`ResourceProvider`].
+/// Standalone / `--shots` / unit tests use this door; when hosted,
+/// [`tilo_resource::publish`] owns the library Document ops instead.
 pub fn provide_resources(_books: &[crate::model::Book], doc: &AutoCommit) -> Vec<Resource> {
-    let library = Resource::new("ebook.library", "ebook.library", "Books library")
-        .with_action(open_book_operation());
+    let mut library = Resource::new("ebook.library", "ebook.library", "Books library");
+    for spec in library_effect_specs() {
+        library = library.with_action(spec);
+    }
     let mut settings = settings_resource(doc);
     settings.children.clear();
     vec![library_preference_actions(library, doc), settings]
