@@ -386,6 +386,8 @@ if [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] && [ "$TILO_RUST_LTO" = off ]; then
 fi
 _tilo_jobs_args=()
 [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
+# The release profile's debug info (os/Containerfile TILO_RUST_DEBUGINFO) when set.
+[ -z "${TILO_RUST_DEBUGINFO:-}" ] || _tilo_jobs_args+=(--build-arg "TILO_RUST_DEBUGINFO=$TILO_RUST_DEBUGINFO")
 # Retained development payloads have their own provenance, including an unknown
 # original compilation epoch. Never present them as a current producer build.
 if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
