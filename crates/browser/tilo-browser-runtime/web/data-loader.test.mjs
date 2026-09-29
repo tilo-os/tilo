@@ -17,7 +17,8 @@ function fixture(files){
   const loader=createDataLoader({baseURL:'https://tilo.invalid/bundle/host.mjs',runtime,fetch,crypto:webcrypto});
   return {requests,installed,failed,fetched,loader};
 }
-const settle=()=>new Promise(resolve=>setTimeout(resolve,10));
+// Digest verification runs off the event loop, so give it several turns.
+const settle=async()=>{for(let i=0;i<20;i++)await new Promise(resolve=>setTimeout(resolve,10));};
 
 test('requested data is fetched from data/, verified and installed',async()=>{
   const {requests,installed,failed,fetched,loader}=fixture({'data.json':JSON.stringify(manifest),'data/typst/Font.otf':font});

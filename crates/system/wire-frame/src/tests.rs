@@ -290,7 +290,7 @@ mod asynchronous {
             framing,
         );
         let mut frames = Vec::new();
-        let mut interrupted = 0;
+        let mut interrupted = 0_u32;
         while frames.len() < 3 {
             tokio::select! {
                 biased;
