@@ -125,6 +125,7 @@ async fn writer_boundary(
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
+        compactor: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -400,6 +401,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
+        compactor: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };

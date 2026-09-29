@@ -231,6 +231,9 @@ pub struct PeerContext {
     /// Mints and checks resumable subscribers' positions; `None` refuses
     /// resumption, and a `SubscribeFrom` replays everything.
     pub positions: Option<crate::position::PositionIssuer>,
+    /// Keeps retained document channels short; `None` never compacts and
+    /// refuses compaction volunteers.
+    pub compactor: Option<crate::compaction::Compactor>,
 }
 
 /// Receives every validated live frame: workspace, stamped sender, frame.
@@ -295,6 +298,7 @@ struct SessionCtx<'a> {
     live_bridge: Option<&'a LiveBridge>,
     agents: &'a AgentRegistry,
     positions: Option<crate::position::PositionIssuer>,
+    compactor: Option<&'a crate::compaction::Compactor>,
     /// This connection's resume log per resumed workspace.
     resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
     /// Rooms whose live deliveries this connection could not take.
@@ -482,6 +486,7 @@ where
         live_bridge,
         agents,
         positions,
+        compactor,
     } = ctx;
     let resumes = std::sync::Mutex::new(HashMap::new());
     let lag = Arc::new(Lag::default());
@@ -520,6 +525,7 @@ where
         live_bridge: live_bridge.as_ref(),
         agents: &agents,
         positions,
+        compactor: compactor.as_ref(),
         resumes: &resumes,
         lag: &lag,
     };
@@ -1764,9 +1770,14 @@ async fn handle_envelope(
             frame,
             ..
         } => handle_live(peer, session, subscribed, workspace_id, frame).await,
+        env @ (Envelope::CompactVolunteer { .. } | Envelope::Compacted { .. }) => {
+            handle_compaction(peer, session, subscribed, env).await;
+            Ok(None)
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
-        Envelope::Ready { .. }
+        Envelope::CompactRequest { .. }
+        | Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong
         | Envelope::SyncResponse { .. }
@@ -4942,9 +4953,63 @@ async fn handle_delta(
             reason: "workspace membership changed".into(),
         }));
     };
+    let observed = match (&env, session.compactor) {
+        (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
+        _ => None,
+    };
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
+        compactor.note(&ws, workspace_id, observed);
+    }
 
     Ok(None)
+}
+
+/// A member volunteering to compact sealed routes, or its coverage
+/// statement for one: the host removes the entries the statement names. A
+/// refused statement removes nothing and only costs the member its snapshot
+/// upload.
+async fn handle_compaction(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) {
+    let Some(compactor) = session.compactor else {
+        return;
+    };
+    let (Envelope::CompactVolunteer { workspace_id } | Envelope::Compacted { workspace_id, .. }) =
+        env
+    else {
+        return;
+    };
+    if !subscribed.contains(&workspace_id) || peer.role != crate::auth::PeerRole::Device {
+        return;
+    }
+    let Envelope::Compacted {
+        statement,
+        signature,
+        ..
+    } = env
+    else {
+        compactor.volunteer(workspace_id, peer.device_public_key);
+        return;
+    };
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    if let Err(error) = compactor
+        .compacted(
+            &ws,
+            workspace_id,
+            peer.device_public_key,
+            &statement,
+            &signature,
+        )
+        .await
+    {
+        tracing::warn!(workspace_id, %error, "refused a compaction statement");
+    }
 }
 
 /// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
@@ -5035,6 +5100,11 @@ async fn handle_commit(
     // still fail: wait for the change to be durable and published.
     crate::persistence::receipt(admitted.completion).await?;
     let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
+    if let (Some(compactor), Envelope::Delta { delta, .. }) = (session.compactor, &authored)
+        && let Some(observed) = crate::compaction::Compactor::observe(delta)
+    {
+        compactor.note(&ws, workspace_id, observed);
+    }
     // The author holds what it committed; a resume never replays it to it.
     if let Some(position) = resume_record(session, workspace_id, [&authored]) {
         let _ = session.outbound.try_send(position);
@@ -7216,6 +7286,7 @@ mod private_transport_tests {
                 live_bridge: None,
                 agents: crate::peer::AgentRegistry::default(),
                 positions: None,
+                compactor: None,
             },
             true,
             false,
@@ -8210,6 +8281,7 @@ mod private_transport_tests {
                 live_bridge: None,
                 agents: crate::peer::AgentRegistry::default(),
                 positions: None,
+                compactor: None,
             };
             tasks.push(tokio::spawn(run_peer_stream(
                 peer.clone(),
@@ -8552,6 +8624,7 @@ mod private_transport_tests {
                     live_bridge: None,
                     agents: crate::peer::AgentRegistry::default(),
                     positions: None,
+                    compactor: None,
                 },
                 true,
                 false,
@@ -8839,6 +8912,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -9060,6 +9134,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -9186,6 +9261,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -9328,6 +9404,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -9547,6 +9624,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -10013,6 +10091,7 @@ mod private_transport_tests {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };

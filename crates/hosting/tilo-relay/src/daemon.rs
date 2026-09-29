@@ -595,6 +595,10 @@ impl Relay {
             app_serving,
             live_bridge: Arc::default(),
             agents: Arc::default(),
+            compactor: crate::compaction::Compactor::new(
+                identity.device_signing_key.clone(),
+                identity.device_cert.clone(),
+            ),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -878,6 +882,11 @@ impl Relay {
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
+    }
+
+    /// The compactor keeping this relay's retained document channels short.
+    pub fn compactor(&self) -> &crate::compaction::Compactor {
+        &self.web.relay.compactor
     }
 
     /// The local sockets the relay's endpoint is bound to.
@@ -1825,6 +1834,7 @@ pub(crate) struct RelayProtocol {
     /// Set once when the host starts serving browsers.
     pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
     pub(crate) agents: crate::peer::AgentRegistry,
+    pub(crate) compactor: crate::compaction::Compactor,
 }
 
 impl RelayProtocol {
@@ -1845,6 +1855,7 @@ impl RelayProtocol {
             positions: Some(crate::position::PositionIssuer::new(
                 &self.own_sk.to_bytes(),
             )),
+            compactor: Some(self.compactor.clone()),
         }
     }
 }

@@ -23,6 +23,7 @@
 //!   pin state — a peer can be offline and still catch up when it reconnects.
 
 pub(crate) mod bounded;
+pub(crate) mod compaction;
 pub(crate) mod continuity;
 pub(crate) mod replay;
 pub(crate) mod resume;
