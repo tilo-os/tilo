@@ -528,7 +528,7 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     app.handle_unconsumed_directional_key(&left, None, true, &mut handled);
     assert_eq!(app.focused_node, Some(editor));
     assert_eq!(
-        app.inspect_node(editor, |widget| widget.get_state())
+        app.inspect_node(editor, |widget| crate::undo::get_state(widget))
             .unwrap(),
         Some("0:b:1".into()),
         "Shift+Left extends the editor selection instead of moving host focus"

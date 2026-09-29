@@ -307,14 +307,17 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         layout(&mut app, 900);
         let node = app.focusable_order[0];
         app.set_focused_node(Some(node));
-        let state = app.inspect_node(node, |widget| widget.get_state()).unwrap();
+        let state = app
+            .inspect_node(node, |widget| crate::undo::get_state(widget))
+            .unwrap();
         assert!(state.is_some());
         for width in [200, 600, 900] {
             layout(&mut app, width);
             assert_eq!(app.focusable_order, vec![node]);
             assert_eq!(app.focused_node, Some(node));
             assert_eq!(
-                app.inspect_node(node, |widget| widget.get_state()).unwrap(),
+                app.inspect_node(node, |widget| crate::undo::get_state(widget))
+                    .unwrap(),
                 state
             );
         }

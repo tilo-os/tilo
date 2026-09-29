@@ -114,7 +114,8 @@ impl Widget for Probe {
         dyn crate::undo::CommittedActions,
         dyn crate::history_mode::capability::DocumentHistory,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
     );
 
     crate::testing::inert_widget_methods!(
@@ -124,12 +125,6 @@ impl Widget for Probe {
         get_rect,
         name = "Controlled owner"
     );
-    fn needs_commit(&self) -> bool {
-        self.commit.get()
-    }
-    fn on_commit(&mut self) {
-        self.commit.set(false);
-    }
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         for child in self.children.borrow().iter() {
             visitor(child.as_ref());
@@ -215,6 +210,15 @@ impl Widget for Probe {
             invocation,
             output: tilo_actions::ActionOutput::default(),
         })
+    }
+}
+
+impl crate::undo::UndoPoints for Probe {
+    fn needs_commit(&self) -> bool {
+        self.commit.get()
+    }
+    fn on_commit(&mut self) {
+        self.commit.set(false);
     }
 }
 

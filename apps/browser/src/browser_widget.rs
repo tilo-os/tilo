@@ -972,7 +972,7 @@ impl BrowserWidget {
                 if widget.test_id() == Some(URL_INPUT_ID)
                     && let Some((_, text)) = widget.text_review()
                 {
-                    widget.set_state(&text.len().to_string());
+                    ui::undo::set_state(widget, &text.len().to_string());
                 }
                 for child in widget.children_mut() {
                     caret(child);
@@ -4366,9 +4366,9 @@ impl BrowserWidget {
                 widget.set_focus(true);
                 if let Some((_, text)) = widget.text_review() {
                     if text.is_empty() {
-                        widget.set_state("0");
+                        ui::undo::set_state(widget, "0");
                     } else {
-                        widget.set_state(&format!("{}:b:0", text.len()));
+                        ui::undo::set_state(widget, &format!("{}:b:0", text.len()));
                     }
                 }
                 return true;
@@ -4389,14 +4389,14 @@ impl BrowserWidget {
     fn focus_control_preserving_selection(&mut self, id: &str) {
         fn state(widget: &dyn Widget, id: &str) -> Option<String> {
             if widget.test_id() == Some(id) {
-                return widget.get_state();
+                return ui::undo::get_state(widget);
             }
             widget.children().iter().find_map(|child| state(*child, id))
         }
 
         fn restore(widget: &mut dyn Widget, id: &str, value: &str) {
             if widget.test_id() == Some(id) {
-                widget.set_state(value);
+                ui::undo::set_state(widget, value);
             }
             for child in widget.children_mut() {
                 restore(child, id, value);
@@ -4544,8 +4544,7 @@ fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
         Some(URL_INPUT_ID | crate::daily_controls::FIND_INPUT)
     ) && widget.is_focused()
     {
-        return widget
-            .get_state()
+        return ui::undo::get_state(widget)
             .map(|state| (widget.test_id().unwrap_or(URL_INPUT_ID).to_owned(), state));
     }
     widget
@@ -4556,7 +4555,7 @@ fn address_state(widget: &dyn Widget) -> Option<(String, String)> {
 fn restore_address(widget: &mut dyn Widget, id: &str, state: &str) {
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
-        widget.set_state(state);
+        ui::undo::set_state(widget, state);
         return;
     }
     for child in widget.children_mut() {
@@ -8142,7 +8141,7 @@ mod tests {
             fn state(widget: &dyn Widget) -> Option<String> {
                 if widget.test_id() == Some(URL_INPUT_ID) {
                     assert!(widget.is_focused());
-                    return widget.get_state();
+                    return ui::undo::get_state(widget);
                 }
                 widget.children().iter().find_map(|child| state(*child))
             }

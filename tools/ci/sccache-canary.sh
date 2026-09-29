@@ -14,10 +14,11 @@ import json, os, sys
 payload = json.load(sys.stdin)
 stats = payload.get("stats", {})
 location = payload.get("cache_location", "")
-expected = os.environ["TILO_SCCACHE_KEY_PREFIX"].strip("/")
-if f"/{expected}/" not in location:
+expected = os.environ["TILO_SCCACHE_KEY_PREFIX"]
+# The GHA backend names its namespace "sccache-v<version>-<prefix>".
+if f"-{expected}," not in location + ",":
     raise SystemExit(
-        f"sccache used {location!r}, not requested prefix {expected!r}"
+        f"sccache used {location!r}, not requested namespace {expected!r}"
     )
 
 def count(name):

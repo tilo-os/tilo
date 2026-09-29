@@ -268,6 +268,8 @@ pub fn build_for_width(width_hint: Option<f32>) -> Box<dyn Widget> {
 }
 
 impl Widget for RegionPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
@@ -430,26 +432,28 @@ impl Widget for RegionPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "region",
-            "Region & formats",
-            "Change region preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "RegionPane"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for RegionPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "region",
+            "Region & formats",
+            "Change region preferences",
+        )
     }
 }
 

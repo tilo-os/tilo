@@ -208,12 +208,12 @@ class FocusedTests(unittest.TestCase):
             native = workflow.split('  focused:', 1)[1]
             self.assertEqual(native.count('path: control'), 1)
             self.assertEqual(native.count('path: source'), 1)
-            # Checkout uses the registry token; the native job also binds the
-            # shared compiler-cache credential.
-            self.assertIn('source control/tools/ci/compiler_cache_env.sh', native)
+            # Checkout uses the registry token; the runner provides the
+            # compiler cache.
+            self.assertNotIn('compiler_cache_env', native)
             for line in workflow.splitlines():
                 if 'secrets.' in line:
-                    self.assertRegex(line, r'secrets\.(REGISTRY_TOKEN|SCCACHE_AWS_(ACCESS_KEY_ID|SECRET_ACCESS_KEY))\b')
+                    self.assertRegex(line, r'secrets\.REGISTRY_TOKEN\b')
 
 
 if __name__ == '__main__':

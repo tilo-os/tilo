@@ -782,6 +782,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AccessibilityPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
@@ -880,26 +882,28 @@ impl Widget for AccessibilityPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "accessibility",
-            "Accessibility",
-            "Change accessibility preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "AccessibilityPane"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for AccessibilityPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "accessibility",
+            "Accessibility",
+            "Change accessibility preferences",
+        )
     }
 }
 
@@ -956,7 +960,7 @@ mod tests {
             pane.sync(&mut doc, &root);
 
             assert!(
-                pane.take_commit_context().is_none(),
+                ui::undo::take_commit_context(&mut pane).is_none(),
                 "hydration is not undoable user intent"
             );
             for key in [

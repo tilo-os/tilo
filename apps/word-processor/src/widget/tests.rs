@@ -258,7 +258,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let mut wp = WordProcessorWidget::new();
         wp.lifecycle.needs_commit = true;
 
-        let context = wp.take_commit_context().expect("native edit provenance");
+        let context = ui::undo::take_commit_context(&mut wp).expect("native edit provenance");
         assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
