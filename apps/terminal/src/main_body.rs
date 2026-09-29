@@ -2156,6 +2156,10 @@ impl TerminalWidget {
     }
 
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::EnsureStructure,
+            state,
+        );
         if self.grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
                 self.grid_id = Some(id);
@@ -2171,7 +2175,7 @@ impl TerminalWidget {
         let Some(grid_id) = self.grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &grid_id, self.height, &mut self.line_ids);
+        Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::List), id))) =
@@ -2188,7 +2192,13 @@ impl TerminalWidget {
         let Some(alt_grid_id) = self.alt_grid_id.clone() else {
             return;
         };
-        Self::ensure_lines(state, &alt_grid_id, self.height, &mut self.alt_line_ids);
+        Self::ensure_lines(
+            state,
+            &alt_grid_id,
+            true,
+            self.height,
+            &mut self.alt_line_ids,
+        );
 
         if self.links_id.is_none() {
             if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
@@ -2240,9 +2250,13 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
-                && state.put(&cursor_id, "x", 0u64).is_ok()
-                && state.put(&cursor_id, "y", 0u64).is_ok()
+            } else if ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
+                state,
+            )
+            .is_ok()
+                && let Ok(Some((Value::Object(ObjType::Map), cursor_id))) =
+                    state.get(root, "cursor")
             {
                 self.cursor_id = Some(cursor_id);
             }
@@ -2253,29 +2267,25 @@ impl TerminalWidget {
     /// `ids` to mirror the list. Shared by the main and alternate buffers.
     /// Lines are created empty; `print` grows them on demand (see below),
     /// so no width is needed here.
-    fn ensure_lines(state: &mut AutoCommit, grid_id: &ObjId, min_len: usize, ids: &mut Vec<ObjId>) {
-        let current_len = state.length(grid_id);
-        if current_len < min_len {
-            // Blank lines are created *empty*, not pre-filled with `width`
-            // spaces. Pre-filling every new line splices `width` characters
-            // into a fresh Automerge `Text` per row, and the columnar op-set
-            // insert is O(doc) per character — so seeding a full screen the
-            // first time a terminal syncs cost seconds (≈3 s in debug for an
-            // 80-col screen) and froze the whole compositor. A short/empty
-            // line renders as blank cells (the draw path already pads
-            // visually) and the write path (`print`) pads a line on demand
-            // when the cursor lands past its current end, so nothing depends
-            // on the eager fill.
-            for y in current_len..min_len {
-                // A failed insert means the doc rejected this op; further
-                // inserts at later indices would only compound the
-                // misalignment, so stop rather than push on.
-                let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
-                    break;
-                };
-                let _ = state.put_object(&line_id, "text", ObjType::Text);
-            }
-        }
+    fn ensure_lines(
+        state: &mut AutoCommit,
+        grid_id: &ObjId,
+        alternate: bool,
+        min_len: usize,
+        ids: &mut Vec<ObjId>,
+    ) {
+        // Blank lines stay empty. Pre-filling every new line with spaces
+        // splices a full row of characters into a fresh text object, and that
+        // insert is O(doc) per character — seeding an 80-column screen froze
+        // the compositor. Drawing pads visually; print grows a line when the
+        // cursor lands past its end.
+        let Some(min_len) = u32::try_from(min_len).ok() else {
+            return;
+        };
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
+            state,
+        );
         let new_len = state.length(grid_id);
         if ids.len() != new_len {
             ids.clear();
@@ -6541,8 +6551,10 @@ impl TerminalPerformer<'_> {
         self.flush_print_buf();
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
-        let _ = self.state.put(&self.cursor_id, "x", x);
-        let _ = self.state.put(&self.cursor_id, "y", y);
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::SetCursor { x, y },
+            self.state,
+        );
     }
 
     /// Stage `bytes` to be written back to the PTY once this feed's parse

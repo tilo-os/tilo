@@ -53,6 +53,12 @@ pub enum TerminalAction {
         protocol_id: Option<u64>,
         alternate_screen: bool,
     },
+    /// Create the shared grid, links, images, and cursor when they are missing.
+    EnsureStructure,
+    /// Grow one grid with empty lines up to `min_len`.
+    EnsureLines { alternate: bool, min_len: u32 },
+    /// Write the shared cursor after a feed.
+    SetCursor { x: u64, y: u64 },
 }
 
 impl Action for TerminalAction {
@@ -155,9 +161,62 @@ impl Action for TerminalAction {
                     doc.put(&placement, "protocol_id", *protocol_id)?;
                 }
             }
+            Self::EnsureStructure => ensure_structure(doc)?,
+            Self::EnsureLines { alternate, min_len } => {
+                ensure_lines(doc, *alternate, *min_len)?;
+            }
+            Self::SetCursor { x, y } => set_cursor(doc, *x, *y)?,
         }
         Ok(())
     }
+}
+
+fn object_at(
+    doc: &mut Doc,
+    key: &str,
+    kind: automerge::ObjType,
+) -> Result<automerge::ObjId, ActionError> {
+    match doc.get(ROOT, key)? {
+        Some((_, existing)) => Ok(existing),
+        None => Ok(doc.put_object(ROOT, key, kind)?),
+    }
+}
+
+fn ensure_structure(doc: &mut Doc) -> Result<(), ActionError> {
+    object_at(doc, "terminal_grid", automerge::ObjType::List)?;
+    object_at(doc, "terminal_grid_alt", automerge::ObjType::List)?;
+    object_at(doc, "terminal_links", automerge::ObjType::Map)?;
+    object_at(doc, "terminal_images", automerge::ObjType::List)?;
+    if doc.get(ROOT, "cursor")?.is_none() {
+        set_cursor(doc, 0, 0)?;
+    }
+    Ok(())
+}
+
+fn ensure_lines(doc: &mut Doc, alternate: bool, min_len: u32) -> Result<(), ActionError> {
+    if min_len > 4096 {
+        return Err(ActionError::Refused("grid is too tall".into()));
+    }
+    let key = if alternate {
+        "terminal_grid_alt"
+    } else {
+        "terminal_grid"
+    };
+    let grid = object_at(doc, key, automerge::ObjType::List)?;
+    let target = min_len as usize;
+    while doc.length(&grid) < target {
+        let index = doc.length(&grid);
+        let line = doc.insert_object(&grid, index, automerge::ObjType::Map)?;
+        doc.put_object(&line, "text", automerge::ObjType::Text)?;
+    }
+    Ok(())
+}
+
+fn set_cursor(doc: &mut Doc, x: u64, y: u64) -> Result<(), ActionError> {
+    let cursor = object_at(doc, "cursor", automerge::ObjType::Map)?;
+    doc.put(&cursor, "x", x)?;
+    doc.put(&cursor, "y", y)?;
+    Ok(())
 }
 
 /// The terminal session resource.
@@ -457,6 +516,41 @@ mod tests {
             .map(|(_, id)| id)
             .unwrap();
         assert_eq!(doc.length(&images), 1);
+    }
+
+    #[test]
+    fn structure_lines_and_cursor_are_session_actions() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
+        TerminalAction::EnsureStructure.apply(&mut doc).unwrap();
+        TerminalAction::EnsureLines {
+            alternate: false,
+            min_len: 2,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        TerminalAction::SetCursor { x: 3, y: 1 }
+            .apply(&mut doc)
+            .unwrap();
+        let grid = doc
+            .get(automerge::ROOT, "terminal_grid")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        assert_eq!(doc.length(&grid), 2);
+        let cursor = doc
+            .get(automerge::ROOT, "cursor")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        let x = doc
+            .get(&cursor, "x")
+            .unwrap()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(value) => value.as_i64(),
+                _ => None,
+            });
+        assert_eq!(x, Some(3));
     }
 }
 
