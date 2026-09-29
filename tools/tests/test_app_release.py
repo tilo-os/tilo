@@ -27,20 +27,20 @@ class AppReleaseTests(unittest.TestCase):
                     self.assertEqual(
                         app_release.architecture_matrix(ref, event),
                         {"include": [
-                            {"arch": "aarch64", "runner": "runner-arm64"},
-                            {"arch": "x86_64", "runner": "runner"},
+                            {"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"},
+                            {"arch": "x86_64", "runner": "runner", "build_runner": "runner-large"},
                         ]},
                     )
         with self.subTest(phase='manual build can explicitly select one architecture'):
             self.assertEqual(
                 app_release.architecture_matrix("refs/heads/main", "workflow_dispatch", requested="aarch64"),
-                {"include": [{"arch": "aarch64", "runner": "runner-arm64"}]},
+                {"include": [{"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"}]},
             )
         with self.subTest(phase='main architecture switch and tags cover both'):
             both = {
                 "include": [
-                    {"arch": "aarch64", "runner": "runner-arm64"},
-                    {"arch": "x86_64", "runner": "runner"},
+                    {"arch": "aarch64", "runner": "runner-arm64", "build_runner": "runner-large-arm64"},
+                    {"arch": "x86_64", "runner": "runner", "build_runner": "runner-large"},
                 ]
             }
             self.assertEqual(
