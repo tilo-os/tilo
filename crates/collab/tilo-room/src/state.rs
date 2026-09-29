@@ -217,6 +217,18 @@ struct DurableV6<'a> {
 /// Each encrypted record's sealed writes, in admission order.
 type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
 
+/// Any earlier shape and the memberships the room holds outside its
+/// governance (`room::held`). Written only while the room holds some, so
+/// every other state keeps its earlier bytes.
+#[derive(Serialize, Deserialize)]
+struct DurableV7 {
+    version: u32,
+    base: DurableV4,
+    exact: Option<Vec<u8>>,
+    sealed: SealedHistory,
+    held: crate::room::held::HeldRecords,
+}
+
 /// How a local write reaches admission: plain, or sealed and opened by its
 /// key holder once the sealed envelope passed every check.
 pub(crate) enum LocalWrite<'a> {
@@ -231,6 +243,33 @@ const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 #[derive(Clone)]
 pub struct StatePeer {
     core: PeerCore<LegacyNative>,
+}
+
+/// A room's governance capabilities with the memberships it holds outside
+/// governance added: host admissions in a public room, and recording
+/// delegations unless the room forbids them.
+pub(crate) fn room_caps_with_held(
+    doc: &AutoCommit,
+    owner: Option<&str>,
+    caps: &[CapOverride],
+    held: &crate::room::held::HeldRecords,
+    room: &str,
+    now: SystemTime,
+) -> Vec<CapOverride> {
+    if held.is_empty() {
+        return caps.to_vec();
+    }
+    let class = tilo_desktop_model::projection::channel_class_of(doc).unwrap_or_default();
+    let forbidden =
+        tilo_desktop_model::projection::recording_delegates_forbidden_of(doc).unwrap_or(false);
+    let mut all = caps.to_vec();
+    all.extend(held.admitted(class, owner, caps, room, now));
+    let with_admitted = all.clone();
+    all.extend(
+        held.recording_delegates(owner, &with_admitted, forbidden, None, room, now_secs(now))
+            .into_values(),
+    );
+    all
 }
 
 fn check_governed_snapshot(
@@ -288,6 +327,7 @@ impl StatePeer {
                 checkpoint_times: BTreeMap::new(),
                 exact_admissions: ExactAdmissions::default(),
                 admission_v5: false,
+                held: crate::room::held::HeldRecords::default(),
                 native_cut_publisher: None,
                 _retention: (),
             },
@@ -560,6 +600,60 @@ impl StatePeer {
         }
     }
 
+    /// Make the other person of a direct room an Editor of it. A direct room
+    /// is the one room between two people (`tilo_reference::DirectRoom`): its
+    /// id is derived from both, so the end that creates and governs it admits
+    /// the other by that fact alone, with no invitation, and the other's
+    /// devices join by their certificates.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, this room is
+    /// not the direct room between its owner and `other_user_public_key`, or
+    /// governance cannot be updated.
+    pub fn admit_direct_member(
+        &mut self,
+        other_user_public_key: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let owner = hex::encode(self.core.authority.user_public_key);
+        let other = hex::encode(other_user_public_key);
+        let direct = tilo_reference::DirectRoom::between(&owner, &other)
+            .ok_or("a direct room is between two different people")?;
+        if direct.room_id() != self.core.room {
+            return Err("this room is not the direct room of these two people".into());
+        }
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let policy = doc.policy();
+        if room::direct_member(
+            policy.owner.as_deref(),
+            &policy.caps,
+            &self.core.room,
+            &other,
+            now_secs(now),
+        ) {
+            return Ok(false);
+        }
+        let before = doc.get_heads();
+        let caps = doc
+            .get(ROOT, "capabilities")
+            .map_err(err)?
+            .ok_or("governed capabilities missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        put_direct_member_capability(&mut doc, &caps, other_user_public_key)?;
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+
     /// Change a governed collaborator's room role.
     ///
     /// # Errors
@@ -705,6 +799,34 @@ impl StatePeer {
                 member_devices.push(cert.device_public_key);
                 member_user_roots.push(cert.user_public_key);
             }
+        }
+        // Devices a public room's host admitted are members too, for as long
+        // as their admission stands.
+        let doc = self
+            .core
+            .room_doc
+            .as_deref()
+            .ok_or("room governance missing")?;
+        let admitted = self.core.held.admitted(
+            tilo_desktop_model::projection::channel_class_of(doc).unwrap_or_default(),
+            policy.owner.as_deref(),
+            &policy.caps,
+            &self.core.room,
+            now,
+        );
+        for admission in self.core.held.admissions() {
+            let id = crate::room::held::admission_capability_id(&admission.member_user);
+            if !admitted.iter().any(|cap| cap.id == id) {
+                continue;
+            }
+            let device = *admission.member_device.as_bytes();
+            if self.core.revocations.is_revoked(&device)
+                || self.core.certificate_typed(&device, now).is_err()
+            {
+                continue;
+            }
+            member_devices.push(device);
+            member_user_roots.push(*admission.member_user.as_bytes());
         }
         member_devices.sort_unstable();
         member_devices.dedup();
@@ -973,14 +1095,7 @@ impl StatePeer {
     ) -> Result<(Role, Vec<collab_types::caps::CapOverride>, String), String> {
         let role = self.role(&source, now)?;
         let cert = self.certificate(&source, now)?;
-        let mut caps = self
-            .core
-            .room_doc
-            .as_ref()
-            .ok_or("room missing")?
-            .policy()
-            .caps
-            .clone();
+        let mut caps = self.room_caps(now)?;
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         backend::member::restrict_foreign_device(
             cert,
@@ -1214,9 +1329,7 @@ impl StatePeer {
     ) -> Result<Role, String> {
         let role = self.role(source, authorization_time)?;
         let cert = self.certificate(source, authorization_time)?;
-        let (_, _, mut caps) = room::extract_governed_fields(
-            self.core.room_doc.as_deref().ok_or("missing governance")?,
-        );
+        let mut caps = self.room_caps(authorization_time)?;
         let person = Principal::person_from_key(Ed25519PublicKey::from_bytes(cert.user_public_key));
         backend::member::restrict_foreign_device(
             cert,
@@ -1440,9 +1553,18 @@ impl StatePeer {
                                 .cloned()
                         })
                         .and_then(|bytes| serde_json::from_slice::<GovernedIdentity>(&bytes).ok());
-                    if admitted
-                        .as_ref()
-                        .is_none_or(|identity| identity.device_cert != *cert)
+                    let held =
+                        self.core
+                            .held
+                            .admission_of_device(&source)
+                            .is_some_and(|admission| {
+                                admission.member_user.as_bytes() == &cert.user_public_key
+                            })
+                            || self.person_granted(&cert.user_public_key, now);
+                    if !held
+                        && admitted
+                            .as_ref()
+                            .is_none_or(|identity| identity.device_cert != *cert)
                     {
                         return Err("identity is absent from admitted roster".into());
                     }
@@ -1534,6 +1656,18 @@ impl StatePeer {
                 if !room::immutable_receipts(self.core.room_doc.as_deref(), &candidate) {
                     return Err("effect receipt is immutable".into());
                 }
+                // A room's channel class is fixed once stated: an encrypted
+                // room never turns public, nor the other way round.
+                if let Some(before) = self
+                    .core
+                    .room_doc
+                    .as_deref()
+                    .and_then(tilo_desktop_model::projection::channel_class_of)
+                {
+                    let after = tilo_desktop_model::projection::channel_class_of(&candidate)
+                        .ok_or("governance may not drop the room's channel class")?;
+                    before.may_become(after).map_err(err)?;
+                }
                 let mut receipts = self.core.receipts.clone();
                 for (key, value) in room::receipt_values(&candidate) {
                     let bytes = serde_json::to_vec(&value).map_err(err)?;
@@ -1604,11 +1738,112 @@ impl StatePeer {
                 }
                 self.receive_document(source, message, now, retained_replay, strict_report)
             }
+            NeighbourMsg::RoomAdmission { room, admission } => {
+                if room != self.core.room {
+                    return Err("room topic mismatch".into());
+                }
+                let changed = self
+                    .core
+                    .held
+                    .receive_admission(&self.core.room, *admission)
+                    .map_err(err)?;
+                self.settle_held(changed, now, strict_report)
+            }
+            NeighbourMsg::RecordingDelegation {
+                room,
+                delegation,
+                cert,
+            } => {
+                if room != self.core.room {
+                    return Err("room topic mismatch".into());
+                }
+                if self.core.revocations.is_revoked(&cert.device_public_key) {
+                    return Err("device revoked".into());
+                }
+                let changed = self
+                    .core
+                    .held
+                    .receive_recording(&self.core.room, *delegation, *cert, now_ns(now))
+                    .map_err(err)?;
+                self.settle_held(changed, now, strict_report)
+            }
             _ => Ok(AdmissionReport::new(
                 InputDisposition::UnsupportedFamily,
                 ReceiveOutcome::default(),
             )),
         }
+    }
+
+    /// A membership held outside governance changed: what waited for it (a
+    /// document from a device a host just admitted) is tried again.
+    fn settle_held(
+        &mut self,
+        changed: bool,
+        now: SystemTime,
+        strict_report: bool,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        let mut outcome = ReceiveOutcome {
+            metadata_changed: changed,
+            ..Default::default()
+        };
+        if changed && self.core.room_doc.is_some() {
+            let pending = std::mem::take(&mut self.core.pending);
+            self.core.pending_bytes = 0;
+            for (author, message, replayed) in pending {
+                match self.receive_with_context(author, message, now, replayed, strict_report) {
+                    Ok(applied) => {
+                        outcome.changed |= applied.changed;
+                        outcome.metadata_changed |= applied.metadata_changed;
+                        outcome.rejected = outcome.rejected.saturating_add(applied.rejected);
+                    }
+                    Err(error) => {
+                        if self.core.native_cut_publisher.is_some() {
+                            return Err(error);
+                        }
+                        outcome.rejected = outcome.rejected.saturating_add(1);
+                    }
+                }
+            }
+        }
+        outcome.deferred = !self.core.pending.is_empty();
+        Ok(AdmissionReport::metadata(outcome))
+    }
+
+    /// Whether the person `user_public_key` is the other person of this
+    /// direct room: every device their root certifies is then theirs here.
+    fn person_granted(&self, user_public_key: &[u8; 32], now: SystemTime) -> bool {
+        let Some(doc) = self.core.room_doc.as_ref() else {
+            return false;
+        };
+        let policy = doc.policy();
+        room::direct_member(
+            policy.owner.as_deref(),
+            &policy.caps,
+            &self.core.room,
+            &hex::encode(user_public_key),
+            now_secs(now),
+        )
+    }
+
+    /// Every membership the room grants now: its governance's capabilities
+    /// and the memberships it holds outside governance (host admissions in a
+    /// public room, recording delegations while the room allows them).
+    fn room_caps(&self, now: SystemTime) -> Result<Vec<CapOverride>, String> {
+        let doc = self.core.room_doc.as_deref().ok_or("missing governance")?;
+        let policy = self
+            .core
+            .room_doc
+            .as_ref()
+            .ok_or("missing governance")?
+            .policy();
+        Ok(room_caps_with_held(
+            doc,
+            policy.owner.as_deref(),
+            &policy.caps,
+            &self.core.held,
+            &self.core.room,
+            now,
+        ))
     }
     /// True only when governance covers this exact route with a checkpoint by
     /// the same author at a strictly greater sequence than `sequence`. Any other
@@ -1828,6 +2063,13 @@ impl StatePeer {
         // `Comment` change goes nowhere else but the room route.
         collab_types::check_document_route(&record_id, envelope.op_class, &envelope.author)
             .map_err(err)?;
+        // A public room's content is signed and never sealed.
+        tilo_desktop_model::projection::channel_class_of(
+            self.core.room_doc.as_deref().ok_or("missing governance")?,
+        )
+        .unwrap_or_default()
+        .admits_op(&envelope)
+        .map_err(err)?;
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -2930,6 +3172,24 @@ impl StatePeer {
             .filter(|(_, entry)| !entry.sealed.is_empty())
             .map(|(route, entry)| (route.clone(), entry.sealed.clone()))
             .collect();
+        if !sealed.is_empty() && !self.core.admission_v5 {
+            return Err("sealed record history requires durable admission v5".into());
+        }
+        if !self.core.held.is_empty() {
+            let exact = if self.core.admission_v5 {
+                Some(self.core.exact_admissions.encode().map_err(err)?)
+            } else {
+                None
+            };
+            return postcard::to_allocvec(&DurableV7 {
+                version: 7,
+                base: value,
+                exact,
+                sealed,
+                held: self.core.held.clone(),
+            })
+            .map_err(err);
+        }
         if self.core.admission_v5 && !sealed.is_empty() {
             let exact = self.core.exact_admissions.encode().map_err(err)?;
             postcard::to_allocvec(&DurableV6 {
@@ -2979,6 +3239,8 @@ impl StatePeer {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         let mut exact_admissions = ExactAdmissions::default();
         let mut sealed = Vec::new();
+        let mut held = crate::room::held::HeldRecords::default();
+        let mut admission_v5 = version >= 5;
         let (durable, pending, pending_bytes) = match version {
             4 => {
                 let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
@@ -3015,6 +3277,29 @@ impl StatePeer {
                     value.base.pending_bytes,
                 )
             }
+            7 => {
+                let (value, tail): (DurableV7, _) =
+                    postcard::take_from_bytes(bytes).map_err(err)?;
+                if !tail.is_empty()
+                    || value.version != 7
+                    || value.base.version != 4
+                    || value.held.is_empty()
+                    || (value.exact.is_none() && !value.sealed.is_empty())
+                {
+                    return Err("invalid native v7 durable envelope".into());
+                }
+                admission_v5 = value.exact.is_some();
+                if let Some(exact) = &value.exact {
+                    exact_admissions = ExactAdmissions::decode(exact).map_err(err)?;
+                }
+                sealed = value.sealed;
+                held = value.held;
+                (
+                    value.base.base,
+                    value.base.pending,
+                    value.base.pending_bytes,
+                )
+            }
             _ => return Err("unsupported durable admission version".into()),
         };
         if durable.version != 3 || durable.room != room || durable.authority != authority {
@@ -3041,7 +3326,8 @@ impl StatePeer {
                 pending_bytes,
                 checkpoint_times: BTreeMap::new(),
                 exact_admissions,
-                admission_v5: version >= 5,
+                admission_v5,
+                held,
                 native_cut_publisher: None,
                 _retention: (),
             },
@@ -3195,7 +3481,38 @@ pub(crate) fn put_member_capability(
     user_public_key: [u8; 32],
     role: crate::join::MemberRole,
 ) -> Result<(), String> {
-    let id = member_capability_id(user_public_key);
+    put_person_capability(
+        doc,
+        capabilities,
+        user_public_key,
+        role,
+        member_capability_id(user_public_key),
+    )
+}
+
+/// The other person of a direct room as its governance names them: the one
+/// membership a device joins by its certificate alone ([`room::direct_member`]).
+fn put_direct_member_capability(
+    doc: &mut AutoCommit,
+    capabilities: &automerge::ObjId,
+    user_public_key: [u8; 32],
+) -> Result<(), String> {
+    put_person_capability(
+        doc,
+        capabilities,
+        user_public_key,
+        crate::join::MemberRole::Editor,
+        room::direct_member_capability_id(&hex::encode(user_public_key)),
+    )
+}
+
+fn put_person_capability(
+    doc: &mut AutoCommit,
+    capabilities: &automerge::ObjId,
+    user_public_key: [u8; 32],
+    role: crate::join::MemberRole,
+    id: String,
+) -> Result<(), String> {
     let person = hex::encode(user_public_key);
     let shadowing = doc
         .keys(capabilities)

@@ -59,27 +59,7 @@ pub use policy::TrustPolicy;
 pub use process_lease::ProcessLease;
 pub use transport::{ALPN, ContentPeerRegistration, Envelope};
 
-/// Derive the stable numeric host/gossip shard for a room UUID. This is shared
-/// by the shell and admin CLI so local workspace handles never leak onto the
-/// wire and operators cannot accidentally bind a different shard.
-///
-/// # Errors
-///
-/// Returns an error if `room` is not a valid UUID string.
-pub fn room_workspace_id(room: &str) -> Result<u64, uuid::Error> {
-    let room = uuid::Uuid::parse_str(room)?;
-    // Encode on the stack: bounded delivery paths derive this id under a
-    // native allowance that funds no heap allocation.
-    let mut canonical = [0u8; 36];
-    let hash = blake3::derive_key(
-        "tilo-room-transport-v1",
-        room.hyphenated().encode_lower(&mut canonical).as_bytes(),
-    );
-    let mut first8 = [0u8; 8];
-    first8.copy_from_slice(&hash[..8]);
-    let id = u64::from_le_bytes(first8);
-    Ok(if id == 0 { 1 } else { id })
-}
+pub use tilo_room::{room_workspace_id, room_workspace_id_matches};
 
 /// Stable private relay shard for same-identity continuation checkpoints.
 /// This is not a user-visible workspace and is derived only from the root
@@ -90,11 +70,6 @@ pub fn personal_continuity_workspace_id(user_public_key: &[u8; 32]) -> u64 {
     first8.copy_from_slice(&hash[..8]);
     let id = u64::from_le_bytes(first8);
     if id == 0 { 1 } else { id }
-}
-
-/// Match a retained or subscribed binding without aliasing arbitrary numeric IDs.
-pub fn room_workspace_id_matches(room: &str, workspace: u64) -> bool {
-    room_workspace_id(room).is_ok_and(|id| id == workspace)
 }
 
 /// Only the shard derived from this authenticated identity is private.

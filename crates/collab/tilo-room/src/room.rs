@@ -1,5 +1,6 @@
 //! Room-policy leaves shared by the shell and certified browser peer.
 pub(crate) mod delivery_policy;
+pub mod held;
 pub(crate) mod key_hex;
 pub mod media;
 pub(crate) mod policy;
@@ -220,6 +221,40 @@ pub fn role_of(owner: Option<&str>, caps: &[CapOverride], user: &str, now: u64) 
         Verb::Read | Verb::Invite => Role::Viewer,
     })
 }
+/// The id a direct room's governance names its other person under.
+#[must_use]
+pub fn direct_member_capability_id(person: &str) -> String {
+    format!("room-direct-v1:{person}")
+}
+
+/// Whether `person` is the other person of the direct room `room` owned by
+/// `owner`: the room is the one derived from both (`DirectRoom::between`)
+/// and its governance names them with a live grant. Such a person is a
+/// member on every device their root certifies; any other member is one on
+/// the devices governance names.
+#[must_use]
+pub fn direct_member(
+    owner: Option<&str>,
+    caps: &[CapOverride],
+    room: &str,
+    person: &str,
+    now: u64,
+) -> bool {
+    let Some(owner) = owner else {
+        return false;
+    };
+    if owner == person
+        || tilo_reference::DirectRoom::between(owner, person)
+            .is_none_or(|direct| direct.room_id() != room)
+    {
+        return false;
+    }
+    let id = direct_member_capability_id(person);
+    caps.iter()
+        .any(|cap| cap.id == id && cap.effect == Effect::Grant && cap.is_live_at(Some(now)))
+        && role_of(Some(owner), caps, person, now).is_some_and(|role| role != Role::Denied)
+}
+
 /// Effect receipts are immutable by value; omission cannot erase old evidence.
 pub fn immutable_receipts(before: Option<&AutoCommit>, after: &AutoCommit) -> bool {
     let Some(before) = before else {

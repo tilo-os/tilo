@@ -1,10 +1,11 @@
 //! One private peer representation; storage qualification cannot be copied.
 use super::{
     AcceptedCheckpoint, Actor, ArtifactKind, AutoCommit, BTreeMap, CachedDocument, CapDecision,
-    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, Ed25519PublicKey,
-    ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal, RedemptionReceipt, ResourceRef,
-    RevocationList, Role, Route, Scope, StatePeer, Subject, SystemTime, VecDeque, Verb,
-    VerifiedCertificate, decide_capability, err, now_ns, now_secs, room,
+    CapOverride, ChannelState, DeviceCert, DurableV4, DurableV5, DurableV6, DurableV7,
+    Ed25519PublicKey, ExactAdmissions, GovernedIdentity, NeighbourMsg, Principal,
+    RedemptionReceipt, ResourceRef, RevocationList, Role, Route, Scope, StatePeer, Subject,
+    SystemTime, VecDeque, Verb, VerifiedCertificate, decide_capability, err, now_ns, now_secs,
+    room,
 };
 use crate::resources::native::NativeDocument;
 pub(super) mod access;
@@ -130,6 +131,9 @@ pub(super) struct PeerCore<S: Storage> {
     pub(super) checkpoint_times: BTreeMap<Route, SystemTime>,
     pub(super) exact_admissions: S::ExactEvidence,
     pub(super) admission_v5: bool,
+    /// Memberships the room holds outside its governance: host admissions
+    /// and recording delegations.
+    pub(super) held: crate::room::held::HeldRecords,
     // Transient native cut context is never part of the durable DTO.
     pub(super) native_cut_publisher: Option<[u8; 32]>,
     pub(super) _retention: S::Retention,
@@ -149,6 +153,7 @@ impl Clone for PeerCore<LegacyNative> {
             checkpoint_times: self.checkpoint_times.clone(),
             exact_admissions: self.exact_admissions.clone(),
             admission_v5: self.admission_v5,
+            held: self.held.clone(),
             native_cut_publisher: self.native_cut_publisher,
             _retention: (),
         }

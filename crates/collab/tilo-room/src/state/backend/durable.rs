@@ -1,5 +1,5 @@
 //! Guarded original durable DTO storage, before semantic peer restoration.
-use super::{DurableV4, DurableV5, DurableV6};
+use super::{DurableV4, DurableV5, DurableV6, DurableV7};
 use crate::admission::BoundedExactAdmissions;
 use crate::resources::{OuterLimits, PeerResourceError};
 
@@ -16,6 +16,7 @@ pub(super) struct DecodedDurable {
     pub(super) wire: DurableV4,
     pub(super) exact: Option<BoundedExactAdmissions>,
     pub(super) version: u32,
+    pub(super) held: crate::room::held::HeldRecords,
 }
 impl DecodedDurable {
     pub(super) fn decode(
@@ -25,7 +26,7 @@ impl DecodedDurable {
     ) -> Result<Self, DurableDecodeError> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes)
             .map_err(|_| DurableDecodeError::Resource(PeerResourceError::Malformed))?;
-        if !matches!(version, 4..=6) {
+        if !matches!(version, 4..=7) {
             return Err(DurableDecodeError::UnsupportedVersion);
         }
         // Every path below is one of the closed schemas.
@@ -35,6 +36,7 @@ impl DecodedDurable {
                     .map_err(DurableDecodeError::Resource)?
             };
         }
+        let mut held = crate::room::held::HeldRecords::default();
         let (wire, exact) = match version {
             4 => (decode!(DurableV4), None),
             5 => {
@@ -59,6 +61,24 @@ impl DecodedDurable {
                     .map_err(DurableDecodeError::Resource)?;
                 (value.base, Some(exact))
             }
+            7 => {
+                let value = decode!(DurableV7);
+                if value.version != 7
+                    || value.base.version != 4
+                    || value.held.is_empty()
+                    || (value.exact.is_none() && !value.sealed.is_empty())
+                {
+                    return Err(DurableDecodeError::Envelope);
+                }
+                let exact = value
+                    .exact
+                    .as_deref()
+                    .map(|exact| BoundedExactAdmissions::decode(exact, exact_limits))
+                    .transpose()
+                    .map_err(DurableDecodeError::Resource)?;
+                held = value.held;
+                (value.base, exact)
+            }
             _ => return Err(DurableDecodeError::UnsupportedVersion),
         };
         if wire.version != 4 || wire.base.version != 3 {
@@ -70,6 +90,7 @@ impl DecodedDurable {
             wire,
             exact,
             version,
+            held,
         })
     }
 }

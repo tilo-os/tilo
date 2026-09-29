@@ -119,6 +119,8 @@ pub(in crate::state) fn restrict_foreign_device(
 }
 struct LegacyPolicy<'a> {
     data: &'a crate::cached_document::PolicyData,
+    /// The governance's capabilities with the memberships held outside it.
+    caps: std::borrow::Cow<'a, [CapOverride]>,
     identity: GovernedIdentity,
 }
 impl Policy for LegacyPolicy<'_> {
@@ -126,7 +128,7 @@ impl Policy for LegacyPolicy<'_> {
         self.data.owner.as_deref()
     }
     fn caps(&self) -> &[CapOverride] {
-        &self.data.caps
+        &self.caps
     }
     fn identity(&self) -> &GovernedIdentity {
         &self.identity
@@ -140,9 +142,57 @@ pub(in crate::state) fn legacy(
     current(peer, source, now, |room| {
         let data = room.policy();
         let key = key_text(source);
-        let bytes = data.identities.get(key.as_str()).ok_or(Error::Absent)?;
-        let identity = serde_json::from_slice(bytes).map_err(Error::LegacyJson)?;
-        Ok(LegacyPolicy { data, identity })
+        let identity = if let Some(bytes) = data.identities.get(key.as_str()) {
+            serde_json::from_slice(bytes).map_err(Error::LegacyJson)?
+        } else {
+            // A device a public room's host admitted is known by its
+            // admission and the certificate its hello carried, never by
+            // governance.
+            {
+                let cert = peer
+                    .certificate_typed(source, now)
+                    .map_err(Error::Certificate)?;
+                // The other person of a direct room is a member on every
+                // device their root certifies.
+                let granted = room::direct_member(
+                    data.owner.as_deref(),
+                    &data.caps,
+                    &peer.room,
+                    key_text(&cert.user_public_key).as_str(),
+                    now_secs(now),
+                );
+                if !granted {
+                    let admission = peer.held.admission_of_device(source).ok_or(Error::Absent)?;
+                    if admission.member_user.as_bytes() != &cert.user_public_key {
+                        return Err(Error::CertificateMismatch);
+                    }
+                }
+                GovernedIdentity {
+                    device_cert: cert.clone(),
+                    revocations: Vec::new(),
+                    admission: None,
+                    admissions: Vec::new(),
+                    workspace_delegations: Vec::new(),
+                }
+            }
+        };
+        let caps = if peer.held.is_empty() {
+            std::borrow::Cow::Borrowed(data.caps.as_slice())
+        } else {
+            std::borrow::Cow::Owned(crate::state::room_caps_with_held(
+                room,
+                data.owner.as_deref(),
+                &data.caps,
+                &peer.held,
+                &peer.room,
+                now,
+            ))
+        };
+        Ok(LegacyPolicy {
+            data,
+            caps,
+            identity,
+        })
     })
     .map(|(role, _, _)| role)
 }

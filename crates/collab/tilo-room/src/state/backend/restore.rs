@@ -69,6 +69,7 @@ pub(in crate::state) fn restore(
         wire,
         exact,
         version,
+        held,
     } = decoded;
     let stored_room = wire.base.room;
     let stored_authority = wire.base.authority;
@@ -157,8 +158,9 @@ pub(in crate::state) fn restore(
         pending,
         pending_bytes,
         checkpoint_times: BTreeMap::new(),
+        admission_v5: version >= 5 && exact.is_some(),
         exact_admissions: exact,
-        admission_v5: version >= 5,
+        held,
         native_cut_publisher: None,
         _retention: (),
     };

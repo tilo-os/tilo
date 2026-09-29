@@ -15724,6 +15724,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
+ "tilo-reference",
  "tilo-room-index",
  "tilo-user-identity",
  "uuid",
