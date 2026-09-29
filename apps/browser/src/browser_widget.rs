@@ -520,6 +520,58 @@ fn navigation_contract() -> ActionContract {
     }
 }
 
+/// Window-level navigation Views/Effects for [`crate::resource::Browser::local_operations`].
+///
+/// Hosted surfaces empty [`PublishesResources::resources`] so these must ride
+/// `tilo_resource::publish` — otherwise the palette loses back / forward /
+/// reload / stop / open-address when the widget tree is no longer the door.
+pub(crate) fn window_navigation_operations() -> Vec<ActionSpec> {
+    let mut ops = Vec::with_capacity(5);
+    for (id, label, operation) in [
+        ("back", "Go back", BrowserOperation::Back),
+        ("forward", "Go forward", BrowserOperation::Forward),
+        ("reload", "Reload", BrowserOperation::Reload),
+        ("stop", "Stop loading", BrowserOperation::Stop),
+    ] {
+        let payload = browser_operation_payload(&operation);
+        let Ok(spec) = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            BROWSER_OPERATION_TYPE,
+            &payload,
+        ) else {
+            continue;
+        };
+        ops.push(if id == "stop" {
+            spec
+        } else {
+            spec.with_contract(navigation_contract())
+        });
+    }
+    ops.push(
+        ActionSpec::typed_operation(
+            "navigate",
+            "Open address",
+            "https://…",
+            OperationKind::Effect,
+            BROWSER_OPERATION_TYPE,
+            vec![ActionParam::required_owned(
+                "url",
+                ParamType::Text,
+                "Absolute URL or search terms",
+            )],
+            |args: &ActionArgs| {
+                encode_browser_operation(&BrowserOperation::Navigate {
+                    url: args.text("url").unwrap_or("").to_string(),
+                })
+            },
+        )
+        .with_contract(navigation_contract()),
+    );
+    ops
+}
+
 /// An explicit contract for sensitive work that happens only in this running
 /// browser profile.  These effects are intentionally not CRDT mutations: a
 /// peer must not clear this machine's cookies, history, media surface, or
@@ -1200,6 +1252,10 @@ impl BrowserWidget {
     /// [`Widget::resources`] defers to `tilo_resource::publish`.
     pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
         self.framework_hosted = hosted;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
     }
 
     /// Test hook: pin a suggestion list into view (bypasses focus/query)
@@ -5664,6 +5720,10 @@ impl ui::resources::PublishesResources for BrowserWidget {
         reason = "Resource definitions stay together so their action contracts remain discoverable."
     )]
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        // Hosted: ResourceRoot already published bookmarks + window navigation
+        // via tilo_resource::publish. Live extras (find-in-page session, load
+        // progress) are not resource actions today, so there is nothing left
+        // to add beside that door.
         if self.framework_hosted {
             return Vec::new();
         }

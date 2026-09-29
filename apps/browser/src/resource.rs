@@ -1,17 +1,18 @@
 //! Browser as a [`tilo_resource::Resource`]: bookmarks and preferences are
-//! document actions; navigation and the visit log stay View/Effect operations.
+//! document actions; window navigation is published from
+//! [`Resource::local_operations`].
 
 use std::rc::Rc;
 
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionParam, ParamType};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
 use crate::actions::{
     BROWSER_ACTION_TYPE, BrowserAction, bookmark_resource_id, bookmarks_from_doc, register,
 };
-use crate::browser_widget::BrowserWidget;
+use crate::browser_widget::{BrowserWidget, window_navigation_operations};
 use crate::library::{Bookmark, Bookmarks};
 
 /// Document projection: collaborative bookmarks.
@@ -75,6 +76,13 @@ impl Resource for Browser {
         ]
     }
 
+    fn local_operations() -> Vec<ActionSpec> {
+        // Window chrome navigation. Live availability (can-go-back, in-flight
+        // stop) stays on the standalone page child; publish always offers the
+        // ops so hosted ResourceRoot does not drop the palette door.
+        window_navigation_operations()
+    }
+
     fn children(state: &BrowserState) -> Vec<tilo_actions::Resource> {
         let mut bookmarks =
             tilo_actions::Resource::new("browser.bookmarks", "browser.bookmarks", "Bookmarks");
@@ -129,7 +137,10 @@ impl ResourceApp for BrowserShell {
 }
 
 impl ResourceSurface<Browser> for BrowserWidget {
-    fn present(&mut self, _state: &Rc<BrowserState>) {}
+    fn present(&mut self, _state: &Rc<BrowserState>) {
+        // Empty on purpose: bookmarks sync through the widget's Automerge path.
+        // Wiping chrome/engine state here would drop unsynced local navigation.
+    }
 
     fn attach(&mut self, _cx: SurfaceCx<Browser>) {
         self.set_framework_hosted(true);
@@ -139,4 +150,72 @@ impl ResourceSurface<Browser> for BrowserWidget {
 /// Live launch on the framework host.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<BrowserShell>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::AutoCommit;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn resource_publish_owns_navigation_and_hosted_keeps_no_duplicate_root() {
+        let state = BrowserState::default();
+        let published = ui::tilo_resource::publish::<Browser>("browser", "Browser", &state);
+        assert_eq!(published.kind, "browser.application");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in ["back", "forward", "reload", "stop", "navigate"] {
+            assert!(
+                ids.contains(&expected),
+                "navigation `{expected}` must ride local_operations via publish: {ids:?}"
+            );
+        }
+        let back = published
+            .actions
+            .iter()
+            .find(|action| action.id == "back")
+            .expect("back");
+        assert_eq!(back.kind, OperationKind::View);
+        assert_eq!(back.operation_type.as_deref(), Some("browser.operation"));
+        let navigate = published
+            .actions
+            .iter()
+            .find(|action| action.id == "navigate")
+            .expect("navigate");
+        assert_eq!(navigate.kind, OperationKind::Effect);
+
+        let mut widget = BrowserWidget::new_headless();
+        let mut doc = AutoCommit::new();
+        widget.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(
+            !widget.is_framework_hosted(),
+            "standalone stays on the local host"
+        );
+        let standalone = widget.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "browser.application");
+        let page = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.id.0 == "browser.page")
+            .expect("standalone still publishes the page child");
+        assert!(
+            page.actions.iter().any(|a| a.id == "back")
+                && page.actions.iter().any(|a| a.id == "forward")
+                && page.actions.iter().any(|a| a.id == "reload")
+                && page.actions.iter().any(|a| a.id == "stop"),
+            "standalone page child still carries navigation"
+        );
+
+        widget.set_framework_hosted(true);
+        assert!(widget.is_framework_hosted());
+        let extras = widget.resources(&doc);
+        assert!(
+            extras.is_empty(),
+            "hosted must not republish browser.application beside ResourceRoot: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+    }
 }
