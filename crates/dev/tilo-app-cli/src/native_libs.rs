@@ -105,7 +105,7 @@ pub fn require_thin_runtime() -> Result<()> {
     }
     bail!(
         "a Tilo OS build links the toolkit library the OS ships, which links GStreamer; {}\n\
-         or pass `--static` for a larger package that needs none of them",
+         a desktop package (`--platform linux`) needs none of them",
         install_hint(&missing)
     )
 }
