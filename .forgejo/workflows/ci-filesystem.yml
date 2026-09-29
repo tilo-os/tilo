@@ -76,7 +76,6 @@ on:
   #     - "tools/ci/focused_test.py"
   #     - "tools/ci/native-stores.sh"
   #     - "tools/ci/prepare_pr_history.py"
-  #     - "tools/ci/sccache.sh"
   #     - "tools/ci/workflow_applicability.py"
   #     - "tools/native-tier1.sh"
   #     - ".forgejo/workflows/build-image.yml"
@@ -155,7 +154,6 @@ on:
       - "tools/ci/focused_test.py"
       - "tools/ci/native-stores.sh"
       - "tools/ci/prepare_pr_history.py"
-      - "tools/ci/sccache.sh"
       - "tools/ci/workflow_applicability.py"
       - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
@@ -186,8 +184,6 @@ env:
   TILO_FS_FUSE_REQUIRED: "1"
   TILO_REQUIRE_FUSE: "1"
 
-  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   applicability:
     uses: ./.forgejo/workflows/applicability.yml
@@ -229,12 +225,6 @@ jobs:
 
       - name: Require a real kernel FUSE environment
         run: bash scripts/ci-fuse-preflight.sh
-
-      - name: Enable shared compiler cache
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
 
       - name: Enforce graphical-session and verified-identity lifecycle
         run: bash os/tests/tilo-session-lifecycle.sh
@@ -365,12 +355,6 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Enable shared compiler cache
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
-
       # Nextcloud installs itself before it listens; curl's retry bounds it.
       - name: Wait for the servers to serve
         run: |
@@ -409,12 +393,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
-      - name: Enable shared compiler cache
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
 
       - name: Run the conformance suite against live accounts
         run: >-
@@ -483,12 +461,6 @@ jobs:
           test -c /dev/loop-control
           uname -r
 
-      - name: Enable shared compiler cache
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
-
       - name: Run the native data plane acceptance suites
         env:
           TILO_NATIVE_TIER1_DIR: ${{ runner.temp }}/native-tier1
@@ -517,12 +489,6 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           persist-credentials: false
-
-      - name: Enable shared compiler cache
-        run: |
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          bash tools/ci/sccache.sh prepare
 
       - name: Enforce Files collaboration UX in a fresh overlay
         run: >-
