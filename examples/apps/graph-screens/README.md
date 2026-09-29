@@ -13,7 +13,7 @@ Read:
 
 - `ui/main.json`, `ui/about.json`: the screens.
 - `src/components/project_summary.rs`: a component the graph mounts by name.
-- `tests/app.rs`: the component renders, every screen builds, graph edits have their own undo.
+- `tests/app.rs`: the component renders, every screen builds, the About link navigates through a published action, graph edits have their own undo.
 
 Start your own app from it:
 
