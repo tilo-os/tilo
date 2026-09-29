@@ -26,10 +26,15 @@ NoNewPrivileges=yes
 ProtectSystem=strict
 ProtectHome=yes
 PrivateTmp=yes
-PrivateNetwork=yes
+# No PrivateNetwork=: the audit checks the host's network sysctls, and a
+# private namespace has its own defaults (and no net.core.bpf_jit_harden).
+# RestrictAddressFamilies=AF_UNIX keeps it off the network.
 PrivateIPC=yes
 ProtectKernelTunables=yes
-ProtectKernelModules=yes
+# No ProtectKernelModules=: it hides /usr/lib/modules, and with it the running
+# kernel's config, so every compiled-option check failed. Loading a module
+# stays impossible: the capability bounding set is empty and @module is
+# filtered below.
 ProtectControlGroups=yes
 ProtectClock=yes
 ProtectHostname=yes
