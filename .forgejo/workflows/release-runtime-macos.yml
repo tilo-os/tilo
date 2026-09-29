@@ -44,6 +44,11 @@ jobs:
           CREDENTIAL_BROKER: ${{ vars.IMAGER_MACOS_CREDENTIAL_BROKER }}
           EXPECTED_TEAM_ID: ${{ vars.IMAGER_MAC_TEAM_ID }}
           EXPECTED_CERT_SHA256: ${{ vars.IMAGER_MAC_CERT_SHA256 }}
+          # Self-update (dist/macos/README.md, "Updates"). Without a feed the
+          # signed bundle updates only through its installer.
+          UPDATE_FEED: ${{ vars.TILO_RUNTIME_UPDATE_FEED }}
+          UPDATE_PUBLIC_KEY: ${{ vars.TILO_RUNTIME_UPDATE_PUBLIC_KEY }}
+          UPDATE_KEY: ${{ secrets.TILO_RUNTIME_UPDATE_KEY }}
         run: |
           set -euo pipefail
           case "${GITHUB_REF:-}" in
@@ -71,12 +76,26 @@ jobs:
             echo "TILO_MAC_EXPECTED_CERT_SHA256=$cert_fingerprint"
             echo "TILO_VERSION=$version"
           } >> "$GITHUB_ENV"
+          if [ -n "${UPDATE_FEED:-}" ]; then
+            test -n "${UPDATE_PUBLIC_KEY:-}" && test -n "${UPDATE_KEY:-}" || {
+              printf 'an update feed needs TILO_RUNTIME_UPDATE_PUBLIC_KEY and the TILO_RUNTIME_UPDATE_KEY secret\n' >&2
+              exit 1
+            }
+            key_file="$RUNNER_TEMP/tilo-runtime-update-key.json"
+            (umask 077 && printf '%s' "$UPDATE_KEY" > "$key_file")
+            {
+              echo "TILO_RUNTIME_UPDATE_FEED=$UPDATE_FEED"
+              echo "TILO_RUNTIME_UPDATE_PUBLIC_KEY=$UPDATE_PUBLIC_KEY"
+              echo "TILO_RUNTIME_UPDATE_KEY_FILE=$key_file"
+            } >> "$GITHUB_ENV"
+          fi
       - name: Build, sign and package Tilo.app
         run: dist/macos/build-app.sh target/dist-macos
       - name: Remove temporary macOS signing credentials
         if: always()
         run: |
           set +e
+          rm -f "$RUNNER_TEMP/tilo-runtime-update-key.json"
           if [ -n "${TILO_NOTARY_KEYCHAIN_PROFILE:-}" ]; then
             security delete-generic-password -s com.apple.gke.notary.tool \
               -a "$TILO_NOTARY_KEYCHAIN_PROFILE" 2>/dev/null
@@ -94,4 +113,12 @@ jobs:
             target/dist-macos/tilo-macos-universal.zip
             target/dist-macos/tilo-macos-universal.zip.sha256
             target/dist-macos/tilo.rb
+          if-no-files-found: error
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: env.TILO_RUNTIME_UPDATE_KEY_FILE != ''
+        with:
+          name: tilo-macos-update-feed
+          path: |
+            target/dist-macos/tilo-macos-update.json
+            target/dist-macos/tilo-macos-update.json.sig
           if-no-files-found: error

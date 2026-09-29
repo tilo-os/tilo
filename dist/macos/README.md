@@ -12,7 +12,9 @@ Tilo.app/Contents/
   Info.plist                          so.tilo.runtime, version from dist/VERSION
   MacOS/Tilo                          the store binary (CFBundleExecutable), universal
   MacOS/tilo-runtime                  the runtime, universal
+  MacOS/tilo-runtime-update           the self-updater, universal
   Library/LaunchAgents/so.tilo.runtime.plist
+  Library/LaunchAgents/so.tilo.runtime.update.plist
 ```
 
 Opening Tilo starts the store, which finds the sibling `tilo-runtime` (the
@@ -71,6 +73,50 @@ server-side claim policy currently admits only `release-imager.yml` on
 `imager-v*` tags (`docs/imager-release-operations.md`). Signed runtime
 builds need that policy to also admit `release-runtime-macos.yml` on
 protected `runtime-v*` tags.
+
+## Updates
+
+Apps update through the registry. On Linux the runtime comes from the
+distribution repositories. On macOS, `Contents/MacOS/tilo-runtime-update`
+(crate `runtime-update`) keeps `Tilo.app` itself current. The
+`so.tilo.runtime.update` agent runs it daily and is registered like
+`so.tilo.runtime` (see below). It:
+
+1. reads `TiloUpdateFeedURL` and `TiloUpdatePublicKey` from its own
+   `Info.plist`, which the bundle signature seals. A bundle without them prints
+   `this build updates through its installer` and does nothing, as every
+   ad-hoc and local build does.
+2. fetches the feed and `FEED.sig`, and verifies the detached Ed25519
+   signature over the feed's exact bytes with that key before reading it. The
+   feed is `{"version","url","sha256"}`, and the URL must be https.
+3. continues only for a numerically newer version. It then downloads the zip,
+   checks its SHA-256, and unpacks it beside the installed bundle.
+4. requires the new bundle to satisfy the installed bundle's own designated
+   requirement, `codesign --verify --deep --strict -R=…`: the same identifier
+   and Developer ID team. An ad-hoc bundle's requirement names its own
+   hash, so it never accepts a replacement.
+5. swaps the bundles with two renames, restores the old one if the second
+   fails, and `launchctl kickstart`s `so.tilo.runtime`.
+
+`tilo-runtime-update --check` reports without installing.
+
+Enabling updates for a signed build takes three settings. Configure them on
+the Forgejo repository, or export them to `build-app.sh`:
+
+| Setting | `build-app.sh` variable | Content |
+|---|---|---|
+| `vars.TILO_RUNTIME_UPDATE_FEED` | `TILO_RUNTIME_UPDATE_FEED` | the https URL the feed is served from |
+| `vars.TILO_RUNTIME_UPDATE_PUBLIC_KEY` | `TILO_RUNTIME_UPDATE_PUBLIC_KEY` | the key's public half, 64 lowercase hex digits |
+| `secrets.TILO_RUNTIME_UPDATE_KEY` | `TILO_RUNTIME_UPDATE_KEY_FILE` (a path) | the signing key, `{"secret_key_hex": …}` |
+
+Create the key with `tilo-runtime-bundle key generate --out KEY` and read the
+public half with `tilo-runtime-bundle key pubkey KEY`. With these set,
+`build-app.sh` also writes `tilo-macos-update.json` and its `.sig` for the
+stapled zip it just built, and the rendered cask declares `auto_updates true`.
+The signed workflow run uploads both files as the `tilo-macos-update-feed`
+artifact. Publishing is replacing the two files at the feed URL, after the
+zip is attached to the `runtime-vX.Y.Z` release. No host serves the feed
+yet: choosing one and creating the key are the remaining release steps.
 
 ## Homebrew
 
