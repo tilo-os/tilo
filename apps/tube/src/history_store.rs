@@ -365,19 +365,14 @@ fn owner_file_id(owner_id: &str) -> String {
     blake3::hash(owner_id.as_bytes()).to_hex().to_string()
 }
 
-/// Load the history file: a regular file, not a link, with no group or
-/// other access where the storage has permissions, and bounded.
+/// Load the history file: a regular file, not a link, and bounded. A file
+/// with group or other access, where the storage has permissions, is
+/// rewritten owner-only once it loads.
 fn read_private_document(dir: &Dir, name: &VPath) -> std::io::Result<AutoCommit> {
     let meta = blocking::metadata(dir, name).map_err(std::io::Error::other)?;
     if meta.kind != Kind::File || meta.symlink {
         return Err(std::io::Error::other(
             "history target is not a regular file",
-        ));
-    }
-    if meta.mode.is_some_and(|mode| mode & 0o077 != 0) {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::PermissionDenied,
-            "history file is readable by others",
         ));
     }
     if meta.len > MAX_HISTORY_BYTES {
@@ -387,7 +382,11 @@ fn read_private_document(dir: &Dir, name: &VPath) -> std::io::Result<AutoCommit>
     if u64::try_from(bytes.len()).map_err(std::io::Error::other)? > MAX_HISTORY_BYTES {
         return Err(std::io::Error::other("history read exceeds size limit"));
     }
-    AutoCommit::load(&bytes).map_err(std::io::Error::other)
+    let doc = AutoCommit::load(&bytes).map_err(std::io::Error::other)?;
+    if meta.mode.is_some_and(|mode| mode & 0o077 != 0) {
+        blocking::write_private(dir, name, &bytes).map_err(std::io::Error::other)?;
+    }
+    Ok(doc)
 }
 
 #[cfg(test)]
