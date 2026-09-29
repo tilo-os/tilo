@@ -145,13 +145,15 @@ pub async fn approve_one(host: &TestHost, root: &SigningKey, laptop: &Device) ->
     )
     .await
     .unwrap();
-    let mut attempts = 0u32;
+    let deadline = tilo_test_env::hang_deadline();
     let pending = loop {
         if let Some(pending) = approver.list_pending().await.unwrap().pop() {
             break pending;
         }
-        attempts = attempts.saturating_add(1);
-        assert!(attempts < 1000, "no pending certification request");
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no pending certification request"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     };
     let cert = issue_device_cert(
@@ -178,13 +180,19 @@ where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Option<T>>,
 {
-    for _ in 0..1500 {
+    // A loaded runner makes reconnects and replays slow, not wrong: wait on
+    // the shared hang bound rather than a count of polls.
+    let deadline = tilo_test_env::hang_deadline();
+    loop {
         if let Some(value) = probe().await {
             return value;
         }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "timed out waiting for {what}"
+        );
         tokio::time::sleep(Duration::from_millis(10)).await;
     }
-    panic!("timed out waiting for {what}");
 }
 
 pub fn start_peer(
