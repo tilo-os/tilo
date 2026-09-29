@@ -931,11 +931,22 @@ fn run() -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn disable_core_dumps() -> bool {
+    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 }
+}
+
+/// No portable equivalent; refusing keeps keys out of core dumps.
+#[cfg(not(target_os = "linux"))]
+fn disable_core_dumps() -> bool {
+    false
+}
+
 fn main() -> std::process::ExitCode {
     // Grant and endorsement commands may load human-root or device keys. Fail
     // before parsing them unless the process can make itself non-dumpable.
-    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
-    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+    if !disable_core_dumps() {
         eprintln!("tilo-image-trust: could not disable core dumps");
         return std::process::ExitCode::FAILURE;
     }
