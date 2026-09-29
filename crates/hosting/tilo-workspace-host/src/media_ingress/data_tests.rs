@@ -34,6 +34,54 @@ fn at(now: u64) -> web_time::SystemTime {
     web_time::SystemTime::UNIX_EPOCH + web_time::Duration::from_nanos(now)
 }
 
+/// A fresh request proof for `session`, valid for 30 s.
+pub(super) fn sign_proof(
+    session: ([u8; 16], [u8; 32]),
+    key: &ed25519_dalek::SigningKey,
+    method: &str,
+    target: &str,
+    body: &[u8],
+) -> Vec<u8> {
+    let now = tilo_delivery_protocol::clock::now_ns();
+    RequestProof::sign(
+        session.0,
+        session.1,
+        &Request::new(method, target, body).unwrap(),
+        now,
+        now + 30_000_000_000,
+        key,
+    )
+    .unwrap()
+    .encode()
+    .unwrap()
+}
+
+/// The browser's schedule for re-issuing a state chunk the host deferred
+/// (`503 temporarily-unavailable` while staging capacity is held): the same
+/// range with a fresh proof, 200 ms doubling to 2 s, within the hang bound.
+pub(super) struct Deferral {
+    deadline: std::time::Instant,
+    pause: Duration,
+}
+impl Deferral {
+    pub(super) fn new() -> Self {
+        Self {
+            deadline: tilo_test_env::hang_deadline(),
+            pause: Duration::from_millis(200),
+        }
+    }
+    /// The pause before re-issuing, or `None` when `status` and `body` are the
+    /// final reply.
+    pub(super) fn pause(&mut self, status: StatusCode, body: &[u8]) -> Option<Duration> {
+        let deferred = status == StatusCode::SERVICE_UNAVAILABLE
+            && body == b"temporarily-unavailable"
+            && std::time::Instant::now() < self.deadline;
+        let pause = self.pause;
+        self.pause = (pause * 2).min(Duration::from_secs(2));
+        deferred.then_some(pause)
+    }
+}
+
 /// Serve the actor side until the client future completes: accept requests,
 /// and run owner maintenance so handed-off work and held polls complete.
 pub(super) async fn drive<T>(
@@ -252,18 +300,13 @@ impl Harness {
     }
 
     pub(super) fn proof(&self, method: &str, target: &str, body: &[u8]) -> Vec<u8> {
-        let now = tilo_delivery_protocol::clock::now_ns();
-        RequestProof::sign(
-            self.session.0,
-            self.session.1,
-            &Request::new(method, target, body).unwrap(),
-            now,
-            now + 30_000_000_000,
+        sign_proof(
+            self.session,
             &self.f.owner.identity.native,
+            method,
+            target,
+            body,
         )
-        .unwrap()
-        .encode()
-        .unwrap()
     }
 
     pub(super) async fn signed(
@@ -292,23 +335,16 @@ impl Harness {
         )
         .unwrap();
         let body = frame(MessageType::StateItemChunk, &chunk.encode().unwrap());
-        // Deferred staging capacity answers a retryable 503; like the browser,
-        // re-issue the same range with a fresh proof after a doubling backoff.
-        let deadline = tilo_test_env::hang_deadline();
-        let mut pause = Duration::from_millis(200);
+        let mut deferral = Deferral::new();
         let bytes = loop {
             let (status, bytes) = self.signed("POST", "/peer/v3/state", body.clone()).await;
-            if status == StatusCode::SERVICE_UNAVAILABLE
-                && bytes == b"temporarily-unavailable"
-                && std::time::Instant::now() < deadline
-            {
+            if let Some(pause) = deferral.pause(status, &bytes) {
                 drive(
                     &mut self.ingress,
                     &mut self.f.owner,
                     tokio::time::sleep(pause),
                 )
                 .await;
-                pause = (pause * 2).min(Duration::from_secs(2));
                 continue;
             }
             assert_eq!(
