@@ -25,6 +25,8 @@ pub(crate) fn selected_with_clock() -> (
 }
 
 fn selected_store() -> tempfile::TempDir {
+    // The actual broker and runtime threads open this Store too.
+    crate::storage::test_journal::journal_this_process();
     // The workers install the managed sender under the Store root.
     let (directory, mut store, _) = crate::agent_owner_tests::enrolled_admitted();
     let mut peer = store.peer().unwrap();
@@ -34,6 +36,25 @@ fn selected_store() -> tempfile::TempDir {
     store.commit(state).unwrap();
     drop(store);
     directory
+}
+
+/// The broker thread opens the owner's Store on collaboration joins. Here, as
+/// in production, an unchanged Store is reused on any thread without file or
+/// directory barriers, so a slow disk cannot stall joins behind them.
+#[test]
+fn broker_thread_store_opens_take_no_durability_barrier() {
+    let (_directory, owner) = selected();
+    drop(owner.store().unwrap());
+    let reconciles = std::thread::spawn(move || {
+        let before = crate::storage::reconciles_for_test();
+        for _ in 0..3 {
+            drop(owner.store().unwrap());
+        }
+        crate::storage::reconciles_for_test() - before
+    })
+    .join()
+    .unwrap();
+    assert_eq!(reconciles, 0, "a read-only open paid durability barriers");
 }
 
 // A second host/owner or a legacy/no-owner broker must not stand in for the

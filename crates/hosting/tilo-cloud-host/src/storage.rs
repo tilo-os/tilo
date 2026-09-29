@@ -1032,9 +1032,23 @@ pub(crate) mod test_journal {
             FORCED.with(|forced| forced.set(self.0));
         }
     }
+    /// Every thread of this test process journals, as production does.
+    static PROCESS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     pub(crate) fn enabled() -> bool {
         FORCED.with(Cell::get)
+            || PROCESS.load(std::sync::atomic::Ordering::Acquire)
             || std::env::var_os("TILO_TEST_CLOUD_JOURNAL").is_some_and(|value| value == "1")
+    }
+    /// Run every Store of this test process in the production mode: journaled,
+    /// so a read-only open of an unchanged Store reuses what this process made
+    /// durable instead of paying file and directory barriers. Tests that run
+    /// the actual broker, runtime and HTTPS threads need it: those threads
+    /// cannot see [`with_journal`]'s thread-local switch, and on a slow disk
+    /// every broker-thread open would otherwise stall each collaboration join
+    /// behind barriers production never takes. Nextest runs every test in its
+    /// own process, so this never reaches another test.
+    pub(crate) fn journal_this_process() {
+        PROCESS.store(true, std::sync::atomic::Ordering::Release);
     }
     /// Stores written inside `operation` on this thread journal their commits.
     pub(crate) fn with_journal<T>(operation: impl FnOnce() -> T) -> T {
