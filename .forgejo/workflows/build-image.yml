@@ -1361,7 +1361,11 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
+          # The compile scope too: BuildKit's garbage collection can drop the
+          # compile step's local records before this step runs, and without
+          # them it compiles the Rust workspace again (run 48581).
           cache-from: |
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
@@ -1440,9 +1444,12 @@ jobs:
           # toolchain, Windows and media inputs), not only final-image layers.
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
-          # Nothing to import: the steps above left every stage in this
-          # builder, and each imported chain inflates BuildKit's cache
-          # normalization (moby/buildkit#6008).
+          # It exports nothing, so imports cost no cache normalization
+          # (moby/buildkit#6008); they cover local records BuildKit's garbage
+          # collection dropped since the steps above.
+          cache-from: |
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
           # No cache export: the rootfs and compile steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
