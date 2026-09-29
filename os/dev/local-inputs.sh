@@ -41,11 +41,13 @@ _li_published_rpms=""
 # published" would switch the base to a local snapshot and rebuild everything.
 if [ -z "${RPMS_REF:-}" ]; then
   _li_rc=0
-  _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>/dev/null)" || _li_rc=$?
+  _li_err="$(mktemp)"
+  _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>"$_li_err")" || _li_rc=$?
+  _li_why="$(tail -n 1 "$_li_err")"; rm -f "$_li_err"
   case "$_li_rc" in
     0) _li_published_rpms="$_li_resolved" ;;
-    3) "$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" --exists || true
-       die "local inputs: the RPM snapshot registry could not be asked (see above); retry, or set RPMS_REF" ;;
+    3) die "local inputs: the RPM snapshot registry could not be asked; retry, or set RPMS_REF
+  $_li_why" ;;
   esac
 fi
 _li_pin="$(sed -n "s/^$_li_pin_var=//p" "$TILO_OS_DIR/kernel-snapshot.env")"
