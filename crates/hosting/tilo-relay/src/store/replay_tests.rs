@@ -456,7 +456,10 @@ fn capture_replays_certificate_lineages_first() {
     fs::create_dir_all(lineage.join(name)).unwrap();
     fs::write(lineage.join("CURRENT"), name).unwrap();
     fs::write(lineage.join(name).join("checkpoint.delta"), frame(2, 8, 50)).unwrap();
-    assert_eq!(lineage_rank(&format!("{}-{}", hex::encode(author), hex::encode([9; 32]))), "1");
+    assert_eq!(
+        lineage_rank(&format!("{}-{}", hex::encode(author), hex::encode([9; 32]))),
+        "1"
+    );
 
     let mut snapshot = snapshot(&store);
     assert_eq!(prepare(&store, &mut snapshot).total_frames, 3);

@@ -2487,7 +2487,8 @@ impl ActorState {
             cert: Box::new(cert),
             revocations,
         };
-        let (Some((channel, _)), Ok(bytes)) = (retention(&hello, false), postcard::to_allocvec(&hello))
+        let (Some((channel, _)), Ok(bytes)) =
+            (retention(&hello, false), postcard::to_allocvec(&hello))
         else {
             return;
         };

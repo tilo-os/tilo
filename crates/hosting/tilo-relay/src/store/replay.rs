@@ -203,7 +203,9 @@ fn lineage_rank(lineage: &str) -> &'static str {
 /// [`lineage_rank`] of the retained lineage a store-relative source path
 /// lies under; `"1"` for anything else.
 fn source_rank(source: &Path) -> &'static str {
-    let mut parts = source.components().map(|part| part.as_os_str().to_string_lossy());
+    let mut parts = source
+        .components()
+        .map(|part| part.as_os_str().to_string_lossy());
     match (parts.next(), parts.next(), parts.next()) {
         (Some(root), Some(version), Some(lineage)) if root == "retained" && version == "v2" => {
             lineage_rank(&lineage)

@@ -834,13 +834,18 @@ mod tests {
         let errors = Arc::new(AtomicUsize::new(0));
         let subscriber = tracing_subscriber::registry().with(Errors(Arc::clone(&errors)));
         tracing::subscriber::with_default(subscriber, || {
-            rt.fanout_delta(&[6u8; 32], PeerRole::Device, &env_delta(57, [6u8; 32]), &payload, 1)
-                .unwrap();
+            rt.fanout_delta(
+                &[6u8; 32],
+                PeerRole::Device,
+                &env_delta(57, [6u8; 32]),
+                &payload,
+                1,
+            )
+            .unwrap();
         });
         assert_eq!(errors.load(Ordering::SeqCst), 0);
         assert!(rt.current_heads().is_empty());
     }
-
 
     fn env_delta(id: u64, author: [u8; 32]) -> Envelope {
         Envelope::Delta {
