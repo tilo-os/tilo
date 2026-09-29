@@ -1615,6 +1615,15 @@ impl CollaborationManager {
         }
     }
 
+    /// Whether the broker refused or failed an action-surface publication
+    /// since the last call; the caller must republish its surface.
+    pub(crate) fn take_action_surface_failed(&mut self) -> bool {
+        match &mut self.backend {
+            Backend::Transport(transport) => transport.take_action_surface_failed(),
+            Backend::Disabled(_) => false,
+        }
+    }
+
     pub(crate) fn stop_after_publication_failure(&mut self) {
         if let Backend::Transport(transport) = &self.backend {
             transport.fail_closed("pre-terminal document publication; outcome unknown");
