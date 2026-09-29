@@ -468,16 +468,24 @@ nix)
         nix_config+=$'\nfilter-syscalls = false'
     fi
     export NIX_CONFIG=$nix_config
+    # The checkout copied into this container need not carry the Git object
+    # store, which a git+file flake reads. Build a path flake over the tracked
+    # files, listed from the index alone.
+    stage=prepare-nix-source
+    nix_source=$(mktemp -d)
+    git -c safe.directory="$PWD" ls-files -z \
+        | tar --create --file=- --null --files-from=- | tar -x -C "$nix_source"
+    export TILO_NIX_FLAKE="path:$nix_source"
     stage=build-nix
-    nix build --print-build-logs .#tilo-session
+    nix build --print-build-logs "$TILO_NIX_FLAKE#tilo-session"
     stage=inspect-nix
     dist/ci/verify-nix-result.sh result "$arch"
     stage=build-nix-runtime
-    nix build --print-build-logs --out-link result-runtime .#tilo-runtime
+    nix build --print-build-logs --out-link result-runtime "$TILO_NIX_FLAKE#tilo-runtime"
     stage=inspect-nix-runtime
     dist/ci/verify-nix-runtime.sh result-runtime
     stage=check-nix-flake
-    nix flake check --no-build --all-systems
+    nix flake check --no-build --all-systems "$TILO_NIX_FLAKE"
     stage=export-nix-closure
     mapfile -t requisites < <(nix-store --query --requisites result)
     # Level 1 keeps the portable .nar.gz contract while avoiding a long,

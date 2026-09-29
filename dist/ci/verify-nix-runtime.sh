@@ -21,8 +21,9 @@ grep -Eq '/nix/store/[^/]+-bubblewrap-[^/]+/bin' "$private/tilo-launcher"
 grep -Eq '/nix/store/[^/]+-xdg-dbus-proxy-[^/]+/bin' "$private/tilo-launcher"
 
 # A Nix userspace has no GPU driver on its library path; lavapipe from the
-# flake's own nixpkgs renders the app headless.
-mesa=$(nix build --no-link --print-out-paths --inputs-from "$repo_root" nixpkgs#mesa)
+# flake's own nixpkgs renders the app headless. TILO_NIX_FLAKE names the flake
+# when the checkout is not a readable Git repository.
+mesa=$(nix build --no-link --print-out-paths --inputs-from "${TILO_NIX_FLAKE:-$repo_root}" nixpkgs#mesa)
 icd=$(find "$mesa/share/vulkan/icd.d" -name 'lvp_icd.*.json' -print -quit)
 [[ -n $icd ]] || { echo "nixpkgs mesa carries no lavapipe ICD" >&2; exit 1; }
 TILO_RUNTIME_SMOKE_USER=current TILO_RUNTIME_DIR="$private" \
