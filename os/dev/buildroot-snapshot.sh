@@ -32,17 +32,36 @@ common_inputs=(
 kernel_inputs=(os/Containerfile.kernel-buildroot)
 wpe_inputs=(
   os/Containerfile.wpe-buildroot
-  os/external-assets/github-assets.tsv
-  os/dev/cache-github-assets.sh
 )
 wpe_stage_inputs=(
   os/Containerfile.wpe
   os/dev/build-wpe.sh
   os/dev/wpe-stage-key.sh
   os/wpe-buildroot-snapshot.env
-  os/external-assets/github-assets.tsv
   os/dev/cache-github-assets.sh
 )
+
+# The asset manifest contains many unrelated OS and Windows downloads. Only
+# these three pinned archives enter Containerfile.wpe; unrelated rows must not
+# start another hour-long signed stage build or reject its in-flight promotion.
+wpe_source_records() {
+  git show "$1:os/external-assets/github-assets.tsv" | awk -F '\t' '
+    BEGIN {
+      names[1]="libwpe-1.16.3.tar.xz"
+      names[2]="wpebackend-fdo-1.16.1.tar.xz"
+      names[3]="wpewebkit-2.52.6.tar.xz"
+    }
+    $2 == names[1] || $2 == names[2] || $2 == names[3] {
+      rows[$2]=$0; count[$2]++
+    }
+    END {
+      for (i=1; i<=3; i++) {
+        if (count[names[i]] != 1) exit 1
+        print rows[names[i]]
+      }
+    }
+  '
+}
 
 kind_vars() {
   case "$1" in
@@ -73,12 +92,18 @@ arch_key() {
 }
 
 changed() {
-  local before=$1 after=$2 kinds=() kind
+  local before=$1 after=$2 kinds=() kind before_wpe after_wpe
   for kind in kernel wpe wpe-stage; do
     kind_vars "$kind"
     if [[ ! $before =~ ^[0-9a-f]{40}$ || $before =~ ^0+$ ]] \
        || ! git diff --quiet "$before" "$after" -- "${inputs[@]}"; then
       kinds+=("\"$kind\"")
+    elif [ "$kind" = wpe-stage ]; then
+      before_wpe="$(wpe_source_records "$before")" \
+        || die "invalid WPE source records at $before"
+      after_wpe="$(wpe_source_records "$after")" \
+        || die "invalid WPE source records at $after"
+      [ "$before_wpe" = "$after_wpe" ] || kinds+=("\"$kind\"")
     fi
   done
   local IFS=,
@@ -184,6 +209,15 @@ promote() {
   git fetch --no-tags origin main
   if ! git diff --quiet "$GITHUB_SHA..origin/main" -- "${inputs[@]}"; then
     die "$label buildroot inputs changed after this run started; refusing stale promotion"
+  fi
+  if [ "$kind" = wpe-stage ]; then
+    local original_wpe current_wpe
+    original_wpe="$(wpe_source_records "$GITHUB_SHA")" \
+      || die "invalid WPE source records at $GITHUB_SHA"
+    current_wpe="$(wpe_source_records origin/main)" \
+      || die "invalid WPE source records at origin/main"
+    [ "$original_wpe" = "$current_wpe" ] \
+      || die "WPE source records changed after this run started; refusing stale promotion"
   fi
   git checkout --detach origin/main
   python3 os/dev/open-snapshot-pr.py pins "$promote_kind" --x86-ref "$x86" --arm-ref "$arm" > "$pins"
