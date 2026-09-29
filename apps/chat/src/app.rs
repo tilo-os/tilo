@@ -1038,13 +1038,16 @@ impl ChatApp {
     }
 
     /// Show the rooms and channels the framework resource already holds.
-    /// An empty projection does not wipe a workspace that has not been published yet.
+    /// An empty projection does not wipe unpublished local rooms or messages.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ChatState) {
-        if state.workspaces.is_empty() && state.channels.is_empty() {
-            return;
+        if !state.workspaces.is_empty() {
+            self.workspaces.clone_from(&state.workspaces);
         }
-        self.workspaces.clone_from(&state.workspaces);
-        self.channels.clone_from(&state.channels);
+        if !state.channels.is_empty() {
+            self.channels.clone_from(&state.channels);
+        }
+        // Messages stay on the live sync path — never clear them from an
+        // empty resource projection that has not caught up yet.
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
@@ -1053,6 +1056,15 @@ impl ChatApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Chat>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// The context Ctrl+K needs to build Chat's resource tree: the active
@@ -3951,14 +3963,12 @@ impl ui::search::capability::SearchSource for ChatApp {
 }
 
 impl ui::resources::PublishesResources for ChatApp {
-    /// The resource tree Chat currently has open — the active workspace, its
-    /// channels, and the open channel's messages — each exporting the actions
-    /// Ctrl+K offers. Delegates to the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`], the same builder the affordance covenant tests
-    /// drive. Recomputed each frame; empty until a workspace is selected.
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// channel/message Document ops ride [`tilo_resource::publish`]; this
+    /// returns only live extras — never a second `chat.workspace` Document door.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
     }
@@ -3967,13 +3977,16 @@ impl ui::resources::PublishesResources for ChatApp {
     }
     /// The tree a delivered invocation resolves against for an agent task
     /// participant: the same resources, authored as that participant (its
-    /// posts carry it as author and its display name). Chat keeps no other
-    /// per-participant view state.
+    /// posts carry it as author and its display name). When hosted, Document
+    /// ops stay on ResourceRoot's publish — do not republish a second chat root.
     fn resources_for(
         &self,
         participant: Option<&tilo_actions::ParticipantId>,
         doc: &AutoCommit,
     ) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
         match participant.and_then(|p| self.participant_ctx(p)) {
             Some(ctx) => crate::actions::provide_resources(&ctx, doc),
             None => ui::resources::resources(self, doc),
