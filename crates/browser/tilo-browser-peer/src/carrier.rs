@@ -17,7 +17,7 @@ use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
     API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, FEATURE_RESUME, LiveGrant,
-    MAX_POLL_MS, SessionChallenge, SessionFinish, decode_grant,
+    MAX_POLL_MS, MAX_REQUEST_BYTES, SessionChallenge, SessionFinish, decode_grant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -301,6 +301,15 @@ impl Drop for HttpsLink {
     }
 }
 
+/// Encoded envelopes one `/send` carries: the host refuses a body past
+/// [`MAX_REQUEST_BYTES`], and the batch's length prefix needs a few bytes.
+const SEND_BATCH_BYTES: usize = MAX_REQUEST_BYTES.saturating_sub(64 * 1024);
+
+fn encoded_len(envelope: &Envelope) -> usize {
+    postcard::serialize_with_flavor(envelope, postcard::ser_flavors::Size::default())
+        .unwrap_or(usize::MAX)
+}
+
 async fn send_pump(
     client: Arc<dyn HttpClient>,
     session: String,
@@ -308,16 +317,29 @@ async fn send_pump(
     end: watch::Sender<bool>,
 ) {
     let mut ended = end.subscribe();
+    // An envelope that did not fit the previous batch opens the next.
+    let mut carried = None;
     loop {
-        let first = tokio::select! {
-            envelope = outgoing.recv() => envelope,
-            _ = ended.wait_for(|ended| *ended) => None,
+        let first = if let Some(envelope) = carried.take() {
+            Some(envelope)
+        } else {
+            tokio::select! {
+                envelope = outgoing.recv() => envelope,
+                _ = ended.wait_for(|ended| *ended) => None,
+            }
         };
         let Some(first) = first else {
             return;
         };
+        let mut bytes = encoded_len(&first);
         let mut batch = vec![first];
         while let Ok(next) = outgoing.try_recv() {
+            let len = encoded_len(&next);
+            if bytes.saturating_add(len) > SEND_BATCH_BYTES {
+                carried = Some(next);
+                break;
+            }
+            bytes = bytes.saturating_add(len);
             batch.push(next);
         }
         let Ok(body) = postcard::to_allocvec(&batch) else {
