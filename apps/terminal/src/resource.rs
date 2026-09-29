@@ -39,6 +39,20 @@ pub enum TerminalAction {
     RegisterLink { id: u16, url: String },
     /// Write the shared pane id when no peer has claimed it yet.
     ClaimPane { pane_id: String },
+    /// Record one content-addressed image placement on the shared session.
+    PlaceImage {
+        hash: String,
+        mime: String,
+        byte_len: u64,
+        row: u64,
+        col: u64,
+        columns: u64,
+        rows: u64,
+        pixel_width: u64,
+        pixel_height: u64,
+        protocol_id: Option<u64>,
+        alternate_screen: bool,
+    },
 }
 
 impl Action for TerminalAction {
@@ -96,6 +110,50 @@ impl Action for TerminalAction {
                     return Ok(());
                 }
                 doc.put(ROOT, "terminal_pane_id", pane_id.as_str())?;
+            }
+            Self::PlaceImage {
+                hash,
+                mime,
+                byte_len,
+                row,
+                col,
+                columns,
+                rows,
+                pixel_width,
+                pixel_height,
+                protocol_id,
+                alternate_screen,
+            } => {
+                if hash.is_empty()
+                    || hash.len() > 128
+                    || mime.is_empty()
+                    || mime.len() > 64
+                    || *columns == 0
+                    || *rows == 0
+                    || *columns > 1024
+                    || *rows > 1024
+                {
+                    return Err(ActionError::Refused("image placement is invalid".into()));
+                }
+                let images = match doc.get(ROOT, "terminal_images")? {
+                    Some((_, existing)) => existing,
+                    None => doc.put_object(ROOT, "terminal_images", automerge::ObjType::List)?,
+                };
+                let index = doc.length(&images);
+                let placement = doc.insert_object(&images, index, automerge::ObjType::Map)?;
+                doc.put(&placement, "hash", hash.as_str())?;
+                doc.put(&placement, "mime", mime.as_str())?;
+                doc.put(&placement, "byte_len", *byte_len)?;
+                doc.put(&placement, "row", *row)?;
+                doc.put(&placement, "col", *col)?;
+                doc.put(&placement, "columns", *columns)?;
+                doc.put(&placement, "rows", *rows)?;
+                doc.put(&placement, "pixel_width", *pixel_width)?;
+                doc.put(&placement, "pixel_height", *pixel_height)?;
+                doc.put(&placement, "alternate_screen", *alternate_screen)?;
+                if let Some(protocol_id) = protocol_id {
+                    doc.put(&placement, "protocol_id", *protocol_id)?;
+                }
             }
         }
         Ok(())
@@ -373,6 +431,32 @@ mod tests {
             read_string(&doc, "terminal_pane_id").as_deref(),
             Some("first")
         );
+    }
+
+    #[test]
+    fn place_image_records_a_content_addressed_descriptor() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        TerminalAction::PlaceImage {
+            hash: "blake3:abc".into(),
+            mime: "image/png".into(),
+            byte_len: 12,
+            row: 1,
+            col: 2,
+            columns: 8,
+            rows: 4,
+            pixel_width: 64,
+            pixel_height: 32,
+            protocol_id: Some(7),
+            alternate_screen: false,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let images = doc
+            .get(automerge::ROOT, "terminal_images")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        assert_eq!(doc.length(&images), 1);
     }
 }
 

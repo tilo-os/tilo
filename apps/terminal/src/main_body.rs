@@ -5794,36 +5794,20 @@ impl TerminalPerformer<'_> {
                 return;
             }
         };
-        let index = self.state.length(&self.images_id);
-        let Ok(placement) = self
-            .state
-            .insert_object(&self.images_id, index, ObjType::Map)
-        else {
-            return;
+        let action = crate::resource::TerminalAction::PlaceImage {
+            hash,
+            mime: image.mime.to_string(),
+            byte_len: image.bytes.len() as u64,
+            row: self.absolute_y() as u64,
+            col: self.cursor_x as u64,
+            columns: u64::from(image.columns),
+            rows: u64::from(image.rows),
+            pixel_width: u64::from(image.pixel_width),
+            pixel_height: u64::from(image.pixel_height),
+            protocol_id: image.protocol_id.map(u64::from),
+            alternate_screen: *self.alt_active,
         };
-        let _ = self.state.put(&placement, "hash", hash);
-        let _ = self.state.put(&placement, "mime", image.mime);
-        let _ = self
-            .state
-            .put(&placement, "byte_len", image.bytes.len() as u64);
-        let _ = self.state.put(&placement, "row", self.absolute_y() as u64);
-        let _ = self.state.put(&placement, "col", self.cursor_x as u64);
-        let _ = self
-            .state
-            .put(&placement, "columns", u64::from(image.columns));
-        let _ = self.state.put(&placement, "rows", u64::from(image.rows));
-        let _ = self
-            .state
-            .put(&placement, "pixel_width", u64::from(image.pixel_width));
-        let _ = self
-            .state
-            .put(&placement, "pixel_height", u64::from(image.pixel_height));
-        let _ = self
-            .state
-            .put(&placement, "alternate_screen", *self.alt_active);
-        if let Some(id) = image.protocol_id {
-            let _ = self.state.put(&placement, "protocol_id", u64::from(id));
-        }
+        let _ = ui::tilo_actions::Action::apply(&action, &mut self.state);
     }
 
     fn csi_first(p: &vte::Params) -> u16 {
