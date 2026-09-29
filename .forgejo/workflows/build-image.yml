@@ -853,6 +853,11 @@ jobs:
       # Build / OS dev seals no composefs and runs neither gate; serialized, its
       # pulls, layer extraction and small stages queued behind each other on
       # the critical path, so it lets four operations run at once.
+      #
+      # No garbage collection: the builder lives for this job only, and its
+      # default policy (keep 40% of the disk free) pruned the compile step's
+      # results between steps, so the rootfs step compiled the workspace
+      # again (runs 48581, 49019, 49047).
       - name: Set up buildx (docker-container driver for cache export)
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
@@ -861,6 +866,7 @@ jobs:
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = ${{ github.event_name == 'workflow_call' && 4 || 1 }}
+              gc = false
 
       # Reads only the snapshot's metadata layer; BuildKit pulls the package
       # layers when a stage actually mounts them.
