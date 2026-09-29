@@ -297,7 +297,7 @@ mod asynchronous {
                 frame = reader.read_frame_async() => {
                     frames.push(frame.unwrap().unwrap().to_vec());
                 }
-                () = std::future::ready(()) => interrupted += 1,
+                () = std::future::ready(()) => interrupted = interrupted.saturating_add(1),
             }
         }
         assert!(interrupted > 20, "the read was dropped mid-frame");
