@@ -330,7 +330,7 @@ COPY os/app-runtime /build/os/app-runtime
 # copy. Builder and final share BASE_REF, so their glibc matches by
 # construction. Bump deliberately: re-run `mirror-base`, commit the new
 # BASE_REF, re-run `snapshot-rpms`.
-FROM ${BASE_REF} AS builder
+FROM ${BASE_REF} AS builder-base
 
 # Rust toolchain + the C/-devel deps the workspace's *-sys crates link or build
 # against. Superset of the my-distrobox dev deps (repo CLAUDE.md) plus the base
@@ -481,6 +481,11 @@ COPY --from=wpe-builder /wpe/ /
 RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     --mount=type=bind,source=os/scripts/check-wpe-runtime.sh,target=/run/tilo-check-wpe-runtime.sh,ro \
     bash /run/tilo-check-wpe-runtime.sh "the builder stage's dnf list (and its mirror, builder-packages.txt)"
+
+# Everything above is the build toolchain: it changes with packages, the pinned
+# tools and the browser engine, not with the workspace, and CI caches it on its
+# own (the compile below goes through the compiler cache instead).
+FROM builder-base AS builder
 
 # Copy the frequently changing workspace only after the large, stable WPE
 # overlay. This keeps source-only iterations from re-importing the browser
