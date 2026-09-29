@@ -379,6 +379,36 @@ fn push_continuity_environment(argv: &mut Vec<String>) {
             value,
         ]);
     }
+    // Where an unattended session's Save chooser answers. It only names a
+    // destination: whether the app may write there is still its file grants'.
+    if let Ok(value) = std::env::var(SAVE_DIRECTORY_ENV)
+        && is_plain_absolute_path(&value)
+    {
+        argv.extend([
+            "--setenv".to_string(),
+            SAVE_DIRECTORY_ENV.to_string(),
+            value,
+        ]);
+    }
+}
+
+/// The session's save directory for an unattended guest (see
+/// `tilo_dialogs::portal::SAVE_DIRECTORY_ENV`).
+const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
+
+/// An absolute path of ordinary components, bounded and free of control
+/// characters.
+fn is_plain_absolute_path(value: &str) -> bool {
+    let path = std::path::Path::new(value);
+    value.len() <= 4096
+        && !value.chars().any(char::is_control)
+        && path.is_absolute()
+        && path.components().all(|component| {
+            matches!(
+                component,
+                std::path::Component::RootDir | std::path::Component::Normal(_)
+            )
+        })
 }
 
 fn push_app_metadata(argv: &mut Vec<String>, manifest: &MinimalManifest, payload_mount: &Path) {
@@ -1250,6 +1280,26 @@ mod tests {
         reason = "each phase keeps one former test's body verbatim"
     )]
     fn argv_exports_only_validated_launch_metadata() {
+        // Phase `argv_forwards_only_a_plain_save_directory`.
+        {
+            for (value, forwarded) in [
+                ("/data/out", true),
+                ("/data/../etc", false),
+                ("relative/out", false),
+                ("/data/out\n", false),
+            ] {
+                let mut argv = Vec::new();
+                let mut env = tilo_test_env::ScopedEnv::new();
+                env.set(SAVE_DIRECTORY_ENV, value);
+                push_continuity_environment(&mut argv);
+                assert_eq!(
+                    argv.windows(3)
+                        .any(|w| w[0] == "--setenv" && w[1] == SAVE_DIRECTORY_ENV),
+                    forwarded,
+                    "{value:?}"
+                );
+            }
+        }
         // Phase `argv_forwards_the_complete_validated_continuation_envelope`.
         {
             let mut env = tilo_test_env::ScopedEnv::new();
