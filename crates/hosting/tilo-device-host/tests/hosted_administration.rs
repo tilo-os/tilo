@@ -386,3 +386,47 @@ fn a_room_with_assigned_profiles_still_admits_people() {
         )
         .unwrap();
 }
+
+#[test]
+fn an_administrator_grants_and_revokes_an_app_another_apps_action() {
+    let (_temp, mut owner, service, session) = hosted_with_session();
+    let grant = |lifetime: &str| DesktopCommand::GrantAppAction {
+        app: "so.tilo.notes".into(),
+        target_app: "so.tilo.word-processor".into(),
+        action: "read-text".into(),
+        lifetime: lifetime.into(),
+    };
+    let granted = |owner: &SessionOwner| {
+        room_capabilities(owner)
+            .into_iter()
+            .filter(|cap| {
+                cap.subject == collab_types::caps::Subject::app("so.tilo.notes")
+                    && matches!(cap.scope, collab_types::caps::Scope::Action { .. })
+            })
+            .count()
+    };
+    let editor = command(&owner, &session, grant("always"));
+    assert!(
+        owner.commit_desktop_command(&editor).is_err(),
+        "an editor grants nothing"
+    );
+
+    make_administrator(&mut owner, &service, &session);
+    let hosted_session = command(&owner, &session, grant("session"));
+    assert!(owner.commit_desktop_command(&hosted_session).is_err());
+    let always = command(&owner, &session, grant("always"));
+    owner.commit_desktop_command(&always).unwrap();
+    assert_eq!(granted(&owner), 1);
+
+    let revoking = command(
+        &owner,
+        &session,
+        DesktopCommand::RevokeAppAction {
+            app: "so.tilo.notes".into(),
+            target_app: "so.tilo.word-processor".into(),
+            action: "read-text".into(),
+        },
+    );
+    owner.commit_desktop_command(&revoking).unwrap();
+    assert_eq!(granted(&owner), 0);
+}

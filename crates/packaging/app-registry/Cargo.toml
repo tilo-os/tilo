@@ -11,7 +11,7 @@ name = "app_registry"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../../crates/system/atomic-file" }
 tilo-app-package = { path = "../tilo-app-package" }
@@ -26,7 +26,7 @@ iroh-blobs.workspace = true
 # blob is fetched over iroh. Both async.
 tokio = { workspace = true, features = ["macros", "fs", "io-util", "time", "sync"] }
 # rustls-tls only (no openssl / native-tls) to match the rest of the tree.
-tilo-net = { path = "../../system/tilo-net", features = ["http"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["http"] }
 
 serde.workspace = true
 serde_json.workspace = true

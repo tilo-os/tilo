@@ -181,7 +181,8 @@ pub struct SizeReport {
 }
 
 impl SizeReport {
-    /// Measures every regular file under `payload`.
+    /// Measures every regular file under `payload`, for a package the registry
+    /// accepts up to `limit` bytes of ([`tilo_app_package::platform_size_limit`]).
     ///
     /// # Errors
     ///
@@ -191,6 +192,7 @@ impl SizeReport {
         entrypoints: &[PathBuf],
         archive: u64,
         budget: Budget,
+        limit: u64,
     ) -> Result<Self> {
         let mut files = Vec::new();
         let mut pending = vec![PathBuf::new()];
@@ -224,7 +226,7 @@ impl SizeReport {
         Ok(Self {
             files,
             archive,
-            limit: tilo_app_package::MAX_APP_TAPP_BYTES,
+            limit,
             budget,
         })
     }

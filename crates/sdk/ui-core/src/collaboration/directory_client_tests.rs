@@ -8,6 +8,7 @@ struct DirectoryCaptures {
     eager_invocations: usize,
     unsupported: bool,
     pending_method: Option<&'static str>,
+    invoke_delay: Option<std::time::Duration>,
     status_calls: Vec<u64>,
 }
 
@@ -121,7 +122,13 @@ macro_rules! directory_fake_methods {
             if self.captures.lock().unwrap().directory.pending_method == Some("invoke") {
                 return Promise::from_future(std::future::pending());
             }
-            Promise::from_future(async move { result })
+            let delay = self.captures.lock().unwrap().directory.invoke_delay;
+            Promise::from_future(async move {
+                if let Some(delay) = delay {
+                    tokio::time::sleep(delay).await;
+                }
+                result
+            })
         }
         fn published_invocation_status(
             self: Rc<Self>,
@@ -316,6 +323,9 @@ fn sdk_lazy_directory_queue_rejects_retained_capacity_before_rpc() {
 }
 
 fn pending_directory_rpc_releases_lane(method: &'static str) {
+    if method == "invoke" {
+        super::directory_client::set_test_admission_timeout(Duration::from_secs(2));
+    }
     let (mut manager, captures, thread) = directory_manager(false);
     captures.lock().unwrap().directory.pending_method = Some(method);
     let request = match method {
@@ -413,4 +423,36 @@ fn sdk_directory_deadline_pending_resolve_releases_status_lane() {
 #[test]
 fn sdk_directory_deadline_pending_invoke_is_unknown_and_releases_status_lane() {
     pending_directory_rpc_releases_lane("invoke");
+}
+
+/// Admission answered after longer than any short RPC bound (a durable
+/// journal on a loaded host) is a definite result, never an unknown outcome.
+#[test]
+fn sdk_slow_admission_answer_is_definite() {
+    let (mut manager, captures, thread) = directory_manager(false);
+    captures.lock().unwrap().directory.invoke_delay = Some(Duration::from_secs(3));
+    assert!(manager.send(resolved_request(30)));
+    let mut result = None;
+    tilo_test_env::wait_until("the slow admission answer", || {
+        for event in manager.poll() {
+            if let CollabEvent::PublishedInvocationResult {
+                request_id: 30,
+                result: answer,
+            } = event
+            {
+                result = Some(answer);
+            }
+        }
+        result.is_some()
+    });
+    drop(manager);
+    thread.join().unwrap();
+    let (id, update) = result
+        .unwrap()
+        .expect("a slow admission is answered definitely");
+    assert_eq!(id, 47);
+    assert!(matches!(
+        update,
+        tilo_actions::InvocationUpdate::Accepted { .. }
+    ));
 }

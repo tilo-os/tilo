@@ -118,7 +118,7 @@ async fn committed_echo_refuses_uncommitted_factory_body_through_the_signing_doo
     let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let mut echo = None;
     let (complete, result) = pending.0.apply_scoped_fenced(
-        crate::owner_commit::execution_deadline(),
+        crate::owner_commit::turn_budget(),
         |route, _, mutation, authorization| {
             let authorization = authorization.expect("genuine SDK startup custody");
             echo = Some(

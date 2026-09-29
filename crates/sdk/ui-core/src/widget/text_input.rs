@@ -4650,14 +4650,40 @@ impl crate::undo::UndoPoints for TextInput {
 }
 
 impl crate::presence::capability::PublishesPresence for TextInput {
+    /// The widget's path, else the document field it edits (an input bound
+    /// with [`TextInput::with_on_change_path`] or
+    /// [`TextInput::from_document_string`] has no structural path), so peers
+    /// editing the same field share carets.
     fn presence_key(&self) -> Option<PresenceKey> {
-        if self.path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
+        if !self.path.is_empty() {
+            return Some(PresenceKey::Widget {
                 path: self.path.clone(),
-            })
+            });
         }
+        (!self.on_change_path.is_empty()).then(|| PresenceKey::Widget {
+            path: vec![PathSegment::Field(self.on_change_path.clone())],
+        })
+    }
+
+    /// The caret, or the selection when one is extended, while focused. A
+    /// secret field publishes nothing.
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        if !self.is_focused || self.secret {
+            return None;
+        }
+        let key = self.presence_key()?;
+        let payload = match self.selection_anchor {
+            Some(anchor) if anchor != self.cursor_pos => {
+                crate::collaboration::PresencePayload::Selection {
+                    start: anchor.min(self.cursor_pos),
+                    end: anchor.max(self.cursor_pos),
+                }
+            }
+            _ => crate::collaboration::PresencePayload::Caret {
+                pos: self.cursor_pos,
+            },
+        };
+        Some((key, payload))
     }
 }
 

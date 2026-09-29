@@ -1,12 +1,14 @@
 # Publish a Tilo app
 
-Getting an app from `tilo-app package` into the store takes one key, one
-application for the namespace your app ids live in, and then one command per
-release:
+Getting an app from `tilo-app package` into the store takes the CLI, one key,
+one application for the namespace your app ids live in, and then one command
+per release ([Build a Tilo app](app-development.md) covers the app itself):
 
 ```bash
-tilo-app keys new                                  # once
-tilo-app apply --domain example.com --contact you@example.com   # once
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli   # once
+tilo-app new reading-list --id org.example.reading-list && cd reading-list
+tilo-app keys new                                                # once
+tilo-app apply --domain example.com --contact you@example.com    # once
 tilo-app package
 tilo-app publish
 ```
@@ -76,6 +78,7 @@ tilo-app package --platform linux --arch x86_64    # other Linux desktops
 tilo-app package --platform macos --arch aarch64   # macOS
 tilo-app package --platform windows --arch x86_64  # Windows
 tilo-app package --platform web                    # the browser
+tilo-app package --platform android                # Android phones and tablets
 tilo-app publish
 ```
 
@@ -103,6 +106,15 @@ The core itself is Tilo's to publish (`so.tilo.runtime.web`); an app never
 ships one. That core exports what Tilo's own web apps import, so a module
 that needs more of a shared crate than they do does not link in it yet.
 
+An Android package, `dist/<package>-android-<arch>.tapp`, carries the
+release-signed APK as `bin/<package>.apk`; the `.apk` and the `.aab` beside it
+are for sideloading and for Google Play. Its signed `[target]` names the
+`android` platform and the architecture. The registry lists it beside the app's other
+builds and Tilo OS clients never install it. The APK is signed with your
+Android release key, separate from the publisher key and kept beside it
+([Android signing](android.md#signing)); keep both, since Android refuses an
+update signed with another key.
+
 ## From CI
 
 ```bash
@@ -123,10 +135,13 @@ signed with a throwaway key and are never published. Set the variable
 `TILO_REGISTRY` to publish to another registry.
 
 On GitHub the matrix covers Tilo OS, Linux, Windows and macOS, each on x86_64 and
-aarch64, and the web, using GitHub's hosted runners. Forgejo and Gitea hosts
-provide Linux runners, so their workflow builds Tilo OS for x86_64 and the web
-and lists the other builds commented out: enable each one you have a runner
-for. The Tilo OS and web jobs run in `registry.tilo.so/tilo/tilo-builder`, the
+aarch64, the web and Android (aarch64), using GitHub's hosted runners. Forgejo
+and Gitea hosts provide Linux runners, so their workflow builds Tilo OS for
+x86_64, the web and Android and lists the other builds commented out: enable
+each one you have a runner for. The Android job installs the Android SDK with
+`tilo-app setup android` and caches it; set the `TILO_ANDROID_KEYSTORE`
+(base64) and `TILO_ANDROID_KEYSTORE_PASS` secrets to sign with your own
+release key. The Tilo OS, web and Android jobs run in `registry.tilo.so/tilo/tilo-builder`, the
 image Tilo itself builds in, so a package built in CI links the same system
 libraries and CPU floor as the OS it runs on, and the web job finds the web
 toolchain there. Each job installs `tilo-app` from the Tilo revision your

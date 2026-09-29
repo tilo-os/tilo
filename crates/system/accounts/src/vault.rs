@@ -79,6 +79,10 @@ const FORMAT: VaultFormat = VaultFormat {
 pub struct SecretVault {
     /// The vault directory (`.../tilo/accounts/vault`).
     dir: PathBuf,
+    /// Set where there is no native config directory (a browser page): the
+    /// vault lives in the shared config location's storage instead, its key
+    /// in the platform's secret store.
+    page: Option<tilo_files::Dir>,
     /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
     custody: SecretCustody,
@@ -105,11 +109,15 @@ impl SecretVault {
                 let dir = crate::vault_dir_in(&root);
                 Self::open_at(dir, SecretCustody::for_session())
             }
-            None => Self {
-                dir: PathBuf::from("accounts/vault"),
-                entries: BTreeMap::new(),
-                custody: explicit_root_custody(),
-                load_error: Some("user config directory unavailable".into()),
+            None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
+                Ok(page) => Self::open_page(page),
+                Err(error) => Self {
+                    dir: PathBuf::from("accounts/vault"),
+                    page: None,
+                    entries: BTreeMap::new(),
+                    custody: explicit_root_custody(),
+                    load_error: Some(format!("user config directory unavailable: {error}")),
+                },
             },
         }
     }
@@ -122,6 +130,23 @@ impl SecretVault {
         Self::open_at(dir, custody)
     }
 
+    fn open_page(page: tilo_files::Dir) -> Self {
+        let (entries, load_error) = match load_page_entries(&page) {
+            Ok(entries) => (entries, None),
+            Err(error) => {
+                tracing::warn!(%error, "accounts: vault unavailable; writes disabled until reopen");
+                (BTreeMap::new(), Some(error))
+            }
+        };
+        Self {
+            dir: PathBuf::from("accounts/vault"),
+            page: Some(page),
+            entries,
+            custody: SecretCustody::System,
+            load_error,
+        }
+    }
+
     fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
         let (entries, load_error) = match load_entries(&dir, custody) {
             Ok(entries) => (entries, None),
@@ -132,6 +157,7 @@ impl SecretVault {
         };
         Self {
             dir,
+            page: None,
             entries,
             custody,
             load_error,
@@ -201,6 +227,9 @@ impl SecretVault {
                 "vault recovery required; restore access and reopen: {error}"
             ));
         }
+        if let Some(page) = &self.page {
+            return self.save_page(page);
+        }
         // Revalidate the on-disk vault before replacing it, including failures
         // that appeared after this instance was opened.
         load_entries(&self.dir, self.custody)?;
@@ -217,6 +246,47 @@ impl SecretVault {
         atomic_file::write(&self.dir.join("vault.enc"), &blob)
             .map_err(|error| format!("could not write credential vault: {error}"))
     }
+}
+
+impl SecretVault {
+    fn save_page(&self, page: &tilo_files::Dir) -> Result<(), String> {
+        load_page_entries(page)?;
+        let key = FORMAT
+            .load_or_create_system_key(page_vault_exists(page))
+            .ok_or_else(|| "no vault key is available".to_string())?;
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&self.entries)
+                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+        );
+        let blob = seal(&key, &plaintext)
+            .ok_or_else(|| "credential vault encryption failed".to_string())?;
+        tilo_files::blocking::write_atomic(page, &page_vault(), &blob)
+            .map_err(|error| format!("could not write credential vault: {error}"))
+    }
+}
+
+fn page_vault() -> tilo_files::VPath {
+    tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
+}
+
+fn page_vault_exists(page: &tilo_files::Dir) -> bool {
+    tilo_files::blocking::metadata(page, &page_vault()).is_ok()
+}
+
+/// As [`load_entries`], for a vault in page storage.
+fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
+    let blob = match tilo_files::blocking::read(page, &page_vault()) {
+        Ok(blob) => blob,
+        Err(tilo_files::FsError::NotFound) => return Ok(BTreeMap::new()),
+        Err(error) => return Err(format!("could not read credential vault: {error}")),
+    };
+    let key = FORMAT
+        .load_or_create_system_key(true)
+        .ok_or_else(|| "credential vault key unavailable".to_string())?;
+    let plaintext =
+        open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
+    serde_json::from_slice(&plaintext)
+        .map_err(|_| "decrypted credential vault is invalid".to_string())
 }
 
 /// Read and authenticate existing entries, distinguishing absence from damage.

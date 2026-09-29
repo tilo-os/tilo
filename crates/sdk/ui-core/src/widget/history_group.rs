@@ -572,9 +572,10 @@ fn finish_group(
     let mut del = 0usize;
     let mut all_counted = true;
     for e in slice {
-        if !authors
-            .iter()
-            .any(|a| a.name == e.author.name && a.identity_short == e.author.identity_short)
+        if !e.is_genesis()
+            && !authors
+                .iter()
+                .any(|a| a.name == e.author.name && a.identity_short == e.author.identity_short)
         {
             authors.push(e.author.clone());
         }

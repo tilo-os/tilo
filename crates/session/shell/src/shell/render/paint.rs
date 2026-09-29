@@ -112,6 +112,7 @@ pub struct BridgeAdapterInfo {
     pub vendor: u32,
     pub device: u32,
     pub pci_bus_id: String,
+    #[cfg(target_os = "linux")]
     pub drm_device: Option<ui::dmabuf_import::VulkanDrmDeviceIdentity>,
 }
 
@@ -1279,6 +1280,7 @@ impl RetainedGpuTarget {
             vendor: info.vendor,
             device: info.device,
             pci_bus_id: info.device_pci_bus_id,
+            #[cfg(target_os = "linux")]
             drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&self.device),
         }
     }
@@ -1475,6 +1477,7 @@ impl VelloDrmBridge {
     /// # Errors
     ///
     /// Fails when the device cannot import the dma-buf as a render target.
+    #[cfg(target_os = "linux")]
     pub fn import_scanout_target(
         &self,
         image: &ui::dmabuf_import::DmabufRef<'_>,
@@ -1492,6 +1495,7 @@ impl VelloDrmBridge {
     ///
     /// Fails when the target size does not match this bridge, rendering or
     /// submission fails, or the completion marker misses `deadline`.
+    #[cfg(target_os = "linux")]
     pub fn paint_imported_until(
         &mut self,
         scene: &Scene,
@@ -1772,6 +1776,7 @@ impl VelloDrmBridge {
             vendor: info.vendor,
             device: info.device,
             pci_bus_id: info.device_pci_bus_id,
+            #[cfg(target_os = "linux")]
             drm_device: ui::dmabuf_import::vulkan_drm_device_identity(&dev_handle.device),
         })
     }

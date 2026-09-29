@@ -6,6 +6,9 @@ use std::process::ExitCode;
 #[cfg(target_os = "macos")]
 mod ux_bench_support;
 
+#[cfg(target_os = "macos")]
+use shell::shell::state::WorkspaceAuthority as _;
+
 fn main() -> ExitCode {
     match execute() {
         Ok(true) => ExitCode::SUCCESS,

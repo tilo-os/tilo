@@ -838,6 +838,14 @@ impl DesktopRoot {
                 .iter()
                 .find(|group| group.id == focused)
                 .map(|group| group.tab);
+            layout.window_presence = self
+                .surface
+                .strip_ids()
+                .into_iter()
+                .filter_map(|strip| self.surface.row(strip))
+                .find_map(|row| row.groups.iter().find(|group| group.id == focused))
+                .map(|group| ui::presence::capability::subtree_presence(group))
+                .unwrap_or_default();
         }
         let mut live = self.handle.live.borrow_mut();
         if *live != layout {
@@ -1355,7 +1363,7 @@ impl DesktopRoot {
                         &self.resolver.host.routes,
                     )
                     .ok()?;
-                    (checkout.id.as_str() == target.id && checkout.kind.as_str() == target.kind)
+                    (checkout.id.as_str() == target.id && checkout.kind.names(&target.kind))
                         .then_some((group, tab.id))
                 });
             if let Some((group, tab)) = destination {
