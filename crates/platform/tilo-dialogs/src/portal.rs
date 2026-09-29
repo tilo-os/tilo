@@ -900,6 +900,42 @@ fn display_name(path: &Path) -> String {
         .unwrap_or_else(|| "selected file".to_string())
 }
 
+/// The one temporary file beside a Save destination an app may write and
+/// then rename over it: `<folder>/.<name>.tilo-save`. A Seatbelt-confined
+/// macOS app is granted exactly this name with the destination, and nothing
+/// else in the folder. `None` for a path that names no file.
+pub fn save_sibling(destination: &Path) -> Option<PathBuf> {
+    let name = destination.file_name()?;
+    let mut sibling = std::ffi::OsString::from(".");
+    sibling.push(name);
+    sibling.push(".tilo-save");
+    Some(destination.with_file_name(sibling))
+}
+
+/// Replace the Save destination `destination` with `bytes` atomically:
+/// write [`save_sibling`], flush it to disk, and rename it over the
+/// destination, so a crash leaves the old file or the new one.
+///
+/// # Errors
+///
+/// Writing the sibling or renaming it failed; the destination is untouched.
+pub fn replace_saved(destination: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let sibling = save_sibling(destination).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "the destination names no file",
+        )
+    })?;
+    let written = File::create(&sibling)
+        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+        .and_then(|()| std::fs::rename(&sibling, destination));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&sibling);
+    }
+    written
+}
+
 /// Open a chosen local path without following its final component and verify
 /// the resulting descriptor is a regular file. Checking metadata on the open
 /// descriptor, rather than the path, keeps the type check bound to exactly
