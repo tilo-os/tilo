@@ -2167,26 +2167,6 @@ impl WordProcessor {
         let _ = action.apply_under(state, &automerge::ROOT);
     }
 
-    fn region_insert_block(
-        &mut self,
-        state: &mut AutoCommit,
-        after: Option<&str>,
-        kind: &str,
-    ) -> Option<String> {
-        let containers = self.containers.clone()?;
-        let region = self.region;
-        let ids = self.ids.as_mut()?;
-        let mut dm = DocMut {
-            doc: state,
-            c: &containers,
-            ids,
-        };
-        Some(match region {
-            Region::Body => dm.insert_block(after, kind),
-            r => dm.insert_block_in(r, after, kind),
-        })
-    }
-
     fn region_set_kind(&mut self, state: &mut AutoCommit, block: &str, kind: &str) {
         if self.containers.is_none() || self.ids.is_none() {
             return;
@@ -2626,7 +2606,6 @@ impl WordProcessor {
         let offset = self.caret.offset;
         let text = self.region_block_text(state, &block).unwrap_or_default();
         let char_count = text.chars().count();
-        let tail: String = text.chars().skip(offset).collect();
         let (kind, ordered, _level) = self.block_meta(state, &block);
 
         // Enter on an empty list item exits the list.
@@ -2640,29 +2619,25 @@ impl WordProcessor {
         } else {
             "paragraph"
         };
-        if offset < char_count {
-            self.region_splice(
-                state,
-                &block,
-                offset,
-                num::isize_of_usize(char_count - offset),
-                "",
-            );
+        let ordered = (new_kind == "list_item").then_some(ordered);
+        let action = crate::actions::split_block_action(
+            self.action_region(),
+            &block,
+            offset,
+            new_kind,
+            ordered,
+        );
+        if !self.apply_rich(state, action) {
+            return;
         }
-        let Some(id) = self.region_insert_block(state, Some(&block), new_kind) else {
+        let Some(id) = self
+            .region_blocks_in_order(state)
+            .into_iter()
+            .skip_while(|id| id != &block)
+            .nth(1)
+        else {
             return;
         };
-        if new_kind == "list_item" {
-            self.set_block_attr(
-                state,
-                vec![id.clone()],
-                "ordered",
-                crate::actions::AttrVal::Bool(ordered),
-            );
-        }
-        if !tail.is_empty() {
-            self.region_splice(state, &id, 0, 0, &tail);
-        }
         self.caret = Caret {
             block: id,
             offset: 0,
