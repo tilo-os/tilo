@@ -396,11 +396,12 @@ test('a caret an action moved is published without input, and again once the run
   const live = fakeLive();
   const frames = [];
   let caret = '0101';
+  const timers = [];
   const overlay = createLiveOverlay({
     surface, canvas: doc.createElement('canvas'), document: doc, live: () => live,
     snapshot: () => JSON.stringify({...snapshotA, selection: {anchor: caret, head: caret}}),
     requestFrame: callback => { frames.push(callback); return {}; }, cancelFrame: () => {},
-    setInterval: () => 1, clearInterval: () => {},
+    setInterval: () => 1, clearInterval: () => {}, setTimeout: callback => timers.push(callback),
   });
   const run = () => { for (const callback of frames.splice(0)) callback(0); };
   run();
@@ -416,6 +417,14 @@ test('a caret an action moved is published without input, and again once the run
   overlay.wake();
   run();
   assert.deepEqual(live.published.at(-1).selection, {anchor: '0142', head: '0142'});
+  // A mount that presents no frames (an agent's hidden one) re-reads on time.
+  caret = '0150';
+  overlay.refresh();
+  run();
+  caret = '0155';
+  for (const callback of timers.splice(0)) callback();
+  run();
+  assert.deepEqual(live.published.at(-1).selection, {anchor: '0155', head: '0155'});
   overlay.close();
 });
 

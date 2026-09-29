@@ -308,6 +308,8 @@ export const LIVE_PUBLICATION_WINDOW_MS = 16;
 /** Presented frames that re-read the snapshot after an action changed the
  * mount: its caret may settle a frame after the action returns. */
 const REFRESH_FRAMES = 2;
+/** ... and after these delays, for a mount that presents no frames. */
+const REFRESH_DELAYS_MS = [120, 600];
 
 /**
  * Remote in-flight typing from `OpsFrame::Preview`, per publisher and
@@ -546,6 +548,7 @@ export function createLiveOverlay({
   cancelFrame = defaultCancelFrame,
   setInterval: every = (callback, ms) => globalThis.setInterval(callback, ms),
   clearInterval: stopEvery = handle => globalThis.clearInterval(handle),
+  setTimeout: later = (callback, ms) => globalThis.setTimeout(callback, ms),
   onError = () => {},
 }) {
   const view = createOverlayView(surface, doc);
@@ -769,7 +772,14 @@ export function createLiveOverlay({
     },
     /** The mount changed without input (an action moved the caret or edited):
      * publish its presence now and after the next presented frames. */
-    refresh() { refreshFrames = REFRESH_FRAMES; inputDirty = true; stateDirty = true; schedule(); },
+    refresh() {
+      refreshFrames = REFRESH_FRAMES;
+      inputDirty = true; stateDirty = true; schedule();
+      // A mount that presents no frames (hidden, an agent's) settles on time.
+      for (const delay of REFRESH_DELAYS_MS) {
+        later(() => { if (!closed) { inputDirty = true; stateDirty = true; schedule(); } }, delay);
+      }
+    },
     /** A desktop command entered submission: preview a window reorder at once. */
     commandPending(pending) {
       if (!api?.available) return;
