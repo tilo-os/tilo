@@ -1546,7 +1546,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     handshake(&mut client, &root).await;
     let first = browser_delta(&root, MACHINE, "kept-one ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .post_retrying("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
         .await;
     assert_eq!(
         status,
@@ -1556,7 +1556,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     );
     let second = browser_delta(&root, MACHINE, "kept-two ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
+        .post_retrying("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
         .await;
     assert_eq!(
         status,
@@ -1575,8 +1575,10 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
             break;
         }
     }
+    // A cursor ack is idempotent; the delivery client re-sends it after a
+    // retryable 503, as it does every state upload.
     let (status, _) = client
-        .post(
+        .post_retrying(
             "/peer/v3/acks",
             framed(
                 MessageType::CursorAck,

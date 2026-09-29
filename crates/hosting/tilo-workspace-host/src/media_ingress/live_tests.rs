@@ -264,8 +264,15 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
     );
     let forwarded =
         tilo_test_env::within("the admitted signed change on the live ops track", async {
-            let mut group = ops.recv_group().await.unwrap().unwrap();
-            group.read_frame().await.unwrap().unwrap().payload.to_vec()
+            // Groups travel on separate streams: a seal appended after the
+            // change can overtake it. Readers skip seals (one empty frame).
+            loop {
+                let mut group = ops.recv_group().await.unwrap().unwrap();
+                let frame = group.read_frame().await.unwrap().unwrap();
+                if !frame.payload.is_empty() {
+                    break frame.payload.to_vec();
+                }
+            }
         })
         .await;
     let OpsFrame::SignedChange {
