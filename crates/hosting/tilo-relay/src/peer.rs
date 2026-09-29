@@ -2100,6 +2100,17 @@ pub(crate) struct StateSession {
     replay: Option<Arc<ReplayCatchup>>,
     lag: Option<Arc<Lag>>,
 }
+impl StateSession {
+    /// Everything fanned out to this session so far reached its wire: none
+    /// of it is queued, left on disk while it lagged, or still replaying.
+    pub(crate) fn caught_up(&self) -> bool {
+        self.tx.capacity() == self.tx.max_capacity()
+            && self.lag.as_ref().is_none_or(|lag| lag.is_empty())
+            && self.replay.as_ref().is_none_or(|replay| {
+                replay.phase.load(std::sync::atomic::Ordering::SeqCst) != ReplayCatchup::ACTIVE
+            })
+    }
+}
 /// The rooms whose live deliveries a connection could not take and left on
 /// disk (its pending queue and the retained log). Once the connection's
 /// queues drain it resumes each of them from its position, so the replay
@@ -4957,10 +4968,15 @@ async fn handle_delta(
         (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
         _ => None,
     };
+    let admitting = session
+        .compactor
+        .zip(observed)
+        .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
     if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
     }
+    drop(admitting);
 
     Ok(None)
 }
@@ -5079,6 +5095,13 @@ async fn handle_commit(
             seq: admitted.seq,
         }));
     }
+    let observed = session
+        .compactor
+        .and_then(|_| crate::compaction::Compactor::observe(&delta));
+    let admitting = session
+        .compactor
+        .zip(observed)
+        .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
     let delta = Envelope::Delta {
         workspace_id,
         author_device_public_key,
@@ -5100,11 +5123,10 @@ async fn handle_commit(
     // still fail: wait for the change to be durable and published.
     crate::persistence::receipt(admitted.completion).await?;
     let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
-    if let (Some(compactor), Envelope::Delta { delta, .. }) = (session.compactor, &authored)
-        && let Some(observed) = crate::compaction::Compactor::observe(delta)
-    {
+    if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
         compactor.note(&ws, workspace_id, observed);
     }
+    drop(admitting);
     // The author holds what it committed; a resume never replays it to it.
     if let Some(position) = resume_record(session, workspace_id, [&authored]) {
         let _ = session.outbound.try_send(position);

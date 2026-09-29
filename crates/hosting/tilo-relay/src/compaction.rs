@@ -56,6 +56,9 @@ const CHECK_BYTES: usize = 512 * 1024;
 /// How long a member has to answer a request before another may be asked.
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL: Duration = Duration::from_millis(250);
+/// How long a request waits for a volunteer that holds every delivery.
+const CATCH_UP: Duration = Duration::from_secs(10);
+const CATCH_UP_POLL: Duration = Duration::from_millis(20);
 
 #[derive(Default)]
 struct Growth {
@@ -63,6 +66,8 @@ struct Growth {
     bytes: usize,
     last: Option<Instant>,
     scheduled: bool,
+    /// Deltas of the channel being admitted ([`Admitting`]).
+    admitting: usize,
 }
 
 struct Outstanding {
@@ -102,6 +107,22 @@ pub(crate) struct Observed {
 /// Schedules and runs compaction for the workspaces of one host.
 #[derive(Clone)]
 pub struct Compactor(Arc<Inner>);
+
+/// A delta of an observed channel being admitted. The channel is not quiet
+/// while one is: a commit whose durability stalls must not let a round start
+/// in the middle of its burst. Dropping it ends the admission.
+pub(crate) struct Admitting {
+    compactor: Compactor,
+    key: ChannelKey,
+}
+
+impl Drop for Admitting {
+    fn drop(&mut self) {
+        if let Some(growth) = lock(&self.compactor.0.growth).get_mut(&self.key) {
+            growth.admitting = growth.admitting.saturating_sub(1);
+        }
+    }
+}
 
 fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     mutex
@@ -159,6 +180,20 @@ impl Compactor {
         })
     }
 
+    /// An observed delta of `workspace_id` is being admitted, until the
+    /// returned guard drops.
+    pub(crate) fn admitting(&self, workspace_id: u64, observed: Observed) -> Admitting {
+        let key = (workspace_id, observed.channel);
+        let mut growth = lock(&self.0.growth);
+        let entry = growth.entry(key).or_default();
+        entry.admitting = entry.admitting.saturating_add(1);
+        drop(growth);
+        Admitting {
+            compactor: self.clone(),
+            key,
+        }
+    }
+
     /// An observed delta was retained in `workspace_id`: schedule its
     /// channel's upkeep when it grew enough.
     pub(crate) fn note(&self, workspace: &SharedWorkspace, workspace_id: u64, observed: Observed) {
@@ -190,7 +225,8 @@ impl Compactor {
                 .get(&key)
                 .map_or((true, false), |growth| {
                     (
-                        growth.last.is_none_or(|last| last.elapsed() >= QUIET),
+                        growth.admitting == 0
+                            && growth.last.is_none_or(|last| last.elapsed() >= QUIET),
                         growth.entries >= COMPACT_TAIL_ENTRIES.saturating_mul(4)
                             || growth.bytes >= COMPACT_TAIL_BYTES.saturating_mul(4),
                     )
@@ -203,7 +239,10 @@ impl Compactor {
             return;
         };
         if let Some(growth) = lock(&self.0.growth).get_mut(&key) {
-            *growth = Growth::default();
+            *growth = Growth {
+                admitting: growth.admitting,
+                ..Growth::default()
+            };
         }
         // A fold forced during a burst leaves the burst's end behind; the
         // fold after it goes quiet takes that end even when it is short.
@@ -266,7 +305,8 @@ impl Compactor {
                 .await?;
         }
         if let Some(route) = sealed {
-            self.request(workspace, workspace_id, channel, route).await;
+            let (this, workspace) = (self.clone(), workspace.clone());
+            tokio::spawn(async move { this.ask(&workspace, workspace_id, channel, &route).await });
         }
         Ok(())
     }
@@ -310,13 +350,37 @@ impl Compactor {
         drop(volunteers);
     }
 
+    /// Ask volunteers in turn until one answers for `channel`: a volunteer
+    /// that leaves a request unanswered does not keep the channel from being
+    /// compacted.
+    async fn ask(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+    ) {
+        let volunteers = lock(&self.0.volunteers)
+            .get(&workspace_id)
+            .map_or(0, Vec::len);
+        for _ in 0..volunteers.max(1) {
+            let Some(request) = self.request(workspace, workspace_id, channel, route).await else {
+                return;
+            };
+            tokio::time::sleep(REQUEST_TIMEOUT).await;
+            if lock(&self.0.requests).remove(&request).is_none() {
+                return;
+            }
+        }
+    }
+
     async fn request(
         &self,
         workspace: &SharedWorkspace,
         workspace_id: u64,
         channel: [u8; 32],
-        route: Route,
-    ) {
+        route: &Route,
+    ) -> Option<[u8; 16]> {
         {
             let mut requests = lock(&self.0.requests);
             requests.retain(|_, request| request.sent.elapsed() < REQUEST_TIMEOUT);
@@ -324,36 +388,59 @@ impl Compactor {
                 .values()
                 .any(|request| request.workspace_id == workspace_id && request.channel == channel)
             {
-                return;
+                return None;
             }
         }
         let candidates = lock(&self.0.volunteers)
             .get(&workspace_id)
             .cloned()
             .unwrap_or_default();
-        let runtime = workspace.lock().await;
-        let Some((device, tx)) = candidates.iter().find_map(|device| {
-            runtime
-                .subscribers
-                .get(device)
-                .filter(|subscriber| !subscriber.tx.is_closed())
-                .map(|subscriber| (*device, subscriber.tx.clone()))
-        }) else {
-            return;
+        // A member answers with the replica it holds when the request reaches
+        // it. The request overtakes deliveries still queued for a member or
+        // left on disk while it lags, so a member that took them all is asked
+        // first; after CATCH_UP any open one is.
+        let asked = Instant::now();
+        let (device, tx) = loop {
+            let runtime = workspace.lock().await;
+            let open: Vec<_> = candidates
+                .iter()
+                .filter_map(|device| {
+                    let subscriber = runtime
+                        .subscribers
+                        .get(device)
+                        .filter(|subscriber| !subscriber.tx.is_closed())?;
+                    let caught_up = runtime
+                        .state_sessions
+                        .get(device)
+                        .is_none_or(crate::peer::StateSession::caught_up);
+                    Some((*device, subscriber.tx.clone(), caught_up))
+                })
+                .collect();
+            drop(runtime);
+            let chosen = open
+                .iter()
+                .find(|(_, _, caught_up)| *caught_up)
+                .or_else(|| open.first().filter(|_| asked.elapsed() >= CATCH_UP));
+            if let Some((device, tx, _)) = chosen {
+                break (*device, tx.clone());
+            }
+            if open.is_empty() {
+                return None;
+            }
+            tokio::time::sleep(CATCH_UP_POLL).await;
         };
-        drop(runtime);
         let request: [u8; 16] = rand::random();
         if tx
             .try_send(Envelope::CompactRequest {
                 workspace_id,
                 request,
-                app_id: route.app_id,
-                cluster_id: route.cluster_id,
-                record: route.record_id,
+                app_id: route.app_id.clone(),
+                cluster_id: route.cluster_id.clone(),
+                record: route.record_id.clone(),
             })
             .is_err()
         {
-            return;
+            return None;
         }
         lock(&self.0.requests).insert(
             request,
@@ -371,6 +458,7 @@ impl Compactor {
             let chosen = list.remove(at);
             list.push(chosen);
         }
+        Some(request)
     }
 
     /// A member's answer: remove exactly the entries its snapshot covers.
