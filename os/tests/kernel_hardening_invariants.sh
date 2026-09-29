@@ -543,14 +543,34 @@ for required in \
   'ProcSubset=pid' \
   'CapabilityBoundingSet=' \
   'AmbientCapabilities=' \
-  'ReadWritePaths=/boot' \
+  'StateDirectory=tilo/esp-plan/boot-entries' \
+  'StateDirectoryMode=0700' \
   'ReadOnlyPaths=/var/lib/tilo/secureboot' \
   'SystemCallFilter=@system-service' \
   'SystemCallFilter=~@privileged @resources'; do
   grep -Fqx "$required" "$boot_entries_unit" \
     || bad "boot-entry maintenance sandbox is missing: $required"
 done
-[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to the ESP'
+# /boot stays read-only: the unit stages plans, and only the ESP writer, with
+# CAP_SYS_ADMIN for its private remount alone, applies them.
+grep -q '^ReadWritePaths=.*/boot' "$boot_entries_unit" \
+  && bad 'boot-entry maintenance writes the ESP itself'
+esp_writer_unit="$repo/os/usr/lib/systemd/system/tilo-esp-write@.service"
+for required in \
+  'ExecStart=/usr/libexec/tilo-esp-write %i' \
+  'PrivateMounts=yes' \
+  'NoNewPrivileges=yes' \
+  'ProtectSystem=strict' \
+  'ReadWritePaths=/boot /var/lib/tilo/esp-plan/%i' \
+  'PrivateNetwork=yes' \
+  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+  'AmbientCapabilities=' \
+  'RestrictAddressFamilies=AF_UNIX' \
+  'SystemCallFilter=@system-service @mount'; do
+  grep -Fqx "$required" "$esp_writer_unit" \
+    || bad "ESP writer sandbox is missing: $required"
+done
+[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to staged, validated ESP plans'
 
 game_planner="$repo/crates/windows/compat-service/src/plan.rs"
 game_executor="$repo/crates/windows/compat-service/src/execute.rs"
