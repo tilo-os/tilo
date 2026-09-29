@@ -1694,6 +1694,14 @@ impl Renderer {
         self.resolver.set_image_atlas_max(max_size);
     }
 
+    /// Grow the bump buffers at most once, straight to the
+    /// [`Self::set_bump_budget_limit`] total, instead of doubling as a scene
+    /// fills up. Each growth reallocates every buffer, which a browser's GPU
+    /// process briefly holds twice.
+    pub fn set_bump_budget_grow_once(&mut self, grow_once: bool) {
+        self.budget.set_grow_once(grow_once);
+    }
+
     /// Limit the adaptive bump buffers to `bytes` in total, whatever frames
     /// report using. Scenes past it drop geometry, which the shaders report,
     /// instead of taking a browser's GPU process past its memory limit.
