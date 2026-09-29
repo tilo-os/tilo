@@ -559,24 +559,18 @@ impl TypstApp {
     /// Get-or-create the `root["source"]` Text object, seeding it with the
     /// current sample the first time it's created.
     fn ensure_source_obj(&self, doc: &mut AutoCommit) -> ObjId {
-        if let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "source") {
-            id
-        } else {
-            // `put_object` on the document root only errors for conditions
-            // this call never hits (a foreign actor id, or exceeding the
-            // object-nesting depth); fall back to `ROOT` itself rather than
-            // panicking — a caller that then fails to read/splice a "source"
-            // Text degrades to a no-op instead of crashing the app.
-            let id = doc
-                .put_object(&ROOT, "source", ObjType::Text)
-                .unwrap_or(ROOT);
-            let seed = self
-                .documents
-                .get(self.current)
-                .map(|d| d.source.clone())
-                .unwrap_or_default();
-            let _ = doc.splice_text(&id, 0, 0, &seed);
-            id
+        let seed = self
+            .documents
+            .get(self.current)
+            .map(|d| d.source.clone())
+            .unwrap_or_default();
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TypstDocAction::EnsureSource { seed },
+            doc,
+        );
+        match doc.get(&ROOT, "source") {
+            Ok(Some((Value::Object(ObjType::Text), id))) => id,
+            _ => ROOT,
         }
     }
 
@@ -602,11 +596,11 @@ impl TypstApp {
         };
         let src = entry.source.clone();
         let name = entry.name.clone();
-        if let Some(id) = self.source_id.clone() {
-            // Diff-splice only the changed span instead of delete+reinsert of
-            // the whole buffer — switching documents shares the common prefix/
-            // suffix rather than tombstoning the entire previous source.
-            ui::doc::splice_text_diffed(doc, &id, &src);
+        if self.source_id.is_some() {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TypstDocAction::ReplaceSource { text: src },
+                doc,
+            );
         }
         self.editor.reset_cursor();
         // Keep focus consistent with the visible pane in compact mode.
@@ -2365,8 +2359,13 @@ impl Widget for TypstApp {
                 true
             }
             ui::a11y::Action::SetValue(source) => {
+                let _ = ui::tilo_actions::Action::apply(
+                    &crate::resource::TypstDocAction::ReplaceSource {
+                        text: source.clone(),
+                    },
+                    doc,
+                );
                 let source_id = self.ensure_source_obj(doc);
-                ui::doc::splice_text_diffed(doc, &source_id, source);
                 self.source_id = Some(source_id);
                 self.source_cache.clone_from(source);
                 self.editor.set_caret(source.len());
