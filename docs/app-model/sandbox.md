@@ -385,6 +385,7 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
 | Picked files | Read and write, never exec, of exactly what the person picked in a chooser the runtime showed (below) |
+| Camera, microphone | No device and no TCC service; frames and samples arrive over an inherited socket from the runtime (below) |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
 | Network: allowlist | Connect to one loopback port only: the egress gate the launcher runs for this launch, named by `HTTP(S)_PROXY` and `ALL_PROXY` |
 | Network: host | IP in and out, the system resolver, `trustd`. Filesystem sockets such as an `ssh-agent` stay closed |
@@ -408,6 +409,31 @@ writing that and renaming it over the destination
 writable, so an app that picks its own temporary name cannot save that way.
 A grant does not outlive the process.
 
+**Camera and microphone.** The runtime, which holds the TCC permission,
+captures on the app's behalf. The app inherits a control socket
+(`TILO_SVC_CAPTURE_FD`); `tilo_capture::VideoCapture::open_camera` and
+`AudioCapture::open_microphone` use it by themselves in such an app, so
+its code is the same everywhere. Each request sends one end of a fresh
+socket pair with it, and the runtime answers on that end, granted or
+refused, then streams RGBA frames or `f32` samples until the app drops the
+capture or the grant goes (`tilo_capture::broker`). The app names a device
+and a format, never a device handle. What the runtime allows:
+
+1. Only a device the manifest declares: `[sandbox.portals] camera =
+   "via-host"` or `microphone = "via-host"`. Anything else is refused
+   without asking anyone.
+2. The person's decision for this app in this workspace, kept in the
+   runtime profile (`state/device-grants`, `tilo_capture::grants`). The
+   first request asks them in a native alert the runtime shows outside the
+   sandbox, with "Don't Allow" as the default; the answer, either way, is
+   kept.
+3. A revoked grant (`DeviceGrants::revoke`, from any process: the file is
+   the truth) ends a running capture within a frame and asks again next
+   time.
+
+The runtime captures through the crate's GStreamer backend, so a macOS
+runtime build links GStreamer.
+
 The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
 It runs a preflight first, against a target that cannot exist. If the
 kernel rejects the profile, the launch is refused with an error, and
@@ -423,14 +449,9 @@ nothing is ever started unsandboxed.
   user clients, which are a large kernel attack surface that no profile
   can narrow. Mach services the profile allows (WindowServer, fonts,
   pasteboard) are reachable IPC surface as well.
-- Device grants (camera, microphone) are not honoured under Seatbelt.
-  macOS gates them through TCC, and the profile grants no TCC service,
-  so the app is denied rather than widened. The least-privilege path is
-  the one the file chooser takes: the runtime, which holds the TCC grant,
-  captures on the app's behalf once the person consents and the app's
-  grant names the device, and streams frames over an inherited
-  descriptor. The standalone runtime has no device-grant store or capture
-  service yet, so neither device is brokered.
+- A camera or microphone is never opened by the app: macOS gates them
+  through TCC, which the profile grants no service of. It is brokered
+  instead (below).
 - An allowlisted network under Seatbelt has no empty namespace behind it,
   so the gate listens on a loopback TCP port instead of a Unix socket, and
   the profile admits that one port. Any local process can reach the port;

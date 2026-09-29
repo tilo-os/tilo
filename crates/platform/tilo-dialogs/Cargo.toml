@@ -43,7 +43,7 @@ open.workspace = true
 block2 = "0.6"
 dispatch2 = "0.3"
 objc2 = "0.6"
-objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSOpenPanel", "NSPanel", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSWindow", "NSWorkspace"] }
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSAlert", "NSApplication", "NSButton", "NSControl", "NSOpenPanel", "NSPanel", "NSResponder", "NSRunningApplication", "NSSavePanel", "NSView", "NSWindow", "NSWorkspace"] }
 objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSString", "NSURL"] }
 
 [target.'cfg(windows)'.dependencies]

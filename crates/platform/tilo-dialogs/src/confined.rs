@@ -325,6 +325,93 @@ pub fn run_chooser_helper() -> io::Result<()> {
     stdout.write_all(b"\n")
 }
 
+/// Whether `app` may use `device` (`camera`, `microphone`): the question the
+/// runtime asks the person, once, before a confined app first captures.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Consent {
+    pub app: String,
+    pub device: String,
+}
+
+impl Consent {
+    fn encode(&self) -> String {
+        url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("app", &self.app)
+            .append_pair("device", &self.device)
+            .finish()
+    }
+
+    fn decode(line: &str) -> Option<Self> {
+        let (mut app, mut device) = (None, None);
+        for (key, value) in url::form_urlencoded::parse(line.trim_end().as_bytes()) {
+            match &*key {
+                "app" => app = Some(value.into_owned()),
+                "device" => device = Some(value.into_owned()),
+                _ => {}
+            }
+        }
+        Some(Self {
+            app: app?,
+            device: device?,
+        })
+    }
+}
+
+/// The consent helper's whole life: read one [`Consent`] from stdin, ask it
+/// in a native alert, and write `allow` or `deny` to stdout. Like
+/// [`run_chooser_helper`], the main thread of a process of its own.
+///
+/// # Errors
+///
+/// Reading the question or writing the answer failed.
+pub fn run_consent_helper() -> io::Result<()> {
+    let line = read_line(&mut io::stdin().lock())?
+        .ok_or_else(|| io::Error::new(io::ErrorKind::UnexpectedEof, "no consent question"))?;
+    let consent = Consent::decode(&line).ok_or_else(|| invalid("not a consent question"))?;
+    let allowed = crate::macos::ask_modal(
+        &format!("Allow {} to use the {}?", consent.app, consent.device),
+        &format!(
+            "Tilo keeps this choice for this app in this workspace until you revoke it. \
+             The app gets nothing from the {} unless you allow it.",
+            consent.device
+        ),
+        "Allow",
+        "Don’t Allow",
+    )
+    .map_err(io::Error::other)?;
+    writeln!(
+        io::stdout().lock(),
+        "{}",
+        if allowed { "allow" } else { "deny" }
+    )
+}
+
+/// Ask `consent` through the helper `command` runs ([`run_consent_helper`]).
+/// Anything but a clear `allow` is a refusal.
+///
+/// # Errors
+///
+/// The helper could not run.
+pub fn ask_consent_in_helper(
+    mut command: std::process::Command,
+    consent: &Consent,
+) -> Result<bool, String> {
+    use std::process::Stdio;
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("the consent prompt could not start: {error}"))?;
+    if let Some(mut stdin) = child.stdin.take() {
+        // A helper that exits without reading is a refusal, not an error.
+        let _ = writeln!(stdin, "{}", consent.encode());
+    }
+    let output = child
+        .wait_with_output()
+        .map_err(|error| error.to_string())?;
+    Ok(String::from_utf8_lossy(&output.stdout).trim() == "allow")
+}
+
 /// Show `request` through the chooser helper `command` runs
 /// ([`run_chooser_helper`]): the `show` a runtime passes to [`serve`].
 ///
@@ -635,6 +722,25 @@ mod tests {
         assert_eq!(std::fs::read(&destination).unwrap(), b"new");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
         assert!(crate::portal::save_sibling(Path::new("/")).is_none());
+    }
+
+    #[test]
+    fn a_consent_question_survives_the_wire_and_only_allow_allows() {
+        let consent = Consent {
+            app: "Video & Co=1".into(),
+            device: "camera".into(),
+        };
+        assert_eq!(Consent::decode(&consent.encode()), Some(consent.clone()));
+        assert_eq!(Consent::decode("app=x"), None);
+        let answer = |script: &str| {
+            let mut command = std::process::Command::new("/bin/sh");
+            command.args(["-c", script]);
+            ask_consent_in_helper(command, &consent).unwrap()
+        };
+        assert!(answer("read q; echo allow"));
+        assert!(!answer("read q; echo deny"));
+        assert!(!answer("read q; echo allowed"));
+        assert!(!answer("exit 1"));
     }
 
     #[test]
