@@ -1,19 +1,33 @@
-//! Snippets as a [`tilo_resource::Resource`]: the library syncs; search focus
-//! and reveal are Views.
+//! Snippets as a [`tilo_resource::Resource`]: one action vocabulary, one
+//! publish path for the library.
+//!
+//! Document mutations (`new-snippet`, per-snippet rename / language / tags /
+//! star / delete, …) live on this resource via [`Resource::declarations`] /
+//! [`Resource::children`]. Search focus is a View
+//! ([`Resource::local_operations`]). Hosted [`PublishesResources::resources`]
+//! stays empty — never a second hand-built `snippets.library` root beside
+//! [`tilo_resource::publish`].
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_actions::{
+    ActionParam, ActionSpec, EncodedAction, OperationKind, PROMPTED_PARAM, ParamType,
+    Resource as PublishedResource,
+};
+use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
+use uuid::Uuid;
 
 use crate::actions::{
-    SNIPPETS_ACTION_TYPE, SnippetsAction, SnippetsResourceCtx, provide_contextual_resources,
-    provide_resources, register, snippet_resource_id,
+    self, SNIPPETS_ACTION_TYPE, SnippetsAction, create_snippet_action, library_view_specs,
+    publish_children, register, snippet_resource_id,
 };
 use crate::app::SnippetsApp;
 use crate::doc::SnippetsDoc;
 use crate::model::Snippet;
+
+/// Stable id for the published library root.
+pub const LIBRARY_RESOURCE_ID: &str = "snippets.library";
 
 /// The snippets library resource.
 pub struct Snippets;
@@ -34,22 +48,39 @@ impl Resource for Snippets {
         Ok(SnippetsDoc::list(doc))
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        provide_contextual_resources(&SnippetsResourceCtx::default())
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        vec![
+            ActionDecl::new(
+                "new-snippet",
+                "New snippet",
+                vec![ActionParam::required(
+                    PROMPTED_PARAM,
+                    ParamType::Text,
+                    "Title",
+                )],
+                |args, _| {
+                    let title = args.text(PROMPTED_PARAM).unwrap_or_default();
+                    let mut snippet = Snippet::blank("");
+                    snippet.id = Uuid::new_v4();
+                    let trimmed = title.trim();
+                    if !trimmed.is_empty() {
+                        snippet.title = trimmed.to_string();
+                    }
+                    Ok(create_snippet_action(snippet))
+                },
+            )
+            .describe("Create a new snippet from a typed title."),
+        ]
     }
 
-    fn children(state: &Vec<Snippet>) -> Vec<tilo_actions::Resource> {
-        let mut doc = ui::automerge::AutoCommit::new();
-        for snippet in state {
-            SnippetsDoc::upsert(&mut doc, snippet);
-        }
-        provide_resources(&SnippetsResourceCtx::default(), &doc)
+    fn children(state: &Vec<Snippet>) -> Vec<PublishedResource> {
+        publish_children(state)
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        library_view_specs()
             .into_iter()
-            .flat_map(|root| root.children)
+            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
             .collect()
     }
 
@@ -86,6 +117,8 @@ impl ResourceApp for SnippetsShell {
 
 impl ResourceSurface<Snippets> for SnippetsApp {
     fn present(&mut self, state: &std::rc::Rc<Vec<Snippet>>) {
+        // Adopt the shared library projection only — never wipe a local
+        // library that has not been published yet.
         self.adopt_resource_state(state);
     }
 
@@ -97,9 +130,11 @@ impl ResourceSurface<Snippets> for SnippetsApp {
 /// Framework dispatcher when hosted; the local action host for standalone
 /// tests and the screenshot launcher.
 pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Snippets>>,
-    last: Option<EncodedAction>,
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<Dispatcher<Snippets>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    pub(crate) hosted: bool,
+    pub(crate) last: Option<EncodedAction>,
 }
 
 impl Default for ActionSink {
@@ -107,6 +142,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
             last: None,
         }
     }
@@ -115,10 +151,11 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Snippets>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
+        self.hosted
     }
 
     pub(crate) fn dispatch_with_context(
@@ -150,9 +187,136 @@ impl ActionSink {
             self.local.last_dispatched()
         }
     }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+}
+
+/// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
+pub fn provide_resources(state: &Vec<Snippet>) -> Vec<PublishedResource> {
+    vec![ui::tilo_resource::publish::<Snippets>(
+        LIBRARY_RESOURCE_ID,
+        "Snippets",
+        state,
+    )]
 }
 
 /// Live launch through the framework host, with History mode registered.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<SnippetsShell>().history(&crate::framework_history::HISTORY)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::tilo_actions::Action;
+    use ui::widget::Widget;
+
+    #[test]
+    fn resource_publish_owns_library_door_and_hosted_keeps_no_second_tree() {
+        let mut doc = AutoCommit::new();
+        let mut snippet = Snippet::blank("Ops");
+        snippet.title = "Deploy".into();
+        snippet.tags = vec!["k8s".into()];
+        create_snippet_action(snippet.clone())
+            .apply(&mut doc)
+            .unwrap();
+        doc.commit();
+
+        let state = Snippets::read(&doc).expect("seeded snippets state");
+        let published =
+            ui::tilo_resource::publish::<Snippets>(LIBRARY_RESOURCE_ID, "Snippets", &state);
+        assert_eq!(published.kind, "snippets.library");
+        for id in ["new-snippet", "search"] {
+            assert!(
+                published.actions.iter().any(|action| action.id == id),
+                "{id} must be on the framework resource"
+            );
+        }
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.kind == "snippets.tag"
+                    && child.actions.iter().any(|action| action.id == "reveal")),
+            "tag children keep their reveal View"
+        );
+        let snippet_child = published
+            .children
+            .iter()
+            .find(|child| child.kind == "snippets.snippet")
+            .expect("snippet child on the published door");
+        for id in [
+            "open",
+            "edit-body",
+            "rename",
+            "set-language",
+            "move-to-folder",
+            "set-tags",
+            "edit-description",
+            "toggle-favorite",
+            "delete",
+        ] {
+            assert!(
+                snippet_child.actions.iter().any(|action| action.id == id),
+                "{id} must be on the published snippet child"
+            );
+        }
+
+        let mut app = SnippetsApp::new_demo();
+        let mut seeded = doc.clone();
+        app.sync(&mut seeded, &ui::automerge::ROOT);
+        assert!(!app.is_hosted(), "standalone stays on the local host");
+        let standalone = app.publish_resources(&seeded);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "snippets.library");
+        assert!(
+            standalone[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet"),
+            "standalone library keeps New snippet"
+        );
+
+        app.mark_hosted_for_test();
+        assert!(app.is_hosted());
+        let extras = ui::resources::PublishesResources::resources(&app, &seeded);
+        assert!(
+            extras.is_empty(),
+            "hosted must not republish snippets.library beside ResourceRoot: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+
+        let door = provide_resources(&state);
+        assert_eq!(door[0].kind, "snippets.library");
+        assert!(
+            door[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-snippet")
+        );
+        assert!(
+            door[0]
+                .children
+                .iter()
+                .any(|child| child.id.as_str() == actions::snippet_resource_id(snippet.id)),
+            "publish children carry per-snippet document ops"
+        );
+
+        // Empty present must not wipe a local library that has not been published.
+        let mut local = SnippetsApp::new_demo();
+        let mut local_doc = AutoCommit::new();
+        local.sync(&mut local_doc, &ui::automerge::ROOT);
+        let before_local = local.snippet_count();
+        assert!(before_local > 0, "demo app starts with a local library");
+        local.adopt_resource_state(&[]);
+        assert_eq!(
+            local.snippet_count(),
+            before_local,
+            "adopting an empty projection must not clear unpublished snippets"
+        );
+    }
 }

@@ -467,7 +467,11 @@ impl SnippetsApp {
     /// after every dispatched action so the list/detail reflect it immediately,
     /// before the next frame's `sync`.
     /// Show the library the framework resource already holds.
+    /// An empty projection does not wipe snippets that have not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &[crate::model::Snippet]) {
+        if state.is_empty() {
+            return;
+        }
         let next = Library {
             snippets: state.to_vec(),
         };
@@ -487,6 +491,20 @@ impl SnippetsApp {
     ) {
         self.actions.attach(dispatcher);
         self.seeded = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    pub(crate) fn snippet_count(&self) -> usize {
+        self.library.snippets.len()
     }
 
     fn refresh_from_doc(&mut self, doc: &AutoCommit) {
@@ -1511,11 +1529,11 @@ impl ui::search::capability::SearchSource for SnippetsApp {
 
 impl ui::resources::PublishesResources for SnippetsApp {
     /// Publish the library + its snippets so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the library door; hosted
+    /// returns nothing rather than a second hand-built tree.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
+        if self.is_hosted() {
             return Vec::new();
         }
         crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
