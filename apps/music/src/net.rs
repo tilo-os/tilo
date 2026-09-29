@@ -3,7 +3,7 @@
 //! Prefetching lyrics / the next queued song / album metadata is only polite on
 //! a **stable, non-metered** connection (home Wi-Fi / ethernet) — never on a
 //! metered cellular link where it would burn the user's data. This module
-//! answers "is the connection metered?" from [`tilo_net::status`] (NetworkManager
+//! answers "is the connection metered?" from [`tilo_net::status`] (`NetworkManager`
 //! on Linux, the Network Information API in a page), with an env override for
 //! tests + headless boxes and a sensible default (assume unmetered / stable)
 //! when the platform cannot tell.
