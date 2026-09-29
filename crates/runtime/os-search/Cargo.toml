@@ -26,6 +26,15 @@ workspace-hack = { version = "0.1" }
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
 zbus = { workspace = true, features = ["tokio"] }
 
+# Spotlight indexes for the app bundle, which reopens a chosen result.
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = ["std", "block2", "NSApplication", "NSResponder", "NSRunningApplication", "NSUserActivity"] }
+objc2-core-spotlight = { version = "0.3", default-features = false, features = ["std", "block2", "objc2-uniform-type-identifiers", "CSSearchableIndex", "CSSearchableItem", "CSSearchableItemAttributeSet", "CSSearchableItemAttributeSet_Documents", "CSSearchableItemAttributeSet_General"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDictionary", "NSError", "NSObject", "NSString", "NSUserActivity"] }
+objc2-uniform-type-identifiers = { version = "0.3", default-features = false, features = ["std", "UTCoreTypes", "UTType"] }
+
 [dev-dependencies]
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

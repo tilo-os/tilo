@@ -34,7 +34,7 @@ impl Host {
     pub(crate) fn edit(&self, change: impl FnOnce(&mut Catalogue)) {
         let mut catalogue = self.0.lock().unwrap();
         change(&mut catalogue);
-        catalogue.revision += 1;
+        catalogue.revision = catalogue.revision.wrapping_add(1);
     }
 
     pub(crate) fn invoked(&self) -> Vec<(Caller, InvokeRequest)> {
@@ -48,23 +48,28 @@ impl ActionHost for Host {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let catalogue = self.0.lock().unwrap();
-        if catalogue.unanswered {
+        let (unanswered, revision, all) = {
+            let catalogue = self.0.lock().unwrap();
+            (
+                catalogue.unanswered,
+                catalogue.revision,
+                catalogue.rows.clone(),
+            )
+        };
+        if unanswered {
             return Pending::ready(Err(ActionHostError::Unavailable {
                 reason: "test".into(),
             }));
         }
-        let revision = catalogue.revision.to_string();
-        let rows = catalogue
-            .rows
+        let rows = all
             .iter()
             .filter(|row| query.provider.as_ref().is_none_or(|p| *p == row.provider))
             .cloned()
             .collect();
-        let mut page = CataloguePage::from_rows(revision, rows, &query);
+        let mut page = CataloguePage::from_rows(revision.to_string(), rows, &query);
         if query.provider.is_none() {
             let mut providers: Vec<CatalogueProvider> = Vec::new();
-            for row in &catalogue.rows {
+            for row in &all {
                 if !providers.iter().any(|p| p.provider == row.provider) {
                     providers.push(CatalogueProvider {
                         provider: row.provider.clone(),
