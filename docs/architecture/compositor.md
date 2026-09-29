@@ -242,7 +242,9 @@ When the env var is set, the compositor binds an additional unix socket alongsid
 | Super+Esc                 | Stop all remote input and end every share      |
 
 The complete map, including the rebindable defaults and the chords Settings
-cannot rebind, is `docs/shell-navigation-keyboard-map.md`.
+cannot rebind, is `docs/shell-navigation-keyboard-map.md`. How chords, gestures,
+pointer controls and overlays fit one model, and how each transition moves, is
+[`window-management.md`](window-management.md).
 
 (Remote-injected keystrokes go through a scrubber that denies system shortcuts. See `docs/architecture/security.md`.)
 

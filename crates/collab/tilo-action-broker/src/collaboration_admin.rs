@@ -10,6 +10,9 @@ pub const CANCEL_ACTION: &str = "invitation.cancel";
 pub const LIST_ACTION: &str = "invitation.list";
 pub const SET_ROLE_ACTION: &str = "member.role.set";
 pub const REMOVE_ACTION: &str = "member.remove";
+/// Operator-only: the loopback operator makes the machine owner's own session
+/// an administrator of the workspace it hosts. Not offered to room members.
+pub const ADMINISTRATOR_ACTION: &str = "member.administrator.set";
 pub const MEDIA_CREATE_ACTION: &str = "media.call.create";
 pub const MEDIA_END_ACTION: &str = "media.call.end";
 pub const MEDIA_RESTART_ACTION: &str = "media.call.restart";
@@ -263,6 +266,7 @@ pub enum CollaborationAdminOperation {
     List,
     SetRole(SetMemberRoleInput),
     Remove(RemoveMemberInput),
+    SetAdministrator(RemoveMemberInput),
     MediaCreate(MediaCreateInput),
     MediaEnd(MediaCallInput),
     MediaRestart(MediaCallInput),
@@ -361,6 +365,7 @@ pub fn parse_operation(
         }
         SET_ROLE_ACTION => parse(argument).map(CollaborationAdminOperation::SetRole),
         REMOVE_ACTION => parse(argument).map(CollaborationAdminOperation::Remove),
+        ADMINISTRATOR_ACTION => parse(argument).map(CollaborationAdminOperation::SetAdministrator),
         MEDIA_CREATE_ACTION => parse(argument).map(CollaborationAdminOperation::MediaCreate),
         MEDIA_END_ACTION => parse(argument).map(CollaborationAdminOperation::MediaEnd),
         MEDIA_RESTART_ACTION => parse(argument).map(CollaborationAdminOperation::MediaRestart),

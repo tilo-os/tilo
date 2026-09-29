@@ -410,7 +410,10 @@ impl InstalledIngress {
             {
                 (hyper::StatusCode::NOT_FOUND, b"unsupported".to_vec())
             }
-            Err(_) => (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec()),
+            Err(error) => {
+                tracing::warn!(route = ?request.route(), %error, "delivery request refused");
+                (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec())
+            }
         };
         let _ = request.respond(status, body);
         self.maintain(owner);
