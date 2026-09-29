@@ -3587,7 +3587,14 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             };
             let readme = app_readme(&spec);
             assert!(readme.contains("tilo-app check --fix\n"));
-            assert!(readme.contains("tilo-app new notes --template starter --dev"));
+            assert!(
+                !readme.contains("tilo-app new notes"),
+                "the README of an app does not scaffold it again"
+            );
+            assert!(readme.contains("tilo-app check --platform all\n"));
+            assert!(readme.contains("tilo-app keys new\n"));
+            assert!(readme.contains("tilo-app apply --domain example.com\n"));
+            assert!(readme.contains("tilo-app publish\n"));
             assert!(readme.contains("\"resource\":\"generated.profile\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
@@ -3612,6 +3619,15 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 ));
             assert!(readme.contains("tilo-app package\n"));
             assert!(readme.contains("`cargo test` and `cargo run`"));
+            assert!(!readme.contains("Before publishing"));
+            let local = app_readme(&AppSpec {
+                app_id: "local.dev.notes".into(),
+                ..spec
+            });
+            assert!(
+                local.contains("Before publishing, change it in `tilo-app.toml`"),
+                "a local.dev id says it cannot be published"
+            );
         }
     }
 
