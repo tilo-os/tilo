@@ -613,6 +613,7 @@ impl SessionOwner {
             roots.tail.push(PublicationRef {
                 payload: pool.intern(&bytes)?,
                 kind: Retention::Delta,
+                author: self.identity.native_cert.device_public_key,
             });
         }
         Ok(())

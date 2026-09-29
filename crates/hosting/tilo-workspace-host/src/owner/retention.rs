@@ -529,18 +529,21 @@ impl SessionOwner {
                 encoded.push((
                     schema::encode_bounded(&message, self.serialized_commit_cap()?)?,
                     Retention::Delta,
+                    self.identity.native_cert.device_public_key,
                 ));
             }
         }
         for item in items {
             let message: NeighbourMsg = postcard::from_bytes(item)?;
-            if !matches!(message, NeighbourMsg::AppDocument { .. }) {
+            let NeighbourMsg::AppDocument { envelope, .. } = &message else {
                 return Ok(false);
-            }
+            };
+            // The uploader's signed item goes out as its own, not the host's.
+            let author = *envelope.author.as_bytes();
             let Some((_, kind)) = retention(&message, false) else {
                 return Ok(false);
             };
-            encoded.push((item.to_vec(), kind));
+            encoded.push((item.to_vec(), kind, author));
         }
         let tail_bytes = next
             .outgoing()
@@ -549,7 +552,7 @@ impl SessionOwner {
             .map(|p| p.bytes.len())
             .sum::<usize>();
         if tail_len.saturating_add(encoded.len()) >= MAX_PUBLICATION_TAIL_ENTRIES
-            || tail_bytes.saturating_add(encoded.iter().map(|(b, _)| b.len()).sum::<usize>())
+            || tail_bytes.saturating_add(encoded.iter().map(|(b, _, _)| b.len()).sum::<usize>())
                 >= MAX_PUBLICATION_TAIL_BYTES
         {
             return Ok(false);
@@ -557,10 +560,11 @@ impl SessionOwner {
         let PublicationStorage::V5 { pool, roots, .. } = &mut next.publication else {
             unreachable!()
         };
-        for (bytes, kind) in &encoded {
+        for (bytes, kind, author) in &encoded {
             roots.tail.push(PublicationRef {
                 payload: pool.intern(bytes)?,
                 kind: *kind,
+                author: *author,
             });
         }
         *candidate = prepared;

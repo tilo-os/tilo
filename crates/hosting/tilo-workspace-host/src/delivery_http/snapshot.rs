@@ -26,7 +26,7 @@ pub struct SnapshotStream {
 }
 struct Record {
     offset: u64,
-    header: [u8; 45],
+    header: [u8; TransferRecordHeader::BYTES],
 }
 impl SnapshotStream {
     pub fn prepare(pin: PublicationCustody, pool: &HostBytes) -> Result<Self, SnapshotFailure> {
@@ -48,7 +48,7 @@ impl SnapshotStream {
             return Err(SnapshotFailure::Capacity);
         }
         let total = canonical
-            .checked_add((pin.len() as u64) * 45)
+            .checked_add((pin.len() as u64) * TransferRecordHeader::BYTES as u64)
             .ok_or(SnapshotFailure::Capacity)?;
         let chunks = total.div_ceil(SNAPSHOT_CHUNK_BYTES as u64) as usize;
         if chunks > MAX_SNAPSHOT_CHUNKS as usize {
@@ -88,14 +88,17 @@ impl SnapshotStream {
         for i in 0..pin.len() {
             let bytes = pin.get(i).ok_or(SnapshotFailure::Invalid)?.bytes;
             let digest = *blake3::hash(bytes).as_bytes();
-            if pin.reference(i).ok_or(SnapshotFailure::Invalid)?.payload != digest {
+            let reference = pin.reference(i).ok_or(SnapshotFailure::Invalid)?;
+            if reference.payload != digest {
                 return Err(SnapshotFailure::Invalid);
             }
+            let author = reference.author;
             let header = TransferRecordHeader::new(
                 i as u32,
                 native_family(bytes)?,
                 bytes.len() as u64,
                 digest,
+                author,
             )
             .map_err(|_| SnapshotFailure::Invalid)?;
             records.push(Record {
@@ -103,9 +106,9 @@ impl SnapshotStream {
                 header: header.encode(),
             });
             order
-                .push(i as u32, digest)
+                .push(i as u32, digest, author)
                 .map_err(|_| SnapshotFailure::Invalid)?;
-            offset += 45 + bytes.len() as u64;
+            offset += (TransferRecordHeader::BYTES + bytes.len()) as u64;
         }
         let mut stream = Self {
             pin,
@@ -150,10 +153,12 @@ impl SnapshotStream {
             let bytes = self.pin.get(record).ok_or(SnapshotFailure::Invalid)?.bytes;
             let within =
                 usize::try_from(position - indexed.offset).map_err(|_| SnapshotFailure::Invalid)?;
-            let source = if within < 45 {
+            let source = if within < TransferRecordHeader::BYTES {
                 &indexed.header[within..]
             } else {
-                bytes.get(within - 45..).ok_or(SnapshotFailure::Invalid)?
+                bytes
+                    .get(within - TransferRecordHeader::BYTES..)
+                    .ok_or(SnapshotFailure::Invalid)?
             };
             let count = source.len().min(length - written);
             if count == 0 {
@@ -162,7 +167,7 @@ impl SnapshotStream {
             output[written..written + count].copy_from_slice(&source[..count]);
             written += count;
             position += count as u64;
-            if position == indexed.offset + 45 + bytes.len() as u64 {
+            if position == indexed.offset + (TransferRecordHeader::BYTES + bytes.len()) as u64 {
                 record += 1;
             }
         }

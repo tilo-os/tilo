@@ -95,6 +95,7 @@ impl<'a> Iterator for BorrowedPublications<'a> {
                 .map(|bytes| PublicationView {
                     bytes,
                     kind: publication.kind,
+                    author: publication.author,
                 })
                 .map_err(|_| PlanningFailure::Unavailable),
         )

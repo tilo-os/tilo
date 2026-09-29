@@ -388,6 +388,7 @@ impl Aggregate {
     pub(super) fn outgoing(&self) -> OutgoingPublications<'_> {
         OutgoingPublications {
             storage: &self.publication,
+            governor: self.authority.device_public_key,
         }
     }
     pub(super) fn validate(&self) -> Result<()> {
@@ -873,11 +874,15 @@ impl postcard::ser_flavors::Flavor for Exact<'_> {
 pub struct PublicationView<'a> {
     pub bytes: &'a [u8],
     pub kind: Retention,
+    /// The device the bytes are attributed to.
+    pub author: [u8; 32],
 }
 /// A view of the committed baseline plus tail. It never copies payload bytes.
 #[derive(Clone, Copy)]
 pub struct OutgoingPublications<'a> {
     storage: &'a PublicationStorage,
+    /// Every V4 publication is the governor's own.
+    governor: [u8; 32],
 }
 impl<'a> OutgoingPublications<'a> {
     pub fn len(&self) -> usize {
@@ -895,6 +900,7 @@ impl<'a> OutgoingPublications<'a> {
                 outgoing.get(index).map(|bytes| PublicationView {
                     bytes,
                     kind: state.kinds[index],
+                    author: self.governor,
                 })
             }
             PublicationStorage::V5 { pool, roots, .. } => {
@@ -908,6 +914,7 @@ impl<'a> OutgoingPublications<'a> {
                         .resolve(&reference.payload)
                         .expect("validated publication root"),
                     kind: reference.kind,
+                    author: reference.author,
                 })
             }
         }

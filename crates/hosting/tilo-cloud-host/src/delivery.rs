@@ -79,7 +79,11 @@ fn intern(
             PublicationKind::Delta => tilo_room::transport::Retention::Delta,
             PublicationKind::Presence => continue,
         };
-        retained.push(PublicationRef { payload, kind });
+        retained.push(PublicationRef {
+            payload,
+            kind,
+            author: *host,
+        });
     }
     Ok(retained)
 }

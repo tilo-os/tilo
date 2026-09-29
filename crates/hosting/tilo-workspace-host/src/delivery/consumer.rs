@@ -81,6 +81,7 @@ impl<'a> Iterator for BorrowedReplay<'a> {
                 .map(|bytes| PublicationView {
                     bytes,
                     kind: publication.kind,
+                    author: publication.author,
                 })
                 .map_err(|error| error::OwnerDataFailure::new(DataFailure::Unavailable, error)),
         )
@@ -459,6 +460,7 @@ impl SessionOwner {
                 Ok(PublicationView {
                     bytes: pool.resolve(&publication.payload)?,
                     kind: publication.kind,
+                    author: publication.author,
                 })
             })
             .collect()

@@ -123,6 +123,10 @@ fn upload_commits_publish_the_authors_original_bytes_and_consumers_converge() {
             vec![PublicationRef {
                 payload: *blake3::hash(&bytes).as_bytes(),
                 kind: Retention::Delta,
+                author: match postcard::from_bytes::<NeighbourMsg>(&bytes).unwrap() {
+                    NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
+                    _ => unreachable!("an upload is a document operation"),
+                },
             }]
         );
         assert_eq!(entry.admitted_operations, record.operations);

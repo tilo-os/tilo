@@ -54,61 +54,76 @@ fn snapshot_chunk_borrows_exact_bytes_and_rejects_noncanonical_ranges() {
 #[test]
 fn record_header_has_fixed_offsets_and_bounded_canonical_item() {
     let header =
-        TransferRecordHeader::new(257, TransferKind::State, 64 * 1024 * 1024, [9; 32]).unwrap();
-    let mut literal = [0; 45];
+        TransferRecordHeader::new(257, TransferKind::State, 64 * 1024 * 1024, [9; 32], [7; 32])
+            .unwrap();
+    let mut literal = [0; TransferRecordHeader::BYTES];
     literal[..4].copy_from_slice(&[1, 1, 0, 0]);
     literal[4] = 1;
     literal[5..13].copy_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0]);
-    literal[13..].fill(9);
+    literal[13..45].fill(9);
+    literal[45..].fill(7);
     assert_eq!(header.encode(), literal);
     assert_eq!(TransferRecordHeader::decode(&literal).unwrap(), header);
     literal[4] = 2;
     assert!(TransferRecordHeader::decode(&literal).is_err());
     assert!(
-        TransferRecordHeader::new(0, TransferKind::Governance, 64 * 1024 * 1024 + 1, [9; 32])
-            .is_err()
+        TransferRecordHeader::new(
+            0,
+            TransferKind::Governance,
+            64 * 1024 * 1024 + 1,
+            [9; 32],
+            [7; 32]
+        )
+        .is_err()
     );
-    assert!(TransferRecordHeader::new(0, TransferKind::State, 0, [9; 32]).is_err());
+    assert!(TransferRecordHeader::new(0, TransferKind::State, 0, [9; 32], [7; 32]).is_err());
 }
 
 #[test]
-fn streaming_order_preserves_old_digest_for_sparse_ordinals_without_old_count_cap() {
-    let events = [(0, [1; 32]), (129, [2; 32]), (4096, [3; 32])];
+fn streaming_order_matches_the_visible_order_digest_for_sparse_ordinals() {
+    let events = [
+        (0, [1; 32], [4; 32]),
+        (129, [2; 32], [5; 32]),
+        (4096, [3; 32], [6; 32]),
+    ];
     let mut order = VisibleOrder::new(3).unwrap();
-    for (ordinal, digest) in events {
-        order.push(ordinal, digest).unwrap();
+    for (ordinal, digest, author) in events {
+        order.push(ordinal, digest, author).unwrap();
     }
     assert_eq!(
         order.finish().unwrap(),
         super::super::visible_order_digest(&events).unwrap()
     );
     let mut golden = blake3::Hasher::new();
-    golden.update(b"tilo-delivery-v3-visible-order-v1\0");
+    golden.update(b"tilo-delivery-v3-visible-order-v2\0");
     let mut literal = vec![3, 0];
     literal.extend([1; 32]);
+    literal.extend([4; 32]);
     literal.extend([0x81, 1]);
     literal.extend([2; 32]);
+    literal.extend([5; 32]);
     literal.extend([0x80, 0x20]);
     literal.extend([3; 32]);
+    literal.extend([6; 32]);
     golden.update(&literal);
     let mut order = VisibleOrder::new(3).unwrap();
-    for (ordinal, digest) in events {
-        order.push(ordinal, digest).unwrap();
+    for (ordinal, digest, author) in events {
+        order.push(ordinal, digest, author).unwrap();
     }
     assert_eq!(order.finish().unwrap(), *golden.finalize().as_bytes());
     let mut large = VisibleOrder::new(65536).unwrap();
     for i in 0..65536 {
-        large.push(i, [1; 32]).unwrap();
+        large.push(i, [1; 32], [1; 32]).unwrap();
     }
     assert!(large.finish().is_ok());
     assert!(VisibleOrder::new(65537).is_err());
     let mut bad = VisibleOrder::new(2).unwrap();
-    bad.push(9, [1; 32]).unwrap();
-    assert!(bad.push(9, [2; 32]).is_err());
+    bad.push(9, [1; 32], [1; 32]).unwrap();
+    assert!(bad.push(9, [2; 32], [1; 32]).is_err());
     assert!(bad.finish().is_err());
     assert!(VisibleOrder::new(1).unwrap().finish().is_err());
     let mut full = VisibleOrder::new(0).unwrap();
-    assert!(full.push(0, [1; 32]).is_err());
+    assert!(full.push(0, [1; 32], [1; 32]).is_err());
 }
 
 fn manifest_issue() -> ManifestIssue {
@@ -136,7 +151,7 @@ fn manifest_issue() -> ManifestIssue {
         baseline_generation: 8,
         expires_at_ns: 200,
         item_count: 1,
-        stream_bytes: 48,
+        stream_bytes: 80,
         chunk_size: 240 * 1024,
         chunk_digests: vec![[12; 32]],
     }
@@ -285,7 +300,7 @@ fn manifest_enforces_stream_counts_scope_and_five_minute_limit() {
     bad.item_count = 65537;
     assert!(SnapshotManifest::issue(bad, &key, 100).is_err());
     let mut bad = base.clone();
-    bad.stream_bytes = 45;
+    bad.stream_bytes = 77;
     assert!(SnapshotManifest::issue(bad, &key, 100).is_err());
     let mut bad = base.clone();
     bad.expires_at_ns = 100 + 300_000_000_001;
@@ -323,17 +338,17 @@ fn manifest_enforces_stream_counts_scope_and_five_minute_limit() {
 #[test]
 fn authenticated_manifest_checks_exact_chunk_identity_length_and_digest() {
     let mut issue = manifest_issue();
-    issue.chunk_digests[0] = *blake3::hash(&[7; 48]).as_bytes();
+    issue.chunk_digests[0] = *blake3::hash(&[7; 80]).as_bytes();
     let key = ed25519_dalek::SigningKey::from_bytes(&[7; 32]);
     let manifest = SnapshotManifest::issue(issue, &key, 100).unwrap();
     let signed = manifest.authenticate(&key.verifying_key(), 100).unwrap();
-    let chunk = SnapshotChunk::new([11; 16], manifest.digest(), 0, &[7; 48]).unwrap();
+    let chunk = SnapshotChunk::new([11; 16], manifest.digest(), 0, &[7; 80]).unwrap();
     assert!(signed.validate_chunk(&chunk).is_ok());
     for wrong in [
-        SnapshotChunk::new([12; 16], manifest.digest(), 0, &[7; 48]).unwrap(),
-        SnapshotChunk::new([11; 16], [2; 32], 0, &[7; 48]).unwrap(),
-        SnapshotChunk::new([11; 16], manifest.digest(), 1, &[7; 48]).unwrap(),
-        SnapshotChunk::new([11; 16], manifest.digest(), 0, &[8; 48]).unwrap(),
+        SnapshotChunk::new([12; 16], manifest.digest(), 0, &[7; 80]).unwrap(),
+        SnapshotChunk::new([11; 16], [2; 32], 0, &[7; 80]).unwrap(),
+        SnapshotChunk::new([11; 16], manifest.digest(), 1, &[7; 80]).unwrap(),
+        SnapshotChunk::new([11; 16], manifest.digest(), 0, &[8; 80]).unwrap(),
         SnapshotChunk::new([11; 16], manifest.digest(), 0, &[7; 47]).unwrap(),
     ] {
         assert!(signed.validate_chunk(&wrong).is_err());

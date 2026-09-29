@@ -430,14 +430,6 @@ fn operations<'de, D: Deserializer<'de>>(d: D) -> Result<Vec<Digest>, D::Error> 
     d.deserialize_seq(V)
 }
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-/// Owner that established an event's storage boundary.
-pub enum EventSource {
-    /// Relay storage established the referenced event.
-    Relay,
-    /// Native owner admission established the referenced event.
-    Native,
-}
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Closed semantic class of original canonical event bytes.
 pub enum EventKind {
     /// Canonical application state.
@@ -455,8 +447,8 @@ pub struct EventChunk {
     committed: CommitRef,
     ordinal: u32,
     event_digest: Digest,
-    source: EventSource,
     kind: EventKind,
+    author: [u8; 32],
     canonical_size: u64,
     offset: u64,
     #[serde(with = "serde_bytes")]
@@ -472,8 +464,8 @@ impl EventChunk {
         committed: CommitRef,
         ordinal: u32,
         event_digest: Digest,
-        source: EventSource,
         kind: EventKind,
+        author: [u8; 32],
         canonical_size: u64,
         offset: u64,
         bytes: Vec<u8>,
@@ -483,8 +475,8 @@ impl EventChunk {
             committed,
             ordinal,
             event_digest,
-            source,
             kind,
+            author,
             canonical_size,
             offset,
             bytes,
@@ -538,9 +530,10 @@ impl EventChunk {
     pub fn event_digest(&self) -> Digest {
         self.event_digest
     }
-    /// Return which owner established storage.
-    pub fn source(&self) -> EventSource {
-        self.source
+    /// Return the device this event is attributed to: its receiver admits
+    /// it as carried from this author.
+    pub fn author(&self) -> [u8; 32] {
+        self.author
     }
     /// Return the event's semantic class.
     pub fn kind(&self) -> EventKind {
@@ -772,18 +765,18 @@ pub fn canonical_item_digest(bytes: &[u8]) -> Digest {
     *blake3::hash(bytes).as_bytes()
 }
 
-/// Commit to the exact ordered visible event identifiers.
+/// Commit to the exact ordered visible event identifiers and their authors.
 ///
 /// # Errors
 ///
 /// Returns `StateError` if the value cannot be canonically encoded.
-pub fn visible_order_digest(events: &[(u32, Digest)]) -> Result<Digest, StateError> {
+pub fn visible_order_digest(events: &[(u32, Digest, [u8; 32])]) -> Result<Digest, StateError> {
     if events.len() > MAX_ADMITTED_OPERATIONS {
         return Err(StateError::Oversized);
     }
     let b = postcard::to_stdvec(events).map_err(|_| StateError::Codec)?;
     let mut h = blake3::Hasher::new();
-    h.update(b"tilo-delivery-v3-visible-order-v1\0");
+    h.update(b"tilo-delivery-v3-visible-order-v2\0");
     h.update(&b);
     Ok(*h.finalize().as_bytes())
 }

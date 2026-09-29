@@ -667,6 +667,7 @@ fn sender_admin_v5_v6_exact_borrowed_base_and_delivery_generation_preserved() {
             .map(|p| PublicationRef {
                 payload: pool.intern(p.bytes).unwrap(),
                 kind: p.kind,
+                author: p.author,
             })
             .collect::<Vec<_>>();
         if version == 6 {

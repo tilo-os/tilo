@@ -199,6 +199,7 @@ impl PublicationCustody {
         self.entries.get(index).map(|entry| PublicationView {
             bytes: entry.payload.bytes(),
             kind: entry.reference.kind,
+            author: entry.reference.author,
         })
     }
     pub fn same_pool(&self, pool: &HostBytes) -> bool {

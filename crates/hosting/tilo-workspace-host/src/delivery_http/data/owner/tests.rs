@@ -361,7 +361,7 @@ fn poll(
 #[test]
 fn replay_callback_returns_original_native_group_before_its_real_signed_boundary() {
     use tilo_delivery_protocol::delivery_v3::state::{
-        CommitBoundary, EventChunk, EventSource, visible_order_digest,
+        CommitBoundary, EventChunk, visible_order_digest,
     };
     let (mut f, budget, ingress) = attached_fixture();
     let mut registry = HttpSessions::new(&f.owner, &f.current, f.now).unwrap();
@@ -432,11 +432,10 @@ fn replay_callback_returns_original_native_group_before_its_real_signed_boundary
         match kind {
             MessageType::EventChunk => {
                 let chunk = EventChunk::decode(payload).unwrap();
-                assert_eq!(chunk.source(), EventSource::Native);
                 let ordinal = chunk.ordinal() as usize;
                 if ordinal == originals.len() {
                     originals.push(vec![]);
-                    digests.push((chunk.ordinal(), chunk.event_digest()));
+                    digests.push((chunk.ordinal(), chunk.event_digest(), chunk.author()));
                 }
                 assert_eq!(chunk.offset(), originals[ordinal].len() as u64);
                 originals[ordinal].extend_from_slice(chunk.bytes());
@@ -456,7 +455,7 @@ fn replay_callback_returns_original_native_group_before_its_real_signed_boundary
         boundary.visible_order_digest(),
         visible_order_digest(&digests).unwrap()
     );
-    for ((_, digest), bytes) in digests.iter().zip(&originals) {
+    for ((_, digest, _), bytes) in digests.iter().zip(&originals) {
         assert_eq!(digest, blake3::hash(bytes).as_bytes());
     }
     let signed = boundary

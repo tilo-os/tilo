@@ -55,8 +55,8 @@ fn event_chunk_checks_offsets_and_encoded_frame_cap() {
         commit(),
         0,
         [5; 32],
-        EventSource::Native,
         EventKind::State,
+        [6; 32],
         3,
         0,
         vec![1, 2, 3],
@@ -68,8 +68,8 @@ fn event_chunk_checks_offsets_and_encoded_frame_cap() {
             commit(),
             0,
             [5; 32],
-            EventSource::Native,
             EventKind::State,
+            [6; 32],
             2,
             1,
             vec![1, 2]
@@ -81,8 +81,8 @@ fn event_chunk_checks_offsets_and_encoded_frame_cap() {
             commit(),
             0,
             [5; 32],
-            EventSource::Native,
             EventKind::State,
+            [6; 32],
             MAX_FRAME_PAYLOAD_BYTES as u64,
             0,
             vec![0; MAX_FRAME_PAYLOAD_BYTES]
@@ -175,10 +175,18 @@ fn state_decoders_reject_truncation_trailing_and_forged_counts() {
 
 #[test]
 fn visible_order_commitment_is_order_sensitive_and_bounded() {
-    let a = visible_order_digest(&[(0, [1; 32]), (1, [2; 32])]).unwrap();
-    let b = visible_order_digest(&[(1, [2; 32]), (0, [1; 32])]).unwrap();
+    let a = visible_order_digest(&[(0, [1; 32], [7; 32]), (1, [2; 32], [7; 32])]).unwrap();
+    let b = visible_order_digest(&[(1, [2; 32], [7; 32]), (0, [1; 32], [7; 32])]).unwrap();
     assert_ne!(a, b);
-    assert!(visible_order_digest(&vec![(0, [0; 32]); MAX_ADMITTED_OPERATIONS + 1]).is_err());
+    let other_author =
+        visible_order_digest(&[(0, [1; 32], [8; 32]), (1, [2; 32], [7; 32])]).unwrap();
+    assert_ne!(
+        a, other_author,
+        "an event's author is part of the visible order"
+    );
+    assert!(
+        visible_order_digest(&vec![(0, [0; 32], [0; 32]); MAX_ADMITTED_OPERATIONS + 1]).is_err()
+    );
 }
 
 #[test]
@@ -197,8 +205,8 @@ fn decoded_payloads_expose_read_only_inert_fields() {
         commit(),
         7,
         [5; 32],
-        EventSource::Native,
         EventKind::State,
+        [6; 32],
         3,
         0,
         vec![1, 2, 3],
@@ -209,10 +217,7 @@ fn decoded_payloads_expose_read_only_inert_fields() {
         (event.committed().clone(), event.event_digest()),
         (commit(), [5; 32])
     );
-    assert_eq!(
-        (event.source(), event.kind()),
-        (EventSource::Native, EventKind::State)
-    );
+    assert_eq!((event.author(), event.kind()), ([6; 32], EventKind::State));
     assert_eq!((event.canonical_size(), event.offset()), (3, 0));
     let token = crate::delivery_v3::cursor::CursorToken::from_bytes(&[1]).unwrap();
     let boundary = CommitBoundary::new(

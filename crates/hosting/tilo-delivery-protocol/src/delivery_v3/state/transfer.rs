@@ -194,8 +194,11 @@ pub struct TransferRecordHeader {
     kind: TransferKind,
     total: u64,
     digest: Digest,
+    author: [u8; 32],
 }
 impl TransferRecordHeader {
+    /// Exact encoded length of one header.
+    pub const BYTES: usize = 77;
     /// Construct after checking the bounded inert fields.
     ///
     /// # Errors
@@ -206,6 +209,7 @@ impl TransferRecordHeader {
         kind: TransferKind,
         total: u64,
         digest: Digest,
+        author: [u8; 32],
     ) -> Result<Self, StateError> {
         if total == 0 || total > MAX_CANONICAL_ITEM_BYTES {
             return Err(StateError::Invalid);
@@ -215,18 +219,20 @@ impl TransferRecordHeader {
             kind,
             total,
             digest,
+            author,
         })
     }
     /// Encode the exact canonical wire representation.
-    pub fn encode(&self) -> [u8; 45] {
-        let mut bytes = [0; 45];
+    pub fn encode(&self) -> [u8; Self::BYTES] {
+        let mut bytes = [0; Self::BYTES];
         bytes[..4].copy_from_slice(&self.ordinal.to_le_bytes());
         bytes[4] = match self.kind {
             TransferKind::Governance => 0,
             TransferKind::State => 1,
         };
         bytes[5..13].copy_from_slice(&self.total.to_le_bytes());
-        bytes[13..].copy_from_slice(&self.digest);
+        bytes[13..45].copy_from_slice(&self.digest);
+        bytes[45..].copy_from_slice(&self.author);
         bytes
     }
     /// Decode exact bounded canonical bytes; no authority is granted.
@@ -235,7 +241,7 @@ impl TransferRecordHeader {
     ///
     /// Returns `StateError` if the input is not a canonical encoding within this type's bounds.
     pub fn decode(bytes: &[u8]) -> Result<Self, StateError> {
-        let bytes: &[u8; 45] = bytes.try_into().map_err(|_| StateError::Codec)?;
+        let bytes: &[u8; Self::BYTES] = bytes.try_into().map_err(|_| StateError::Codec)?;
         let kind = match bytes[4] {
             0 => TransferKind::Governance,
             1 => TransferKind::State,
@@ -245,7 +251,8 @@ impl TransferRecordHeader {
             u32::from_le_bytes(bytes[..4].try_into().map_err(|_| StateError::Codec)?),
             kind,
             u64::from_le_bytes(bytes[5..13].try_into().map_err(|_| StateError::Codec)?),
-            bytes[13..].try_into().map_err(|_| StateError::Codec)?,
+            bytes[13..45].try_into().map_err(|_| StateError::Codec)?,
+            bytes[45..].try_into().map_err(|_| StateError::Codec)?,
         )
     }
     /// Return the original visible publication ordinal.
@@ -263,6 +270,10 @@ impl TransferRecordHeader {
     /// Return the original complete canonical item digest.
     pub fn canonical_digest(&self) -> Digest {
         self.digest
+    }
+    /// Return the device the item is attributed to.
+    pub fn author(&self) -> [u8; 32] {
+        self.author
     }
 }
 /// Streaming commitment to exactly one known visible item count.
@@ -284,7 +295,7 @@ impl VisibleOrder {
             return Err(StateError::Oversized);
         }
         let mut hasher = blake3::Hasher::new();
-        hasher.update(b"tilo-delivery-v3-visible-order-v1\0");
+        hasher.update(b"tilo-delivery-v3-visible-order-v2\0");
         let mut buffer = [0; 10];
         let bytes =
             postcard::to_slice(&u64::from(expected), &mut buffer).map_err(|_| StateError::Codec)?;
@@ -297,12 +308,17 @@ impl VisibleOrder {
             failed: false,
         })
     }
-    /// Append one strictly increasing original ordinal and digest.
+    /// Append one strictly increasing original ordinal, digest and author.
     ///
     /// # Errors
     ///
     /// Returns `StateError` if the resource budget refuses the allocation or the input is invalid.
-    pub fn push(&mut self, ordinal: u32, digest: Digest) -> Result<(), StateError> {
+    pub fn push(
+        &mut self,
+        ordinal: u32,
+        digest: Digest,
+        author: [u8; 32],
+    ) -> Result<(), StateError> {
         if self.failed
             || self.seen >= self.expected
             || self.last.is_some_and(|last| ordinal <= last)
@@ -314,6 +330,7 @@ impl VisibleOrder {
         let bytes = postcard::to_slice(&ordinal, &mut buffer).map_err(|_| StateError::Codec)?;
         self.hasher.update(bytes);
         self.hasher.update(&digest);
+        self.hasher.update(&author);
         self.last = Some(ordinal);
         self.seen = self.seen.saturating_add(1);
         Ok(())
@@ -520,7 +537,9 @@ impl ManifestIssue {
         {
             return Err(StateError::Oversized);
         }
-        let headers = u64::from(self.item_count) * 45;
+        let headers = u64::from(self.item_count)
+            .checked_mul(TransferRecordHeader::BYTES as u64)
+            .ok_or(StateError::Oversized)?;
         let canonical_bytes = self
             .stream_bytes
             .checked_sub(headers)

@@ -279,7 +279,7 @@ mod authenticity_tests {
             baseline_generation: 8,
             expires_at_ns: expires,
             item_count: 1,
-            stream_bytes: 46,
+            stream_bytes: 78,
             chunk_size: 240 * 1024,
             chunk_digests: vec![[10; 32]],
         }

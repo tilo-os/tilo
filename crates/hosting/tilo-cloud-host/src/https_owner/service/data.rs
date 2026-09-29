@@ -9,7 +9,7 @@ use tilo_delivery_protocol::delivery_v3::{
     framing::{self, FrameError, MessageType},
     http_proof::Method,
     state::{
-        self, CommitBoundary, CursorAck, EventChunk, EventKind, EventSource, StateItemChunk,
+        self, CommitBoundary, CursorAck, EventChunk, EventKind, StateItemChunk,
         visible_order_digest,
     },
 };
@@ -415,12 +415,13 @@ fn replay_group(
             ordinal: ordinal.try_into()?,
             digest: *blake3::hash(publication.bytes).as_bytes(),
             kind,
+            author: publication.author,
             canonical: publication.bytes,
         });
     }
     let order = events
         .iter()
-        .map(|event| (event.ordinal, event.digest))
+        .map(|event| (event.ordinal, event.digest, event.author))
         .collect::<Vec<_>>();
     let token = turn
         .issue_delivery_cursor(session, committed.clone())
@@ -475,6 +476,7 @@ struct Event<'a> {
     ordinal: u32,
     digest: Digest,
     kind: EventKind,
+    author: [u8; 32],
     canonical: &'a [u8],
 }
 impl Event<'_> {
@@ -489,8 +491,8 @@ impl Event<'_> {
                 committed.clone(),
                 self.ordinal,
                 self.digest,
-                EventSource::Native,
                 self.kind,
+                self.author,
                 self.canonical.len() as u64,
                 (index * EVENT_CHUNK) as u64,
                 bytes.to_vec(),

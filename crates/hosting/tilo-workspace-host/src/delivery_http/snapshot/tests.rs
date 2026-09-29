@@ -87,16 +87,20 @@ fn snapshot_stream_preserves_real_original_records_across_chunk_and_item_boundar
     let mut order = VisibleOrder::new(expected.len() as u32).unwrap();
     let mut remaining = materialized.as_slice();
     for (ordinal, bytes) in expected.iter().enumerate() {
-        let header = TransferRecordHeader::decode(&remaining[..45]).unwrap();
+        let header =
+            TransferRecordHeader::decode(&remaining[..TransferRecordHeader::BYTES]).unwrap();
         assert_eq!(header.ordinal(), ordinal as u32);
         assert_eq!(header.canonical_size(), bytes.len() as u64);
         assert_eq!(header.canonical_digest(), *blake3::hash(bytes).as_bytes());
         assert_eq!(header.kind(), native_family(bytes).unwrap());
-        assert_eq!(&remaining[45..45 + bytes.len()], bytes);
+        assert_eq!(
+            &remaining[TransferRecordHeader::BYTES..TransferRecordHeader::BYTES + bytes.len()],
+            bytes
+        );
         order
-            .push(ordinal as u32, header.canonical_digest())
+            .push(ordinal as u32, header.canonical_digest(), header.author())
             .unwrap();
-        remaining = &remaining[45 + bytes.len()..];
+        remaining = &remaining[TransferRecordHeader::BYTES + bytes.len()..];
     }
     assert!(remaining.is_empty());
     assert_eq!(stream.visible_order(), order.finish().unwrap());

@@ -54,6 +54,11 @@ pub struct PublicationRef {
     pub payload: Digest,
     /// Existing checkpoint/delta policy, independent of payload ownership.
     pub kind: Retention,
+    /// The device the payload is attributed to: the authenticated author of a
+    /// relay-carried item, or the serving host for its own writes. A receiver
+    /// admits the payload as carried from this author, and its room core
+    /// verifies it against the room's governance.
+    pub author: [u8; 32],
 }
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 /// Inert durable-position claim; only the native owner can establish it.

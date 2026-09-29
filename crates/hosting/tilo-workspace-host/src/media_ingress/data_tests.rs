@@ -726,11 +726,12 @@ async fn installed_https_snapshot_baseline_chunks_replay_and_renewal() {
     let mut offset = 0;
     let mut order = Vec::new();
     while offset < stream.len() {
-        let header = TransferRecordHeader::decode(&stream[offset..offset + 45]).unwrap();
-        let body = &stream[offset + 45..offset + 45 + header.canonical_size() as usize];
+        const HEADER: usize = TransferRecordHeader::BYTES;
+        let header = TransferRecordHeader::decode(&stream[offset..offset + HEADER]).unwrap();
+        let body = &stream[offset + HEADER..offset + HEADER + header.canonical_size() as usize];
         assert_eq!(blake3::hash(body).as_bytes(), &header.canonical_digest());
-        order.push((header.ordinal(), header.canonical_digest()));
-        offset += 45 + body.len();
+        order.push((header.ordinal(), header.canonical_digest(), header.author()));
+        offset += HEADER + body.len();
     }
     assert_eq!(order.len() as u32, issue.item_count);
     assert_eq!(

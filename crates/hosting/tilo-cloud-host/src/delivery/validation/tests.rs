@@ -168,6 +168,7 @@ fn cloud_delivery_validation_preserves_outer_structure_and_barrier_error_order()
             8 => state.delivery.as_mut().unwrap().tail.push(PublicationRef {
                 payload: [0; 32],
                 kind: Retention::Delta,
+                author: [0; 32],
             }),
             9 => (),
             _ => unreachable!(),

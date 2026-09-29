@@ -4,6 +4,7 @@ fn reference(pool: &mut PublicationPool, bytes: &[u8]) -> PublicationRef {
     PublicationRef {
         payload: pool.intern(bytes).unwrap(),
         kind: Retention::Delta,
+        author: [7; 32],
     }
 }
 #[test]
@@ -76,6 +77,7 @@ fn publication_custody_capacity_missing_refs_and_false_iterator_lengths_release_
     let missing = PublicationRef {
         payload: [99; 32],
         kind: Retention::Delta,
+        author: [7; 32],
     };
     let available = host.available_bytes();
     assert!(matches!(

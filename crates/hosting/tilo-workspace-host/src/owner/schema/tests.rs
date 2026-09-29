@@ -39,6 +39,7 @@ fn fixture_from(old: &Aggregate) -> FixtureV5<'_> {
         .map(|p| PublicationRef {
             payload: pool.intern(p.bytes).unwrap(),
             kind: p.kind,
+            author: p.author,
         })
         .collect::<Vec<_>>();
     FixtureV5 {
@@ -327,6 +328,7 @@ fn complete_literal_fixture(old: &Aggregate) -> FixtureV5<'_> {
     value.publication.tail.push(PublicationRef {
         payload: r.payload,
         kind: Retention::Delta,
+        author: r.author,
     });
     let committed = CommitRef {
         sequence: old.generation,
@@ -450,6 +452,7 @@ fn session_v5_combined_reference_budget_rejects_tail_before_element_read() {
     let r = PublicationRef {
         payload: [1; 32],
         kind: Retention::Checkpoint,
+        author: [2; 32],
     };
     let mut bytes = postcard::to_stdvec(&1u64).unwrap();
     bytes.extend(postcard::to_stdvec(&vec![r]).unwrap());

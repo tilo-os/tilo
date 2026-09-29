@@ -4,12 +4,11 @@ use ed25519_dalek::SigningKey;
 use tilo_delivery_protocol::delivery_v3::{
     commit::CommitRef,
     cursor::{CursorIssue, CursorToken},
-    state::{
-        CommitBoundary, EventChunk, EventKind, EventSource, canonical_item_digest,
-        visible_order_digest,
-    },
+    state::{CommitBoundary, EventChunk, EventKind, canonical_item_digest, visible_order_digest},
 };
 const ROOM: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+/// The device every test event is attributed to.
+const AUTHOR: [u8; 32] = [9; 32];
 fn fixture() -> (CursorIdentity, SigningKey, CommitRef) {
     let key = SigningKey::from_bytes(&[10; 32]);
     (
@@ -39,8 +38,8 @@ fn chunk(
         commit.clone(),
         ordinal,
         canonical_item_digest(bytes),
-        EventSource::Native,
         EventKind::State,
+        AUTHOR,
         bytes.len() as u64,
         range.start as u64,
         bytes[range].to_vec(),
@@ -51,7 +50,7 @@ fn boundary(
     identity: &CursorIdentity,
     key: &SigningKey,
     commit: &CommitRef,
-    events: &[(u32, [u8; 32])],
+    events: &[(u32, [u8; 32], [u8; 32])],
 ) -> CommitBoundary {
     let token = CursorToken::issue(
         CursorIssue {
@@ -97,7 +96,7 @@ fn replay_reassembles_exact_ranges_then_checks_signed_complete_cut() {
                 &identity,
                 &key,
                 &commit,
-                &[(0, canonical_item_digest(bytes))],
+                &[(0, canonical_item_digest(bytes), AUTHOR)],
             ),
         )
         .unwrap();
@@ -111,7 +110,7 @@ fn replay_reassembles_exact_ranges_then_checks_signed_complete_cut() {
             &identity,
             &key,
             &commit,
-            &[(0, canonical_item_digest(bytes))]
+            &[(0, canonical_item_digest(bytes), AUTHOR)]
         )
         .cursor()
         .as_bytes()
@@ -148,7 +147,7 @@ fn replay_boundary_cannot_skip_pending_bytes_change_scope_or_lie_about_order() {
         &identity,
         &key,
         &commit,
-        &[(0, canonical_item_digest(bytes))],
+        &[(0, canonical_item_digest(bytes), AUTHOR)],
     );
     assert!(partial.finish(11, &valid).is_err());
     assert!(make().finish(12, &valid).is_err());
@@ -165,7 +164,7 @@ fn replay_boundary_cannot_skip_pending_bytes_change_scope_or_lie_about_order() {
                     &identity,
                     &key,
                     &commit,
-                    &[(1, canonical_item_digest(bytes))]
+                    &[(1, canonical_item_digest(bytes), AUTHOR)]
                 )
             )
             .is_err()
@@ -180,7 +179,7 @@ fn replay_boundary_cannot_skip_pending_bytes_change_scope_or_lie_about_order() {
                     &foreign,
                     &key,
                     &commit,
-                    &[(0, canonical_item_digest(bytes))]
+                    &[(0, canonical_item_digest(bytes), AUTHOR)]
                 )
             )
             .is_err()
@@ -193,7 +192,7 @@ fn replay_boundary_cannot_skip_pending_bytes_change_scope_or_lie_about_order() {
                     &identity,
                     &SigningKey::from_bytes(&[44; 32]),
                     &commit,
-                    &[(0, canonical_item_digest(bytes))]
+                    &[(0, canonical_item_digest(bytes), AUTHOR)]
                 )
             )
             .is_err()
@@ -225,6 +224,7 @@ fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
                 TransferKind::State,
                 bytes.len() as u64,
                 canonical_item_digest(bytes),
+                AUTHOR,
             )
             .unwrap()
             .encode(),
@@ -243,9 +243,11 @@ fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
     }
     assert_eq!(
         decoder.finish().unwrap(),
-        visible_order_digest(
-            &items.map(|(ordinal, bytes)| (ordinal, canonical_item_digest(bytes)))
-        )
+        visible_order_digest(&items.map(|(ordinal, bytes)| (
+            ordinal,
+            canonical_item_digest(bytes),
+            AUTHOR
+        )))
         .unwrap()
     );
     assert_eq!(
@@ -256,25 +258,30 @@ fn staged_stream_reads_split_headers_and_one_canonical_item_at_a_time() {
 #[test]
 fn staged_stream_rejects_incomplete_corrupt_oversized_and_out_of_order_items() {
     use tilo_delivery_protocol::delivery_v3::state::{TransferKind, TransferRecordHeader};
-    let header =
-        TransferRecordHeader::new(4, TransferKind::State, 6, canonical_item_digest(b"abcdef"))
-            .unwrap()
-            .encode();
-    let mut decoder = StreamDecoder::new(1, 51, 5).unwrap();
+    let header = TransferRecordHeader::new(
+        4,
+        TransferKind::State,
+        6,
+        canonical_item_digest(b"abcdef"),
+        AUTHOR,
+    )
+    .unwrap()
+    .encode();
+    let mut decoder = StreamDecoder::new(1, 83, 5).unwrap();
     assert!(decoder.push(&header, |_| panic!("must not admit")).is_err());
-    let mut decoder = StreamDecoder::new(1, 51, 6).unwrap();
+    let mut decoder = StreamDecoder::new(1, 83, 6).unwrap();
     decoder
         .push(&header[..10], |_| panic!("must not admit"))
         .unwrap();
     assert!(decoder.finish().is_err());
-    let mut decoder = StreamDecoder::new(1, 51, 6).unwrap();
+    let mut decoder = StreamDecoder::new(1, 83, 6).unwrap();
     decoder.push(&header, |_| panic!("must not admit")).unwrap();
     assert!(
         decoder
             .push(b"abcdeg", |_| panic!("corrupt bytes must not admit"))
             .is_err()
     );
-    let mut decoder = StreamDecoder::new(2, 102, 6).unwrap();
+    let mut decoder = StreamDecoder::new(2, 166, 6).unwrap();
     decoder.push(&header, |_| Ok(())).unwrap();
     decoder.push(b"abcdef", |_| Ok(())).unwrap();
     assert!(decoder.push(&header, |_| Ok(())).is_err());
@@ -290,12 +297,13 @@ fn pinned_transfer_checks_scope_every_chunk_final_order_generation_and_actual_de
     let (identity, key, commit) = fixture();
     let bytes = b"original";
     let digest = canonical_item_digest(bytes);
-    let mut stream = TransferRecordHeader::new(4, TransferKind::State, bytes.len() as u64, digest)
-        .unwrap()
-        .encode()
-        .to_vec();
+    let mut stream =
+        TransferRecordHeader::new(4, TransferKind::State, bytes.len() as u64, digest, AUTHOR)
+            .unwrap()
+            .encode()
+            .to_vec();
     stream.extend(bytes);
-    let boundary = boundary(&identity, &key, &commit, &[(4, digest)]);
+    let boundary = boundary(&identity, &key, &commit, &[(4, digest, AUTHOR)]);
     let scope = boundary
         .cursor()
         .authenticate(&key.verifying_key())
@@ -398,19 +406,25 @@ fn bounded_publication_decode_refuses_past_its_outer_allocation_limit() {
 fn staged_parser_refuses_an_item_past_its_limit_and_emits_a_complete_one() {
     use state::{TransferKind, TransferRecordHeader};
     let header = |size: u64, body: &[u8]| {
-        TransferRecordHeader::new(1, TransferKind::State, size, canonical_item_digest(body))
-            .unwrap()
-            .encode()
+        TransferRecordHeader::new(
+            1,
+            TransferKind::State,
+            size,
+            canonical_item_digest(body),
+            AUTHOR,
+        )
+        .unwrap()
+        .encode()
     };
     let oversized = vec![3; 32 * 1024 + 1];
-    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 46, 32 * 1024).unwrap();
+    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 78, 32 * 1024).unwrap();
     assert!(
         decoder
             .push(&header(32 * 1024 + 1, &oversized), |_| unreachable!())
             .is_err()
     );
     let body = vec![3; 32 * 1024];
-    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 45, 32 * 1024).unwrap();
+    let mut decoder = StreamDecoder::new(1, 32 * 1024 + 77, 32 * 1024).unwrap();
     decoder
         .push(&header(32 * 1024, &body), |_| unreachable!())
         .unwrap();
@@ -445,7 +459,7 @@ fn group_frames(
             1 << 20,
         )
         .unwrap();
-        order.push((ordinal as u32, canonical_item_digest(bytes)));
+        order.push((ordinal as u32, canonical_item_digest(bytes), AUTHOR));
     }
     let boundary = boundary(identity, key, commit, &order);
     framing::append_frame(

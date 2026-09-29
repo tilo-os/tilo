@@ -355,12 +355,13 @@ fn replay_group(
             ordinal: ordinal.try_into()?,
             digest: *blake3::hash(publication.bytes).as_bytes(),
             kind,
+            author: publication.author,
             canonical: publication.bytes,
         });
     }
     let order = events
         .iter()
-        .map(|event| (event.ordinal, event.digest))
+        .map(|event| (event.ordinal, event.digest, event.author))
         .collect::<Vec<_>>();
     let token = owner.data_issue_cursor(turn, source, committed.clone())?;
     let cursor = token.clone();
@@ -418,6 +419,7 @@ struct ReplayEvent<'a> {
     ordinal: u32,
     digest: Digest,
     kind: tilo_delivery_protocol::delivery_v3::state::EventKind,
+    author: [u8; 32],
     canonical: &'a [u8],
 }
 impl ReplayEvent<'_> {
@@ -426,7 +428,7 @@ impl ReplayEvent<'_> {
         committed: &tilo_delivery_protocol::delivery_v3::commit::CommitRef,
         mut visit: impl FnMut(&[u8]) -> anyhow::Result<()>,
     ) -> anyhow::Result<()> {
-        use tilo_delivery_protocol::delivery_v3::state::{EventChunk, EventSource};
+        use tilo_delivery_protocol::delivery_v3::state::EventChunk;
         anyhow::ensure!(
             !self.canonical.is_empty(),
             "empty native replay publication"
@@ -438,8 +440,8 @@ impl ReplayEvent<'_> {
                 committed.clone(),
                 self.ordinal,
                 self.digest,
-                EventSource::Native,
                 self.kind,
+                self.author,
                 self.canonical.len() as u64,
                 (index * CHUNK) as u64,
                 bytes.to_vec(),

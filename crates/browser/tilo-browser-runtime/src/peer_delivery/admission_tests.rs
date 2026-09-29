@@ -124,6 +124,7 @@ fn admit(state: &StatePeer, events: &[(EventKind, Vec<u8>)]) -> Result<StatePeer
                 ordinal: ordinal as u32,
                 kind: *kind,
                 digest: canonical_item_digest(bytes),
+                author: [0; 32],
                 bytes: bytes.to_vec(),
             },
             time(),
@@ -208,6 +209,7 @@ fn refused_item_consumes_the_candidate_and_leaves_the_owner_untouched() {
         ordinal: 0,
         kind: EventKind::Governance,
         digest: [0; 32],
+        author: [0; 32],
         bytes: vec![0xff; 4],
     };
     assert!(cut.push(bad, time()).is_err());
@@ -753,6 +755,7 @@ fn replay_cut(events: &[(EventKind, Vec<u8>)], sequence: u64) -> crate::peer_del
                 ordinal: ordinal as u32,
                 kind: *kind,
                 digest: canonical_item_digest(bytes),
+                author: [0; 32],
                 bytes: bytes.to_vec(),
             })
             .collect(),

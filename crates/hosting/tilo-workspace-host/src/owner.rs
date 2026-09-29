@@ -847,6 +847,7 @@ impl SessionOwner {
                         tilo_delivery_protocol::delivery_v3::commit::PublicationRef {
                             payload: pool.intern(bytes)?,
                             kind: Retention::Checkpoint,
+                            author: self.identity.native_cert.device_public_key,
                         },
                     )
                 })
@@ -1059,6 +1060,7 @@ impl SessionOwner {
                             tilo_delivery_protocol::delivery_v3::commit::PublicationRef {
                                 payload: pool.intern(bytes)?,
                                 kind,
+                                author: self.identity.native_cert.device_public_key,
                             },
                         );
                     }

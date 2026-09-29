@@ -3,8 +3,8 @@ use crate::peer_delivery_cursor::{CursorIdentity, StoredDeliveryCursor};
 use tilo_delivery_protocol::delivery_v3::{
     commit::{CommitRef, MAX_ENVELOPE_BYTES},
     state::{
-        CommitBoundary, EventChunk, EventKind, EventSource, MAX_ADMITTED_OPERATIONS,
-        canonical_item_digest, visible_order_digest,
+        CommitBoundary, EventChunk, EventKind, MAX_ADMITTED_OPERATIONS, canonical_item_digest,
+        visible_order_digest,
     },
 };
 
@@ -14,6 +14,8 @@ pub(crate) struct CompleteEvent {
     pub ordinal: u32,
     pub kind: EventKind,
     pub digest: [u8; 32],
+    /// The device the event is attributed to.
+    pub author: [u8; 32],
     pub bytes: Vec<u8>,
 }
 struct PartialEvent {
@@ -63,8 +65,8 @@ impl ReplayBatch {
         result
     }
     fn push_inner(&mut self, generation: u64, chunk: EventChunk) -> Result<(), String> {
-        if self.failed || generation != self.generation || chunk.source() != EventSource::Native {
-            return Err("stale or unsupported replay source".into());
+        if self.failed || generation != self.generation {
+            return Err("stale replay generation".into());
         }
         if self
             .committed
@@ -105,6 +107,7 @@ impl ReplayBatch {
                     ordinal: chunk.ordinal(),
                     kind: chunk.kind(),
                     digest: chunk.event_digest(),
+                    author: chunk.author(),
                     bytes,
                 },
                 size,
@@ -115,6 +118,7 @@ impl ReplayBatch {
         if partial.event.ordinal != chunk.ordinal()
             || partial.event.kind != chunk.kind()
             || partial.event.digest != chunk.event_digest()
+            || partial.event.author != chunk.author()
             || partial.size as u64 != chunk.canonical_size()
             || partial.event.bytes.len() as u64 != chunk.offset()
             || partial
@@ -151,7 +155,7 @@ impl ReplayBatch {
         let order = self
             .events
             .iter()
-            .map(|event| (event.ordinal, event.digest))
+            .map(|event| (event.ordinal, event.digest, event.author))
             .collect::<Vec<_>>();
         if visible_order_digest(&order).map_err(|error| error.to_string())?
             != boundary.visible_order_digest()
@@ -306,7 +310,7 @@ pub(crate) struct StreamDecoder {
     expected_bytes: u64,
     seen_bytes: u64,
     item_limit: usize,
-    header: [u8; 45],
+    header: [u8; state::TransferRecordHeader::BYTES],
     header_len: usize,
     item: Option<(state::TransferRecordHeader, Vec<u8>)>,
     failed: bool,
@@ -326,7 +330,7 @@ impl StreamDecoder {
             expected_bytes: stream_bytes,
             seen_bytes: 0,
             item_limit,
-            header: [0; 45],
+            header: [0; state::TransferRecordHeader::BYTES],
             header_len: 0,
             item: None,
             failed: false,
@@ -359,12 +363,12 @@ impl StreamDecoder {
         self.seen_bytes += bytes.len() as u64;
         while !bytes.is_empty() {
             if self.item.is_none() {
-                let take = (45 - self.header_len).min(bytes.len());
+                let take = (state::TransferRecordHeader::BYTES - self.header_len).min(bytes.len());
                 self.header[self.header_len..self.header_len + take]
                     .copy_from_slice(&bytes[..take]);
                 self.header_len += take;
                 bytes = &bytes[take..];
-                if self.header_len != 45 {
+                if self.header_len != state::TransferRecordHeader::BYTES {
                     continue;
                 }
                 let header =
@@ -375,7 +379,7 @@ impl StreamDecoder {
                     return Err("staged canonical item exceeds bound".into());
                 }
                 self.order
-                    .push(header.ordinal(), header.canonical_digest())
+                    .push(header.ordinal(), header.canonical_digest(), header.author())
                     .map_err(|e| e.to_string())?;
                 let body = incoming::buffer(size)?;
                 self.item = Some((header, body));
@@ -397,6 +401,7 @@ impl StreamDecoder {
                         state::TransferKind::State => state::EventKind::State,
                     },
                     digest: header.canonical_digest(),
+                    author: header.author(),
                     bytes,
                 })?;
             }

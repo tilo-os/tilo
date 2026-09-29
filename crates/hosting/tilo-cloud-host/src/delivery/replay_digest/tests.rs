@@ -47,10 +47,12 @@ fn cloud_replay_digest_stream_matches_actual_retained_and_all_reference_fields()
         PublicationRef {
             payload: [32; 32],
             kind: Retention::Delta,
+            author: [36; 32],
         },
         PublicationRef {
             payload: [33; 32],
             kind: Retention::Checkpoint,
+            author: [37; 32],
         },
     ]);
     entry.admitted_operations.extend([[34; 32], [35; 32]]);

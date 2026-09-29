@@ -15,6 +15,7 @@ fn publication(bytes: &[u8]) -> PublicationRef {
     PublicationRef {
         payload: *blake3::hash(bytes).as_bytes(),
         kind: Retention::Delta,
+        author: [7; 32],
     }
 }
 fn replay(reference: PublicationRef) -> ReplayCommit {
@@ -419,6 +420,7 @@ fn literal_empty_wire_and_maximum_vector_decode_while_one_more_is_refused() {
             publications: vec![PublicationRef {
                 payload: [3; 32],
                 kind: Retention::Delta,
+                author: [7; 32],
             }],
             admitted_operations: vec![[4; 32]; MAX_REFERENCES],
             committed_at_ns: u64::MAX,
