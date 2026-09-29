@@ -648,29 +648,17 @@ pub struct NetGateBind {
 }
 
 /// Wire the egress gate into the sandbox: socket + env vars for an
-/// ordinary HTTP client.
+/// ordinary HTTP client ([`crate::netgate::proxy_env`]), pointed at the
+/// in-sandbox relay.
 ///
 /// `--bind`, not `--ro-bind`: `connect(2)` on a pathname socket needs
 /// write access.
-///
-/// Both proxy forms advertised since picking one breaks apps:
-/// `HTTP(S)_PROXY` works with no feature flags (matters since
-/// `reqwest`'s SOCKS support is non-default); `ALL_PROXY` →
-/// `socks5h://…`, where the `h` sends the **hostname** to the proxy
-/// instead of resolving locally, which the sandbox can't do.
 pub fn push_net_gate(argv: &mut Vec<String>, bind: &NetGateBind) {
     push_bind(argv, "--bind", &bind.host_socket, &bind.sandbox_socket);
-    let http = format!("http://127.0.0.1:{}", bind.port);
-    for var in ["HTTP_PROXY", "http_proxy", "HTTPS_PROXY", "https_proxy"] {
+    for (var, value) in crate::netgate::proxy_env(bind.port) {
         argv.push("--setenv".to_string());
         argv.push(var.to_string());
-        argv.push(http.clone());
-    }
-    let socks = format!("socks5h://127.0.0.1:{}", bind.port);
-    for var in ["ALL_PROXY", "all_proxy"] {
-        argv.push("--setenv".to_string());
-        argv.push(var.to_string());
-        argv.push(socks.clone());
+        argv.push(value);
     }
     // Convenience for an app that speaks to the gate directly instead of
     // via the loopback relay.

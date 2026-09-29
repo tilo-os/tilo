@@ -96,7 +96,6 @@ fn request_with(f: &Fixture, exe: &Path, op: &str, arg: OsString) -> LaunchReque
         container_dir: f.container.clone(),
         capabilities: CapabilityPlan::empty(),
         egress: EgressDecision::Blocked,
-        gate_socket: None,
         inherit_fds: Vec::new(),
         env: Vec::new(),
         trust: TrustRequirement::DeveloperId,
@@ -258,22 +257,40 @@ fn network_follows_the_egress_decision() {
     to_agent.egress = EgressDecision::Unrestricted;
     assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
 
-    let gate = f.root.join("gate.sock");
-    let _gate = UnixListener::bind(&gate).unwrap();
-    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["example.com".into()]));
-    let mut to_gate = request(&f, "unix", &gate);
-    to_gate.egress = filtered.clone();
-    assert_eq!(exit_code(&to_gate), REFUSED, "no gate was configured");
-    to_gate.gate_socket = Some(gate.clone());
-    assert_eq!(exit_code(&to_gate), OK, "the gate was unreachable");
-    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port);
-    tcp_gated.egress = filtered;
-    tcp_gated.gate_socket = Some(gate);
+    // A host allowlist: the launcher's gate is the only way out, through the
+    // proxy environment, and it carries only the granted hosts.
+    let filtered = EgressDecision::Filtered(EgressPolicy::new(vec!["localhost".into()]));
+    let mut tcp_gated = request_with(&f, &f.probe, "tcp", port.clone());
+    tcp_gated.egress = filtered.clone();
     assert_eq!(
         exit_code(&tcp_gated),
         REFUSED,
         "filtered egress bypassed the gate"
     );
+    let through_gate = |target: String| {
+        let mut req = request_with(&f, &f.probe, "proxy", OsString::from(target));
+        req.egress = filtered.clone();
+        exit_code(&req)
+    };
+    let port = port.to_str().unwrap();
+    assert_eq!(
+        through_gate(format!("localhost:{port}")),
+        OK,
+        "a granted host was unreachable through the gate"
+    );
+    assert_eq!(
+        through_gate(format!("127.0.0.1:{port}")),
+        REFUSED,
+        "an address literal satisfied a hostname grant"
+    );
+    assert_eq!(
+        through_gate("example.com:443".to_string()),
+        REFUSED,
+        "an ungranted host was reachable"
+    );
+    let mut to_agent = request(&f, "unix", &agent);
+    to_agent.egress = filtered;
+    assert_eq!(exit_code(&to_agent), REFUSED, "a user socket was reachable");
 }
 
 fn user_cache_dir() -> PathBuf {
