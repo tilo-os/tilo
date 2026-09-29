@@ -902,10 +902,14 @@ fn register_search_providers() {
     let written = data_home_root()
         .map_err(|error| error.to_string())
         .and_then(|data| {
-            tilo_os_search::linux_files::write(&data, &runtime).map_err(|error| error.to_string())
+            let config = xdg_paths::config_dir().ok_or("no configuration directory")?;
+            tilo_os_search::linux_files::write(&data, &config, &runtime)
+                .map_err(|error| error.to_string())
         });
     match written {
-        Ok(()) => println!("  search   : GNOME Shell and KRunner find its resources"),
+        Ok(()) => println!(
+            "  search   : KRunner finds its resources now, GNOME Shell after the next login"
+        ),
         Err(error) => eprintln!("tilo-install: host search not registered: {error}"),
     }
 }

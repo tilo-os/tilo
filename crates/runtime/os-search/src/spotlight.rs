@@ -1,33 +1,20 @@
-//! Spotlight: its own copy of the index, and the activity that opens a result.
+//! Spotlight: its own copy of the index.
 //!
 //! Spotlight keeps what it is given, so [`apply`] hands it each walk's
 //! [`Changes`] and [`reset`] clears what a previous run left. Items belong to
 //! the app bundle that indexed them: a process without a bundle identifier
 //! (a binary run from `target/`) cannot index, and [`bundled`] says so.
-//! Choosing a result starts or wakes that bundle with a `CSSearchableItem`
-//! user activity naming the entry, which [`run_continuations`] hands over.
+//! Choosing a result starts or wakes that bundle's app (in `Tilo.app`, the
+//! Store), which hands the entry back to the daemon (`tilo-host-search`).
 
-use std::ptr::NonNull;
-
-use block2::{DynBlock, RcBlock};
+use block2::RcBlock;
+use objc2::AllocAnyThread;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{
-    AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
-};
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSUserActivityRestoring,
-};
-use objc2_core_spotlight::{
-    CSSearchableIndex, CSSearchableItem, CSSearchableItemActionType,
-    CSSearchableItemActivityIdentifier, CSSearchableItemAttributeSet,
-};
-use objc2_foundation::{
-    NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString, NSUserActivity,
-};
+use objc2_core_spotlight::{CSSearchableIndex, CSSearchableItem, CSSearchableItemAttributeSet};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSString};
 use objc2_uniform_type_identifiers::UTTypeItem;
 
-use crate::{Changes, EntryId, SearchEntry};
+use crate::{Changes, SearchEntry};
 
 /// The domain every item this runtime indexes carries, so a reset removes
 /// exactly them.
@@ -115,114 +102,5 @@ fn item(entry: &SearchEntry) -> Retained<CSSearchableItem> {
             Some(&NSString::from_str(DOMAIN)),
             &attributes,
         )
-    }
-}
-
-/// The entry a Spotlight user activity asks to open, if it is one.
-pub fn activity_entry(activity: &NSUserActivity) -> Option<EntryId> {
-    // SAFETY: both keys are immutable framework constants.
-    let (action, key) = unsafe {
-        (
-            CSSearchableItemActionType,
-            CSSearchableItemActivityIdentifier,
-        )
-    };
-    if &*activity.activityType() != action {
-        return None;
-    }
-    let info = activity.userInfo()?;
-    let id = info.objectForKey(key)?.downcast::<NSString>().ok()?;
-    id.to_string().parse().ok()
-}
-
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements, and `Continuation`
-    // does not implement `Drop`.
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[name = "TiloSpotlightContinuation"]
-    #[ivars = Box<dyn Fn(EntryId)>]
-    struct Continuation;
-
-    // SAFETY: NSObjectProtocol has no safety requirements.
-    unsafe impl NSObjectProtocol for Continuation {}
-
-    // SAFETY: the method signature matches the protocol's.
-    unsafe impl NSApplicationDelegate for Continuation {
-        #[unsafe(method(application:continueUserActivity:restorationHandler:))]
-        fn continue_activity(
-            &self,
-            _application: &NSApplication,
-            activity: &NSUserActivity,
-            _restore: &DynBlock<dyn Fn(NonNull<NSArray<ProtocolObject<dyn NSUserActivityRestoring>>>)>,
-        ) -> bool {
-            match activity_entry(activity) {
-                Some(entry) => {
-                    (self.ivars())(entry);
-                    true
-                }
-                None => false,
-            }
-        }
-    }
-);
-
-/// Run the app on the main thread, handing every Spotlight result the person
-/// chooses to `open`. Returns only once the app terminates.
-///
-/// # Errors
-///
-/// Refuses to run off the main thread, where `AppKit` cannot.
-pub fn run_continuations(open: impl Fn(EntryId) + 'static) -> std::io::Result<()> {
-    let mtm = MainThreadMarker::new().ok_or_else(|| {
-        std::io::Error::other("Spotlight results are continued on the main thread")
-    })?;
-    let app = NSApplication::sharedApplication(mtm);
-    // A background service: no Dock icon, no menu bar.
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    let delegate = Continuation::alloc(mtm).set_ivars(Box::new(open) as Box<dyn Fn(EntryId)>);
-    // SAFETY: NSObject's `init` has this signature.
-    let delegate: Retained<Continuation> = unsafe { msg_send![super(delegate), init] };
-    // The application holds its delegate weakly; `delegate` lives as long as
-    // this frame, which is as long as the app runs.
-    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    app.run();
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use objc2_foundation::NSDictionary;
-
-    use super::*;
-
-    fn activity(kind: &NSString, id: &str) -> Retained<NSUserActivity> {
-        let activity = NSUserActivity::initWithActivityType(NSUserActivity::alloc(), kind);
-        // SAFETY: the key is an immutable framework constant.
-        let key = unsafe { CSSearchableItemActivityIdentifier };
-        let info = NSDictionary::from_retained_objects(&[key], &[NSString::from_str(id)]);
-        // SAFETY: a dictionary of strings is a dictionary of property-list
-        // objects, which is what a user activity carries.
-        unsafe {
-            activity.setUserInfo(Some(&Retained::cast_unchecked::<NSDictionary>(info)));
-        }
-        activity
-    }
-
-    #[test]
-    fn a_spotlight_activity_names_the_entry_it_opens() {
-        let id: EntryId = "00112233aabbccdd".parse().unwrap();
-        // SAFETY: an immutable framework constant.
-        let spotlight = unsafe { CSSearchableItemActionType };
-        assert_eq!(
-            activity_entry(&activity(spotlight, "00112233aabbccdd")),
-            Some(id)
-        );
-        assert_eq!(activity_entry(&activity(spotlight, "../../etc")), None);
-        let handoff = NSString::from_str("so.tilo.handoff");
-        assert_eq!(
-            activity_entry(&activity(&handoff, "00112233aabbccdd")),
-            None
-        );
     }
 }

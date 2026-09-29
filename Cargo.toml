@@ -222,6 +222,7 @@ members = [
     "crates/platform/tilo-location",
     "crates/platform/tilo-media",
     "crates/platform/tilo-net",
+    "crates/platform/tilo-host-search",
     "crates/platform/tilo-notify",
     "crates/platform/tilo-paths",
     "crates/platform/tilo-pdf",
