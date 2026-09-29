@@ -2,6 +2,10 @@
 # Generate the fixed target-independent Tilo root discovery path in the initrd.
 set -eu
 out="${1:-/run/systemd/generator}"
+# Only the initrd finds and mounts the root. The booted system's systemd runs
+# its generators too, with the same command line; there these units would
+# rediscover a root that is already mounted, and fail at every boot.
+[ -e "${TILO_ROOT_INITRD_RELEASE:-/etc/initrd-release}" ] || exit 0
 grep -qw 'root=tilo-auto' "${TILO_ROOT_CMDLINE_FILE:-/proc/cmdline}" 2>/dev/null || exit 0
 install -d -m 0755 "$out"
 cat >"$out/tilo-root-discover.service" <<'EOF'
