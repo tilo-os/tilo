@@ -594,6 +594,7 @@ impl WorkspaceHistoryIndex {
             documents.insert(origin.key(), doc.get_heads());
             // What people did: a record's genesis names no one.
             let rows = HistorySource::new()
+                .without_field_paths()
                 .with_authors(self.authors.clone())
                 .with_artifact_kind(artifact_kind(&record.checkout.kind))
                 .with_max_entries(limit)
@@ -842,6 +843,7 @@ impl WorkspaceHistoryIndex {
             || {
                 let mut doc = committed_snapshot(tree.document());
                 HistorySource::new()
+                    .without_field_paths()
                     .with_authors(self.authors.clone())
                     .with_artifact_kind(ArtifactKind::Cluster)
                     .with_max_entries(limit)
@@ -861,6 +863,7 @@ impl WorkspaceHistoryIndex {
             let inserted_live = records.read(&record.id, |doc| {
                 let mut doc = committed_snapshot(doc);
                 let rows = HistorySource::new()
+                    .without_field_paths()
                     .with_authors(authors)
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)
@@ -871,6 +874,7 @@ impl WorkspaceHistoryIndex {
                 && let Some(doc) = cold.get_mut(&record.id)
             {
                 let rows = HistorySource::new()
+                    .without_field_paths()
                     .with_authors(self.authors.clone())
                     .with_artifact_kind(kind)
                     .with_max_entries(limit)

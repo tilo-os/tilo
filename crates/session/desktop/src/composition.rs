@@ -633,7 +633,7 @@ impl DesktopSurface {
                 .collect();
             for id in stale {
                 if let Some(group) = row.groups.iter_mut().find(|g| g.id == id) {
-                    reports.extend(group.close_components());
+                    reports.extend(ui::component_lifecycle::close_components(group));
                 }
                 changed |= row.remove_group_by_id(id);
             }
@@ -671,7 +671,7 @@ impl DesktopSurface {
                     .collect();
                 for id in stale {
                     if let Some((_, mut host)) = live.detach_tab(id) {
-                        reports.extend(host.close_components());
+                        reports.extend(ui::component_lifecycle::close_components(&mut host));
                         changed = true;
                     }
                 }
@@ -721,7 +721,9 @@ impl DesktopSurface {
                                 }
                                 other => {
                                     if let Some((_, mut old)) = live.detach_tab(tab.id) {
-                                        reports.extend(old.close_components());
+                                        reports.extend(ui::component_lifecycle::close_components(
+                                            &mut old,
+                                        ));
                                     }
                                     let checked = matches!(
                                         &other,
@@ -764,7 +766,7 @@ impl DesktopSurface {
                         && resolver.ready_to_replace(tab)
                         && let Some((_, mut old)) = retained.take()
                     {
-                        reports.extend(old.close_components());
+                        reports.extend(ui::component_lifecycle::close_components(&mut old));
                     }
                     // A native surface may still be waiting for its first frame. Keep the
                     // old identity snapshot so a later reconciliation retries replacement.
@@ -806,7 +808,7 @@ impl DesktopSurface {
             }
         }
         for (_, (_, mut host)) in moved {
-            reports.extend(host.close_components());
+            reports.extend(ui::component_lifecycle::close_components(&mut host));
         }
         tiles.retain(|id, _| destinations.contains_key(id));
         self.tiles = tiles;
@@ -882,7 +884,7 @@ impl DesktopSurface {
                 }
             }
         }
-        let reports = self.close_components();
+        let reports = ui::component_lifecycle::close_components(self);
         let mut inherited = std::mem::take(&mut self.retained_wakes);
         inherited.push(self.component_wake.clone());
         let failures = std::mem::take(&mut self.failures);
@@ -893,7 +895,8 @@ impl DesktopSurface {
         let mut next = Self::build(tree, records, &mut retained, chrome);
         next.inherit_navigation(self);
         for (_, mut host) in retained.hosts {
-            next.close_reports.extend(host.close_components());
+            next.close_reports
+                .extend(ui::component_lifecycle::close_components(&mut host));
         }
         next.close_reports.extend(reports);
         next.failures.extend(failures);
@@ -931,6 +934,8 @@ impl DesktopSurface {
     }
 }
 impl Widget for DesktopSurface {
+    ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
+
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
     }
@@ -1019,14 +1024,19 @@ impl Widget for DesktopSurface {
     fn wants_pointer_capture(&self) -> bool {
         self.root.wants_pointer_capture()
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
     fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let reports = self.root.close_components();
+        let reports = ui::component_lifecycle::close_components(self.root.as_mut());
         self.close_reports.extend(reports);
         self.take_component_close_reports()
     }
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
         let mut out = std::mem::take(&mut self.close_reports);
-        out.extend(self.root.take_component_close_reports());
+        out.extend(ui::component_lifecycle::take_component_close_reports(
+            self.root.as_mut(),
+        ));
         out
     }
 }

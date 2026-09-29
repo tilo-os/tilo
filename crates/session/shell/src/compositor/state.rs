@@ -1892,6 +1892,10 @@ impl State {
         for peer in removed {
             self.release_remote_focus_for_surface(peer, surface);
         }
+        // A new viewer starts at the keyframe `sync_viewers` asked for.
+        if !added.is_empty() {
+            self.seed_share_frame(session, surface);
+        }
     }
 
     /// Reconcile encoder lifetimes and viewer permissions with the active
@@ -1968,18 +1972,24 @@ impl State {
                 }
             }
             self.register_share_session(Arc::clone(&session));
+            self.seed_share_frame(&session, surface);
+        }
+    }
 
-            if let Some(rgba) = self.share_frame(&session, surface, || {
-                crate::compositor::foreign::store()
-                    .snapshot(surface)
-                    .map(|frame| frame.rgba)
-            }) {
-                session.deposit_captured_rgba(rgba);
-                if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
-                    && let Some(publish) = &self.legacy_stream_publisher
-                {
-                    let _ = publish(frame.into_neighbour_msg());
-                }
+    /// Encode and publish `surface`'s already captured frame, so a viewer
+    /// can start decoding without the window having to damage itself (a
+    /// static window may never do so).
+    fn seed_share_frame(&self, session: &SharedFlatpakSession, surface: SurfaceId) {
+        if let Some(rgba) = self.share_frame(session, surface, || {
+            crate::compositor::foreign::store()
+                .snapshot(surface)
+                .map(|frame| frame.rgba)
+        }) {
+            session.deposit_captured_rgba(rgba);
+            if let Some(frame) = session.encode_next_frame(std::time::Instant::now())
+                && let Some(publish) = &self.legacy_stream_publisher
+            {
+                let _ = publish(frame.into_neighbour_msg());
             }
         }
     }
@@ -2232,7 +2242,13 @@ impl State {
         if previously_controlled && !still_controls {
             self.release_remote_focus_for_surface(peer, surface);
         }
-        self.apply_remote_input(peer, surface, event)
+        match self.review_remote_input(peer, surface, event) {
+            Ok(()) => true,
+            Err(denial) => {
+                tracing::debug!(peer, surface, ?denial, "remote input refused");
+                false
+            }
+        }
     }
 
     /// [`Self::apply_remote_input`], reporting which rule refused the event rather than collapsing every refusal to `false`.

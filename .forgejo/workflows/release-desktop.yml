@@ -22,7 +22,7 @@ on:
       - "crates/packaging/launcher/**"
       - "crates/system/sandbox-core/**"
       - "crates/session/tilo-unlock-helper/**"
-      - ".forgejo/workflows/package-desktop.yml"
+      - ".forgejo/workflows/release-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
       - "tools/ci/workflow_applicability.py"
@@ -55,7 +55,7 @@ jobs:
   applicability:
     uses: ./.forgejo/workflows/applicability.yml
     with:
-      workflow: .forgejo/workflows/package-desktop.yml
+      workflow: .forgejo/workflows/release-desktop.yml
       event: ${{ github.event_name }}
 
   validate:

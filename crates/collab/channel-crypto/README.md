@@ -351,5 +351,5 @@ versioned handshake.
 ## Building
 
 ```bash
-rcargo test --locked -p channel-crypto
+cargo test --locked -p channel-crypto
 ```

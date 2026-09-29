@@ -11,7 +11,7 @@ Current deployment and measured startup results are recorded in the
   request full checks on both native architectures (x86-64 and ARM64).
 - `lint.yml` runs formatting, repository policy, dependency policy and dependency
   usage checks on the reserved quality lane with its pinned lean tools image.
-- `nightly.yml` runs the complete workspace, all targets, examples, and live
+- `ci-nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
@@ -67,18 +67,12 @@ crates, which sccache does not store. The
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
 
-A tested package too heavy for one test job (`TEST_PARTITION_WEIGHT` in
-`tools/ci/affected_packages.py`; in practice `shell`) runs as nextest
-partitions (`--partition count:K/N`) on dedicated jobs. `test-archive` builds
-its test binaries once, with the test shards' profile and flags, on
-`runner-large` for x86-64 (the build is the partitions' critical path), and
-uploads them as a `cargo nextest archive`. Each `test-partition` job downloads
-the archive, extracts it over its checkout's `target/` at the same workspace
-path, since compile-time paths such as `CARGO_BIN_EXE_*` point there, and runs
-its slice with the shards' environment, filters and JUnit report, without
-compiling. Before, every partition compiled the whole package itself, so a
-shell change compiled shell three times on contended hosts. The other test
-shards do not wait for the archive.
+A tested package too heavy to share a test job (`DEDICATED_TEST_WEIGHT` in
+`tools/ci/affected_packages.py`; in practice `shell`) gets a test shard of its
+own, which builds and runs its tests in one job beside the balanced shards.
+Splitting it into nextest partitions fed by a separately built archive put two
+runner queue waits in series on the critical path, which cost more than the
+parallel test time saved.
 
 When the selection includes an app with an Android host example (an
 `<app>-android` example; today calculator and notes, so every change to the SDK
@@ -249,7 +243,7 @@ them to the slot's target tree.
   when the store passes 75%. Checkout gives files new mtimes; the helper
   restores them for blobs a sealed previous job built from, and an unsealed job
   leaves nothing to restore.
-- `release-relay.yml` and `registry-server-image.yml` keep a persistent BuildKit
+- `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.
   Publications start from a fresh builder.

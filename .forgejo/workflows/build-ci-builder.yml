@@ -38,7 +38,7 @@ on:
       - "tools/ci/verify-native-mold.sh"
       - ".forgejo/actions/install-cosign/**"
       - ".forgejo/actions/restore-cargo-downloads/**"
-      - ".forgejo/workflows/build-builder-image.yml"
+      - ".forgejo/workflows/build-ci-builder.yml"
   workflow_dispatch:
     inputs:
       cache_revision:

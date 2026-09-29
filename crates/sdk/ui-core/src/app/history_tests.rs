@@ -3583,7 +3583,7 @@ fn check_admitted_legacy_effect_owner_retirement(close: bool) {
     // references survive the supported close/rebind operation.
     unsafe {
         if close {
-            (*pointer).close_components();
+            crate::component_lifecycle::close_components(&mut (*pointer));
         } else {
             (*pointer).bind_record(second.clone(), checkout.clone());
         }
@@ -6130,7 +6130,8 @@ struct CustodyControlsRoot {
 impl crate::widget::Widget for CustodyControlsRoot {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::record::capability::RecordScoped
     );
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -6164,11 +6165,6 @@ impl crate::widget::Widget for CustodyControlsRoot {
     // that enclosing boundary, not a second independent document owner.
     fn has_separate_document_owner(&self) -> bool {
         false
-    }
-    fn record_intent(&self) -> Option<crate::RecordCheckout> {
-        self.record
-            .as_ref()
-            .and_then(|record| record.borrow().clone())
     }
     fn name(&self) -> &str {
         "Controlled component boundary"
@@ -6241,6 +6237,14 @@ impl crate::widget::Widget for CustodyControlsRoot {
         Ok(Some(crate::widget::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         )))
+    }
+}
+
+impl crate::record::capability::RecordScoped for CustodyControlsRoot {
+    fn record_intent(&self) -> Option<crate::RecordCheckout> {
+        self.record
+            .as_ref()
+            .and_then(|record| record.borrow().clone())
     }
 }
 
@@ -7883,4 +7887,52 @@ fn committed_queued_publication_failure_restores_all_producer_frontiers() {
             .is_empty(),
         "canonical primary owner must replay its accepted history too"
     );
+}
+
+#[test]
+fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
+    use crate::host_chrome::model::CommandGroup;
+    let has_open_button = |app: &App| {
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-open"))
+                .unwrap_or(false)
+        })
+    };
+    let mut in_window = app();
+    in_window.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
+    layout(&mut in_window);
+    assert!(
+        has_open_button(&in_window),
+        "hosts without chrome keep the button"
+    );
+
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    assert!(!has_open_button(&app));
+    let show = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .expect("the menu bar presents framework History");
+    assert_eq!(show.label, "Show History");
+    assert!(show.enabled);
+    assert!(app.invoke_host_command(&show.invocation().unwrap()));
+    layout(&mut app);
+    assert!(app.history.as_ref().unwrap().is_open());
+    assert!(
+        has_open_button(&app),
+        "open History keeps its way back to the live app"
+    );
+
+    let hide = app
+        .host_commands(false)
+        .into_iter()
+        .find(|command| command.group == CommandGroup::History)
+        .unwrap();
+    assert_eq!(hide.label, "Hide History");
+    assert!(app.invoke_host_command(&hide.invocation().unwrap()));
+    layout(&mut app);
+    assert!(!app.history.as_ref().unwrap().is_open());
+    assert!(!has_open_button(&app));
 }

@@ -14,6 +14,7 @@
 //! hook, [`FreezeThaw::serialize_state`] / [`FreezeThaw::restore_state`],
 //! defaulting to the CRDT save/load; a non-CRDT app overrides just those two.
 
+pub mod capability;
 use serde::{Deserialize, Serialize};
 
 /// Envelope format version. Bump when the wire shape of [`FrozenApp`] changes
@@ -165,8 +166,9 @@ pub(crate) fn capture_widget_view_bound(
             ..View::default()
         };
     };
-    let open_resource = root.record_intent().map(|c| c.id.as_str().to_string());
-    let contribution = root.view_state().unwrap_or_default();
+    let open_resource =
+        crate::record::capability::record_intent(root).map(|c| c.id.as_str().to_string());
+    let contribution = crate::view::capability::view_state(root).unwrap_or_default();
     View {
         scroll: contribution.scroll,
         focus,
@@ -190,10 +192,13 @@ pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, vi
     let Ok(_entry) = crate::bound_dispatch::enter_widget(root) else {
         return;
     };
-    root.restore_view_state(&ViewContribution {
-        scroll: view.scroll.clone(),
-        view_mode: view.view_mode.clone(),
-    });
+    crate::view::capability::restore_view_state(
+        root,
+        &ViewContribution {
+            scroll: view.scroll.clone(),
+            view_mode: view.view_mode.clone(),
+        },
+    );
 }
 
 /// The caller resolves the saved ordinal in its current component's focus order.
@@ -422,6 +427,11 @@ mod tests {
     }
 
     impl Widget for DocRoot {
+        crate::provides!(
+            dyn crate::record::capability::RecordScoped,
+            dyn crate::view::capability::ViewState
+        );
+
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -463,6 +473,9 @@ mod tests {
         fn set_state(&mut self, state: &str) {
             self.caret = state.to_string();
         }
+    }
+
+    impl crate::view::capability::ViewState for DocRoot {
         fn view_state(&self) -> Option<ViewContribution> {
             Some(ViewContribution {
                 scroll: self.scroll.clone(),
@@ -473,6 +486,9 @@ mod tests {
             self.scroll = view.scroll.clone();
             self.mode = view.view_mode.clone();
         }
+    }
+
+    impl crate::record::capability::RecordScoped for DocRoot {
         fn record_intent(&self) -> Option<RecordCheckout> {
             RecordId::parse(&self.resource)
                 .map(|id| RecordCheckout::new(id, RecordKind::new("document")))

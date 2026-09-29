@@ -6,7 +6,7 @@ on every run, so no key outside the repository signs anything here. Regenerate
 with:
 
 ```sh
-rcargo test -p tilo-device-host --test publication --run-ignored only regenerate_shell_selection_fixture
+cargo nextest run -p tilo-device-host --test publication --run-ignored only regenerate_shell_selection_fixture
 ```
 
 `manifest.json` records the authority and certificates, the export time, the

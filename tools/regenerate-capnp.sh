@@ -30,7 +30,7 @@ shift 2
 engine="$(command -v podman || command -v docker)"
 plugin_root="${XDG_CACHE_HOME:-$HOME/.cache}/tilo-capnpc-$CAPNPC_VERSION"
 if [ ! -x "$plugin_root/bin/capnpc-rust" ]; then
-    rcargo install --locked --quiet "capnpc@$CAPNPC_VERSION" --root "$plugin_root"
+    "${CARGO:-cargo}" install --locked --quiet "capnpc@$CAPNPC_VERSION" --root "$plugin_root"
 fi
 
 # The compiler emits a CodeGeneratorRequest; the host-built plugin turns it

@@ -23,7 +23,7 @@ REBUILD_PATHS = {
     "tools/ci/verify-native-mold.sh",
 }
 REBUILD_PREFIXES = (".forgejo/actions/install-cosign/", ".forgejo/actions/cache-github-assets/")
-WORKFLOW = ".forgejo/workflows/build-builder-image.yml"
+WORKFLOW = ".forgejo/workflows/build-ci-builder.yml"
 
 
 def job(text, name):
