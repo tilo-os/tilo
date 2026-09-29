@@ -73,6 +73,13 @@ pub enum TerminalAction {
         text: String,
         attrs: Vec<u8>,
     },
+    /// Drop one grid line. Scrollback, scrolling regions, and the alternate
+    /// screen all use this.
+    DeleteGridLine { alternate: bool, index: u32 },
+    /// Drop `count` lines from the front of the main scrollback.
+    TrimGridPrefix { count: u32 },
+    /// After scrollback is trimmed, move or drop main-screen image placements.
+    ShiftImageRows { removed_rows: u32 },
 }
 
 impl Action for TerminalAction {
@@ -192,6 +199,11 @@ impl Action for TerminalAction {
                 text,
                 attrs,
             } => insert_blank_line(doc, *alternate, *index, text, attrs)?,
+            Self::DeleteGridLine { alternate, index } => {
+                delete_grid_line(doc, *alternate, *index)?;
+            }
+            Self::TrimGridPrefix { count } => trim_grid_prefix(doc, *count)?,
+            Self::ShiftImageRows { removed_rows } => shift_image_rows(doc, *removed_rows)?,
         }
         Ok(())
     }
@@ -304,6 +316,72 @@ fn insert_blank_line(
     }
     doc.insert_object(&grid, at, automerge::ObjType::Map)?;
     write_line(doc, alternate, index, text, attrs)
+}
+
+fn delete_grid_line(doc: &mut Doc, alternate: bool, index: u32) -> Result<(), ActionError> {
+    let key = if alternate {
+        "terminal_grid_alt"
+    } else {
+        "terminal_grid"
+    };
+    let grid = match doc.get(ROOT, key)? {
+        Some((_, id)) => id,
+        None => return Err(ActionError::Refused("grid line is missing".into())),
+    };
+    let at = index as usize;
+    if at >= doc.length(&grid) {
+        return Err(ActionError::Refused("grid line is missing".into()));
+    }
+    doc.delete(&grid, at)?;
+    Ok(())
+}
+
+fn trim_grid_prefix(doc: &mut Doc, count: u32) -> Result<(), ActionError> {
+    if count > 100_000 {
+        return Err(ActionError::Refused("scrollback trim is too large".into()));
+    }
+    let Some((_, grid)) = doc.get(ROOT, "terminal_grid")? else {
+        return Ok(());
+    };
+    let count = (count as usize).min(doc.length(&grid));
+    for _ in 0..count {
+        doc.delete(&grid, 0)?;
+    }
+    Ok(())
+}
+
+fn shift_image_rows(doc: &mut Doc, removed_rows: u32) -> Result<(), ActionError> {
+    let Some((_, images)) = doc.get(ROOT, "terminal_images")? else {
+        return Ok(());
+    };
+    let removed = removed_rows as usize;
+    for index in (0..doc.length(&images)).rev() {
+        let Some((Value::Object(automerge::ObjType::Map), placement)) = doc.get(&images, index)?
+        else {
+            continue;
+        };
+        let alternate = matches!(
+            doc.get(&placement, "alternate_screen")?,
+            Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Boolean(true))
+        );
+        if alternate {
+            continue;
+        }
+        let row = match doc.get(&placement, "row")? {
+            Some((Value::Scalar(value), _)) => match value.as_ref() {
+                ScalarValue::Uint(n) => *n as usize,
+                ScalarValue::Int(n) if *n >= 0 => *n as usize,
+                _ => 0,
+            },
+            _ => 0,
+        };
+        if row < removed {
+            doc.delete(&images, index)?;
+        } else {
+            doc.put(&placement, "row", (row - removed) as u64)?;
+        }
+    }
+    Ok(())
 }
 
 /// The terminal session resource.
@@ -658,6 +736,49 @@ mod tests {
         .apply(&mut doc)
         .unwrap();
         assert_eq!(doc.length(&grid), 3);
+        TerminalAction::TrimGridPrefix { count: 1 }
+            .apply(&mut doc)
+            .unwrap();
+        assert_eq!(doc.length(&grid), 2);
+        TerminalAction::DeleteGridLine {
+            alternate: false,
+            index: 0,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(doc.length(&grid), 1);
+        TerminalAction::PlaceImage {
+            hash: "blake3:row".into(),
+            mime: "image/png".into(),
+            byte_len: 4,
+            row: 2,
+            col: 0,
+            columns: 1,
+            rows: 1,
+            pixel_width: 1,
+            pixel_height: 1,
+            protocol_id: None,
+            alternate_screen: false,
+        }
+        .apply(&mut doc)
+        .unwrap();
+        TerminalAction::ShiftImageRows { removed_rows: 2 }
+            .apply(&mut doc)
+            .unwrap();
+        let images = doc
+            .get(automerge::ROOT, "terminal_images")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        let placement = doc.get(&images, 0).unwrap().map(|(_, id)| id).unwrap();
+        let row = doc
+            .get(&placement, "row")
+            .unwrap()
+            .and_then(|(value, _)| match value {
+                automerge::Value::Scalar(value) => value.as_u64(),
+                _ => None,
+            });
+        assert_eq!(row, Some(0));
     }
 }
 

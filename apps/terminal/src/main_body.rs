@@ -6036,6 +6036,19 @@ impl TerminalPerformer<'_> {
         }
     }
 
+    fn delete_grid_line(&mut self, index: usize) {
+        let Some(index) = u32::try_from(index).ok() else {
+            return;
+        };
+        let _ = ui::tilo_actions::Action::apply(
+            &crate::resource::TerminalAction::DeleteGridLine {
+                alternate: *self.alt_active,
+                index,
+            },
+            self.state,
+        );
+    }
+
     fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
         let Some(index) = u32::try_from(index).ok() else {
             return;
@@ -6083,7 +6096,6 @@ impl TerminalPerformer<'_> {
             self.scroll_region_up(1);
         } else {
             // Main buffer accumulates scrollback.
-            let grid_id = self.main_grid_id.clone();
             let idx = self.main_line_ids.len();
             if let Some(line_id) = self.make_blank_line(idx) {
                 self.main_line_ids.push(line_id);
@@ -6097,52 +6109,20 @@ impl TerminalPerformer<'_> {
             // stays aligned.
             if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
                 let overflow = self.main_line_ids.len() - MAX_HISTORY;
-                for _ in 0..overflow {
-                    let _ = self.state.delete(&grid_id, 0);
+                if let Ok(count) = u32::try_from(overflow) {
+                    let _ = ui::tilo_actions::Action::apply(
+                        &crate::resource::TerminalAction::TrimGridPrefix { count },
+                        self.state,
+                    );
+                    let _ = ui::tilo_actions::Action::apply(
+                        &crate::resource::TerminalAction::ShiftImageRows {
+                            removed_rows: count,
+                        },
+                        self.state,
+                    );
                 }
                 self.main_line_ids.drain(0..overflow);
-                self.shift_main_image_placements(overflow);
                 *self.trimmed_front += overflow;
-            }
-        }
-    }
-
-    fn shift_main_image_placements(&mut self, removed_rows: usize) {
-        for index in (0..self.state.length(&self.images_id)).rev() {
-            let Ok(Some((Value::Object(ObjType::Map), placement))) =
-                self.state.get(&self.images_id, index)
-            else {
-                continue;
-            };
-            let alternate = self
-                .state
-                .get(&placement, "alternate_screen")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| match value {
-                    automerge::ScalarValue::Boolean(value) => Some(value),
-                    _ => None,
-                })
-                .unwrap_or(false);
-            if alternate {
-                continue;
-            }
-            let row = self
-                .state
-                .get(&placement, "row")
-                .ok()
-                .flatten()
-                .and_then(|(value, _)| value.into_scalar().ok())
-                .and_then(|value| value.as_u64())
-                .and_then(|value| usize::try_from(value).ok())
-                .unwrap_or(0);
-            if row < removed_rows {
-                let _ = self.state.delete(&self.images_id, index);
-            } else {
-                let _ = self
-                    .state
-                    .put(&placement, "row", (row - removed_rows) as u64);
             }
         }
     }
@@ -6162,8 +6142,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, top);
+            let _ = self.delete_grid_line(top);
             self.active_line_ids_mut().remove(top);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6185,8 +6164,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - top + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            let _ = self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(top) {
                 self.active_line_ids_mut().insert(top, line);
@@ -6207,8 +6185,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, bot);
+            let _ = self.delete_grid_line(bot);
             self.active_line_ids_mut().remove(bot);
             if let Some(line) = self.make_blank_line(at) {
                 self.active_line_ids_mut().insert(at, line);
@@ -6230,8 +6207,7 @@ impl TerminalPerformer<'_> {
         }
         let n = n.min(bot - at + 1);
         for _ in 0..n {
-            let grid_id = self.active_grid_id();
-            let _ = self.state.delete(&grid_id, at);
+            let _ = self.delete_grid_line(at);
             self.active_line_ids_mut().remove(at);
             if let Some(line) = self.make_blank_line(bot) {
                 self.active_line_ids_mut().insert(bot, line);
@@ -6427,7 +6403,7 @@ impl TerminalPerformer<'_> {
         }
         while self.alt_line_ids.len() > self.height {
             let idx = self.alt_line_ids.len() - 1;
-            let _ = self.state.delete(&self.alt_grid_id, idx);
+            let _ = self.delete_grid_line(idx);
             self.alt_line_ids.pop();
         }
     }
