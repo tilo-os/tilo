@@ -24,6 +24,7 @@
 //! | Linux | XDG Desktop Portal `FileChooser` | portal `OpenURI` (by descriptor) | portal `OpenURI`, else the desktop opener |
 //! | macOS | `NSOpenPanel` / `NSSavePanel` | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
+//! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
 //!
 //! [`availability`] says which [`Feature`]s the target has.
 
@@ -32,6 +33,8 @@ use std::sync::{Arc, OnceLock};
 mod caps;
 pub mod conformance;
 pub mod portal;
+#[cfg(not(target_arch = "wasm32"))]
+mod unattended;
 pub mod web_policy;
 
 #[cfg(target_os = "macos")]
@@ -110,6 +113,19 @@ pub trait UriOpener: Send + Sync {
     /// # Errors
     /// The host refused or cannot open URIs at all.
     fn open(&self, uri: &str) -> std::io::Result<()>;
+}
+
+/// Choosers for a session nobody sits at ([`portal::SAVE_DIRECTORY_ENV`]): a
+/// Save answers at once with a free path in `directory`, every Open is
+/// refused, and opening a path is `system`'s. `None` unless `directory` is
+/// absolute.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn unattended_picker(
+    directory: std::path::PathBuf,
+    system: Arc<dyn FilePicker>,
+) -> Option<Arc<dyn FilePicker>> {
+    unattended::SaveDirectoryPicker::new(directory, system)
+        .map(|picker| Arc::new(picker) as Arc<dyn FilePicker>)
 }
 
 /// This target's file choosers.

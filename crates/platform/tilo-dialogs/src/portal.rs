@@ -386,6 +386,12 @@ impl FileFilter {
     }
 }
 
+/// Names the directory a session nobody sits at (a provider's guest) saves
+/// into: a Save chooser answers there under its suggested name, and an Open
+/// chooser is refused, since no one is present to choose. Whether the app may
+/// write there is still its file grants'.
+pub const SAVE_DIRECTORY_ENV: &str = "TILO_SAVE_DIRECTORY";
+
 /// Which chooser to open.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PickKind {
