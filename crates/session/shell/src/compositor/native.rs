@@ -3680,6 +3680,9 @@ fn dispatch_control_command(
                 Vec::new(),
             )
         }
+        test_control::Command::ProvisionTestIdentity => {
+            (crate::compositor::dev_test_identity::respond(), Vec::new())
+        }
         cmd => {
             let state = FrameBuilderControlState {
                 fb: frame_builder,
