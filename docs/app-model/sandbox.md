@@ -381,6 +381,7 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Payload | Read, map-executable and exec. Never writable, even under a broader user grant |
 | Runtime dylibs | Read and map-executable |
 | Container | Read and write, never exec: `~/Library/Application Support/Tilo/tilo-rooms/<room>/<package>`, which is also `HOME`, `XDG_*` and `TMPDIR` |
+| Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
 | Network: allowlist | Connect to the egress gate's Unix socket only (`TILO_NET_GATE`) |
@@ -409,8 +410,6 @@ nothing is ever started unsandboxed.
   socket. There is no network namespace in which to run the loopback
   relay, so `HTTP_PROXY`/`ALL_PROXY`-style clients are offline until the
   app talks to `TILO_NET_GATE` directly.
-- Metal's shader cache under `/var/folders/…/C` is not writable, so
-  shaders recompile on each launch.
 - A process whose ad-hoc signature claims the App Sandbox entitlement
   gets Seatbelt, and then `libsystem_secinit` tries to apply App Sandbox
   on top. That aborts the process, which fails closed.

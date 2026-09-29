@@ -44,6 +44,12 @@ pub const TILO_SUPPORT_DIR: &str = "Library/Application Support/Tilo";
 /// directory (`/var/folders/…`) is shared by every process of the user.
 pub const CONTAINER_TMP: &str = "tmp";
 
+/// What `libsystem` appends to the per-user cache and temporary directories
+/// (`confstr(_CS_DARWIN_USER_CACHE_DIR)`), as launchd does for XPC services.
+/// Metal keeps its compiled shaders below the cache directory, so this gives
+/// each app its own shader cache.
+pub const DARWIN_DIR_SUFFIX_ENV: &str = "DIRHELPER_USER_DIR_SUFFIX";
+
 /// The Tilo data home for `home`.
 pub fn data_home(home: &Path) -> PathBuf {
     home.join(TILO_SUPPORT_DIR)
@@ -68,6 +74,56 @@ pub fn prepare_container(
     let dir = appdir::prepare_host_app_dir(data_home, workspace_id, package_id)?;
     std::fs::create_dir_all(dir.join(CONTAINER_TMP))?;
     Ok(dir)
+}
+
+/// The [`DARWIN_DIR_SUFFIX_ENV`] of the app whose container is `container`:
+/// one path component per room and package. `libsystem` accepts no `/` in
+/// it, and `+` is outside the alphabet of both components, so two containers
+/// never share a suffix.
+pub fn darwin_dir_suffix(container: &Path) -> Option<String> {
+    let package = container.file_name()?.to_str()?;
+    let room = container.parent()?.file_name()?.to_str()?;
+    Some(format!("so.tilo+{room}+{package}"))
+}
+
+/// The app's own directory below the per-user cache directory `user_cache`,
+/// created private to the user: where Metal caches the app's compiled
+/// shaders across launches.
+///
+/// # Errors
+///
+/// Returns the error of creating it; `InvalidInput` when `container` has no
+/// room and package to name it after.
+pub fn prepare_darwin_cache(user_cache: &Path, container: &Path) -> io::Result<DarwinCache> {
+    use std::os::unix::fs::DirBuilderExt as _;
+    let suffix = darwin_dir_suffix(container).ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "the container names no room and package",
+        )
+    })?;
+    let dir = std::fs::canonicalize(user_cache)?.join(&suffix);
+    match std::fs::DirBuilder::new().mode(0o700).create(&dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e),
+    }
+    // A link here would hand the app whatever it points at.
+    if !std::fs::symlink_metadata(&dir)?.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "the app's cache directory is not a directory",
+        ));
+    }
+    Ok(DarwinCache { suffix, dir })
+}
+
+/// An app's own per-user cache directory: [`DARWIN_DIR_SUFFIX_ENV`] and
+/// where it resolves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DarwinCache {
+    pub suffix: String,
+    pub dir: PathBuf,
 }
 
 /// The environment a Seatbelt-confined app gets: the Linux launcher's
@@ -122,6 +178,8 @@ pub struct PolicyInputs<'a> {
     pub egress: &'a EgressDecision,
     /// The egress gate's socket, when [`EgressDecision::Filtered`] runs one.
     pub gate_socket: Option<&'a Path>,
+    /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
+    pub darwin_cache: Option<&'a Path>,
 }
 
 /// Every grant of one launch, as resolved paths.
@@ -130,6 +188,8 @@ pub struct SeatbeltPolicy {
     pub payload: PathBuf,
     pub runtime: Option<PathBuf>,
     pub container: PathBuf,
+    /// Read and write, like the container.
+    pub darwin_cache: Option<PathBuf>,
     /// User-granted read-only paths.
     pub read_only: Vec<PathBuf>,
     /// User-granted read-write paths.
@@ -152,7 +212,7 @@ pub enum PolicyError {
     #[error("the {role} directory {path} resolves to the filesystem root")]
     Root { role: &'static str, path: PathBuf },
     #[error(
-        "the container {container} and the {role} directory {other} overlap; an app \
+        "the writable directory {container} and the {role} directory {other} overlap; an app \
          must not be able to write what it executes"
     )]
     Overlap {
@@ -181,15 +241,21 @@ impl SeatbeltPolicy {
             .map(|dir| resolve_dir("runtime", dir))
             .transpose()?;
         let container = resolve_dir("container", inputs.container_dir)?;
-        for (role, other) in std::iter::once(("payload", &payload))
-            .chain(runtime.as_ref().map(|runtime| ("runtime", runtime)))
-        {
-            if container.starts_with(other) || other.starts_with(&container) {
-                return Err(PolicyError::Overlap {
-                    role,
-                    container,
-                    other: other.clone(),
-                });
+        let darwin_cache = inputs
+            .darwin_cache
+            .map(|dir| resolve_dir("cache", dir))
+            .transpose()?;
+        for writable in std::iter::once(&container).chain(&darwin_cache) {
+            for (role, other) in std::iter::once(("payload", &payload))
+                .chain(runtime.as_ref().map(|runtime| ("runtime", runtime)))
+            {
+                if writable.starts_with(other) || other.starts_with(writable) {
+                    return Err(PolicyError::Overlap {
+                        role,
+                        container: writable.clone(),
+                        other: other.clone(),
+                    });
+                }
             }
         }
 
@@ -233,6 +299,7 @@ impl SeatbeltPolicy {
             payload,
             runtime,
             container,
+            darwin_cache,
             read_only,
             read_write,
             network,
@@ -335,6 +402,7 @@ mod tests {
             capabilities: plan,
             egress,
             gate_socket: None,
+            darwin_cache: None,
         }
     }
 
@@ -475,6 +543,73 @@ mod tests {
             container.join(".local/share").display().to_string()
         );
         assert_eq!(get("TMPDIR"), container.join("tmp").display().to_string());
+    }
+
+    #[test]
+    fn each_container_gets_its_own_cache_directory() {
+        let data = Path::new("/Users/u/Library/Application Support/Tilo");
+        let suffix = |room: &str, package: &str| {
+            darwin_dir_suffix(&container_dir(data, Some(room), package)).unwrap()
+        };
+        assert_eq!(suffix("r", "so.tilo.notes"), "so.tilo+r+so.tilo.notes");
+        assert_ne!(suffix("a.b", "c"), suffix("a", "b.c"));
+        assert_ne!(suffix("a", "so.tilo.notes"), suffix("b", "so.tilo.notes"));
+        assert!(!suffix("../x", "a/b").contains('/'));
+
+        let tmp = tempfile::tempdir().unwrap();
+        let user_cache = tmp.path().join("C");
+        std::fs::create_dir_all(&user_cache).unwrap();
+        let container = container_dir(tmp.path(), Some("r"), "so.tilo.notes");
+        let cache = prepare_darwin_cache(&user_cache, &container).unwrap();
+        assert_eq!(cache.suffix, "so.tilo+r+so.tilo.notes");
+        assert_eq!(
+            cache.dir,
+            std::fs::canonicalize(&user_cache)
+                .unwrap()
+                .join(&cache.suffix)
+        );
+        assert_eq!(
+            prepare_darwin_cache(&user_cache, &container).unwrap(),
+            cache
+        );
+
+        let other = container_dir(tmp.path(), Some("r"), "so.tilo.other");
+        std::os::unix::fs::symlink(
+            &cache.dir,
+            user_cache.join(darwin_dir_suffix(&other).unwrap()),
+        )
+        .unwrap();
+        assert!(
+            prepare_darwin_cache(&user_cache, &other).is_err(),
+            "a link to another app's cache was accepted"
+        );
+    }
+
+    #[test]
+    fn the_cache_directory_is_writable_and_never_executable() {
+        let l = layout();
+        let plan = CapabilityPlan::empty();
+        let egress = EgressDecision::Blocked;
+        let cache = l.root.join("cache");
+        std::fs::create_dir_all(&cache).unwrap();
+        let mut i = inputs(&l, &plan, &egress);
+        i.darwin_cache = Some(&cache);
+        let policy = SeatbeltPolicy::resolve(&i).unwrap();
+        assert_eq!(
+            policy.darwin_cache,
+            Some(std::fs::canonicalize(&cache).unwrap())
+        );
+
+        let inside = l.payload.join("cache");
+        std::fs::create_dir_all(&inside).unwrap();
+        i.darwin_cache = Some(&inside);
+        assert!(matches!(
+            SeatbeltPolicy::resolve(&i),
+            Err(PolicyError::Overlap {
+                role: "payload",
+                ..
+            })
+        ));
     }
 
     #[test]
