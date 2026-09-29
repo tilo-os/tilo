@@ -141,8 +141,10 @@ pub fn try_connect() -> Result<FsClient, NotAvailable> {
 pub fn connect(socket: &std::path::Path) -> Result<FsClient, NotAvailable> {
     use std::os::fd::IntoRawFd as _;
     let stream = std::os::unix::net::UnixStream::connect(socket)?;
-    let unix =
-        UnixCapnpClient::from_connected_fd(stream.into_raw_fd(), rpc_twoparty_capnp::Side::Client)?;
+    let unix = runtime_portal::UnixCapnpClient::from_connected_fd(
+        stream.into_raw_fd(),
+        capnp_rpc::rpc_twoparty_capnp::Side::Client,
+    )?;
     let client: WorkspaceFsClient = unix.bootstrap();
     Ok(FsClient::from_raw(client))
 }
