@@ -72,19 +72,25 @@ class Context:
             time.sleep(0.6)
 
     def close_all_windows(self, timeout: float = 20) -> None:
-        """Close every window group through its own close action."""
+        """Close every window group through its own close action.
+
+        A group whose close action fails outright is recorded in facts["unclosable"] and
+        left alone: the check that owns it reports it, the others go on."""
         deadline = time.monotonic() + timeout
+        stuck = self.facts.setdefault("unclosable", {})
         while time.monotonic() < deadline:
             closers = [a for a in self.vm.actions()
-                       if a["provider"] == "desktop-windows" and a["id"].startswith("group.close:")]
+                       if a["provider"] == "desktop-windows" and a["id"].startswith("group.close:")
+                       and a["id"] not in stuck]
             if not closers:
                 return
             for a in closers:
                 try:
                     self.vm.invoke(a["provider"], a["id"], {"confirm": True}
                                    if a.get("params") else None)
-                except VmError:
-                    pass
+                except VmError as exc:
+                    if "action_failed" in str(exc):
+                        stuck[a["id"]] = a.get("title")
             time.sleep(1.0)
         raise core.CheckFailed("windows still open after closing every group")
 
@@ -99,7 +105,15 @@ class Context:
         """Open an app through its search action; return (group, seconds to its group)."""
         before = {g["id"] for g in core.all_groups(self.vm.state())}
         started = time.monotonic()
-        self.vm.invoke(provider, app_id)
+        # A fresh session publishes its app catalogue a few seconds after it starts.
+        while True:
+            try:
+                self.vm.invoke(provider, app_id)
+                break
+            except VmError as exc:
+                if "unknown_action" not in str(exc) or time.monotonic() - started > 30:
+                    raise
+                time.sleep(2)
         st = self.wait_state(
             lambda s: [g for g in core.all_groups(s) if g["id"] not in before],
             timeout, f"a new window group for {app_id}")

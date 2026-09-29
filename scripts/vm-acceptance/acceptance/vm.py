@@ -20,6 +20,11 @@ from pathlib import Path
 class VmError(RuntimeError):
     """A tilo-vm command failed; carries its output for the report."""
 
+    def reason(self) -> str:
+        """The innermost `error ...` line, without tilo-vm's hints and receipt."""
+        lines = [l.strip() for l in str(self).splitlines() if "error" in l]
+        return (lines[-1] if lines else str(self).splitlines()[0])[:400]
+
 
 def first_json(text: str):
     for line in text.splitlines():

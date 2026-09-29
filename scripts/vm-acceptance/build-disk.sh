@@ -16,7 +16,7 @@
 set -euo pipefail
 
 [ $# -eq 2 ] || { sed -n '2,15p' "$0"; exit 2; }
-: "${TILO_DISK_BUILDER:?set TILO_DISK_BUILDER to the builder's ssh destination}"
+: "${TILO_DISK_BUILDER:?set TILO_DISK_BUILDER to the ssh destination of the builder}"
 : "${TILO_DISK_SCRATCH:?set TILO_DISK_SCRATCH to a scratch directory on the builder}"
 MIRRORS=${TILO_DISK_MIRRORS:-/srv/rcargo/p/*/w/*}
 out=$(realpath -m "$2")

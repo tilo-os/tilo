@@ -8,7 +8,7 @@ import time
 
 from .. import core
 from ..core import CheckFailed, Unobservable, check, expect
-from ..vm import wait_until
+from ..vm import VmError, wait_until
 
 AREA = "search"
 
@@ -130,20 +130,31 @@ def files(ctx, res):
     expect(found, f"'{needle}.txt' in ~/Documents not found by search within 45 s")
 
 
-@check("S08", AREA, "Workspace activity opens and shows content")
+@check("S08", AREA, "Workspace activity opens, shows content and closes")
 def activity(ctx, res):
     ctx.reset()
+    before = {g["id"] for g in core.all_groups(ctx.state())}
     ctx.vm.invoke("actions", "room.activity.open")
-    ctx.wait_state(lambda s: core.overlays(s)["room_activity"], 5, "activity view open")
+    # The activity view is an overlay in some builds and a window tile in others.
+    st = ctx.wait_state(lambda s: core.overlays(s)["room_activity"]
+                        or any(g["id"] not in before for g in core.all_groups(s)), 5, "activity view open")
+    tile = next((g for g in core.all_groups(st) if g["id"] not in before), None)
+    res.metrics["presented_as"] = core.tab_app(tile["tabs"][0]) if tile else "overlay"
     ctx.settle(1.0)
     shot = ctx.shot("S08-activity")
     img = core.load_image(shot)
-    st = ctx.state()
     d = core.display_rects(st)[0]
     stats = core.region_stats(img, (d[0] + d[2] * 0.25, d[1] + 60, d[2] * 0.5, d[3] * 0.6))
     res.metrics["center_pixels"] = stats
-    ctx.close_overlays()
     expect(stats["stddev"] > 0.03, f"the activity view's centre is blank (stddev {stats['stddev']})")
+    if tile is None:
+        ctx.close_overlays()
+        return
+    try:
+        ctx.vm.invoke("desktop-windows", f"group.close:{tile['id']}")
+    except VmError as exc:
+        raise CheckFailed(f"the activity window cannot be closed: {exc.reason()}") from exc
+    ctx.wait_state(lambda s: core.group_by_id(s, tile["id"]) is None, 5, "activity window closed")
 
 
 @check("S09", AREA, "Super+H opens the workspace history")

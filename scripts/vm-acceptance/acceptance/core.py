@@ -133,6 +133,8 @@ def group_by_id(state: dict, gid):
 
 def tab_app(tab: dict) -> str | None:
     tile = tab.get("tile") or {}
+    if isinstance(tile, str):
+        return tile
     if "Foreign" in tile:
         return tile["Foreign"].get("app_id")
     if "AppPlaceholder" in tile:

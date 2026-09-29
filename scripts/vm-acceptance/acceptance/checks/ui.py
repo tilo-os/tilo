@@ -44,7 +44,9 @@ def layout_problems(targets: list[dict], displays: dict) -> dict:
     for n, r in rects:
         if core.rect_inside(r, desk_rect) and (r[2] >= desk_rect[2] - 1 or r[3] >= desk_rect[3] - 1):
             continue  # a desktop-wide container
-        if not any(core.rect_inside(r, d, slack=1.5) for d in displays.values()):
+        # Wholly off screen is scrolled away (a panned strip), not clipped.
+        visible = any(core.overlap(r, d) > 0 for d in displays.values())
+        if visible and not any(core.rect_inside(r, d, slack=1.5) for d in displays.values()):
             outside.append((n, r))
     names = {n for n, _ in rects}
     leaves = [(n, r) for n, r in rects
@@ -55,6 +57,8 @@ def layout_problems(targets: list[dict], displays: dict) -> dict:
     for parent, kids in by_parent.items():
         for i, (a, ra) in enumerate(kids):
             for b, rb in kids[i + 1:]:
+                if core.rect_inside(ra, rb) or core.rect_inside(rb, ra):
+                    continue  # a hit area around its own visual, not two controls colliding
                 ov = core.overlap(ra, rb)
                 small = min(ra[2] * ra[3], rb[2] * rb[3])
                 if small and ov / small > 0.25:
