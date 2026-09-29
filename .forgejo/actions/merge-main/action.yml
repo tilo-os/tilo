@@ -1,0 +1,26 @@
+name: Merge the pull request onto main
+description: >-
+  On a pull request, merge the checked-out head with main so the job tests the
+  result the lander would land. Every job of a run merges the same main commit
+  (the select job's), so they test one tree. Outside pull requests this does
+  nothing.
+
+inputs:
+  main:
+    description: Main commit to merge; empty merges main's current tip.
+    required: false
+    default: ""
+outputs:
+  main:
+    description: The merged main commit, or empty outside pull requests.
+    value: ${{ steps.merge.outputs.main }}
+
+runs:
+  using: composite
+  steps:
+    - id: merge
+      shell: bash
+      env:
+        MAIN: ${{ inputs.main }}
+        EVENT: ${{ github.event_name }}
+      run: bash "$GITHUB_ACTION_PATH/merge-main.sh"

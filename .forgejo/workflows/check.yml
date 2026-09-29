@@ -100,6 +100,7 @@ jobs:
       check_matrix: ${{ steps.plan.outputs.check_matrix }}
       check_required: ${{ steps.plan.outputs.check_required }}
       base: ${{ steps.plan.outputs.base }}
+      main: ${{ steps.merge.outputs.main }}
       full: ${{ steps.plan.outputs.full }}
       rust_required: ${{ steps.plan.outputs.rust_required }}
       security_required: ${{ steps.plan.outputs.security_required }}
@@ -116,12 +117,15 @@ jobs:
       estimated_cost: ${{ steps.plan.outputs.estimated_cost }}
       shard_count: ${{ steps.plan.outputs.shard_count }}
     steps:
+      # A pull request merges onto main below, which deepens its shallow
+      # checkout as far as the merge needs; a merge cannot work in a blob-less
+      # clone, whose missing blobs the forge does not serve by ID.
       - name: Checkout head for change selection
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 0
-          filter: blob:none
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
+          filter: ${{ github.event_name != 'pull_request' && 'blob:none' || '' }}
 
       - name: Fetch comparison base
         shell: bash
@@ -143,6 +147,12 @@ jobs:
             fi
           fi
 
+      # Pull requests test the head merged onto main's current tip, and every
+      # other job merges this same main commit.
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
+
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
@@ -152,7 +162,7 @@ jobs:
         id: plan
         env:
           EVENT_NAME: ${{ github.event_name }}
-          PULL_REQUEST_BASE: ${{ github.event.pull_request.base.sha }}
+          PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
         shell: bash
         run: |
@@ -180,9 +190,8 @@ jobs:
             base=HEAD^
           fi
           # Every diff-style gate compares with the common ancestor, as package
-          # selection does. The pull-request base is main's tip when the event
-          # fired; a branch behind it would otherwise be charged with every
-          # Clippy warning main fixed after the branch point. A push to main
+          # selection does. A pull request is tested merged onto main, so its
+          # ancestor with main is the merged main commit itself. A push to main
           # extends its previous tip, so there the common ancestor is exactly
           # github.event.before.
           base=$(git merge-base "$base" HEAD)
@@ -215,6 +224,11 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
 
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
       # ci-fast carries the native fixture tools (os/Containerfile.ci-fast);
       # check them explicitly so EFI/RPM tests cannot skip.
       - name: Ensure invariant test tooling
@@ -244,6 +258,11 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
 
       - name: Run selected suites
         id: suites-run
@@ -289,6 +308,11 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
 
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
@@ -427,6 +451,11 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
@@ -493,6 +522,11 @@ jobs:
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
 
       - name: Prepare Rust build caches
         id: rust-build
@@ -582,6 +616,11 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
@@ -624,6 +663,11 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 1
 
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
+
       - name: Prepare Rust build caches
         uses: ./.forgejo/actions/prepare-rust-build
 
@@ -656,6 +700,11 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Merge onto the tested main
+        uses: ./.forgejo/actions/merge-main
+        with:
+          main: ${{ needs.select.outputs.main }}
       - name: Install verification tools
         run: |
           ./os/dev/install-cached-cosign.sh
