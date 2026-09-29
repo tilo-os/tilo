@@ -95,6 +95,65 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     std::fs::rename(&temporary, &destination).is_ok()
 }
 
+/// One line per in-place reload, written once the new code's first frame is
+/// presented. `tilo-app dev --timings` joins it with the build that produced
+/// the library.
+#[cfg(feature = "native")]
+const RELOAD_TIMINGS_FILE: &str = "reload-timings.jsonl";
+
+/// Where one in-place reload spent its time inside the app.
+#[cfg(feature = "native")]
+pub(crate) struct DevReloadTiming {
+    pub session: std::path::PathBuf,
+    pub library: std::path::PathBuf,
+    /// When the event loop took the reload request.
+    pub received: crate::time::SystemTime,
+    /// Freezing the running app into `checkpoint.bin`.
+    pub checkpoint: std::time::Duration,
+    /// `dlopen` and symbol lookup.
+    pub load: std::time::Duration,
+    /// The library's per-window apply and its new root.
+    pub handoff: std::time::Duration,
+    /// Installing that root and laying it out.
+    pub install: std::time::Duration,
+}
+
+#[cfg(feature = "native")]
+impl DevReloadTiming {
+    /// Append this reload, with the time its first frame was handed to the
+    /// renderer and the time that frame was presented.
+    pub(crate) fn record(
+        &self,
+        submitted: crate::time::SystemTime,
+        presented: crate::time::SystemTime,
+    ) {
+        use std::io::Write as _;
+        let unix_ms = |at: crate::time::SystemTime| {
+            at.duration_since(crate::time::UNIX_EPOCH)
+                .map_or(0.0, |since| since.as_secs_f64() * 1000.0)
+        };
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1000.0;
+        let line = serde_json::json!({
+            "library": self.library,
+            "received_unix_ms": unix_ms(self.received),
+            "checkpoint_ms": ms(self.checkpoint),
+            "load_ms": ms(self.load),
+            "handoff_ms": ms(self.handoff),
+            "install_ms": ms(self.install),
+            "submitted_unix_ms": unix_ms(submitted),
+            "presented_unix_ms": unix_ms(presented),
+        });
+        let appended = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.session.join(RELOAD_TIMINGS_FILE))
+            .and_then(|mut file| writeln!(file, "{line}"));
+        if let Err(error) = appended {
+            eprintln!("tilo: cannot record reload timings: {error}");
+        }
+    }
+}
+
 #[cfg(all(feature = "native", unix))]
 static DEV_STOP_PIPE: AtomicI32 = AtomicI32::new(-1);
 #[cfg(all(feature = "native", unix))]
