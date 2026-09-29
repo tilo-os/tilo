@@ -34,7 +34,7 @@ uid=__UID__
 for d in /proc/[0-9]*; do
   [ "$(stat -c %u $d 2>/dev/null)" = "$uid" ] || continue
   comm=$(tr " " _ < $d/comm 2>/dev/null)
-  rss=$(awk '/^VmRSS:/ {print $2}' $d/status 2>/dev/null)
+  rss=$(awk '/^VmRSS:/ {r=$2} /^RssAnon:/ {a=$2} END {if (r) print r, a+0}' $d/status 2>/dev/null)
   [ -n "$rss" ] || continue
   pss=$(awk '/^Pss:/ {print $2}' $d/smaps_rollup 2>/dev/null)
   echo "${d#/proc/} $comm $rss ${pss:--}"
@@ -100,14 +100,15 @@ def memory(ctx) -> dict:
         parts = line.split()
         if parts[:1] == ["M"]:
             mem[parts[1].rstrip(":")] = int(parts[2]) // 1024
-        elif len(parts) == 4 and parts[0].isdigit():
-            pss = None if parts[3] == "-" else round(int(parts[3]) / 1024, 1)
-            procs.append({"pid": int(parts[0]), "comm": parts[1],
-                          "rss_mb": round(int(parts[2]) / 1024, 1), "pss_mb": pss})
+        elif len(parts) == 5 and parts[0].isdigit():
+            pss = None if parts[4] == "-" else round(int(parts[4]) / 1024, 1)
+            procs.append({"pid": int(parts[0]), "comm": parts[1], "rss_mb": round(int(parts[2]) / 1024, 1),
+                          "anon_rss_mb": round(int(parts[3]) / 1024, 1), "pss_mb": pss})
     procs.sort(key=lambda p: -p["rss_mb"])
     have_pss = bool(procs) and all(p["pss_mb"] is not None for p in procs)
     return {"procs": procs, "guest_mem_mb": mem, "pss_available": have_pss,
             "rss_mb_total": round(sum(p["rss_mb"] for p in procs), 1),
+            "anon_rss_mb_total": round(sum(p["anon_rss_mb"] for p in procs), 1),
             "pss_mb_total": round(sum(p["pss_mb"] for p in procs), 1) if have_pss else None}
 
 
@@ -171,14 +172,15 @@ def mem(ctx, res):
         _open_several(ctx)
     m = memory(ctx)
     res.metrics.update(top=m["procs"][:15], rss_mb_total=m["rss_mb_total"],
+                       anon_rss_mb_total=m["anon_rss_mb_total"],
                        pss_mb_total=m["pss_mb_total"], guest_mem_mb=m["guest_mem_mb"])
     ctx.write("R03-memory.json", json.dumps(m, indent=1))
     b = ctx.config["budgets"]
     shell = next((p for p in m["procs"] if p["comm"] == "shell"), None)
     expect(shell, "no compositor process found")
-    # PSS where the kernel reports it; RSS (an upper bound on PSS) against the same budgets.
-    key = "pss_mb" if m["pss_available"] else "rss_mb"
-    kind = key[:3].upper()
+    # PSS where the kernel reports it; otherwise anonymous RSS, the memory a process holds
+    # privately, against the same budgets (full RSS counts every shared library in full).
+    key, kind = ("pss_mb", "PSS") if m["pss_available"] else ("anon_rss_mb", "anonymous RSS")
     problems = []
     if shell[key] > b["shell_pss_mb"]:
         problems.append(f"compositor {kind} {shell[key]} MB > {b['shell_pss_mb']} MB")
@@ -186,12 +188,12 @@ def mem(ctx, res):
     if big:
         problems.append(f"over the per-process {kind} budget: " +
                         ", ".join(f"{p['comm']} {p[key]} MB" for p in big[:5]))
-    total = m["pss_mb_total"] if m["pss_available"] else m["rss_mb_total"]
+    total = m["pss_mb_total"] if m["pss_available"] else m["anon_rss_mb_total"]
     if total > b["session_pss_mb"]:
         problems.append(f"session {kind} {total} MB > {b['session_pss_mb']} MB")
     expect(not problems, "; ".join(problems))
     if not m["pss_available"]:
-        raise core.Unobservable("RSS is within budget, but the kernel exposes no smaps_rollup "
+        raise core.Unobservable("anonymous RSS is within budget, but the kernel exposes no smaps_rollup "
                                 "(CONFIG_PROC_PAGE_MONITOR off), so PSS cannot be measured")
 
 

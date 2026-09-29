@@ -94,45 +94,53 @@ def bluetooth(ctx, res):
     expect(not live, f"Bluetooth actions offered as available with no adapter: {live}")
 
 
-@check("B04", AREA, "Keyboard layout import: GNOME de+nodeadkeys and compose:ralt become the session's layout")
-def keyboard_import(ctx, res):
-    have = ctx.vm.exec("command -v gsettings || true").strip()
-    if not have or have.startswith("receipt"):
-        raise Unobservable("gsettings is not in the image, so the GNOME layout import cannot be seeded")
-    ctx.vm.exec("gsettings set org.gnome.desktop.input-sources sources \"[('xkb', 'de+nodeadkeys')]\" && "
-                "gsettings set org.gnome.desktop.input-sources xkb-options \"['compose:ralt']\"")
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json"')
-    doc = json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")))
-    for section in doc.values():
-        if isinstance(section, dict):
-            for k in [k for k in section if k in ("keyboard_layout", "keyboard_layouts", "compose_key")
-                      or k.startswith("host_input_migration")]:
-                section.pop(k)
-    ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
-    ctx.vm.run("slot", "restart", timeout=180)
-    time.sleep(8)
-    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json"')
-    doc = json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")))
-    found = {k: v for sec in doc.values() if isinstance(sec, dict) for k, v in sec.items()
-             if k in ("keyboard_layout", "keyboard_layouts", "compose_key")}
-    res.metrics["imported"] = found
-    expect(found.get("keyboard_layout") == "de:nodeadkeys",
-           f"layout not imported: settings hold {found or 'no keyboard keys'}")
-    expect(found.get("compose_key") == "ralt", f"compose key not imported: {found.get('compose_key')}")
-    # Functional: the physical Y key is `z` on a German layout.
+def _settings(ctx) -> dict:
+    raw = ctx.vm.exec('cat "$HOME/.config/tilo/settings.json" 2>/dev/null || echo "{}"')
+    return json.loads("\n".join(l for l in raw.splitlines() if not l.startswith("receipt:")) or "{}")
+
+
+def _typed_in_search(ctx, key: str) -> str:
+    """The text a physical key press puts into the search field (read back from state-dump)."""
+    ctx.close_overlays()
+    ctx.vm.key("super+space")
+    ctx.wait_state(lambda s: (s["chrome"].get("palette") or {}).get("visible"), 5, "search open")
+    ctx.vm.key(key)
+    ctx.settle(0.8)
+    query = (ctx.state()["chrome"].get("palette") or {}).get("query") or ""
+    ctx.close_overlays()
+    return query
+
+
+@check("B04", AREA, "Keyboard layout: de nodeadkeys with a compose key applies to the physical keys")
+def keyboard_layout(ctx, res):
     ctx.reset()
-    ctx.new_terminal_window()
-    time.sleep(2)
-    probe = f"acc{int(time.time()) % 100000}"
-    ctx.vm.input("type", f"touch ~/{probe}")
-    ctx.vm.key("y", "Return")
-    time.sleep(2)
-    hits = ctx.vm.exec(f'ls -d "$HOME"/{probe}* 2>/dev/null; true')
-    names = [l.rsplit("/", 1)[-1] for l in hits.splitlines() if probe in l]
-    res.metrics["typed_files"] = names
-    ctx.shot("B04-typed-de")
-    expect(names, "the typed command did not run (see W17), so the active layout could not be observed")
-    expect(any(n.endswith("z") for n in names), f"the Y key did not type `z`: created {names}")
+    doc = _settings(ctx)
+    saved = dict(doc.get("input") or {})
+    res.metrics["us_y"] = _typed_in_search(ctx, "y")
+    doc.setdefault("input", {}).update(keyboard_layout="de:nodeadkeys",
+                                       keyboard_layouts=["de:nodeadkeys"], compose_key="ralt")
+    ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+    time.sleep(2.5)
+    try:
+        # The physical Y key is `z` on a German layout; a US one types `y`.
+        typed = _typed_in_search(ctx, "y")
+        res.metrics["de_y"] = typed
+        ctx.shot("B04-layout-de")
+    finally:
+        doc = _settings(ctx)
+        doc["input"] = saved
+        ctx.vm.write_home_file(".config/tilo/settings.json", json.dumps(doc, indent=2).encode())
+        time.sleep(2.5)
+    expect(res.metrics["us_y"] == "y", f"with the default layout the Y key typed {res.metrics['us_y']!r}")
+    expect(typed == "z", f"with de:nodeadkeys the physical Y key typed {typed!r}, not 'z'")
+
+
+@check("B07", AREA, "Keyboard layout import: GNOME de+nodeadkeys and compose:ralt become the session's layout")
+def keyboard_import(ctx, res):
+    # firstboot imports the host's GNOME input settings only in host-desktop install mode
+    # (Tilo installed on an existing GNOME system); a Tilo OS session never runs it.
+    raise Unobservable("the GNOME input import runs only when Tilo is installed on a GNOME host "
+                       "(host-desktop mode); a Tilo OS VM cannot exercise it: verify it on the local install")
 
 
 @check("B05", AREA, "Display arrangement: mirror and extend apply, and revert restores")

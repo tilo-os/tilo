@@ -15,7 +15,7 @@ def commit(ctx, res):
     expect(not p.get("mismatch"), p.get("mismatch", ""))
 
 
-@check("P02", AREA, "A headful slot with a test identity and two outputs is up")
+@check("P02", AREA, "A headful slot with two outputs is up")
 def session(ctx, res):
     st = ctx.state()
     displays = st["workspace_tree"]["outputs"]["displays"]
@@ -25,7 +25,6 @@ def session(ctx, res):
     got = [f"{int(d['width'])}x{int(d['height'])}" for d in displays]
     expect(len(displays) == len(want), f"{len(want)} outputs requested, {len(displays)} present")
     expect(all(w.split("@")[0] == g for w, g in zip(want, got)), f"output modes {got}, requested {want}")
-    expect(st["chrome"].get("local_user_id"), "the session has no identity")
 
 
 @check("P03", AREA, "No failed or restart-looping user services in the session")

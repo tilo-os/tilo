@@ -4,9 +4,9 @@
     scripts/vm-acceptance/run.py --disk ~/vm-images/tilo-dev-x86-<sha>.qcow2 --commit <sha>
     scripts/vm-acceptance/run.py --vm tilofix --commit <sha>          # a VM you already have
 
-Creates (or uses) a dev VM, a headful slot with a throwaway identity and two
-outputs, drives it only through tilo-vm (control socket first, real uinput
-input second), and writes report.json and report.md with shots under
+Creates (or uses) a dev VM and a headful slot on two outputs (with a throwaway
+identity where tilo-vm can mint one), drives it only through tilo-vm (control
+socket first, real uinput input second), and writes report.json and report.md with shots under
 target/vm-acceptance/<run>/. A check that cannot observe its subject fails.
 See README.md beside this file.
 """
@@ -54,7 +54,7 @@ ORDER = ["P01", "P02", "R01", "R02", "R03", "R04",
          "W13", "W14", "W15", "W16", "W17",
          "A01", "A02", "A03", "A04", "A05", "A06", "A07",
          "S01", "S02", "S04", "S05", "S06", "S07", "S08", "S09",
-         "U01", "U02", "B01", "B02", "B03", "B05", "B06", "B04", "P03"]
+         "U01", "U02", "B01", "B02", "B03", "B04", "B05", "B06", "B07", "P03"]
 
 
 def git(*args: str) -> str:
@@ -133,7 +133,11 @@ def renderer(vm: TiloVm) -> str:
 
 
 def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
-    args = ["slot", "create", vm.slot, "--headful", "--identity", "--outputs", ",".join(outputs)]
+    helptext = vm.run("slot", "create", "--help", slot=False)
+    args = ["slot", "create", vm.slot, "--headful", "--outputs", ",".join(outputs)]
+    # A throwaway test identity where this tilo-vm can mint one (`slot create --identity`).
+    if "--identity" in helptext:
+        args.append("--identity")
     if locale:
         args += ["--locale", locale]
     try:
@@ -232,13 +236,14 @@ def main() -> int:
             ctx.facts["locale_de:why"] = "tilo-vm slot create has no --locale, so no German session can be started"
         selected = select(args.only)
         by_id = {c.id: c for c in core.REGISTRY}
-        main_ids = [i for i in ORDER if i in selected and (i not in DE_PASS or not de or "--locale" not in help_text)]
+        german = de and "--locale" in help_text
+        main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
             r = core.run_check(ctx, by_id[cid])
             results.append(r)
             print(f"{r.id} {r.status.upper():4} {r.seconds:6.1f}s  {r.title}" + (f"\n      {r.detail}" if r.detail else ""),
                   flush=True)
-        de_ids = [i for i in DE_PASS if i in selected and i not in main_ids]
+        de_ids = [i for i in DE_PASS if i in selected and german]
         if de_ids:
             vm.run("slot", "rm", vm.slot, timeout=180, slot=False, check=False)
             vm.slot = f"{args.slot}-de"
