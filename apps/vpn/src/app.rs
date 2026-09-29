@@ -1295,6 +1295,16 @@ impl VpnApp {
         self.actions.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     fn publish_vault(&mut self, doc: &mut AutoCommit) {
         let tor_global = self.vault.tor_global;
         for connection in self.vault.connections.clone() {
@@ -3188,7 +3198,7 @@ impl Widget for VpnApp {
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
-            "vpn.toggle-tunnel",
+            actions::VPN_TOGGLE_TYPE,
             actions::VPN_IMPORT_TYPE,
             actions::VPN_DELETE_TYPE,
             actions::VPN_PROVISION_TYPE,
@@ -3783,13 +3793,12 @@ impl Widget for VpnApp {
 }
 
 impl ui::resources::PublishesResources for VpnApp {
-    /// Publish the vault + connections resource tree to the shell's Ctrl+K
-    /// palette (see [`crate::actions`]).
+    /// Standalone / `--shots` / unit tests publish the full vault tree and
+    /// overlay live NetworkManager availability on connect / disconnect /
+    /// delete. When hosted, [`tilo_resource::publish`] already owns that door
+    /// (including tunnel Effects on connection children) — return nothing so
+    /// we do not republish a second `vpn.vault` root.
     fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the vault and its connections. Tunnel
-        // connect/disconnect Effects still decorate that tree for standalone
-        // tests; when hosted they must move onto Resource children rather than
-        // republishing the document door.
         if self.actions.is_hosted() {
             return Vec::new();
         }
@@ -3809,57 +3818,54 @@ impl ui::resources::PublishesResources for VpnApp {
                         .local_details
                         .get(&connection.id)
                         .is_some_and(|details| !details.network_manager_uuid.is_empty());
-                if let Some(delete) = resource
-                    .actions
-                    .iter_mut()
-                    .find(|action| action.id == "delete")
-                {
-                    delete.contract.availability = if locally_provisioned {
-                        tilo_actions::Availability::Available
-                    } else {
-                        tilo_actions::Availability::Unavailable {
-                            code: "local_credentials_required".into(),
-                            reason: "No exact local NetworkManager profile is provisioned on this device".into(),
-                        }
-                    };
-                }
-                let (id, label) = if connection.is_connected() {
-                    ("disconnect", "Disconnect")
+                let tunnel_availability = if connecting {
+                    tilo_actions::Availability::Unavailable {
+                        code: "transition_in_progress".into(),
+                        reason: "The tunnel is already changing state".into(),
+                    }
+                } else if !locally_provisioned {
+                    tilo_actions::Availability::Unavailable {
+                        code: "local_credentials_required".into(),
+                        reason: "Set up this shared profile on this device before connecting"
+                            .into(),
+                    }
                 } else {
-                    ("connect", "Connect")
+                    tilo_actions::Availability::Available
                 };
-                if let Ok(spec) = tilo_actions::ActionSpec::operation(
-                    id,
-                    label,
-                    tilo_actions::OperationKind::Effect,
-                    "vpn.toggle-tunnel",
-                    &connection.id.to_string(),
-                ) {
-                    resource.actions.insert(
-                        0,
-                        spec.with_contract(tilo_actions::ActionContract {
-                            availability: if connecting {
-                                tilo_actions::Availability::Unavailable {
-                                    code: "transition_in_progress".into(),
-                                    reason: "The tunnel is already changing state".into(),
-                                }
-                            } else if !locally_provisioned {
+                for action in &mut resource.actions {
+                    match action.id.as_str() {
+                        "delete" => {
+                            action.contract.availability = if locally_provisioned {
+                                tilo_actions::Availability::Available
+                            } else {
                                 tilo_actions::Availability::Unavailable {
                                     code: "local_credentials_required".into(),
-                                    reason: "Set up this shared profile on this device before connecting".into(),
+                                    reason: "No exact local NetworkManager profile is provisioned on this device".into(),
+                                }
+                            };
+                        }
+                        "connect" => {
+                            action.contract.availability = if connection.is_connected() {
+                                tilo_actions::Availability::Unavailable {
+                                    code: "already_connected".into(),
+                                    reason: "This tunnel is already up on this device".into(),
                                 }
                             } else {
-                                tilo_actions::Availability::Available
-                            },
-                            permission: tilo_actions::PermissionRequirement::Admin,
-                            risk: tilo_actions::RiskLevel::Privileged,
-                            confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                            retry: tilo_actions::RetryPolicy::AtMostOnce,
-                            execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                            result: tilo_actions::ResultSpec::Job,
-                            ..tilo_actions::ActionContract::default()
-                        }),
-                    );
+                                tunnel_availability.clone()
+                            };
+                        }
+                        "disconnect" => {
+                            action.contract.availability = if connection.is_connected() {
+                                tunnel_availability.clone()
+                            } else {
+                                tilo_actions::Availability::Unavailable {
+                                    code: "not_connected".into(),
+                                    reason: "This tunnel is not up on this device".into(),
+                                }
+                            };
+                        }
+                        _ => {}
+                    }
                 }
             }
         }
@@ -3901,7 +3907,7 @@ impl VpnApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "vpn.toggle-tunnel" {
+        if kind != tilo_actions::OperationKind::Effect || type_id != actions::VPN_TOGGLE_TYPE {
             if kind == tilo_actions::OperationKind::Effect && type_id == actions::VPN_DELETE_TYPE {
                 if self.queued_delete.is_some() {
                     return Err("another VPN profile deletion is already queued".into());
@@ -4881,7 +4887,7 @@ mod tests {
                     &ui::widget::ResourceOperation::local(
                         invocation,
                         tilo_actions::OperationKind::Effect,
-                        "vpn.toggle-tunnel",
+                        actions::VPN_TOGGLE_TYPE,
                         &serde_json::to_vec(&connection.to_string()).unwrap(),
                     ),
                     &mut doc,

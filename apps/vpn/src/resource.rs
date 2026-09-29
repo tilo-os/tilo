@@ -1,5 +1,5 @@
 //! VPN as a [`tilo_resource::Resource`]: tunnel profiles in the document;
-//! import / connect / provision against NetworkManager are Effects.
+//! import / connect / disconnect / provision against NetworkManager are Effects.
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
@@ -38,8 +38,8 @@ impl Resource for Vpn {
     fn local_operations() -> Vec<ActionSpec> {
         // Import is a host Effect (file → validated profile → later document
         // add). There is no outbox queue today: the shared profile lands via a
-        // separate document action after validation; connect/disconnect stay
-        // Effects without a compensating document record.
+        // separate document action after validation. Connect / disconnect live
+        // on connection children (see [`crate::actions::tunnel_toggle_specs`]).
         [ConnKind::WireGuard, ConnKind::OpenVpn]
             .into_iter()
             .filter_map(|kind| {
@@ -118,9 +118,11 @@ impl ResourceSurface<Vpn> for VpnApp {
 /// Framework dispatcher when hosted; the local action host for standalone
 /// tests and the screenshot launcher.
 pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Vpn>>,
-    last: Option<EncodedAction>,
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<Dispatcher<Vpn>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    pub(crate) hosted: bool,
+    pub(crate) last: Option<EncodedAction>,
 }
 
 impl Default for ActionSink {
@@ -128,6 +130,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
             last: None,
         }
     }
@@ -136,10 +139,17 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Vpn>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
+        self.hosted
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 
     pub(crate) fn dispatch_with_context(
@@ -176,4 +186,83 @@ impl ActionSink {
 /// Live launch through the framework host.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<VpnShell>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::{VPN_TOGGLE_TYPE, provide_resources};
+    use crate::model::sample_vault;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn resource_publish_owns_connect_disconnect_and_hosted_keeps_no_duplicate_root() {
+        let vault = sample_vault();
+        let published = ui::tilo_resource::publish::<Vpn>("vpn.vault", "VPN", &vault);
+        assert_eq!(published.kind, "vpn.vault");
+        assert!(
+            published.actions.iter().any(|action| {
+                action.id == "import-wireguard" && action.kind == OperationKind::Effect
+            }),
+            "import Effects must ride the framework vault root"
+        );
+        let home = published
+            .children
+            .iter()
+            .find(|child| child.label.starts_with("Home"))
+            .expect("sample Home connection child");
+        let ids: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&"connect"),
+            "connect Effect must be on the connection child via publish: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"disconnect"),
+            "disconnect Effect must be on the connection child via publish: {ids:?}"
+        );
+        let connect = home
+            .actions
+            .iter()
+            .find(|action| action.id == "connect")
+            .expect("connect");
+        assert_eq!(connect.kind, OperationKind::Effect);
+        assert_eq!(connect.operation_type.as_deref(), Some(VPN_TOGGLE_TYPE));
+
+        // children() is the same door provide_resources exports under the vault.
+        let from_children = Vpn::children(&vault);
+        assert_eq!(
+            from_children.len(),
+            provide_resources(&vault)[0].children.len()
+        );
+        assert!(from_children.iter().any(|child| {
+            child.actions.iter().any(|a| a.id == "connect")
+                && child.actions.iter().any(|a| a.id == "disconnect")
+        }));
+
+        let mut app = VpnApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(!app.is_hosted(), "standalone stays on the local host");
+        let standalone = app.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "vpn.vault");
+        assert!(
+            standalone[0].children.iter().any(|child| {
+                child.actions.iter().any(|a| a.id == "connect")
+                    && child.actions.iter().any(|a| a.id == "disconnect")
+            }),
+            "standalone still publishes tunnel Effects"
+        );
+
+        app.mark_hosted_for_test();
+        assert!(app.is_hosted());
+        let extras = app.resources(&doc);
+        assert!(
+            extras.is_empty(),
+            "hosted must not republish vpn.vault beside ResourceRoot: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+    }
 }
