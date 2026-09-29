@@ -90,12 +90,25 @@ pub fn set_membership_at(path: &Path, membership: Membership) -> std::io::Result
 ///
 /// No config directory, or the file cannot be written.
 pub fn set_refused_invite(invite_id: Option<&str>) -> std::io::Result<()> {
+    crate::update_section(SECTION, refused_values(invite_id))
+}
+
+/// [`set_refused_invite`] against an explicit settings file.
+///
+/// # Errors
+///
+/// The file cannot be written.
+pub fn set_refused_invite_at(path: &Path, invite_id: Option<&str>) -> std::io::Result<()> {
+    crate::update_section_at(path, SECTION, refused_values(invite_id))
+}
+
+fn refused_values(invite_id: Option<&str>) -> Map<String, Value> {
     let mut values = Map::new();
     values.insert(
         REFUSED_INVITE.into(),
         invite_id.map_or(Value::Null, |id| Value::String(id.to_string())),
     );
-    crate::update_section(SECTION, values)
+    values
 }
 
 /// Choosing to be in the community also asks once more after a refusal.

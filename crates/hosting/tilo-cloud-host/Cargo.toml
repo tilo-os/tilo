@@ -41,6 +41,12 @@ iroh-base.workspace = true
 web-time = "1"
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }
 tilo-room = {path="../../collab/tilo-room"}
+# Rooms held beside the home room: the community and the team's direct room.
+tilo-room-session = { path = "../../collab/tilo-room-session" }
+tilo-community = { path = "../../collab/tilo-community" }
+neighbour-wire = { path = "../../collab/neighbour-wire" }
+# The person's community membership choice.
+settings-store = { path = "../../system/settings-store" }
 tilo-workspace-host = { path = "../tilo-workspace-host", features = ["media"] }
 tilo-moq = {path="../tilo-moq", features=["relay"]}
 tilo-action-broker = {path="../../collab/tilo-action-broker"}
@@ -68,6 +74,8 @@ tilo-action-broker = {path="../../collab/tilo-action-broker", features=["test-su
 atomic-file = {path="../../system/atomic-file", features=["test-support"]}
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
+# The direct room both ends derive.
+tilo-reference = { path = "../../collab/reference" }
 moq-net.workspace = true
 web-transport-quinn = { version = "0.12.1", default-features = false, features = ["ring"] }
 rustls.workspace = true

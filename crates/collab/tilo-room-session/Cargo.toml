@@ -21,6 +21,9 @@ ed25519-dalek.workspace = true
 iroh.workspace = true
 # The random id of each enrollment challenge request.
 getrandom.workspace = true
+hex.workspace = true
+# The standing invitation a public room is entered by.
+neighbour-wire = { path = "../neighbour-wire" }
 parking_lot.workspace = true
 postcard = { workspace = true, features = ["alloc"] }
 rand_core.workspace = true
@@ -31,6 +34,8 @@ tilo-desktop-model = { path = "../../session/desktop-model" }
 # The device custody an enrollment presents to the issuing host.
 tilo-identity-host = { path = "../../runtime/tilo-identity-host" }
 tilo-room = { path = "../tilo-room" }
+# The direct room between two people.
+tilo-reference = { path = "../reference" }
 # The join client an enrollment redeems its invitation over.
 tilo-relay = { path = "../../hosting/tilo-relay" }
 tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }

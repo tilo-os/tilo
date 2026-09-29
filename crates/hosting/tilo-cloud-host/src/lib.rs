@@ -42,6 +42,7 @@ pub mod operator;
 mod owner_cell;
 pub use owner_cell::StoreGuard;
 mod peer_memo;
+pub mod rooms;
 pub mod runtime;
 mod storage;
 pub use actions::{ActionReceipt, ActionRequest, NativeOperation};

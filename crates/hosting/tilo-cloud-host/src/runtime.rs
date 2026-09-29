@@ -253,6 +253,18 @@ where
                 .context("relay offline")?;
         }
         let mesh_router = crate::mesh::start(root, machine, mode.clone()).await?;
+        // The rooms held beside the home room: the Tilo Community, which
+        // every person is in by default, and their direct room with the team.
+        let (stop_rooms, rooms_stopped) = tokio::sync::watch::channel(false);
+        let (_rooms, rooms_task) = {
+            let identity = Store::open(root, machine)?.rooms_identity()?;
+            let endpoint = Endpoint::builder(presets::Minimal)
+                .relay_mode(mode.clone())
+                .bind()
+                .await?;
+            crate::rooms::Rooms::open(root, identity, tilo_community::config_path(), endpoint)?
+                .start(rooms_stopped)
+        };
         let owner_result: Result<()> = async {
             {
                 let mut store = Store::open(root, machine)?;
@@ -475,6 +487,8 @@ where
             session.close().await;
             session_result
         }.await;
+        let _ = stop_rooms.send(true);
+        let _ = rooms_task.await;
         let shutdown_result = mesh_router.shutdown().await;
         owner_result.and(shutdown_result.map_err(anyhow::Error::from))
     }.await;
