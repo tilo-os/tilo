@@ -1391,6 +1391,7 @@ mod tests {
         let package = |id: &str| crate::shell::launcher::InstalledApp {
             package_id: id.into(),
             display_name: "Writer".into(),
+            localized_names: std::collections::BTreeMap::default(),
             category: None,
             version: "1".into(),
             manifest_path: std::path::PathBuf::from("/x/manifest.toml"),
