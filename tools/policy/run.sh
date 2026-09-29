@@ -29,8 +29,7 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
   --check fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
-  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml
-  --check tilo-runtime .forgejo/workflows/runtime-macos.yml \
+  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
