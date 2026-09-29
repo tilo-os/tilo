@@ -335,18 +335,46 @@ fn snippet_label(s: &Snippet) -> String {
     format!("{} · {}", base, s.language.label())
 }
 
-/// Build the small contextual root shown immediately by Ctrl+K.
-pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
-    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
-    lib = lib.with_action(view_operation(
+/// Library-level View ops (search focus). Document mutations live on
+/// [`crate::resource::Snippets::declarations`] / [`crate::resource::Snippets::children`].
+pub(crate) fn library_view_specs() -> Vec<ActionSpec> {
+    vec![view_operation(
         "search",
         "Search snippets",
         &SnippetsOperation::FocusSearch,
-    ));
+    )]
+}
+
+/// Document-derived children for [`tilo_resource::publish`]: tags and snippets.
+pub(crate) fn publish_children(snippets: &[Snippet]) -> Vec<Resource> {
+    let tags = snippets
+        .iter()
+        .flat_map(|snippet| snippet.tags.iter().cloned())
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut children = Vec::with_capacity(tags.len().saturating_add(snippets.len()));
+    for tag in tags {
+        children.push(provide_tag_resource(tag));
+    }
+    for snippet in snippets {
+        children.push(provide_snippet_resource(snippet));
+    }
+    children
+}
+
+/// Build the small contextual root shown immediately by Ctrl+K (standalone /
+/// `--shots` / unit tests). When the framework hosts the surface,
+/// [`tilo_resource::publish`] owns this door instead.
+pub fn provide_contextual_resources(ctx: &SnippetsResourceCtx) -> Vec<Resource> {
+    let mut lib = Resource::new("snippets.library", "snippets.library", "Snippets");
+    for spec in library_view_specs() {
+        lib = lib.with_action(spec);
+    }
 
     // Library-level: create a new snippet at the current folder. The uuid is
     // minted once when the title argument is committed, then baked into the
-    // envelope, so replay stays deterministic.
+    // envelope, so replay stays deterministic. Hosted publish uses the same
+    // action via [`crate::resource::Snippets::declarations`] (folder defaults
+    // to the All Snippets root there — presentation folder is a View concern).
     let folder = ctx.current_folder.clone();
     lib = lib.with_action(ActionSpec::prompted(
         "new-snippet",
@@ -460,19 +488,9 @@ pub fn provide_resources(ctx: &SnippetsResourceCtx, doc: &AutoCommit) -> Vec<Res
     let mut lib = provide_contextual_resources(ctx)
         .pop()
         .unwrap_or_else(|| Resource::new("snippets.library", "snippets.library", "Snippets"));
-    let snippets = SnippetsDoc::list(doc);
-    let tags = snippets
-        .iter()
-        .flat_map(|snippet| snippet.tags.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>();
-    for tag in tags {
-        lib = lib.with_child(provide_tag_resource(tag));
+    for child in publish_children(&SnippetsDoc::list(doc)) {
+        lib = lib.with_child(child);
     }
-
-    for s in snippets {
-        lib = lib.with_child(provide_snippet_resource(&s));
-    }
-
     vec![lib]
 }
 
