@@ -5,9 +5,10 @@
 //! reading settings / fonts / schemes) live on this resource via
 //! [`Resource::bound_actions`] / [`Resource::children`]. Open-book is an Effect
 //! in [`Resource::local_operations`]. Hosted [`PublishesResources::resources`]
-//! stays empty — never a second hand-built `ebook.library` / `ebook.settings`
-//! root beside [`tilo_resource::publish`]. Live reading-chrome Views for the
-//! open book stay on the widget's exact resource lookup when hosted.
+//! returns only the peer's live reading selection (`ebook.selection`) — never a
+//! second hand-built `ebook.library` / `ebook.settings` root beside
+//! [`tilo_resource::publish`]. Selection-bound highlight / note / bookmark and
+//! page-chrome Views need the open book and stay on that live extra.
 
 use std::rc::Rc;
 
@@ -248,7 +249,7 @@ mod tests {
     use ui::widget::Widget;
 
     #[test]
-    fn resource_publish_owns_library_door_and_hosted_keeps_no_second_tree() {
+    fn resource_publish_owns_library_door_and_hosted_keeps_selection_extras() {
         let mut doc = AutoCommit::new();
         let entry = LibraryEntry {
             id: "book:0123456789abcdef0123456789abcdef".into(),
@@ -331,9 +332,61 @@ mod tests {
         assert!(app.is_hosted());
         let extras = ui::resources::PublishesResources::resources(&app, &seeded);
         assert!(
-            extras.is_empty(),
+            extras
+                .iter()
+                .all(|resource| resource.kind != "ebook.library"
+                    && resource.kind != "ebook.settings"),
             "hosted must not republish ebook.library/settings beside ResourceRoot: {:?}",
             extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        assert_eq!(
+            extras.len(),
+            1,
+            "hosted returns the reading-selection slice alone"
+        );
+        assert_eq!(extras[0].kind, "ebook.selection");
+        let book_id = app
+            .open_book()
+            .expect("sample library opens a book")
+            .id
+            .clone();
+        assert_eq!(extras[0].id.as_str(), format!("ebook.selection:{book_id}"));
+        for id in [
+            "toggle-bookmark",
+            "add-note",
+            "previous-page",
+            "next-page",
+            "contents",
+            "notes",
+            "settings",
+        ] {
+            assert!(
+                extras[0].actions.iter().any(|action| action.id == id),
+                "hosted keeps open-book chrome `{id}`: {:?}",
+                extras[0]
+                    .actions
+                    .iter()
+                    .map(|a| a.id.as_str())
+                    .collect::<Vec<_>>()
+            );
+        }
+        assert!(
+            !extras[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "remove-from-library" || action.id == "toggle-hide-read"),
+            "hosted selection must not copy shelf Document ops already on publish"
+        );
+
+        app.select_passage_for_test(0, 0, 0, 4);
+        let with_sel = ui::resources::PublishesResources::resources(&app, &seeded);
+        assert_eq!(with_sel.len(), 1);
+        assert!(
+            with_sel[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "note-selection"),
+            "hosted selection binds note-selection when text is selected"
         );
 
         let door = provide_resources(&state);
