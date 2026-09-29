@@ -65,6 +65,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 |---|---|
 | `overview.md` | component overview and system stack |
 | `compositor.md` | strips, window model, input |
+| `window-management.md` | one model for windows, strips and workspaces: chords, gestures, pointer, overlays, actions, motion |
 | `collaboration.md` | CRDT sync, presence, peers |
 | `rooms.md` | workspaces, hosts, membership |
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |

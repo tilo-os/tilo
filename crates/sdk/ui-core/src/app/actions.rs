@@ -4002,8 +4002,8 @@ pub(crate) fn directory_row_wire_bytes(row: &runtime_collab::ActionDirectoryRow)
 }
 
 /// Every `(resource, action)` in `resource`'s tree, to `max_depth` levels
-/// below it, whose action id or label, description or resource label contains
-/// `needle` (already lowercase). Each matched resource is kept without its
+/// below it, whose action id or label, description, parameter names and
+/// descriptions or resource label contains `needle` (already lowercase). Each matched resource is kept without its
 /// children.
 fn collect_named_actions(
     resource: &tilo_actions::Resource,
@@ -4019,6 +4019,10 @@ fn collect_named_actions(
             || contains(&action.label)
             || action.description.as_deref().is_some_and(contains)
             || contains(&resource.label)
+            || action
+                .params()
+                .iter()
+                .any(|param| contains(&param.name) || contains(&param.description))
         {
             let shallow = shallow.get_or_insert_with(|| tilo_actions::Resource {
                 children: Vec::new(),

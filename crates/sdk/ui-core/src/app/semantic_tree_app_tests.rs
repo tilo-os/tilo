@@ -1988,3 +1988,17 @@ fn a_needle_finds_actions_published_only_in_the_resource_tree() {
         "the cursor resumes after the returned match"
     );
 }
+
+#[test]
+fn a_needle_finds_an_action_by_its_parameters() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "value".into();
+    let page = app.action_directory_page(query);
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("set-label"))], "{page:?}");
+}
