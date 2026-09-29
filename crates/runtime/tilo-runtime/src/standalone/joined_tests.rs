@@ -652,7 +652,8 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
         .unwrap();
 }
 
-/// Every file under `root`: the host's relay store, the runtime's record.
+/// Every regular file under `root`: the host's relay store, the runtime's
+/// record. A service socket holds no data.
 fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
     let mut files = Vec::new();
     let mut pending = vec![root.to_path_buf()];
@@ -661,7 +662,7 @@ fn files_under(root: &std::path::Path) -> Vec<std::path::PathBuf> {
             let path = entry.path();
             if path.is_dir() {
                 pending.push(path);
-            } else {
+            } else if path.is_file() {
                 files.push(path);
             }
         }
