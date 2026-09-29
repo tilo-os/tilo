@@ -920,22 +920,25 @@ impl WasmPeer {
     }
 
     /// A live-plane grant for `room` over the current HTTPS session, as
-    /// `{token (hex), room, publisher, expiresAtNs}` JSON.
+    /// `{token (hex), room, publisher, expiresAtNs}` JSON. With `agent`, the
+    /// grant is for that agent of this device: it publishes under the
+    /// agent's own namespace, never as the device.
     ///
     /// # Errors
     ///
     /// Rejects when not connected or not admitted to the room.
     #[wasm_bindgen(js_name = liveGrant)]
-    pub async fn live_grant(&self, room: String) -> Result<String, JsError> {
+    pub async fn live_grant(&self, room: String, agent: Option<String>) -> Result<String, JsError> {
         let (reply, receipt) = tokio::sync::oneshot::channel();
-        self.handle
-            .live_grant_then(
-                workspace(&room)?,
-                Box::new(move |grant| {
-                    let _ = reply.send(grant);
-                }),
-            )
-            .map_err(js_error)?;
+        let done: tilo_browser_peer::session::GrantCompletion = Box::new(move |grant| {
+            let _ = reply.send(grant);
+        });
+        let workspace = workspace(&room)?;
+        match agent {
+            None => self.handle.live_grant_then(workspace, done),
+            Some(agent) => self.handle.agent_live_grant_then(workspace, agent, done),
+        }
+        .map_err(js_error)?;
         let grant = receipt
             .await
             .map_err(|_| js_error("peer session closed"))?
@@ -1013,6 +1016,24 @@ impl WasmPeer {
             })
             .collect();
         serde_json::to_string(&out).unwrap_or_else(|_| "[]".into())
+    }
+
+    /// Whether the page holds the room's record `record` of `app`: open in
+    /// a mount, or received from the room and stored for whoever opens it.
+    #[wasm_bindgen(js_name = hasRecord)]
+    pub fn has_record(&self, app: &str, record: &str) -> bool {
+        crate::replication::has_record(self.id, app, record)
+    }
+
+    /// The room's records this page holds, as JSON `[{app, record}]`, so a
+    /// page can hand a guest the record its desktop created.
+    #[wasm_bindgen(js_name = roomRecords)]
+    pub fn room_records(&self) -> String {
+        let records: Vec<JsRecord> = crate::replication::records(self.id)
+            .into_iter()
+            .map(|(app, record)| JsRecord { app, record })
+            .collect();
+        serde_json::to_string(&records).unwrap_or_else(|_| "[]".into())
     }
 
     /// Report the page store's durability of a record (`unknown`,
