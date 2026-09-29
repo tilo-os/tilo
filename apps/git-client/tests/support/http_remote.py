@@ -13,6 +13,11 @@ import urllib.parse
 
 root = pathlib.Path(sys.argv[1]).resolve()
 ready = root / "ready.json"
+# The test's hang bound (tilo_test_env::hang_bound). Git's own work under a
+# loaded runner (index-pack, hooks, fsync) is not what these tests measure, so
+# no fixture wait may give up sooner and turn a slow CGI into a dropped
+# connection that the client can only report as a network failure.
+hang_bound = float(sys.argv[sys.argv.index("--hang-bound") + 1])
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
@@ -49,10 +54,10 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 raise ValueError("invalid chunk terminator")
 
     def serve_git(self):
-        self.connection.settimeout(10)
+        self.connection.settimeout(hang_bound)
         if (root / "block").exists():
             (root / "request-started").touch()
-            deadline = time.monotonic() + 10
+            deadline = time.monotonic() + hang_bound
             while not (root / "release").exists():
                 if time.monotonic() >= deadline:
                     self.reply(503)
@@ -86,7 +91,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         )
         output = subprocess.run(
             ["git", "http-backend"], input=payload, capture_output=True,
-            env=environment, timeout=10,
+            env=environment, timeout=hang_bound,
             creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
         )
         if output.returncode:
