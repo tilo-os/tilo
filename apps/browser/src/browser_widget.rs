@@ -1254,6 +1254,10 @@ impl BrowserWidget {
         self.framework_hosted = hosted;
     }
 
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted
     }

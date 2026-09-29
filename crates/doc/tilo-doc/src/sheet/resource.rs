@@ -47,7 +47,7 @@ impl Action for WorkbookAction {
                 Ok(())
             }
             Self::AddSheet { name, after } => {
-                let c = open_or_init(doc)?;
+                let c = open_or_init(doc);
                 add_sheet(doc, &c, name, after.as_deref())?;
                 Ok(())
             }
@@ -107,10 +107,10 @@ impl Action for WorkbookAction {
     }
 }
 
-fn open_or_init(doc: &mut Doc) -> Result<SheetContainers, ActionError> {
+fn open_or_init(doc: &mut Doc) -> SheetContainers {
     match open(doc, &ROOT) {
-        Ok(c) => Ok(c),
-        Err(_) => Ok(init(doc, &ROOT)),
+        Ok(containers) => containers,
+        Err(_) => init(doc, &ROOT),
     }
 }
 

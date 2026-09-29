@@ -3224,10 +3224,18 @@ impl TerminalWidget {
         self.framework_hosted = true;
     }
 
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted
     }
 
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
     pub(crate) fn mark_hosted_for_test(&mut self) {
         self.framework_hosted = true;
     }

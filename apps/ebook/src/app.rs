@@ -3962,6 +3962,10 @@ impl BooksApp {
         self.actions.attach(dispatcher);
     }
 
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
     pub(crate) fn is_hosted(&self) -> bool {
         self.actions.is_hosted()
     }

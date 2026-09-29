@@ -325,7 +325,7 @@ class AppReleaseTests(unittest.TestCase):
             # One app must not enable unused image codecs in every thin tapp.
             expected = {
                 ROOT / "apps/slides/Cargo.toml": ["jpeg", "png", "gif", "webp"],
-                ROOT / "crates/doc/qdoc-pdf/Cargo.toml": ["jpeg", "png"],
+                ROOT / "crates/doc/tilo-doc-pdf/Cargo.toml": ["jpeg", "png"],
             }
             for manifest, formats in expected.items():
                 dependency = tomllib.loads(manifest.read_text())["dependencies"]["image"]
