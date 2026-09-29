@@ -162,7 +162,7 @@ class BuilderCandidates(unittest.TestCase):
             for ref in ['refs/heads/codex/arm64-tilo-integration', 'refs/tags/test-builder', 'refs/pull/1/head']:
                 with self.subTest(ref=ref):
                     self.assertEqual(self.publication_tags(ref), ['candidate-' + 'b' * 40 + '-42-2'])
-            self.assertIn("github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}'", BUILD)
+            self.assertIn("github.ref == 'refs/heads/main' && format('tilo-builder-{0}', matrix.arch) || format('tilo-builder-candidate-{0}-{1}'", BUILD)
         with self.subTest(phase="main_keeps_existing_promotion_policy"):
             self.assertEqual(self.publication_tags('refs/heads/main'), ['b' * 40, '1.97.1', 'latest'])
         with self.subTest(phase="both_architectures_and_builder_consumers_keep_acceptance_gates"):

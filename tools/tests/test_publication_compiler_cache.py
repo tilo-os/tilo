@@ -162,9 +162,8 @@ class KernelPublicationTests(unittest.TestCase):
         with self.subTest(phase='a published kernel imports no layer cache'):
             build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
             self.assertIn(
-                "cache-from: ${{ github.event_name == 'pull_request' && format('type=registry,"
-                "ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)"
-                " || '' }}", build)
+                "cache-from: ${{ github.event_name == 'pull_request' && "
+                "format('type=gha,scope=kernel-{0}', matrix.arch) || '' }}", build)
             self.assertEqual(self.workflow.count("cache-from:"), 1)
 
 

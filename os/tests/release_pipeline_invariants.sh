@@ -73,8 +73,8 @@ else
 fi
 
 grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
-  && grep -Fq 'tilo-kernel-buildcache:{1},mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
+  && grep -Fq 'scope=kernel-{0},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Eq 'cache-to:.*scope=kernel-.*mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate work or exhaust a PR runner'
 
@@ -82,7 +82,7 @@ grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
 # its best-effort cache write nor discard the build: the cache export ignores
 # errors, and a failed publication push retries the already-loaded image a
 # bounded number of times before the signing gate consumes its digest.
-grep -Fq 'tilo-kernel-buildcache:{1},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
+grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
   && grep -Fq "if: \${{ steps.build.outcome == 'failure' }}" "$workflows/build-kernel.yml" \
   && grep -Fq 'for attempt in 1 2 3; do' "$workflows/build-kernel.yml" \
   && grep -Fq 'docker image inspect "$LOCAL_IMAGE"' "$workflows/build-kernel.yml" \
@@ -216,7 +216,7 @@ fi
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq "format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)" "$kernel_workflow" \
+   && grep -Fq "format('type=gha,scope=kernel-{0}', matrix.arch)" "$kernel_workflow" \
    && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
    && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \

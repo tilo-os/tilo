@@ -128,15 +128,6 @@ jobs:
           # runner slot; only main pushes, which publish, use the trusted builder.
           persistent: true
 
-      # Only the layer cache export uses this login; it ends before the
-      # smoke test runs pull-request code.
-      - name: Log in for the layer cache
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: registry.tilo.so
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Build the production image without publication
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -156,14 +147,8 @@ jobs:
             SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
           secret-envs: ${{ steps.compiler-cache.outputs.secret-envs }}
           tags: ${{ env.IMAGE_REPOSITORY }}:sha-${{ env.SOURCE_REVISION }}
-          # Pull requests read the main cache and write only their own.
-          cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-registry-server-buildcache:main
-            ${{ github.event_name == 'pull_request' && format('type=registry,ref={0}/tilo/tilo-registry-server-buildcache:pr-{1}', env.TILO_LAYER_CACHE_REGISTRY, github.event.number) || '' }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-registry-server-buildcache:${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.number) || 'main' }},mode=max,ignore-error=true
-
-      - name: Log out before running the image
-        run: docker logout registry.tilo.so
+          cache-from: type=gha,scope=registry-server
+          cache-to: type=gha,scope=registry-server,mode=max,ignore-error=true
 
       - name: Exercise the non-root read-only runtime and health endpoint
         run: >-
