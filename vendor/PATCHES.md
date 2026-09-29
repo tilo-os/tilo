@@ -232,3 +232,10 @@ JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
 `ImageCache::set_max_size`) limits how far the image atlas grows; upstream's
 maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
 eviction are omitted and reported, as they already were at the maximum.
+
+## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
+
+wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
+memory stays until JavaScript collects the object. `clear_pool` (run when the
+bump budget grows) and `free_download` now destroy their buffers, so a budget
+growth does not keep every old buffer resident beside its replacement.

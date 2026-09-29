@@ -365,6 +365,9 @@ impl RenderContext {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
         };
+        // Release the old target before allocating the new one: on WebGPU a
+        // dropped texture stays resident until JavaScript collects it.
+        surface.target_texture.destroy();
         let (texture, view) = create_targets(width, height, &handle.device);
         surface.target_texture = texture;
         surface.target_view = view;
