@@ -443,6 +443,9 @@ pub struct ContainersApp {
     /// Keyboard focus for the immediate-mode root; its focused synthetic
     /// create field becomes the exported accessibility active descendant.
     has_focus: bool,
+    /// Document actions: local host for standalone / `--shots` / unit tests;
+    /// framework dispatcher when [`ResourceSurface::attach`] runs.
+    actions: crate::resource::ActionSink,
 }
 
 /// Input dependencies are independent of whether the runtime is live.
@@ -572,7 +575,114 @@ impl ContainersApp {
             compact_layout_active: false,
             motion_reduced: false,
             has_focus: false,
+            actions: crate::resource::ActionSink::default(),
         }
+    }
+
+    pub(crate) fn attach_framework(
+        &mut self,
+        dispatcher: ui::framework::Dispatcher<crate::resource::Containers>,
+    ) {
+        self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Adopt collaborative view prefs; never clear the local engine catalogue.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ContainersState) {
+        self.view.section = state.section;
+        self.view.selected = state.selected.clone();
+        self.view.tab = state.tab;
+        self.view.search.clone_from(&state.search);
+    }
+
+    pub(crate) fn commit_view(
+        &mut self,
+        doc: &mut AutoCommit,
+        action: &crate::resource::ContainersAction,
+    ) {
+        self.actions.dispatch(doc, action);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_document_action(&self) -> Option<&ui::tilo_actions::EncodedAction> {
+        self.actions.last_dispatched()
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// with live engine children overlaid.
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let state = crate::resource::Containers::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Containers>(
+            "containers",
+            "Containers",
+            &state,
+        );
+        if let Some(create) = root.actions.iter_mut().find(|action| action.id == "create")
+            && !self.engine.live
+        {
+            *create = create.clone().unavailable(
+                "engine_offline",
+                "Creating containers requires a connected Podman engine",
+            );
+        }
+        root.children = self.engine_child_resources();
+        vec![root]
+    }
+
+    /// Live engine rows (and an in-flight pull) without a `containers.engine` root.
+    pub(crate) fn live_engine_extras(&self) -> Vec<Resource> {
+        let mut extras = self.engine_child_resources();
+        if let Some(pull) = &self.pull {
+            extras.push(Resource::new(
+                "containers.pull-job",
+                "containers.job",
+                format!("Pulling {}", pull.reference),
+            ));
+        }
+        extras
+    }
+
+    fn engine_child_resources(&self) -> Vec<Resource> {
+        let mut children = Vec::new();
+        for container in &self.engine.containers {
+            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            children.push(container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            ));
+        }
+        for image in &self.engine.images {
+            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            children.push(image_resource(image, self.engine.live));
+        }
+        for volume in &self.engine.volumes {
+            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            children.push(volume_resource(volume, self.engine.live));
+        }
+        for distrobox in &self.engine.distroboxes {
+            if children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            children.push(distrobox_resource(distrobox, self.engine.live));
+        }
+        children
     }
 
     #[doc(hidden)]
@@ -1547,7 +1657,10 @@ impl ContainersApp {
                 ConfirmTarget::Container { id, action } => {
                     self.apply_action(action, &id);
                     if ViewDoc::selected(doc).as_deref() == Some(id.as_str()) {
-                        ViewDoc::set_selected(doc, None);
+                        self.commit_view(
+                            doc,
+                            &crate::resource::ContainersAction::SetSelected { id: None },
+                        );
                     }
                 }
                 ConfirmTarget::Image { reference } => self.remove_image(&reference),
@@ -2183,7 +2296,8 @@ impl Widget for ContainersApp {
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::CommittedActions
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2239,13 +2353,26 @@ impl Widget for ContainersApp {
             self.apply_action(Action::Restart, "armed-container");
         }
         if let Some(target) = self.pending_resource_selection.take() {
-            ViewDoc::set_selected(doc, Some(&target));
+            self.commit_view(
+                doc,
+                &crate::resource::ContainersAction::SetSelected { id: Some(target) },
+            );
         }
         if let Some(section) = self.pending_resource_section.take() {
-            ViewDoc::set_section(doc, section);
+            self.commit_view(
+                doc,
+                &crate::resource::ContainersAction::SetSection {
+                    section: section.as_str().to_owned(),
+                },
+            );
         }
         if let Some(tab) = self.pending_resource_tab.take() {
-            ViewDoc::set_tab(doc, tab);
+            self.commit_view(
+                doc,
+                &crate::resource::ContainersAction::SetTab {
+                    tab: tab.as_str().to_owned(),
+                },
+            );
         }
         self.drain_bg(doc);
         // Seed a representative selection on the very first sync of a demo /
@@ -2944,56 +3071,14 @@ impl ui::search::capability::SearchSource for ContainersApp {
 }
 
 impl ui::resources::PublishesResources for ContainersApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("containers", "containers.engine", "Containers");
-        if let Ok(spec) = ActionSpec::operation(
-            "create",
-            "Create container",
-            OperationKind::View,
-            "containers.engine",
-            &["create"],
-        ) {
-            let spec = if self.engine.live {
-                spec
-            } else {
-                spec.unavailable(
-                    "engine_offline",
-                    "Creating containers requires a connected Podman engine",
-                )
-            };
-            root.actions.push(spec);
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the engine door — keep only live engine rows and pull jobs.
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
-        for container in &self.engine.containers {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            ));
-        }
-        for image in &self.engine.images {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(image_resource(image, self.engine.live));
-        }
-        for volume in &self.engine.volumes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(volume_resource(volume, self.engine.live));
-        }
-        for distrobox in &self.engine.distroboxes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(distrobox_resource(distrobox, self.engine.live));
-        }
-        vec![root]
+        self.publish_resources(doc)
     }
     fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
         if let Some(container_id) = id
@@ -3053,6 +3138,12 @@ impl ui::resources::PublishesResources for ContainersApp {
                 .map(|item| distrobox_resource(item, self.engine.live));
         }
         None
+    }
+}
+
+impl ui::undo::CommittedActions for ContainersApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
