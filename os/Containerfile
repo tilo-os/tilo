@@ -1127,7 +1127,7 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 # kernel moved out of this tree and into a Unified Kernel Image, and the UKI has
 # to be built over the *finished* rootfs (its composefs digest is the digest of
 # what will actually be mounted). See the split/uki/final stages at the end.
-FROM ${BASE_REF} AS rootfs
+FROM ${BASE_REF} AS rootfs-base
 ARG SOURCE_DATE_EPOCH=0
 
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
@@ -2759,6 +2759,12 @@ RUN case "${TILO_GENERATION}" in \
 # ---------------------------------------------------------------------------
 # The Tilo build outputs, last
 # ---------------------------------------------------------------------------
+# rootfs-base is everything above, built and cached on its own in CI: it
+# changes only with os/ inputs, packages and the kernel. This stage adds what
+# changes with almost every commit.
+FROM rootfs-base AS rootfs
+# The build-only dnf/rpm wrappers need it for the removals below.
+ARG SOURCE_DATE_EPOCH=0
 # Everything above changes only with os/ inputs, packages or the kernel. The
 # compiled binaries, the baked runtime and the app store change with almost
 # every commit, so they are copied here, after the RPM transactions,
