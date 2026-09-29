@@ -33,6 +33,65 @@ export function colorOf(key) {
 const recordKey = record => `${record.app}\u0000${record.record}`;
 const unhex = text => Uint8Array.from(text.match(/../g) ?? [], byte => parseInt(byte, 16));
 
+/** Publications after an action that may still carry its caret change (the
+ * caret can settle a presented frame later). */
+const ACTION_PUBLICATIONS = 3;
+
+/**
+ * One presence per live layer, however many mounts share it: the mount the
+ * person (or agent) acted in last publishes, and idle or hidden mounts never
+ * overwrite it. Input in a mount claims its layer at once; an action through
+ * a mount claims it only if it moved that mount's focus or caret (an agent
+ * posting in Chat after editing the notes stays in the notes).
+ */
+export function createSpeakers() {
+  const speaker = new Map();
+  return {
+    mount() {
+      const token = {};
+      const views = new Map();
+      let own = '[null,null]';
+      let focus = null;
+      let selection = null;
+      let actionPublications = 0;
+      const speaks = layer => {
+        if ((speaker.get(layer) ?? token) !== token) return false;
+        speaker.set(layer, token);
+        return true;
+      };
+      return {
+        /** Input in this mount: it speaks for `layer` now. */
+        claim(layer) { speaker.set(layer, token); },
+        /** An action ran through this mount. */
+        acted() { actionPublications = ACTION_PUBLICATIONS; },
+        release() { for (const [layer, holder] of speaker) if (holder === token) speaker.delete(layer); },
+        /** `layer.api` as this mount publishes through it. */
+        view(layer) {
+          let found = views.get(layer);
+          if (!found) {
+            found = Object.create(layer.api, {
+              publishPresence: {value: partial => {
+                if ('focus' in partial) focus = partial.focus;
+                if ('selection' in partial) selection = partial.selection;
+                const next = JSON.stringify([focus, selection]);
+                if (actionPublications > 0) {
+                  actionPublications--;
+                  if (next !== own) speaker.set(layer, token);
+                }
+                own = next;
+                return speaks(layer) && layer.api.publishPresence(partial);
+              }},
+              publishPreview: {value: (record, ops) => speaks(layer) && layer.api.publishPreview(record, ops)},
+            });
+            views.set(layer, found);
+          }
+          return found;
+        },
+      };
+    },
+  };
+}
+
 /**
  * WebTransport at `https://<host>:<webtransportPort>/moq/live` (pinned by
  * `certificateSha256` for a development certificate), else the HTTPS stream
