@@ -1,7 +1,7 @@
 //! Regenerate the PDF fixtures under `tests/fixtures/`.
 //!
 //! ```text
-//! rcargo run --locked -p tilo-pdf --features fixture-gen --example gen_fixtures [NAME.pdf…]
+//! cargo run --locked -p tilo-pdf --features fixture-gen --example gen_fixtures [NAME.pdf…]
 //! ```
 //!
 //! With names, only those fixtures are written.

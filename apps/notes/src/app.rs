@@ -4210,22 +4210,11 @@ impl Widget for NotesApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::component_lifecycle::ComponentLifecycle
     );
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        self.legacy_fixture_storage.as_ref()?;
-        if self.legacy_read_blocked.is_some() {
-            return Some(Err(
-                "Current note is unreadable; its draft has not been saved".into(),
-            ));
-        }
-        self.flush_main_panel_edit();
-        let legacy = self.legacy_fixture_storage.as_ref()?;
-        let bodies = legacy.page_saver.try_flush();
-        let metadata = legacy.saver.try_flush();
-        Some(bodies.and(metadata))
-    }
 
     fn start_operation(
         &mut self,
@@ -4421,28 +4410,6 @@ impl Widget for NotesApp {
         {
             self.pending_block_reveal = None;
         }
-    }
-
-    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
-    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
-    /// every page findable there by title, alongside the actions the app
-    /// exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        // Broadcast which page we're viewing as a Tab location so peers
-        // can render "indicative mist" on the sidebar row that leads here.
-        // This is per-peer (never in the shared doc), which is what lets
-        // two instances view different pages.
-        let sel = self.workspace.selected()?;
-        Some((
-            PresenceKey::Tab {
-                id: sel.to_string(),
-            },
-            PresencePayload::Arrived,
-        ))
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -4918,6 +4885,48 @@ impl Widget for NotesApp {
     ) {
         // The root rect is the whole window — always paint, never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for NotesApp {
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        self.legacy_fixture_storage.as_ref()?;
+        if self.legacy_read_blocked.is_some() {
+            return Some(Err(
+                "Current note is unreadable; its draft has not been saved".into(),
+            ));
+        }
+        self.flush_main_panel_edit();
+        let legacy = self.legacy_fixture_storage.as_ref()?;
+        let bodies = legacy.page_saver.try_flush();
+        let metadata = legacy.saver.try_flush();
+        Some(bodies.and(metadata))
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for NotesApp {
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        // Broadcast which page we're viewing as a Tab location so peers
+        // can render "indicative mist" on the sidebar row that leads here.
+        // This is per-peer (never in the shared doc), which is what lets
+        // two instances view different pages.
+        let sel = self.workspace.selected()?;
+        Some((
+            PresenceKey::Tab {
+                id: sel.to_string(),
+            },
+            PresencePayload::Arrived,
+        ))
+    }
+}
+
+impl ui::search::capability::SearchSource for NotesApp {
+    /// Fold the notebook into the unified Ctrl+K palette: a snapshot
+    /// [`NoteSearchProvider`](crate::search_provider::NoteSearchProvider) makes
+    /// every page findable there by title, alongside the actions the app
+    /// exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 

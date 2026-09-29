@@ -3898,7 +3898,8 @@ fn text_at(state: &AutoCommit, root: &ObjId, key: &str) -> String {
 impl Widget for StoreApp {
     ui::provides!(
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -3917,10 +3918,6 @@ impl Widget for StoreApp {
             "store.moderation-status",
             "store.moderation-appeal",
         ]
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
     }
 
     fn start_operation(
@@ -4179,6 +4176,12 @@ impl Widget for StoreApp {
                 .as_ref()
                 .is_some_and(|images| images.pending() > 0)
             || self.report_export.is_some()
+    }
+}
+
+impl ui::search::capability::SearchSource for StoreApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
     }
 }
 

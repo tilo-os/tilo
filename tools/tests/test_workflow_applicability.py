@@ -89,9 +89,9 @@ jobs:
             workflows = {
                 'build-kernel.yml': 'os/kernel/new.config',
                 'release-relay.yml': 'crates/hosting/tilo-relay/src/lib.rs',
-                'fs-fuse.yml': 'crates/system/fs/src/lib.rs',
-                'legacy-app-e2e.yml': 'scripts/legacy-app-caret-e2e.py',
-                'package-desktop.yml': 'dist/VERSION',
+                'ci-filesystem.yml': 'crates/system/fs/src/lib.rs',
+                'ci-legacy-apps.yml': 'scripts/legacy-app-caret-e2e.py',
+                'release-desktop.yml': 'dist/VERSION',
             }
             self.git('checkout', '-qb', 'candidate')
             self.write('docs/change.md', 'candidate')
@@ -287,8 +287,8 @@ jobs:
         with self.subTest(phase='actual declared paths and unsupported shapes'):
             self.doCleanups()
             self.setUp()
-            for name in ('build-kernel.yml', 'release-relay.yml', 'fs-fuse.yml',
-                         'legacy-app-e2e.yml', 'package-desktop.yml'):
+            for name in ('build-kernel.yml', 'release-relay.yml', 'ci-filesystem.yml',
+                         'ci-legacy-apps.yml', 'release-desktop.yml'):
                 path = ROOT/'.forgejo/workflows'/name
                 declared = gate.declared_paths(path)
                 self.assertIn('tools/ci/workflow_applicability.py', declared)
@@ -332,25 +332,31 @@ jobs:
             jobs = {
                 'build-kernel.yml': ('build-and-push-kernel',),
                 'release-relay.yml': ('build-and-push',),
-                'fs-fuse.yml': ('real-fuse', 'files-ux'),
-                'legacy-app-e2e.yml': ('caret',),
-                'package-desktop.yml': ('validate',),
+                'ci-filesystem.yml': ('real-fuse', 'files-ux'),
+                'ci-legacy-apps.yml': ('caret',),
+                'release-desktop.yml': ('validate',),
             }
+            shared = (ROOT/'.forgejo/workflows/applicability.yml').read_text(encoding='utf-8')
+            gate_job = job(shared, '  compare:')
+            self.assertIn("if: ${{ inputs.event == 'pull_request' }}", gate_job)
+            self.assertIn('--event "${{ inputs.event }}"', gate_job)
+            self.assertIn('runs-on: runner-quality', gate_job)
+            self.assertIn('timeout-minutes: 5', gate_job)
+            self.assertRegex(gate_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}')
+            self.assertIn('persist-credentials: false', gate_job)
+            self.assertNotIn('REGISTRY_TOKEN', gate_job)
+            self.assertIn('sparse-checkout-cone-mode: false', gate_job)
+            self.assertIn('tools/ci/prepare_pr_history.py', gate_job)
+            self.assertIn('tools/ci/workflow_applicability.py', gate_job)
+            self.assertIn('${{ inputs.workflow }}', gate_job)
+            self.assertLess(gate_job.index('Prepare targeted PR history'),
+                            gate_job.index('Require an exact relevant PR diff'))
             for name, expensive_jobs in jobs.items():
                 text = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
-                gate_job = job(text, '  applicability:')
-                self.assertIn("if: ${{ github.event_name == 'pull_request' }}", gate_job)
-                self.assertIn('runs-on: runner-quality', gate_job)
-                self.assertIn('timeout-minutes: 5', gate_job)
-                self.assertRegex(gate_job, r'image: registry\.tilo\.so/tilo/ci-fast@sha256:[0-9a-f]{64}')
-                self.assertIn('fetch-depth: 2', gate_job)
-                self.assertNotIn('fetch-depth: 0', gate_job)
-                self.assertIn('sparse-checkout-cone-mode: false', gate_job)
-                self.assertIn('tools/ci/prepare_pr_history.py', gate_job)
-                self.assertIn('tools/ci/workflow_applicability.py', gate_job)
-                self.assertIn('.forgejo/workflows/'+name, gate_job)
-                self.assertLess(gate_job.index('Prepare targeted PR history'),
-                                gate_job.index('Require an exact relevant PR diff'))
+                caller = job(text, '  applicability:')
+                self.assertIn('uses: ./.forgejo/workflows/applicability.yml', caller)
+                self.assertIn('workflow: .forgejo/workflows/'+name, caller)
+                self.assertIn('event: ${{ github.event_name }}', caller)
                 for job_name in expensive_jobs:
                     with self.subTest(workflow=name, job=job_name):
                         build = job(text, f'  {job_name}:')

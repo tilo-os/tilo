@@ -18,7 +18,7 @@ pub const FORGE_TOKEN_USE: &str =
 
 /// How the docs build tilo-vm; what to run when it is older than the VM.
 pub const REBUILD: &str =
-    "cargo build -p tilo-vm, then run target/debug/tilo-vm   (rcargo works as a drop-in for cargo)";
+    "cargo build -p tilo-vm, then run target/debug/tilo-vm   (any cargo drop-in works)";
 
 /// What to do with a VM that has no bootc, so `vm upgrade` cannot move it.
 pub const NOT_BOOTC_FIX: &str = "create a VM from a dev image instead: tilo-vm vm create <name>   (the published dev disk; or --image <dev disk.qcow2>)   |   or ask whoever set this VM up to move it onto a dev image";
@@ -31,7 +31,7 @@ const UNCHECKED_BOOTC: &str = "whether it runs a bootc dev image could not be ch
 pub fn no_disk_help(local_build: Option<&str>) -> String {
     let local = match local_build {
         Some(script) => format!(
-            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>   |   or build the image on the rcargo builder: rcargo --on-builder --fetch tilo-vm run -p tilo-vm -- image build, write its disk here: tilo-vm image disk, then tilo-vm vm create <name> --image target/tilo-vm/disk.qcow2 (tilo-vm guide images)"
+            "or build a disk locally: {script}, then tilo-vm vm create <name> --image <disk.qcow2>   |   or run tilo-vm image build on a build machine, bring back target/tilo-vm/image, write its disk here: tilo-vm image disk, then tilo-vm vm create <name> --image target/tilo-vm/disk.qcow2 (tilo-vm guide images)"
         ),
         None => format!(
             "no local dev-image build is available in this checkout ({LOCAL_BUILD_SCRIPT} is missing)"

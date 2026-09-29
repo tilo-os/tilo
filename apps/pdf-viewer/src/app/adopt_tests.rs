@@ -128,7 +128,7 @@ fn open(path: &std::path::Path) -> Option<(PdfApp, ui::State)> {
     let mut app = PdfApp::open(path);
     app.raster.as_ref()?;
     let mut state = ui::State::new();
-    let checkout = app.record_intent().expect("a markup record");
+    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
     ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
     app.sync(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);

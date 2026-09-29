@@ -65,6 +65,8 @@ pub enum Route {
     Media(MediaRoute),
     /// Proof-required LIVE_V1 grant issue/renewal.
     LiveGrant,
+    /// Proof-required input for a legacy window from a controlling viewer.
+    LegacyInput,
 }
 
 /// Closed inert media route registry; route selection alone grants no authority.
@@ -114,6 +116,9 @@ impl Route {
                 AUTH_BYTES
             }
             Self::LiveGrant => tilo_delivery_protocol::delivery_v3::live_wire::MAX_GRANT_BYTES,
+            Self::LegacyInput => {
+                tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::MAX_INPUT_BYTES
+            }
             _ => 0,
         }
     }
@@ -381,6 +386,11 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             if parts.uri.query().is_none() =>
         {
             Route::LiveGrant
+        }
+        ("POST", tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::INPUT_TARGET)
+            if parts.uri.query().is_none() =>
+        {
+            Route::LegacyInput
         }
         ("GET", path) if parts.uri.query().is_none() && snapshot_chunk_target(path).is_some() => {
             Route::SnapshotChunk

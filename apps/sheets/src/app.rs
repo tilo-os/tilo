@@ -1848,7 +1848,7 @@ impl SheetsApp {
                                     Self::table_from_snapshot(&snapshot)
                                 })
                                 .collect();
-                            if let Err(error) = self.import_tables(doc, tables) {
+                            if let Err(error) = self.import_tables_with(doc, tables, false) {
                                 self.status = format!("Could not import saved workbook: {error}");
                                 self.last_persist_failure = Some(Instant::now());
                             }
@@ -2004,6 +2004,7 @@ impl SheetsApp {
             eff_fmt: fmt.clone(),
             values: values.clone(),
         });
+        self.grid.set_bold(snap.bold);
         self.grid.set_data(snap.raw, fmt, values);
         self.pending.redraw = true;
     }
@@ -2514,7 +2515,7 @@ impl SheetsApp {
                 (inferred.format != CellFormat::General).then_some(inferred.format),
             ));
         }
-        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)]) {
+        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)], true) {
             Ok(count) => self.status = format!("Imported {count} cells from {}", file_label(path)),
             Err(error) => self.status = format!("CSV import failed: {error}"),
         }
@@ -2543,7 +2544,7 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
     }
 
     /// Materialise the whole workbook in tab order for workbook interchange.
@@ -2616,12 +2617,23 @@ impl SheetsApp {
         }
     }
 
-    /// Import a parsed set of tables (one per sheet) into new sheets, running
-    /// smart inference where a source cell carried no explicit format.
+    /// Import a user's file (one table per sheet) into new sheets; into a
+    /// workbook that is still blank, the file replaces its empty sheet.
     fn import_tables(
         &mut self,
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
+    ) -> Result<usize, String> {
+        self.import_tables_with(doc, tables, true)
+    }
+
+    /// Import a parsed set of tables (one per sheet) into new sheets, running
+    /// smart inference where a source cell carried no explicit format.
+    fn import_tables_with(
+        &mut self,
+        doc: &mut AutoCommit,
+        tables: Vec<crate::xlsx::SheetTable>,
+        replace_blank: bool,
     ) -> Result<usize, String> {
         let cur = self.default_currency();
         let mut total: usize = 0;
@@ -2656,7 +2668,7 @@ impl SheetsApp {
             total += writes.len();
             imported.push((table.name, writes));
         }
-        self.import_workbook_action(doc, imported)?;
+        self.import_workbook_action(doc, imported, replace_blank)?;
         self.reload(doc);
         Ok(total)
     }
@@ -2689,34 +2701,40 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         sheets: ImportedWorkbook,
+        replace_blank: bool,
     ) -> Result<usize, String> {
         let mut total = 0usize;
-        let action = actions::import_sheets_action(sheets.into_iter().map(|(name, mut writes)| {
-            let name = if name.trim().is_empty() {
-                "Imported".to_string()
-            } else {
-                name
-            };
-            writes.sort_by_key(|(addr, _, _)| (addr.1, addr.0));
-            total = total.saturating_add(writes.len());
-            (
-                name,
-                writes
-                    .into_iter()
-                    .map(|(addr, raw, fmt)| actions::CellWrite {
-                        col: addr.0,
-                        row: addr.1,
-                        raw,
-                        fmt: fmt.map(CellFormat::as_str),
-                    })
-                    .collect(),
-            )
-        }));
+        let mut action =
+            actions::import_sheets_action(sheets.into_iter().map(|(name, mut writes)| {
+                let name = if name.trim().is_empty() {
+                    "Imported".to_string()
+                } else {
+                    name
+                };
+                writes.sort_by_key(|(addr, _, _)| (addr.1, addr.0));
+                total = total.saturating_add(writes.len());
+                (
+                    name,
+                    writes
+                        .into_iter()
+                        .map(|(addr, raw, fmt)| actions::CellWrite {
+                            col: addr.0,
+                            row: addr.1,
+                            raw,
+                            fmt: fmt.map(CellFormat::as_str),
+                        })
+                        .collect(),
+                )
+            }));
         if total > MAX_IMPORT_CELLS {
             return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
         }
-        let last_sheet_id = match &action {
-            SheetsAction::ImportSheets { sheets } => {
+        let last_sheet_id = match &mut action {
+            SheetsAction::ImportSheets {
+                sheets,
+                replace_blank: replace,
+            } => {
+                *replace = replace_blank;
                 sheets.last().map(|sheet| sheet.sheet_id.clone())
             }
             _ => None,
@@ -2917,6 +2935,7 @@ impl SheetsApp {
                         raw,
                         format: CellFormat::General,
                         formula: None,
+                        bold: false,
                     });
                 }
                 Ok(vec![crate::xlsx::SheetTable {
@@ -3055,7 +3074,7 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
     }
 
     /// Drain a finished interchange file dialog, if one landed since the last
@@ -5628,11 +5647,17 @@ impl Widget for SheetsApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::SHEETS_OPERATION_TYPE]
+    }
+
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::cell_actions::READERS
     }
 
     fn start_operation(
@@ -5893,23 +5918,6 @@ impl Widget for SheetsApp {
         // went ("Alice is on Q2"). Painted after the chrome so it reads on
         // top of the tab surface.
         self.draw_sheet_tab_presence(scene, transform, theme, presence);
-    }
-
-    /// Announce which sheet the local user is viewing, so peers can flag
-    /// that tab. Keyed by sheet name (the same key
-    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
-    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        let name = self.sheet_names.get(self.active_sheet)?;
-        Some((
-            PresenceKey::Tab { id: name.clone() },
-            PresencePayload::Arrived,
-        ))
-    }
-
-    /// Fold sheets and populated cells into unified search. Every hit names an
-    /// exported resource View action; no app-owned activation callback exists.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
     }
 
     fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
@@ -6383,6 +6391,27 @@ impl Widget for SheetsApp {
 
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for SheetsApp {
+    /// Announce which sheet the local user is viewing, so peers can flag
+    /// that tab. Keyed by sheet name (the same key
+    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        let name = self.sheet_names.get(self.active_sheet)?;
+        Some((
+            PresenceKey::Tab { id: name.clone() },
+            PresencePayload::Arrived,
+        ))
+    }
+}
+
+impl ui::search::capability::SearchSource for SheetsApp {
+    /// Fold sheets and populated cells into unified search. Every hit names an
+    /// exported resource View action; no app-owned activation callback exists.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
     }
 }
 
@@ -8620,7 +8649,7 @@ mod tests {
             assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
 
             let (key, payload) =
-                ui::widget::Widget::presence_payload(&app).expect("a sheet is active");
+                ui::presence::capability::presence_payload(&app).expect("a sheet is active");
             assert_eq!(
                 key,
                 PresenceKey::Tab {
@@ -8634,7 +8663,8 @@ mod tests {
             if app.sheet_names.len() > 1 {
                 let other = (app.active_sheet + 1) % app.sheet_names.len();
                 app.active_sheet = other;
-                let (key2, _) = ui::widget::Widget::presence_payload(&app).expect("still active");
+                let (key2, _) =
+                    ui::presence::capability::presence_payload(&app).expect("still active");
                 assert_eq!(
                     key2,
                     PresenceKey::Tab {
@@ -8981,6 +9011,33 @@ mod tests {
             assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
             // A non-formula neighbour still round-trips as a plain value.
             assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (1, 1)), "1200");
+        }
+
+        // Case `a_file_imported_into_a_new_workbook_is_the_workbook`.
+        // A new workbook's empty Sheet1 gives way, so an export of the
+        // imported file doesn't open on a blank first tab.
+        {
+            let mut app = SheetsApp::new();
+            let mut doc = AutoCommit::new();
+            SheetsDoc::add_sheet(&mut doc, "Sheet1");
+            let table = crate::xlsx::SheetTable {
+                name: "sales".into(),
+                rows: vec![vec![Some(crate::xlsx::ImportedCell {
+                    raw: "Region".into(),
+                    format: CellFormat::General,
+                    formula: None,
+                    bold: false,
+                })]],
+            };
+            app.import_tables(&mut doc, vec![table.clone()]).unwrap();
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), ["sales"]);
+            assert_eq!(app.active_sheet, 0);
+            app.import_tables(&mut doc, vec![table]).unwrap();
+            assert_eq!(
+                SheetsDoc::sheet_names(&mut doc).len(),
+                2,
+                "a used workbook keeps its sheets"
+            );
         }
 
         // Case `csv_export_then_import_roundtrips`.

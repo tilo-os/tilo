@@ -523,7 +523,9 @@ struct ProbeRoot {
 impl Widget for ProbeRoot {
     tilo_ui::provides!(
         dyn tilo_ui::widget::NativeViewLifecycle,
-        dyn tilo_ui::resources::PublishesResources
+        dyn tilo_ui::resources::PublishesResources,
+        dyn tilo_ui::search::capability::SearchSource,
+        dyn tilo_ui::view::capability::ViewState
     );
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -588,17 +590,6 @@ impl Widget for ProbeRoot {
         Some(tilo_actions::InvocationUpdate::Cancelled {
             invocation,
             message: None,
-        })
-    }
-    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
-        PROVIDERS.with_borrow(|providers| {
-            providers.as_ref().map_or_else(Vec::new, |observations| {
-                vec![Box::new(ProbeProvider {
-                    observations: observations.clone(),
-                    local: LocalState::new(false),
-                })
-                    as Box<dyn tilo_ui::search::SearchProvider>]
-            })
         })
     }
     fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
@@ -680,6 +671,9 @@ impl Widget for ProbeRoot {
     fn set_state(&mut self, state: &str) {
         self.caret = state.into();
     }
+}
+
+impl tilo_ui::view::capability::ViewState for ProbeRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
@@ -691,6 +685,20 @@ impl Widget for ProbeRoot {
         if self.corrupt_restore {
             self.scroll = vec![f64::NAN];
         }
+    }
+}
+
+impl tilo_ui::search::capability::SearchSource for ProbeRoot {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
+        PROVIDERS.with_borrow(|providers| {
+            providers.as_ref().map_or_else(Vec::new, |observations| {
+                vec![Box::new(ProbeProvider {
+                    observations: observations.clone(),
+                    local: LocalState::new(false),
+                })
+                    as Box<dyn tilo_ui::search::SearchProvider>]
+            })
+        })
     }
 }
 

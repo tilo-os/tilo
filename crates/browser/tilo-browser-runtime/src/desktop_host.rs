@@ -387,6 +387,11 @@ impl Contexts {
             }
             _ => HostContext::prepare(definition, inputs, target)?,
         };
+        // A local desktop's records are the page's, which its other mounts
+        // of the profile and device edit too.
+        if self.handle.local.is_some() {
+            context.write_as_author();
+        }
         if let Some(content) = &self.content {
             context.provide_content(content.clone());
         }
@@ -2385,7 +2390,10 @@ impl DesktopRoot {
 }
 
 impl Widget for DesktopRoot {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
@@ -2630,6 +2638,9 @@ impl Widget for DesktopRoot {
     fn wants_pointer_capture(&self) -> bool {
         self.surface.wants_pointer_capture()
     }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for DesktopRoot {
     fn close_components(&mut self) -> Vec<ComponentCloseReport> {
         self.close_activity(crate::desktop_activity::ActivityCloseReason::Disposed);
         self.reports.extend(self.surface.close_components());

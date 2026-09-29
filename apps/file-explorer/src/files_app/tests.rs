@@ -3222,7 +3222,7 @@ mod command_path_tests {
         // refresh once, then Ctrl+K itself performs no mount traversal.
         widget.refresh_external_search_catalogs();
 
-        let providers = widget.search_providers();
+        let providers = ui::search::capability::search_providers(&widget);
         // Places and remote-account discovery remain separate providers; find
         // the collaborative hit by its stable record action rather than by a
         // brittle provider position or a developer's local account settings.

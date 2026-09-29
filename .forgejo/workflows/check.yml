@@ -3,7 +3,7 @@ name: CI / affected packages
 # Pull requests and pushes check affected reverse dependencies on native x86,
 # and test changed packages, their direct dependants (up to one shard's cost;
 # see REVERSE_TEST_COST_BUDGET) and contract suites. Full native coverage remains
-# mandatory in nightly.yml; this job is the short feedback path.
+# mandatory in ci-nightly.yml; this job is the short feedback path.
 # Manual dispatch validates the complete workspace on both native architectures.
 on:
   push:
@@ -45,7 +45,7 @@ env:
   # with Mesa's CPU Vulkan driver, so make all headless GPU tests use that same
   # adapter and fail instead of silently selecting runner hardware.
   WGPU_ADAPTER_NAME: llvmpipe
-  # Software-Vulkan goldens are intentionally exercised by nightly.yml after
+  # Software-Vulkan goldens are intentionally exercised by ci-nightly.yml after
   # its parallel suite has drained. Under the affected-package shards their
   # atomic rasterisation changes with runner load, producing repeatable false
   # pixel deltas even though the same canonical image passes while isolated.
@@ -55,7 +55,7 @@ env:
     (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
   # Suites that drive real FUSE daemons or an emulated TPM with LUKS2 images
   # and take tens of seconds each. Pull-request shards skip them; pushes to
-  # main still run them here, and nightly.yml runs them with the whole
+  # main still run them here, and ci-nightly.yml runs them with the whole
   # workspace, so a regression is caught at the merge that caused it.
   PUSH_ONLY_FILTER: >-
     (package(fs) and binary(collab_release_matrix)) or
@@ -95,9 +95,6 @@ jobs:
       image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     outputs:
       matrix: ${{ steps.plan.outputs.matrix }}
-      partitions_required: ${{ steps.plan.outputs.partitions_required }}
-      partition_matrix: ${{ steps.plan.outputs.partition_matrix }}
-      archive_matrix: ${{ steps.plan.outputs.archive_matrix }}
       clippy_matrix: ${{ steps.plan.outputs.clippy_matrix }}
       check_matrix: ${{ steps.plan.outputs.check_matrix }}
       check_required: ${{ steps.plan.outputs.check_required }}
@@ -360,8 +357,7 @@ jobs:
       # shared with nightly and with runs outside CI. The NTFS images are
       # generated only for shards that test their consumer. This shard provides
       # llvmpipe and an audio endpoint, so a test that finds either missing
-      # fails instead of skipping. A package too heavy for one job runs its
-      # nextest partitions in `test-partition` instead.
+      # fails instead of skipping.
       - name: Test shard ${{ matrix.shard }}
         if: matrix.test_packages != ''
         env:
@@ -405,160 +401,6 @@ jobs:
 
       - name: Save test results of shard ${{ matrix.shard }}
         if: always() && (matrix.test_packages != '' || matrix.scoped_tests != '')
-        continue-on-error: true
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        with:
-          name: nextest-junit-${{ matrix.arch }}-${{ matrix.shard }}
-          path: target/nextest/ci/junit.xml
-          retention-days: 14
-          if-no-files-found: warn
-
-  # A package too heavy for one test job builds its test binaries once here,
-  # with the test shards' profile, flags and target directory, and its
-  # partitions run from that archive in `test-partition`. The build is the
-  # partitions' critical path, so x86 builds it on the larger slot.
-  test-archive:
-    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.partitions_required == 'true'
-    needs: [builder, select]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    env:
-      CARGO_BUILD_JOBS: ${{ matrix.arch == 'aarch64' && '1' || '8' }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.partitions_required == 'true' && needs.select.outputs.archive_matrix || '{"include":[{"runner":"runner"}]}') }}
-    container:
-      image: ${{ needs.builder.outputs.image }}
-    steps:
-      - name: Checkout exact change
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 1
-
-      - name: Prepare Rust build caches
-        uses: ./.forgejo/actions/prepare-rust-build
-
-      - name: Check native architecture
-        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-
-      # Compile-time paths (CARGO_BIN_EXE_*, OUT_DIR) point into this
-      # checkout's target/, so the partitions extract the archive at the same
-      # workspace path; record it to fail clearly if a runner's differs.
-      - name: Archive the tests of ${{ matrix.package }}
-        run: |
-          mkdir -p target/ci/nextest-archive
-          printf '%s\n' "$GITHUB_WORKSPACE" > target/ci/nextest-archive/workspace-root
-          bash tools/ci/measure.sh "test archive ${{ matrix.package }}" -- \
-            bash scripts/ci-run.sh "cargo nextest archive (${{ matrix.package }})" -- \
-            cargo nextest archive --locked --profile ci --tests ${{ matrix.test_packages }} \
-            --archive-file target/ci/nextest-archive/tests.tar.zst
-          ls -l target/ci/nextest-archive
-
-      - name: Save the test archive of ${{ matrix.package }}
-        uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        with:
-          name: ${{ matrix.archive }}
-          path: target/ci/nextest-archive/
-          retention-days: 1
-          if-no-files-found: error
-
-  # One nextest partition of a heavy package per job, run from the archive
-  # built above: same environment, filters and reports as a test shard, and
-  # no compile.
-  test-partition:
-    if: needs.select.outputs.rust_required == 'true' && needs.select.outputs.partitions_required == 'true'
-    needs: [builder, select, test-archive]
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 90
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.select.outputs.rust_required == 'true' && needs.select.outputs.partitions_required == 'true' && needs.select.outputs.partition_matrix || '{"include":[{"runner":"runner","check_runner":"runner"}]}') }}
-    container:
-      image: ${{ needs.builder.outputs.image }}
-    steps:
-      - name: Checkout exact change
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          token: ${{ secrets.REGISTRY_TOKEN }}
-          fetch-depth: 1
-
-      - name: Prepare Rust build caches
-        uses: ./.forgejo/actions/prepare-rust-build
-
-      - name: Check native architecture
-        run: ./os/dev/assert-native-arch.sh '${{ matrix.arch }}'
-
-      - name: Ensure isolated audio test dependency
-        run: bash tools/ensure-headless-audio.sh
-
-      - name: Ensure native PDF capture dependency
-        if: contains(matrix.test_packages, '-p pdf-viewer') || contains(matrix.test_packages, '-p tilo-pdf') || contains(matrix.test_packages, '-p thumbnail')
-        run: |
-          asset=$(bash tools/ci/install-pdfium.sh --asset-name)
-          ./os/dev/cache-github-assets.sh "$asset"
-          library=$(bash tools/ci/install-pdfium.sh os/external-assets/cache /usr os/external-assets/github-assets.tsv)
-          printf 'TILO_PDFIUM_LIB=%s\n' "$library" >> "$GITHUB_ENV"
-          bash tools/ci/require-pdf-sandbox.sh
-
-      - name: Prepare qualified imager test filesystem
-        if: contains(matrix.test_packages, '-p imager')
-        run: |
-          root="$GITHUB_WORKSPACE/target/ci/imager-test-fs"
-          mkdir -p "$root"
-          chmod 700 "$root"
-          case "$(stat -f -c %T "$root")" in
-            ext2/ext3|ext2/ext3/ext4|xfs|btrfs) ;;
-            *) echo "workspace does not provide qualified imager semantics" >&2; exit 1 ;;
-          esac
-          printf 'TILO_IMAGER_TEST_CACHE_ROOT=%s\n' "$root" >> "$GITHUB_ENV"
-
-      - name: Build installer used by app-cli integration tests
-        if: contains(matrix.test_packages, '-p app-cli')
-        run: >-
-          bash tools/ci/measure.sh "build tilo-install test fixture" --
-          bash scripts/ci-run.sh "cargo build (tilo-install test fixture)" --
-          cargo build --locked -p install
-
-      - name: Fetch the test archive
-        uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
-        with:
-          name: ${{ matrix.archive }}
-          path: target/ci/nextest-archive
-
-      # Cargo creates CARGO_TARGET_TMPDIR while building integration tests;
-      # the archive does not carry it.
-      - name: Prepare the archive's target directory
-        run: |
-          test "$(cat target/ci/nextest-archive/workspace-root)" = "$GITHUB_WORKSPACE"
-          mkdir -p target/tmp
-
-      # The archive replaces `--locked --tests -p <package>`: it holds exactly
-      # that build, extracted over this checkout's target/.
-      - name: Test shard ${{ matrix.shard }}
-        env:
-          TILO_TEST_NTFS_FIXTURES: ${{ contains(matrix.test_packages, '-p tilo-ntfs-helper') && '1' || '0' }}
-          TILO_REQUIRE_MEDIA: "1"
-          TILO_REQUIRE_AUDIO: "1"
-          TILO_REQUIRE_GPU: "1"
-        run: >-
-          bash tools/ci/measure.sh "test shard ${{ matrix.shard }}" --
-          bash scripts/ci-run.sh "cargo nextest (affected shard ${{ matrix.shard }})" --
-          bash tools/test-env.sh cargo nextest run --profile ci
-          --archive-file target/ci/nextest-archive/tests.tar.zst
-          --extract-to "$GITHUB_WORKSPACE" --extract-overwrite --workspace-remap "$GITHUB_WORKSPACE"
-          --partition ${{ matrix.partition }}
-          -E "not ($GOLDEN_FILTER)${{ github.event_name == 'pull_request' && ' and not ($PUSH_ONLY_FILTER)' || '' }}"
-
-      - name: Report retried tests in shard ${{ matrix.shard }}
-        if: always()
-        run: >-
-          python3 tools/ci/nextest_report.py
-          --label "affected shard ${{ matrix.shard }} (${{ matrix.arch }})"
-          target/nextest/ci/junit.xml
-
-      - name: Save test results of shard ${{ matrix.shard }}
-        if: always()
         continue-on-error: true
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
@@ -837,7 +679,7 @@ jobs:
 
   checks:
     if: always()
-    needs: [builder, select, security, test, test-archive, test-partition, check, clippy, android, wasm, suites, pins]
+    needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]
     runs-on: runner-quality
     timeout-minutes: 10
     container:
@@ -850,9 +692,6 @@ jobs:
           SELECT_RESULT: ${{ needs.select.result }}
           SECURITY_RESULT: ${{ needs.security.result }}
           TEST_RESULT: ${{ needs.test.result }}
-          TEST_ARCHIVE_RESULT: ${{ needs.test-archive.result }}
-          TEST_PARTITION_RESULT: ${{ needs.test-partition.result }}
-          PARTITIONS_REQUIRED: ${{ needs.select.outputs.partitions_required }}
           CHECK_RESULT: ${{ needs.check.result }}
           CLIPPY_RESULT: ${{ needs.clippy.result }}
           CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}
@@ -871,12 +710,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          # Partitioned packages' archive and partition jobs run exactly when
-          # the selector partitions one, and count as part of the test result.
-          case "$PARTITIONS_REQUIRED:$TEST_ARCHIVE_RESULT:$TEST_PARTITION_RESULT:$TEST_RESULT" in
-            true:success:success:success|false:skipped:skipped:*) ;;
-            *) TEST_RESULT=failure ;;
-          esac
           # The shard's test and Clippy jobs, and the standalone check where
           # the selector requires one, pass together or are skipped together;
           # any other combination is a failure.

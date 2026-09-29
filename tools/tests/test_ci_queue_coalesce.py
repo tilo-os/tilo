@@ -45,7 +45,7 @@ class CoalesceTests(unittest.TestCase):
         with self.subTest(phase='only known main push unstarted'):
             self.assertTrue(ci.eligible(run()))
             for changes in [dict(event="workflow_dispatch"), dict(trigger_event="schedule"),
-                            dict(status="running"), dict(workflow_id="development-kernel.yml"),
+                            dict(status="running"), dict(workflow_id="manual-tool.yml"),
                             dict(event_payload='{"ref":"refs/tags/main"}'),
                             dict(event_payload='{"ref":"refs/heads/device"}'),
                             dict(event_payload="bad"), dict(event_payload="[]"),

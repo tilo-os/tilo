@@ -31,6 +31,15 @@ compiles faster. Driving is the same `tilo-control` story as on the host, throug
 driving, storage, platforms and troubleshooting; its source is
 `crates/dev/tilo-vm/guide/`.
 
+Image-level changes (`os/`, units, packages) move the VM onto a new image
+instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
+`--from local` for one that is not pushed yet (`tilo-vm guide images`). The
+`Build / OS dev` workflow builds every main push and every pull request that
+touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`).
+`Release / OS` builds signed, reproduced releases only: tags, the nightly run
+and a `release` dispatch of main.
+
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
 does; `tilo-vm guide fedora-loop` maps its commands.
@@ -93,7 +102,7 @@ disabled during alpha; tags do not enable those lanes.
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
-**Development / focused native test** (`focused-test.yml`). Select a full source
+**Dev / focused test** (`dev-focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
 `concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
@@ -116,7 +125,7 @@ and submit directly through the scheduler (replace the example package and SHA):
 ```sh
 jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
   '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/focused-test.yml/dispatches --hostname code.tilo.so
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
 ```
 
 Use this structured request for lists: the installed `fgj workflow run` does not
@@ -371,7 +380,7 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 ### Android app host
 
 [`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
-cross-compiled with Android NDK r29. `rcargo`'s builder and the Fedora 44
+cross-compiled with Android NDK r29. The Fedora 44
 development image (`dist/dev/Containerfile.fedora44`) carry it, with the
 `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
 that point Cargo at its clang. Elsewhere, install the same release and set
@@ -1134,7 +1143,7 @@ scripts/test-local.sh                            # the workspace, visual goldens
 scripts/test-local.sh -p fs -p tilo-ui           # selected packages
 scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
 scripts/test-local.sh --goldens                  # only the visual goldens
-CARGO=rcargo scripts/test-local.sh -p fs         # compile remotely, run here
+CARGO=my-cargo scripts/test-local.sh -p fs       # any cargo drop-in compiles, run here
 ```
 
 It compiles in your environment, then runs the compiled tests (through
@@ -1201,19 +1210,19 @@ next changed.
 **The native data plane (Tier 1).** `fs --test native_tier1` and
 `fs-native --test it` need root, two dedicated Btrfs volumes and a kernel with
 pre-content fanotify events (6.14 or later, `CONFIG_FANOTIFY_ACCESS_PERMISSIONS`).
-`tools/native-tier1.sh` builds both as you (remotely with `TILO_CARGO=rcargo`),
+`tools/native-tier1.sh` builds both as you (with `$TILO_CARGO`, default `cargo`),
 makes two loop-mounted Btrfs stores, runs every test once as root through
 `sudo -n` with `TILO_REQUIRE_FANOTIFY=1`, and removes the stores and mounts
 again:
 
 ```bash
-TILO_CARGO=rcargo tools/native-tier1.sh                      # both suites
-TILO_CARGO=rcargo TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
+tools/native-tier1.sh                                        # both suites
+TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
     tools/native-tier1.sh sqlite --nocapture                 # one scenario
 ```
 
-`rcargo test --local` cannot run them: its distrobox is a rootless user
-namespace, which gets neither a filesystem mark on a Btrfs store nor a
+A rootless container (a distrobox, a build container) cannot run them: a
+rootless user namespace gets neither a filesystem mark on a Btrfs store nor a
 pre-content group. `sqlite3` and `git` must be on your `PATH`, which the root
 run inherits.
 

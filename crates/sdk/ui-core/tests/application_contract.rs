@@ -1552,7 +1552,7 @@ mod save_status_fixture {
             );
         }
         pub(super) fn close(&mut self) {
-            let reports = self.tile.close_components();
+            let reports = tilo_ui::component_lifecycle::close_components(&mut self.tile);
             assert!(!reports.is_empty());
             assert!(reports.iter().all(|report| report.record_error.is_none()
                 && report.view_error.is_none()
@@ -1591,6 +1591,8 @@ mod paired_local {
     thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
+        tilo_ui::provides!(dyn tilo_ui::view::capability::ViewState);
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -1639,6 +1641,9 @@ mod paired_local {
                 .events
                 .push(format!("ephemeral:{state}"));
         }
+    }
+
+    impl tilo_ui::view::capability::ViewState for LocalRoot {
         fn view_state(&self) -> Option<ViewContribution> {
             Some(ViewContribution {
                 scroll: vec![self.0.borrow().scroll],

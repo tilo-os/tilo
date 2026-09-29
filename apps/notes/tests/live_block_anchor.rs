@@ -37,8 +37,7 @@ fn remote_notes_caret_names_the_same_block_on_both_peers_across_inserted_blocks(
     let text = editor_a.blocks()[1].line.value().to_string();
     editor_a.set_focus(true);
     editor_a.focus_block(1, CursorPlacement::Byte(2));
-    let (key, payload) = editor_a
-        .presence_payload()
+    let (key, payload) = ui::presence::capability::presence_payload(editor_a)
         .expect("focused block publishes a caret");
     assert_eq!(
         key,

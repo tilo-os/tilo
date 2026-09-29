@@ -3921,8 +3921,12 @@ impl App {
                 );
             } else {
                 let nav_before = self.state.doc.get_heads();
-                self.root_widget
-                    .activate_search_result(&action_id, &mut self.state.doc, &root);
+                crate::search::capability::activate_search_result(
+                    self.root_widget.as_mut(),
+                    &action_id,
+                    &mut self.state.doc,
+                    &root,
+                );
                 if self.state.doc.get_heads() != nav_before {
                     self.state.record_committed_action(nav_before, None, None);
                 }

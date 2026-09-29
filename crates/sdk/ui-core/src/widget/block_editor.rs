@@ -6870,6 +6870,8 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
+    crate::provides!(dyn crate::presence::capability::PublishesPresence);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document(state, path);
         self.refresh_image_attachments();
@@ -7904,57 +7906,6 @@ impl Widget for BlockEditor {
         Some("block_editor")
     }
 
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        use crate::collaboration::PresencePayload;
-        let idx = self.focused?;
-        let block = self.blocks.get(idx)?;
-        if !block.line.is_focused() {
-            return None;
-        }
-        if let Some(selection) = self.document_selection {
-            let (start, end) = selection.ordered();
-            if !self.presence_keyed_by_model() {
-                let start_id = self.blocks.get(start.block)?.id.as_str();
-                return Some((
-                    document_selection_presence_key(
-                        start_id,
-                        end.block.saturating_sub(start.block),
-                    ),
-                    PresencePayload::Selection {
-                        start: start.byte,
-                        end: end.byte,
-                    },
-                ));
-            }
-            // Keyed by the owning model's ids, a selection is reported as its
-            // part in the caret's block, which is where a peer's caret lands.
-            let from = if start.block == idx { start.byte } else { 0 };
-            let to = if end.block == idx {
-                end.byte
-            } else {
-                block.text().len()
-            };
-            return Some((
-                self.presence_key_for(&block.id),
-                PresencePayload::Selection {
-                    start: from.min(to),
-                    end: to.max(from),
-                },
-            ));
-        }
-        let key = self.presence_key_for(&block.id);
-        // A selection takes priority over the bare caret.
-        if let Some((start, end)) = block.line.selection_range() {
-            return Some((key, PresencePayload::Selection { start, end }));
-        }
-        Some((
-            key,
-            PresencePayload::Caret {
-                pos: block.line.cursor_pos(),
-            },
-        ))
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -8905,6 +8856,59 @@ impl Widget for BlockEditor {
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
         self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for BlockEditor {
+    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+        use crate::collaboration::PresencePayload;
+        let idx = self.focused?;
+        let block = self.blocks.get(idx)?;
+        if !block.line.is_focused() {
+            return None;
+        }
+        if let Some(selection) = self.document_selection {
+            let (start, end) = selection.ordered();
+            if !self.presence_keyed_by_model() {
+                let start_id = self.blocks.get(start.block)?.id.as_str();
+                return Some((
+                    document_selection_presence_key(
+                        start_id,
+                        end.block.saturating_sub(start.block),
+                    ),
+                    PresencePayload::Selection {
+                        start: start.byte,
+                        end: end.byte,
+                    },
+                ));
+            }
+            // Keyed by the owning model's ids, a selection is reported as its
+            // part in the caret's block, which is where a peer's caret lands.
+            let from = if start.block == idx { start.byte } else { 0 };
+            let to = if end.block == idx {
+                end.byte
+            } else {
+                block.text().len()
+            };
+            return Some((
+                self.presence_key_for(&block.id),
+                PresencePayload::Selection {
+                    start: from.min(to),
+                    end: to.max(from),
+                },
+            ));
+        }
+        let key = self.presence_key_for(&block.id);
+        // A selection takes priority over the bare caret.
+        if let Some((start, end)) = block.line.selection_range() {
+            return Some((key, PresencePayload::Selection { start, end }));
+        }
+        Some((
+            key,
+            PresencePayload::Caret {
+                pos: block.line.cursor_pos(),
+            },
+        ))
     }
 }
 

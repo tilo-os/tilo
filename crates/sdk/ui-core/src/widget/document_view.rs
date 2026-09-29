@@ -198,7 +198,10 @@ where
         dyn crate::widget::FullscreenProvider,
         dyn crate::undo::CommittedActions,
         dyn crate::widget::controls::ActionControls,
-        dyn crate::resources::PublishesResources
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::view::capability::ViewState
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -323,34 +326,6 @@ where
         self.child.on_external_event(payload, state, root);
     }
 
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.child.record_intent()
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        self.child.view_state()
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        self.child.restore_view_state(view);
-    }
-
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        self.child.set_record_scope(record);
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        self.child.release_record_scope()
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.child.search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        self.child.activate_search_result(action_id, doc, path);
-    }
-
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
         self.child.apply_room_action(doc, type_id, payload)
     }
@@ -371,6 +346,50 @@ where
             theme,
             presence,
             permissions,
+        );
+    }
+}
+
+impl<K> crate::view::capability::ViewState for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        crate::view::capability::view_state(self.child.as_ref())
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        crate::view::capability::restore_view_state(self.child.as_mut(), view);
+    }
+}
+
+impl<K> crate::record::capability::RecordScoped for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+        crate::record::capability::record_intent(self.child.as_ref())
+    }
+    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+        crate::record::capability::set_record_scope(self.child.as_mut(), record);
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        crate::record::capability::release_record_scope(self.child.as_mut())
+    }
+}
+
+impl<K> crate::search::capability::SearchSource for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        crate::search::capability::search_providers(self.child.as_ref())
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        crate::search::capability::activate_search_result(
+            self.child.as_mut(),
+            action_id,
+            doc,
+            path,
         );
     }
 }

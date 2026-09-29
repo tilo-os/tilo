@@ -552,7 +552,13 @@ mod component_adapter {
             dyn crate::undo::LocalUndo,
             dyn crate::history_mode::capability::DocumentHistory,
             dyn crate::widget::controls::ActionControls,
-            dyn crate::resources::PublishesResources
+            dyn crate::resources::PublishesResources,
+            dyn crate::search::capability::SearchSource,
+            dyn crate::permissions::capability::PermissionGated,
+            dyn crate::presence::capability::PublishesPresence,
+            dyn crate::record::capability::RecordScoped,
+            dyn crate::view::capability::ViewState,
+            dyn crate::component_lifecycle::ComponentLifecycle
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -571,20 +577,6 @@ mod component_adapter {
                     root.native_input_snapshot(doc, &automerge::ROOT)
                 })
                 .flatten()
-        }
-
-        fn unsaved_documents(
-            &self,
-            _: &AutoCommit,
-        ) -> Vec<crate::close_admission::UnsavedDocument> {
-            self.component.unsaved_documents()
-        }
-        fn checkpoint_components(&mut self) -> Vec<String> {
-            self.component.checkpoint_for_close()
-        }
-        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.finish_admitted_close();
-            self.component.take_close_reports()
         }
 
         fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -607,16 +599,6 @@ mod component_adapter {
             };
             root.apply_primary_vertical_scroll(action)
                 .stamp(binding.lifetime_id)
-        }
-
-        fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.close();
-            self.component.take_close_reports()
-        }
-        fn take_component_close_reports(
-            &mut self,
-        ) -> Vec<crate::application::ComponentCloseReport> {
-            self.component.take_close_reports()
         }
 
         fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -1202,32 +1184,6 @@ mod component_adapter {
             };
             root.take_focus_reset()
         }
-        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.record_intent()
-        }
-        fn view_state(&self) -> Option<crate::view::ViewContribution> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.view_state()
-        }
-        fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.restore_view_state(view);
-        }
         fn appearance_intent(&self) -> Option<crate::theme::AppearanceIntent> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1246,32 +1202,6 @@ mod component_adapter {
             };
             root.set_motion_reduced(reduced);
         }
-        fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_record_scope(record);
-        }
-        fn presence_key(&self) -> Option<PresenceKey> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_key()
-        }
-        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.presence_payload()
-        }
         fn needs_idle_sync(&self) -> bool {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1282,35 +1212,7 @@ mod component_adapter {
             };
             root.needs_idle_sync()
         }
-        fn permission_scope(&self) -> Option<PermissionScope> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.permission_scope()
-        }
 
-        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-            self.component.search_providers()
-        }
-        fn activate_search_result(
-            &mut self,
-            action_id: &str,
-            doc: &mut crate::widget::AppModel,
-            path: &crate::widget::ModelPath,
-        ) {
-            let (doc, _) = crate::doc::document(doc, path);
-            let binding = self.component.callback_binding();
-            binding
-                .with_document(doc, |document, record_root| {
-                    let Some(root) = self.component.root.as_deref_mut() else {
-                        return;
-                    };
-                    root.activate_search_result(action_id, document, record_root);
-                })
-                .unwrap_or(());
-        }
         fn apply_room_action(
             &mut self,
             doc: &mut AutoCommit,
@@ -1566,6 +1468,131 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for BoundAppWidget {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.component.unsaved_documents()
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.component.checkpoint_for_close()
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.finish_admitted_close();
+            self.component.take_close_reports()
+        }
+        fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.close();
+            self.component.take_close_reports()
+        }
+        fn take_component_close_reports(
+            &mut self,
+        ) -> Vec<crate::application::ComponentCloseReport> {
+            self.component.take_close_reports()
+        }
+    }
+
+    impl crate::view::capability::ViewState for BoundAppWidget {
+        fn view_state(&self) -> Option<crate::view::ViewContribution> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::view::capability::view_state(root)
+        }
+        fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::view::capability::restore_view_state(root, view);
+        }
+    }
+
+    impl crate::record::capability::RecordScoped for BoundAppWidget {
+        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::record::capability::record_intent(root)
+        }
+        fn set_record_scope(&mut self, record: &crate::record::RecordId) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::record::capability::set_record_scope(root, record);
+        }
+    }
+
+    impl crate::presence::capability::PublishesPresence for BoundAppWidget {
+        fn presence_key(&self) -> Option<PresenceKey> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_key(root)
+        }
+        fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::presence::capability::presence_payload(root)
+        }
+    }
+
+    impl crate::permissions::capability::PermissionGated for BoundAppWidget {
+        fn permission_scope(&self) -> Option<PermissionScope> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::permissions::capability::permission_scope(root)
+        }
+    }
+
+    impl crate::search::capability::SearchSource for BoundAppWidget {
+        fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+            self.component.search_providers()
+        }
+        fn activate_search_result(
+            &mut self,
+            action_id: &str,
+            doc: &mut crate::widget::AppModel,
+            path: &crate::widget::ModelPath,
+        ) {
+            let (doc, _) = crate::doc::document(doc, path);
+            let binding = self.component.callback_binding();
+            binding
+                .with_document(doc, |document, record_root| {
+                    let Some(root) = self.component.root.as_deref_mut() else {
+                        return;
+                    };
+                    crate::search::capability::activate_search_result(
+                        root,
+                        action_id,
+                        document,
+                        record_root,
+                    );
+                })
+                .unwrap_or(());
         }
     }
 

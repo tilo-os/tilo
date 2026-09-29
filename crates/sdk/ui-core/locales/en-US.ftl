@@ -21,6 +21,34 @@ standalone-history-restore-pending = Finish the current edit, then restore the v
 standalone-history-restore-denied = Only editors can restore a version.
 standalone-history-restore-unavailable = This version can't be restored here.
 standalone-history-preview-resource = Document
+host-search = Search…
+host-search-placeholder = Search
+host-undo = Undo
+host-undo-named = Undo { $change }
+host-redo = Redo
+host-redo-named = Redo { $change }
+host-history-show = Show History
+host-history-hide = Hide History
+host-history-compare = Compare Selection
+host-history-recent = { $author } · { $change } — { $when }
+host-history-unavailable = There is no document to show History for.
+host-history-compare-unavailable = Select two or more changes to compare them.
+host-menu-file = File
+host-menu-edit = Edit
+host-menu-view = View
+host-menu-history = History
+host-menu-window = Window
+host-menu-help = Help
+host-menu-about = About { $app }
+host-menu-services = Services
+host-menu-hide = Hide { $app }
+host-menu-hide-others = Hide Others
+host-menu-show-all = Show All
+host-menu-quit = Quit { $app }
+host-menu-close = Close Window
+host-menu-minimize = Minimize
+host-menu-zoom = Zoom
+host-menu-front = Bring All to Front
 history-edited-field = { $more ->
     [0] Edited { $path }
    *[other] Edited { $path } and { $more } more
@@ -28,6 +56,14 @@ history-edited-field = { $more ->
 history-removed-field = { $more ->
     [0] Removed { $path }
    *[other] Removed { $path } and { $more } more
+}
+history-edited-fields = { $count ->
+    [one] Edited 1 field
+   *[other] Edited { $count } fields
+}
+history-removed-fields = { $count ->
+    [one] Removed 1 field
+   *[other] Removed { $count } fields
 }
 history-review-title = Restore { $resource }
 history-review-confirm = Restore version

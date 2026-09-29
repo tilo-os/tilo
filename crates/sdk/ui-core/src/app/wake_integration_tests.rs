@@ -39,6 +39,8 @@ impl Drop for CaptureRoot {
 }
 
 impl Widget for CaptureRoot {
+    crate::provides!(dyn crate::view::capability::ViewState);
+
     fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {
         self.capture("sync");
     }
@@ -78,12 +80,13 @@ impl Widget for CaptureRoot {
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
     }
+}
 
+impl crate::view::capability::ViewState for CaptureRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         self.capture("capture-view");
         Some(ViewContribution::default())
     }
-
     fn restore_view_state(&mut self, _: &ViewContribution) {
         self.capture("restore-view");
     }

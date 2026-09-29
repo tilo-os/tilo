@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class RegistryServerImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.source = (ROOT / ".forgejo/workflows/registry-server-image.yml").read_text()
+        self.source = (ROOT / ".forgejo/workflows/release-registry-server.yml").read_text()
 
     def test_registry_server_image_is_smoke_tested_before_credentials_and_pushed_by_tested_sha(self) -> None:
         with self.subTest(phase='pull requests build and smoke test without registry write'):
@@ -25,9 +25,11 @@ class RegistryServerImageWorkflowTests(unittest.TestCase):
         with self.subTest(phase='pr code cannot read checkout registry credentials'):
             self.doCleanups()
             self.setUp()
-            checkouts = self.source.split("      - uses: actions/checkout@", 1)[1]
-            applicability_checkout, checkouts = checkouts.split("\n      - name:", 1)
-            build_checkout = checkouts.split(
+            shared = (ROOT / ".forgejo/workflows/applicability.yml").read_text()
+            applicability_checkout = shared.split("      - uses: actions/checkout@", 1)[1].split(
+                "\n      - name:", 1)[0]
+            self.assertIn("uses: ./.forgejo/workflows/applicability.yml", self.source)
+            build_checkout = self.source.split(
                 "      - name: Checkout the exact image source\n", 1
             )[1].split("\n\n      - name:", 1)[0]
             for checkout in (applicability_checkout, build_checkout):

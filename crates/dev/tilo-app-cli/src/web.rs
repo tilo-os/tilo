@@ -28,9 +28,8 @@ use crate::{
 
 /// The build script, relative to the SDK checkout.
 const BUILD_SCRIPT: &str = "crates/browser/tilo-browser-runtime/scripts/build-web-standalone.sh";
-/// A command prefix the build runs under, split on whitespace: for example
-/// `rcargo --fetch web exec --`, which runs it on a remote builder and brings
-/// `target/web` back.
+/// A command prefix the build runs under, split on whitespace: for example a
+/// wrapper that runs it on a remote machine and brings `target/web` back.
 pub const RUNNER_ENV: &str = "TILO_WEB_BUILD_RUNNER";
 /// Where the page polls for the build it should be showing.
 const DEV_BUILD_PATH: &str = "/__tilo-dev/build";
@@ -587,8 +586,8 @@ mod tests {
 
     #[test]
     fn a_runner_prefixes_the_build_command() {
-        let command = runner_command(Some("rcargo --fetch web exec --"));
-        assert_eq!(command.get_program(), "rcargo");
+        let command = runner_command(Some("remote --fetch web exec --"));
+        assert_eq!(command.get_program(), "remote");
         assert_eq!(
             command.get_args().collect::<Vec<_>>(),
             ["--fetch", "web", "exec", "--"]

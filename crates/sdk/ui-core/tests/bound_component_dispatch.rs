@@ -26,7 +26,7 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
             })
             .unwrap();
         let tile = TileHost::from_component(component);
-        let providers = tile.search_providers();
+        let providers = tilo_ui::search::capability::search_providers(&tile);
         wakes.store(0, std::sync::atomic::Ordering::Relaxed);
         let provider = &providers[0];
         assert_eq!(provider.name(), "Probe");
@@ -65,8 +65,8 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let checkout = component.record().clone();
         let mut tile = TileHost::from_component(component);
-        let providers = tile.search_providers();
-        tile.close_components();
+        let providers = tilo_ui::search::capability::search_providers(&tile);
+        tilo_ui::component_lifecycle::close_components(&mut tile);
         assert_eq!(observed.borrow().drops, vec![(false, false)]);
         let mut replacement =
             instantiate_probe(&host, 11, existing(&checkout), RestoreInput::None).unwrap();
@@ -112,11 +112,12 @@ fn provider_payloads_enter_and_drop_under_their_originating_component() {
         let component =
             instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
         let mut tile = TileHost::from_component(component);
-        let mut providers = tile.search_providers();
-        providers.extend(tile.search_providers());
+        let mut providers = tilo_ui::search::capability::search_providers(&tile);
+        providers.extend(tilo_ui::search::capability::search_providers(&tile));
         observed.borrow_mut().panic_on_drop = true;
-        let result =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tile.close_components()));
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            tilo_ui::component_lifecycle::close_components(&mut tile)
+        }));
         observed.borrow_mut().panic_on_drop = false;
         assert!(result.is_err());
         assert_eq!(
@@ -718,16 +719,12 @@ impl Root {
     }
 }
 impl Widget for Root {
-    tilo_ui::provides!(dyn tilo_ui::widget::controls::ActionControls);
-
-    fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
-        LEGACY_INTENT.with_borrow(Clone::clone)
-    }
-    fn set_record_scope(&mut self, record: &tilo_ui::record::RecordId) {
-        if LEGACY_MUTABLE.get() {
-            LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
-        }
-    }
+    tilo_ui::provides!(
+        dyn tilo_ui::widget::controls::ActionControls,
+        dyn tilo_ui::search::capability::SearchSource,
+        dyn tilo_ui::record::capability::RecordScoped,
+        dyn tilo_ui::view::capability::ViewState
+    );
 
     fn start_operation(
         &mut self,
@@ -817,18 +814,6 @@ impl Widget for Root {
         self.mark("draw-permissions");
         self.0.draw(scene, transform, text, theme, presence);
     }
-    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
-        self.mark("provider-create");
-        vec![]
-    }
-    fn activate_search_result(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
-        let (doc, _) = tilo_ui::doc::document(doc, path);
-        assert_eq!(
-            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
-            Some(self.1.as_str())
-        );
-        self.mark("search-activate");
-    }
     fn on_external_event(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
         let (doc, _) = tilo_ui::doc::document(doc, path);
         assert_eq!(
@@ -836,21 +821,6 @@ impl Widget for Root {
             Some(self.1.as_str())
         );
         self.mark("external");
-    }
-    fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
-        assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
-        self.mark("capture-view");
-        Some(if INVALID_VIEW.get() {
-            tilo_ui::view::ViewContribution {
-                scroll: vec![f64::NAN],
-                ..Default::default()
-            }
-        } else {
-            tilo_ui::view::ViewContribution::default()
-        })
-    }
-    fn restore_view_state(&mut self, _: &tilo_ui::view::ViewContribution) {
-        self.mark("restore-view");
     }
     fn test_id(&self) -> Option<&str> {
         Some("dispatch-root")
@@ -870,6 +840,50 @@ impl Widget for Root {
         } else {
             self.0.children_mut()
         }
+    }
+}
+
+impl tilo_ui::view::capability::ViewState for Root {
+    fn view_state(&self) -> Option<tilo_ui::view::ViewContribution> {
+        assert!(!PANIC_VIEW.replace(false), "controlled capture unwind");
+        self.mark("capture-view");
+        Some(if INVALID_VIEW.get() {
+            tilo_ui::view::ViewContribution {
+                scroll: vec![f64::NAN],
+                ..Default::default()
+            }
+        } else {
+            tilo_ui::view::ViewContribution::default()
+        })
+    }
+    fn restore_view_state(&mut self, _: &tilo_ui::view::ViewContribution) {
+        self.mark("restore-view");
+    }
+}
+
+impl tilo_ui::record::capability::RecordScoped for Root {
+    fn record_intent(&self) -> Option<tilo_ui::record::RecordCheckout> {
+        LEGACY_INTENT.with_borrow(Clone::clone)
+    }
+    fn set_record_scope(&mut self, record: &tilo_ui::record::RecordId) {
+        if LEGACY_MUTABLE.get() {
+            LEGACY_SCOPES.with_borrow_mut(|scopes| scopes.push(record.clone()));
+        }
+    }
+}
+
+impl tilo_ui::search::capability::SearchSource for Root {
+    fn search_providers(&self) -> Vec<Box<dyn tilo_ui::search::SearchProvider>> {
+        self.mark("provider-create");
+        vec![]
+    }
+    fn activate_search_result(&mut self, _: &str, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = tilo_ui::doc::document(doc, path);
+        assert_eq!(
+            doc.get(ROOT, "marker").unwrap().unwrap().0.as_str(),
+            Some(self.1.as_str())
+        );
+        self.mark("search-activate");
     }
 }
 
@@ -1279,9 +1293,11 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     tile.poll_resource_operation(invocation, false, &shell, &ROOT);
                 }
                 Callback::Providers => {
-                    tile.search_providers();
+                    tilo_ui::search::capability::search_providers(&tile);
                 }
-                Callback::Search => tile.activate_search_result("result", &mut shell, &ROOT),
+                Callback::Search => tilo_ui::search::capability::activate_search_result(
+                    &mut tile, "result", &mut shell, &ROOT,
+                ),
                 Callback::External => tile.on_external_event("probe", &mut shell, &ROOT),
                 Callback::Control => {
                     // A tile with its own document owner is drained through that
@@ -1293,10 +1309,13 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
                     continue;
                 }
                 Callback::Capture => {
-                    tile.view_state();
+                    tilo_ui::view::capability::view_state(&tile);
                 }
                 Callback::Restore => {
-                    tile.restore_view_state(&tilo_ui::view::ViewContribution::default());
+                    tilo_ui::view::capability::restore_view_state(
+                        &mut tile,
+                        &tilo_ui::view::ViewContribution::default(),
+                    );
                 }
                 Callback::HostIntent => {
                     tile.take_host_intent();
@@ -1519,7 +1538,7 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         );
         FINISH_OPERATION.set(false);
         CANCELLED.set(0);
-        tile.close_components();
+        tilo_ui::component_lifecycle::close_components(&mut tile);
         assert_eq!(CANCELLED.get(), 0, "terminal work was cancelled twice");
     }
 
@@ -1574,8 +1593,10 @@ fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
         CLOSED_DROPS.set(0);
         PANIC_VIEW.set(true);
         assert!(
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| tile.close_components()))
-                .is_err()
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tilo_ui::component_lifecycle::close_components(&mut tile)
+            }))
+            .is_err()
         );
         assert_eq!(
             CLOSED_DROPS.get(),
@@ -1644,10 +1665,10 @@ fn nested_close_replacement_and_mount_failures_report_each_original_once() {
         std::fs::create_dir_all(host.view_path(1)).unwrap();
         std::fs::create_dir_all(host.view_path(2)).unwrap();
         let mut tile = TileHost::from_component(parent);
-        let mut reports = tile.close_components();
+        let mut reports = tilo_ui::component_lifecycle::close_components(&mut tile);
         assert_eq!(reports.len(), 2);
-        assert!(tile.close_components().is_empty());
-        assert!(tile.take_component_close_reports().is_empty());
+        assert!(tilo_ui::component_lifecycle::close_components(&mut tile).is_empty());
+        assert!(tilo_ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
         drop(tile);
         let mut instances = reports
             .iter()

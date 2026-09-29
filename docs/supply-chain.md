@@ -141,7 +141,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
 - **Cross-time reproducibility (frozen RPM repo).** Package versions are frozen
   too, so a rebuild *weeks later* is still byte-identical. The exact resolved RPM
   set is published as a digest-pinned OCI image (`os/Containerfile.rpms`, built +
-  pushed by the `snapshot-rpms` CI job to `registry.tilo.so/tilo/rpms`) and
+  pushed by the `build-rpms.yml` CI job to `registry.tilo.so/tilo/rpms`) and
   addressed as `set-<fingerprint>`, where the fingerprint hashes both
   architectures' package sets, `BASE_REF`, and the files that shape the snapshot
   (`os/dev/rpm-snapshot-fingerprint.py`). Builds call
@@ -158,7 +158,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   builders reject it before any package transaction unless all of those claims
   match the current build inputs.
   **When you add/remove/rename a package in `os/Containerfile`,** merging it to
-  `main` re-runs `snapshot-rpms` (or image builds call it as a reusable
+  `main` re-runs `build-rpms.yml` (or image builds call it as a reusable
   workflow). If `set-<fingerprint>` is already published the job exits early;
   otherwise it builds, signs, attests and tags. There is no hand-kept pin file
   and no pin pull request. The kernel does not build against this snapshot.
@@ -217,7 +217,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   and garbage-collects the manifest it replaces almost immediately, so a
   `FROM quay.io/fedora/fedora-bootc@sha256:…` pin stops resolving after roughly
   a day (`manifest unknown`) and every build fails at its first `FROM` — the
-  `snapshot-rpms` job included, which made the package set unrefreshable too.
+  `build-rpms.yml` job included, which made the package set unrefreshable too.
   So the base is **mirrored into `registry.tilo.so/tilo/fedora-bootc`** and every
   Containerfile takes it as `--build-arg BASE_REF`, pinned in
   `os/base-snapshot.env`. Our registry collects nothing, so the pin keeps
@@ -225,7 +225,7 @@ operate it. Companion to `docs/superpowers/specs/2026-06-30-tilo-security-archit
   multi-arch index survives and the mirrored digest is the digest Fedora
   published — the mirror adds durability, not a second artifact to trust.
   **To refresh the base:** edit `BASE_SOURCE` and `BASE_REF` in
-  `os/base-snapshot.env` (one-line digest bump). Builds and `snapshot-rpms`
+  `os/base-snapshot.env` (one-line digest bump). Builds and `build-rpms.yml`
   call `os/dev/ensure-base-mirror.sh`, which copies `BASE_SOURCE` into the
   mirror when the pinned digest is missing. Changing `BASE_REF` changes the
   RPM fingerprint, so the next snapshot publishes a new `set-<fingerprint>`

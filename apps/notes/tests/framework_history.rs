@@ -630,7 +630,6 @@ enum OutgoingTransition {
     reason = "one failed outgoing-owner lifecycle keeps retry, sibling isolation and durable reopen assertions together"
 )]
 fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_incoming: bool) {
-    use ui::Widget as _;
     let f = LegacyFixture::rich();
     let notes::production::PreparedNotebook {
         root: mut tile,
@@ -721,7 +720,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
     }
     tile.bind_record(incoming.clone(), requested.clone());
     tile.bind_record(incoming.clone(), requested);
-    let mut reports = tile.take_component_close_reports();
+    let mut reports = ui::component_lifecycle::take_component_close_reports(&mut tile);
     assert_eq!(
         reports.len(),
         1,
@@ -755,7 +754,7 @@ fn assert_outgoing_notebook_recovery(transition: OutgoingTransition, reject_inco
             .unwrap(),
         incoming_before
     );
-    assert!(tile.take_component_close_reports().is_empty());
+    assert!(ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
     // Only the recovery report may retain A when B admission fails or succeeds.
     drop(tile);
     drop(records);

@@ -16,7 +16,7 @@ else
   ok 'workflows use Forgejo authorization/OIDC controls without ignored permissions keys'
 fi
 
-desktop="$workflows/package-desktop.yml"
+desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
@@ -29,7 +29,7 @@ else
 fi
 
 cache_driver_ok=1
-for workflow in build-builder-image.yml build-image.yml build-kernel.yml release-relay.yml snapshot-rpms.yml; do
+for workflow in build-ci-builder.yml build-image.yml build-kernel.yml release-relay.yml build-rpms.yml; do
   file="$workflows/$workflow"
   if grep -Fq 'cache-to: type=registry' "$file" \
      && ! grep -Fq 'uses: ./.forgejo/actions/setup-buildx' "$file"; then
@@ -54,7 +54,7 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    release-relay.yml|registry-server-image.yml) continue ;;
+    release-relay.yml|release-registry-server.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
@@ -139,11 +139,11 @@ else
   bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
 fi
 
-if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
-  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'runner: runner-arm64' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
 else
@@ -262,8 +262,8 @@ kernel_triggers="$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"
 if grep -Fq '"os/kernel-buildroot-snapshot.env"' <<<"$kernel_triggers" \
    && grep -Fq '"os/kernel/**"' <<<"$kernel_triggers" \
    && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env"|workflow_call' <<<"$kernel_triggers" \
-   && ! grep -Fq 'build-kernel.yml' "$workflows/snapshot-rpms.yml" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/snapshot-rpms.yml" \
+   && ! grep -Fq 'build-kernel.yml' "$workflows/build-rpms.yml" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/build-rpms.yml" \
    && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
    && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$(sed -n '/KERNEL_SNAPSHOT_INPUTS: |/,/^    steps:/p' "$kernel_workflow")"; then
   ok 'only kernel inputs rebuild the kernel; OS package changes do not'
@@ -317,6 +317,7 @@ grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
+  && grep -Fq 'CONTINUOUS_RELEASE: "0"' "$os" \
   && ! grep -Fq 'token: ${{ secrets.REGISTRY_TOKEN }}' "$os" \
   && ! grep -Fq 'fetch-depth: 0' "$os" \
   && grep -Fq "if: steps.release-mode.outputs.validate == 'true'" "$os" \
@@ -325,22 +326,19 @@ grep -Fq 'with_browser=0' "$os" \
   && ok 'ordinary OS integration checks omit the release-only browser engine' \
   || bad 'OS branch validation still rebuilds or requires the WPE release snapshot'
 
-# The nightly run is a dev build: it keeps a same-commit dev image available
-# and never enters the release channel, which only tags and explicit release
-# dispatches reach.
-release_rule="$(awk '/- name: Select build, validation, or publication mode/,/validate=false/' "$os")"
 grep -Fq 'cron: "0 2 * * *"' "$os" \
   && grep -Fq "if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'" "$os" \
-  && grep -Fq '&& -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then' "$os" \
+  && grep -Fq 'elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then' "$os" \
+  && grep -Fq '$PUBLISHED_REVISION == "$GITHUB_SHA"' "$os" \
   && grep -Fq "needs.plan.outputs.skip != 'true'" "$os" \
-  && ! grep -Fq 'schedule' <<<"$release_rule" \
-  && ! grep -Fq "github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
-  && ok 'nightly main runs are dev builds and skip a commit whose dev image exists' \
-  || bad 'the nightly OS run can release, or rebuilds an existing dev image'
+  && grep -Fq '&& ${PLANNED_PUBLISH:-false} == true ) \' "$os" \
+  && grep -Fq "(github.event_name == 'schedule' && github.ref == 'refs/heads/main')" "$os" \
+  && ok 'nightly main runs publish through the protected main path and skip an already published revision' \
+  || bad 'nightly OS publication is missing, not main-only, or rebuilds an already published revision'
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
   && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
-  && grep -Fq "no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot" "$os" \
+  && grep -Fq "no digest-pinned WPE buildroot for %s; run build-buildroots" "$os" \
   && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
   || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
 
@@ -428,7 +426,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && test "$(grep -Fc 'https:\/\/code.tilo.so}' "$os")" -eq 2 \
   && ! grep -Fq -- "--proto '=http'" "$os" \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
-  && grep -Fq 'Authorization: Bearer $jwt' "$os" \
+  && grep -Fq 'auth="Bearer $jwt"' "$os" \
   && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \

@@ -617,7 +617,7 @@ mod tests {
             app.navigate(sub.clone());
             assert_eq!(app.current_path(), sub);
 
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             assert!(
                 !providers.is_empty(),
                 "the file explorer publishes a search provider"
