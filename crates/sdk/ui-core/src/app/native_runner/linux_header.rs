@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
+use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -115,36 +115,16 @@ impl LiveHeader {
         }
         self.window = bounds;
         self.bar.set_viewport(bounds);
-        self.tree = TaffyTree::new();
-        self.nodes.clear();
-        let node = self
-            .bar
-            .build_layout(&mut self.tree, &app.theme, &mut self.nodes);
-        self.node = Some(node);
-        #[allow(
-            clippy::cast_possible_truncation,
-            reason = "logical window widths are far inside f32 range"
-        )]
-        let available = Size {
-            width: AvailableSpace::Definite(bounds.width() as f32),
-            height: AvailableSpace::MaxContent,
-        };
-        // SAFETY: this arena and node map hold only `self.bar`, which stays
-        // in place and unaliased for the call.
-        let solved = unsafe {
-            crate::widget::compute_widget_layout(
-                &mut self.tree,
-                node,
-                available,
-                &self.nodes,
-                &crate::bound_dispatch::BoundNodeMap::new(),
-                &mut app.text_renderer,
-            )
-        };
-        if solved.is_err() {
+        self.node = self.bar.solve_layout(
+            &mut self.tree,
+            &mut self.nodes,
+            &app.theme,
+            &mut app.text_renderer,
+            bounds.width(),
+        );
+        if self.node.is_none() {
             return;
         }
-        self.bar.apply_layout(&self.tree, node, Point::ORIGIN);
         let area = crate::scale::SafeArea {
             top: self.bar.get_rect().height(),
             ..app.layout.safe_area
