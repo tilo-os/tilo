@@ -454,8 +454,8 @@ fn ide_terminal_runs_a_command_and_shows_output() {
     app.sync(&mut state.doc, &state.root);
     app.shots_terminal_input("printf 'IDE_TERM_OK\\n'\n");
     let mut found = false;
-    let deadline = std::time::Instant::now() + HANG_BOUND;
-    while std::time::Instant::now() < deadline {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         app.sync(&mut state.doc, &state.root);
         if let Some(t) = app.shots_terminal_grid_text()
             && t.contains("IDE_TERM_OK")

@@ -47,10 +47,10 @@ fn create(mut context: HostContext, target: &LaunchTarget) -> Result<AppComponen
             })
             .map_err(LaunchError::Record)?;
     }
-    let runtime = if cfg!(target_arch = "wasm32") {
-        crate::app::ChatRuntime::Unavailable
-    } else {
+    let runtime = if crate::app::native_services() {
         crate::app::ChatRuntime::Native
+    } else {
+        crate::app::ChatRuntime::Unavailable
     };
     let widget = context
         .read_record(|doc| crate::ChatApp::from_document(doc, identity, runtime))

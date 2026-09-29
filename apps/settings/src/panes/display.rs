@@ -38,9 +38,9 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::time::{Duration, Instant, SystemTime};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
@@ -514,7 +514,7 @@ impl DisplayPane {
             output_config,
             pending_candidate: None,
             last_seen_transaction: None,
-            last_snapshot_check: Instant::now(),
+            last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
@@ -579,7 +579,7 @@ impl DisplayPane {
             output_brightness: BTreeMap::new(),
             pending_candidate: None,
             last_seen_transaction: None,
-            last_snapshot_check: Instant::now(),
+            last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
             brightness_tx: None,
@@ -1822,7 +1822,7 @@ impl DisplayPane {
         if self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
             return;
         }
-        self.last_snapshot_check = Instant::now();
+        self.last_snapshot_check = ui::time::now();
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {

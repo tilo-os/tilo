@@ -14,7 +14,8 @@ Read:
 - `src/lib.rs`: the computation as plain testable functions, the task resource, the worker loop.
 - `tests/app.rs`: the work itself, a completed run, a cancelled run, the durable input.
 
-The example works on a `std::thread`, so it runs on native platforms only.
+The work runs through `ui::background`, on a thread where the target has one
+and on the page's executor on the web, so the example runs everywhere.
 
 Start your own app from it:
 

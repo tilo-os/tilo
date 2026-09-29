@@ -18,13 +18,11 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
+# The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app", default-features = false }
 
 [lints]
 workspace = true

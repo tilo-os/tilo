@@ -30,8 +30,8 @@
 //!     preview + transport, multi-track timeline, inspector,
 //!     export dialog — all drawn into one Vello scene.
 //!
-//! The app runs on the app framework ([`VideoEditor`], [`launch_spec`]):
-//! the live window and every capture mode host the same editor, and a
+//! The app runs on the app framework ([`VideoEditor`]; the binary adds the
+//! capture flags): the live window and every capture mode host the same editor, and a
 //! `--shots` scenario stages the demo project through the host and the
 //! editor's view state through `ResourceSurface::stage`. [`app_root`] builds
 //! the standalone widget for tests and benchmarks that drive it directly.
@@ -57,6 +57,7 @@ pub mod audio;
 pub mod curve;
 pub mod doc;
 pub mod export;
+mod files;
 pub mod gpu;
 pub(crate) mod layout;
 pub mod media;
@@ -75,9 +76,14 @@ pub mod timecode;
 pub mod waveform;
 
 pub use app::VideoEditorApp;
-pub use resource::{VideoEditor, VideoProject, launch_spec};
+pub use resource::{VideoEditor, VideoProject};
 
 use ui::widget::Widget;
+
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<VideoEditor>()
+}
 
 /// Build the standalone editor widget: it opens on a blank project and never
 /// fabricates media or clips.

@@ -12,7 +12,7 @@
 //! joined a relative value against the process's working directory). So under a relative
 //! `XDG_CONFIG_HOME`, the compositor and power policy read one file while other apps read
 //! another, silently. [`settings_path`] now resolves it once, following the spec, through
-//! the workspace's shared resolver (`xdg-paths`).
+//! the workspace's shared resolver (`tilo-paths`).
 //!
 //! # The shape on disk
 //!
@@ -71,7 +71,7 @@ const FILE: &str = "settings.json";
 /// `$HOME`, and getting that rule wrong in one reader and right in another is what made this
 /// crate necessary.
 pub fn config_root() -> Option<PathBuf> {
-    Some(xdg_paths::xdg::config_home()?.join("tilo"))
+    Some(tilo_paths::xdg::config_home()?.join("tilo"))
 }
 
 /// [`config_root`] from explicit values of `XDG_CONFIG_HOME` and `HOME` instead of the process
@@ -81,7 +81,7 @@ pub fn config_root_from(
     home: Option<&std::ffi::OsStr>,
 ) -> Option<PathBuf> {
     Some(
-        xdg_paths::xdg::Base::Config
+        tilo_paths::xdg::Base::Config
             .resolve_from(xdg_config_home, home)?
             .join("tilo"),
     )
@@ -209,12 +209,12 @@ pub fn update_section_at(
     write_atomic(path, &Value::Object(doc))
 }
 
-/// Serialise and replace the document. `atomic_file` does the crash-safe part: a truncated
+/// Serialise and replace the document. `tilo_files::native::atomic` does the crash-safe part: a truncated
 /// `settings.json` would reset every pane at once.
 fn write_atomic(path: &Path, doc: &Value) -> std::io::Result<()> {
     let mut body = serde_json::to_string_pretty(doc).map_err(std::io::Error::other)?;
     body.push('\n');
-    atomic_file::write_creating_parent(path, body.as_bytes())
+    tilo_files::native::atomic::write_creating_parent(path, body.as_bytes())
 }
 
 /// Read a `f64` at `section.key`, clamped into `range`, falling back to `default` when
@@ -311,7 +311,7 @@ mod tests {
         }
         // Phase `the_configured_root_applies_the_same_rules_to_the_process_environment`.
         {
-            let home = xdg_paths::home();
+            let home = tilo_paths::home();
             assert_eq!(
                 config_root(),
                 config_root_from(

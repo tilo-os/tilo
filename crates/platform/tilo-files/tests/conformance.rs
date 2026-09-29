@@ -108,6 +108,8 @@ conformance!(
     blocking_calls_agree_with_async_ones,
     prefixes_read_only_the_start,
     appends_extend_or_create,
+    cache_writes_replace_and_create_parents,
+    trees_are_removed_whole,
     watches_report_changes_below_them,
 );
 
@@ -341,6 +343,38 @@ async fn appends_extend_or_create(dir: &Dir) {
     );
 }
 
+async fn cache_writes_replace_and_create_parents(dir: &Dir) {
+    blocking::write(dir, &p("tiles/3/4/5.png"), b"first").unwrap();
+    blocking::write(dir, &p("tiles/3/4/5.png"), b"2nd").unwrap();
+    assert_eq!(dir.read(&p("tiles/3/4/5.png")).await.unwrap(), b"2nd");
+    assert_eq!(
+        blocking::write(dir, &p("tiles/3"), b"x"),
+        Err(FsError::IsADirectory)
+    );
+    assert!(matches!(
+        blocking::write(dir, &VPath::root(), b"x"),
+        Err(FsError::InvalidPath(_))
+    ));
+}
+
+async fn trees_are_removed_whole(dir: &Dir) {
+    dir.write_atomic(&p("cache/a/b/c.png"), b"c").await.unwrap();
+    dir.write_atomic(&p("cache/a/d.png"), b"d").await.unwrap();
+    dir.write_atomic(&p("kept.png"), b"k").await.unwrap();
+    blocking::remove_all(dir, &p("cache")).unwrap();
+    assert_eq!(dir.metadata(&p("cache")).await, Err(FsError::NotFound));
+    blocking::remove_all(dir, &p("kept.png")).unwrap();
+    assert_eq!(dir.metadata(&p("kept.png")).await, Err(FsError::NotFound));
+    assert_eq!(
+        blocking::remove_all(dir, &p("cache")),
+        Err(FsError::NotFound)
+    );
+    assert!(matches!(
+        blocking::remove_all(dir, &VPath::root()),
+        Err(FsError::InvalidPath(_))
+    ));
+}
+
 async fn prefixes_read_only_the_start(dir: &Dir) {
     dir.write_atomic(&p("media/clip.bin"), b"header+body")
         .await
@@ -500,6 +534,20 @@ fn native_metadata_reports_modes_and_links() {
         block_on(Dir::memory().metadata(&VPath::root())).map(|meta| meta.mode),
         Ok(None)
     );
+}
+
+#[cfg(unix)]
+#[test]
+fn removing_a_tree_keeps_what_its_links_point_to() {
+    use std::os::unix::fs::symlink;
+    let (dir, temp) = disk();
+    let root = temp.as_ref().unwrap().path();
+    block_on(dir.write_atomic(&p("outside/keep.png"), b"k")).unwrap();
+    block_on(dir.write_atomic(&p("cache/tile.png"), b"t")).unwrap();
+    symlink(root.join("outside"), root.join("cache/linked")).unwrap();
+    blocking::remove_all(&dir, &p("cache")).unwrap();
+    assert!(!root.join("cache").exists());
+    assert_eq!(std::fs::read(root.join("outside/keep.png")).unwrap(), b"k");
 }
 
 #[cfg(unix)]

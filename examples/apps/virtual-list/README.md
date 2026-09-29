@@ -13,7 +13,8 @@ Read:
 - `src/lib.rs`: the sparse model (`request_range`, `poll_changes`) and the row delegate.
 - `tests/app.rs`: only the viewport is mounted, keys are stable, heights vary, row buttons invoke actions.
 
-The example works on a `std::thread`, so it runs on native platforms only.
+The work runs through `ui::background`, on a thread where the target has one
+and on the page's executor on the web, so the example runs everywhere.
 
 Start your own app from it:
 

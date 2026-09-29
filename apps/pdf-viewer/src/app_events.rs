@@ -345,7 +345,7 @@ impl PdfApp {
             self.next_page();
         }
         // Keep the indicator up right after a nav click.
-        self.page_bubble.poke(std::time::Instant::now());
+        self.page_bubble.poke(ui::time::now());
         self.dirty = true;
         true
     }

@@ -45,7 +45,7 @@ pub(crate) fn android_font_system(locale: String) -> Option<FontSystem> {
 /// The catalog's directory under `$XDG_DATA_HOME`, copied out of the APK if
 /// this version is not there yet.
 fn installed_catalog() -> Result<PathBuf, FontCatalogError> {
-    let data = xdg_paths::data_dir()
+    let data = tilo_paths::data_dir()
         .ok_or_else(|| FontCatalogError::at("XDG_DATA_HOME", "no app data directory"))?;
     let versions = data.join("tilo/fonts");
     let root = versions.join(tilo_font_catalog::manifest_sha256());

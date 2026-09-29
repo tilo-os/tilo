@@ -3,9 +3,14 @@ use automerge::AutoCommit;
 use ui::application::{AppComponent, ApplicationDefinition, HostContext, LaunchTarget};
 use ui::{launch::LaunchError, record::RecordKind, widget::IconDescriptor};
 
-/// Whether the host has neither files nor a picker, so the one book there is
-/// to read is the one compiled into the app: the browser.
-const BUNDLED_LIBRARY: bool = cfg!(target_arch = "wasm32");
+/// Whether the host has no native files, so the one book there is to read is
+/// the one compiled into the app: the browser.
+fn bundled_library() -> bool {
+    !matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
+}
 
 /// What Books opens when a host hands it a file.
 pub const EPUB_MEDIA_TYPE: &str = "application/epub+zip";
@@ -29,7 +34,7 @@ fn books_definition(create: ui::application::ComponentFactory) -> ApplicationDef
 }
 
 static DEFINITION: std::sync::LazyLock<ApplicationDefinition> = std::sync::LazyLock::new(|| {
-    books_definition(|context, target, _| create(context, &target, BUNDLED_LIBRARY))
+    books_definition(|context, target, _| create(context, &target, bundled_library()))
 });
 pub fn definition() -> &'static ApplicationDefinition {
     &DEFINITION
