@@ -25,7 +25,6 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     Action, ActionArgs, ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
     EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
-    RetryPolicy,
 };
 
 use crate::model::BufferEdit;
@@ -245,23 +244,36 @@ fn immediate_spec(id: &str, label: &str, action: &HexEditorAction) -> ActionSpec
     }
 }
 
-/// Build the resource tree the editor currently has open: the buffer as one
-/// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
-/// selection. Palette effects and local keyboard input use the same compact
-/// edit shape, but neither path replicates raw bytes.
+/// Open / save / undo / redo / search / goto — View and Effect ops that ride
+/// [`crate::resource::HexEditor::local_operations`] through
+/// `tilo_resource::publish`. Live cursor targeting stays on
+/// [`live_buffer_extras`].
 #[allow(
-    clippy::too_many_lines,
     clippy::expect_used,
     clippy::missing_panics_doc,
-    reason = "the resource surface is one auditable declaration; serialization cannot fail for these serde-only values"
+    reason = "HexOperation always serializes; these builders feed ActionSpec closures"
 )]
-pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
-    let mut root = Resource::new(
-        "hex_editor.document",
-        "hex_editor.document",
-        ctx.label.clone(),
-    );
+pub(crate) fn document_local_operations() -> Vec<ActionSpec> {
+    // Offer the door without an empty-projection `unavailable` gate: invoke
+    // time refuses save/search/goto when no buffer is open, and undo/redo when
+    // the local journal is empty.
+    root_palette_specs(&HexResourceCtx {
+        label: "Untitled".into(),
+        cursor: 0,
+        len: 0,
+        selection: None,
+        has_file: true,
+        can_undo: true,
+        can_redo: true,
+    })
+}
 
+#[allow(
+    clippy::expect_used,
+    reason = "HexOperation always serializes (serde-only payloads)"
+)]
+fn root_palette_specs(ctx: &HexResourceCtx) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     let open = ActionSpec::typed_operation(
         "open",
         "Open file",
@@ -289,7 +301,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     .destructive()
     .execution(ExecutionMode::Background { cancellable: true })
     .returns(ResultSpec::Job);
-    root = root.with_action(open);
+    specs.push(open);
     let save = ActionSpec::typed_operation(
         "save",
         "Save file",
@@ -317,7 +329,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     .destructive()
     .execution(ExecutionMode::Background { cancellable: true })
     .returns(ResultSpec::Job);
-    root = root.with_action(if ctx.has_file {
+    specs.push(if ctx.has_file {
         save
     } else {
         save.unavailable("no_file", "Open a file first")
@@ -334,7 +346,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
             &value,
         )
         .expect("HexOperation serializes");
-        root = root.with_action(if available {
+        specs.push(if available {
             spec
         } else {
             spec.unavailable("no_local_history", "No local edit available")
@@ -344,28 +356,59 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
         ("search", "Search bytes", HexOperation::Search),
         ("goto-offset", "Go to offset", HexOperation::GotoOffset),
     ] {
-        let kind = OperationKind::View;
-        let mut spec = ActionSpec::operation(id, label, kind, HEX_EDITOR_OPERATION_TYPE, &value)
-            .expect("HexOperation is always serializable");
-        if kind == OperationKind::View {
-            spec = spec.with_contract(ActionContract::view());
-        } else {
-            spec = spec.destructive().retry_policy(RetryPolicy::AtMostOnce);
-        }
+        let mut spec = ActionSpec::operation(
+            id,
+            label,
+            OperationKind::View,
+            HEX_EDITOR_OPERATION_TYPE,
+            &value,
+        )
+        .expect("HexOperation is always serializable")
+        .with_contract(ActionContract::view());
         if !ctx.has_file {
             spec = spec.unavailable("no_file", "Open a file first");
         }
-        root = root.with_action(spec);
+        specs.push(spec);
     }
+    specs
+}
 
+/// Cursor / selection byte edits — live extras, not document state.
+///
+/// Hosted [`PublishesResources`](ui::resources::PublishesResources) returns
+/// this slice alone so agents keep insert/overwrite/delete without a second
+/// `hex_editor.document` root beside [`crate::resource::HexEditor`].
+#[allow(clippy::expect_used, reason = "local edit operations always serialize")]
+pub fn live_buffer_extras(ctx: &HexResourceCtx) -> Vec<Resource> {
     if !ctx.has_file {
-        return vec![root];
+        return Vec::new();
     }
+    let specs = byte_edit_specs(ctx);
+    if specs.is_empty() {
+        return Vec::new();
+    }
+    let label = if let Some((lo, hi)) = ctx.selection {
+        format!("Selection 0x{lo:X}..=0x{hi:X}")
+    } else {
+        format!("Cursor at 0x{:X}", ctx.cursor)
+    };
+    let mut cursor = Resource::new("hex_editor.cursor", "hex_editor.cursor", label);
+    for spec in specs {
+        cursor = cursor.with_action(spec);
+    }
+    vec![cursor]
+}
 
+#[allow(clippy::expect_used, reason = "local edit operations always serialize")]
+fn byte_edit_specs(ctx: &HexResourceCtx) -> Vec<ActionSpec> {
+    if !ctx.has_file {
+        return Vec::new();
+    }
+    let mut specs = Vec::new();
     // Insert a byte at the cursor — a prompted hex value. The offset is the
     // clamped cursor so it is valid even for an append cursor / empty buffer.
     let at = ctx.cursor.min(ctx.len);
-    root = root.with_action(ActionSpec::prompted_operation(
+    specs.push(ActionSpec::prompted_operation(
         "insert-byte",
         "Insert byte",
         "Byte (hex)",
@@ -389,7 +432,7 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
     // Overwrite the byte under the cursor — only when the cursor is on a byte.
     if ctx.cursor < ctx.len {
         let at = ctx.cursor;
-        root = root.with_action(ActionSpec::prompted_operation(
+        specs.push(ActionSpec::prompted_operation(
             "overwrite-byte",
             "Overwrite byte",
             "Byte (hex)",
@@ -411,19 +454,47 @@ pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
 
     // Delete — the active selection, else the single byte at the cursor.
     if let Some((lo, hi)) = ctx.selection {
-        root = root.with_action(immediate_spec(
+        specs.push(immediate_spec(
             "delete-selection",
             "Delete selection",
             &delete_bytes_action(lo, hi - lo + 1),
         ));
     } else if ctx.cursor < ctx.len {
-        root = root.with_action(immediate_spec(
+        specs.push(immediate_spec(
             "delete-byte",
             "Delete byte",
             &delete_bytes_action(ctx.cursor, 1),
         ));
     }
+    specs
+}
 
+/// Build the resource tree the editor currently has open: the buffer as one
+/// `hex_editor.document` root, exporting the byte-edit actions at the cursor /
+/// selection. Palette effects and local keyboard input use the same compact
+/// edit shape, but neither path replicates raw bytes.
+///
+/// Standalone / `--shots` / unit tests use this hand tree. When hosted,
+/// [`tilo_resource::publish`] owns the document door and
+/// [`live_buffer_extras`] keeps only the cursor slice.
+#[allow(
+    clippy::too_many_lines,
+    clippy::expect_used,
+    clippy::missing_panics_doc,
+    reason = "the resource surface is one auditable declaration; serialization cannot fail for these serde-only values"
+)]
+pub fn provide_resources(ctx: &HexResourceCtx) -> Vec<Resource> {
+    let mut root = Resource::new(
+        "hex_editor.document",
+        "hex_editor.document",
+        ctx.label.clone(),
+    );
+    for spec in root_palette_specs(ctx) {
+        root = root.with_action(spec);
+    }
+    for spec in byte_edit_specs(ctx) {
+        root = root.with_action(spec);
+    }
     vec![root]
 }
 
