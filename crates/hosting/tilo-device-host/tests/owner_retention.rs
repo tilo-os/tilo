@@ -58,6 +58,20 @@ fn apply(peer: &mut StatePeer, author: [u8; 32], data: &[u8]) {
         "deferred replay rejected a governed frame"
     );
 }
+/// The host's native connection, re-attempted as its reconnect loop does:
+/// one attempt is bounded to a few seconds, which a loaded host can exceed.
+async fn connect(host: &LocalHost, owner: &SessionOwner) -> NativeSubscription {
+    tilo_test_env::within("the native subscription to connect", async {
+        loop {
+            match host.connect(owner).await {
+                Ok(native) => return native,
+                Err(error) if format!("{error:#}").contains("native reconnect timed out") => {}
+                Err(error) => panic!("native connect: {error:#}"),
+            }
+        }
+    })
+    .await
+}
 async fn native_ready(owner: &mut SessionOwner, session: &mut NativeSubscription) {
     tokio::time::timeout(tilo_test_env::hang_bound(), async {
         while !session.is_ready() {
@@ -391,7 +405,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
             .unwrap();
         let cert = observer_cert.unwrap();
         let host = LocalHost::start(&owner).await.unwrap();
-        let mut native = host.connect(&owner).await.unwrap();
+        let mut native = connect(&host, &owner).await;
         native_ready(&mut owner, &mut native).await;
         let mut session = observer(&host, &owner, &cert, &observer_key).await;
         let mut receiver = fresh(&owner);
@@ -452,7 +466,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
             report(&owner, offline, &format!("commit-{round}"), &output).await;
             if round == 2 {
                 native.into_client().close().await;
-                native = host.connect(&owner).await.unwrap();
+                native = connect(&host, &owner).await;
                 native_ready(&mut owner, &mut native).await;
                 publish(&owner, &native).unwrap();
                 // Exact duplicate reconnect publication is already covered. The
