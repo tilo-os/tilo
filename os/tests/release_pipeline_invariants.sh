@@ -108,7 +108,7 @@ uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/
 [ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the browser engine stage/,/- name: Recognize a missing registry cache blob/' "$os"))" = 3 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
-  && [ "$(grep -c 'mode=max,ignore-error=true' <<<"$uncached")" = 2 ] \
+  && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 2 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
   && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
   && grep -A1 -F -- '- name: Build the browser engine stage without the damaged layer cache' "$os" \

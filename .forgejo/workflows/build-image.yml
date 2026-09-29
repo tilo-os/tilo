@@ -1367,7 +1367,9 @@ jobs:
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
           # The image's own layers suffice: the rootfs is its lineage, and the
-          # compile stages export their intermediate layers above.
+          # compile stages export their intermediate layers above. mode=max
+          # here held every rootfs layer in memory at once and exhausted the
+          # slot (a 32 GB BuildKit during "preparing build cache for export").
           cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Reached only when one of the three cached builds failed. A missing
@@ -1447,7 +1449,7 @@ jobs:
           provenance: false
           cache-to: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
@@ -1700,7 +1702,7 @@ jobs:
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
             --cache-from "type=gha,scope=tilo-vm-dev-$ARCH" \
-            --cache-to "type=gha,scope=tilo-vm-dev-$ARCH,mode=max,ignore-error=true" \
+            --cache-to "type=gha,scope=tilo-vm-dev-$ARCH,mode=min,ignore-error=true" \
             --metadata-file "$metadata" \
             --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,force-compression=true" \
             .
