@@ -133,12 +133,13 @@ pub enum EnrollmentRequest {
 pub const ADMIN_PATH: &str = "/admin/collaboration";
 /// Collaboration actions the loopback operator may run as the governing
 /// native authority. Media governance stays with room members.
-const OPERATOR_ACTIONS: [&str; 5] = [
+const OPERATOR_ACTIONS: [&str; 6] = [
     tilo_action_broker::collaboration_admin::ISSUE_ACTION,
     tilo_action_broker::collaboration_admin::CANCEL_ACTION,
     tilo_action_broker::collaboration_admin::LIST_ACTION,
     tilo_action_broker::collaboration_admin::SET_ROLE_ACTION,
     tilo_action_broker::collaboration_admin::REMOVE_ACTION,
+    tilo_action_broker::collaboration_admin::ADMINISTRATOR_ACTION,
 ];
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
