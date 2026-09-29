@@ -58,6 +58,7 @@ pub fn envelope_bytes(envelope: &Envelope) -> usize {
         Envelope::Delta { delta, .. } | Envelope::Commit { delta, .. } => delta.len(),
         Envelope::SyncResponse { delta_since, .. } => delta_since.len(),
         Envelope::Presence { payload, .. } => payload.len(),
+        Envelope::Compacted { statement, .. } => statement.len(),
         Envelope::Live { frame, .. } | Envelope::RemoteAction { frame, .. } => frame.len(),
         Envelope::NotAuthorised { reason, .. }
         | Envelope::RemoteActionUndeliverable { reason, .. }
@@ -112,6 +113,11 @@ pub struct SessionGrant {
 /// The host accepts [`crate::transport::Envelope::SubscribeFrom`] and issues
 /// [`crate::transport::Envelope::Position`]s.
 pub const FEATURE_RESUME: u64 = 1;
+
+/// The host accepts [`crate::transport::Envelope::CompactVolunteer`] and
+/// [`crate::transport::Envelope::Compacted`], and may send volunteers
+/// [`crate::transport::Envelope::CompactRequest`].
+pub const FEATURE_COMPACTION: u64 = 2;
 
 /// Encode a `/session/finish` answer: the [`SessionGrant`] followed by the
 /// host's feature bits. A device that predates the features reads the grant
