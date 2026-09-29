@@ -28,6 +28,7 @@ use crate::policy::{SeatbeltNetwork, SeatbeltPolicy};
 pub const PAYLOAD_PARAM: &str = "PAYLOAD_DIR";
 pub const RUNTIME_PARAM: &str = "RUNTIME_DIR";
 pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
+pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
 pub const GATE_PARAM: &str = "NET_GATE";
 pub const READ_PARAM_PREFIX: &str = "READ_";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
@@ -120,6 +121,12 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
     out.rule(&format!(
         "(allow file-read* file-write* (subpath (param \"{container}\")))"
     ));
+    if let Some(dir) = &policy.darwin_cache {
+        let cache = out.param(DARWIN_CACHE_PARAM.to_string(), dir);
+        out.rule(&format!(
+            "(allow file-read* file-write* (subpath (param \"{cache}\")))"
+        ));
+    }
     for (index, path) in policy.read_only.iter().enumerate() {
         let name = out.param(format!("{READ_PARAM_PREFIX}{index}"), path);
         out.rule(&format!("(allow file-read* (subpath (param \"{name}\")))"));
@@ -256,6 +263,9 @@ mod tests {
             container: PathBuf::from(
                 "/Users/u/Library/Application Support/Tilo/tilo-rooms/personal/so.tilo.notes",
             ),
+            darwin_cache: Some(PathBuf::from(
+                "/private/var/folders/xy/abc/C/so.tilo+personal+so.tilo.notes",
+            )),
             read_only: vec![PathBuf::from("/Users/u/Music")],
             read_write: vec![PathBuf::from("/Users/u/Documents/\"quoted\" (dir)")],
             network,
@@ -282,6 +292,7 @@ mod tests {
                 "PAYLOAD_DIR",
                 "RUNTIME_DIR",
                 "CONTAINER_DIR",
+                "DARWIN_CACHE_DIR",
                 "READ_0",
                 "WRITE_0"
             ]
@@ -303,7 +314,13 @@ mod tests {
             assert!(!profile.text.contains("(allow default)"));
             assert!(!profile.text.contains("(allow file-read*)\n"));
             assert!(!profile.text.contains("(allow file-write*)\n"));
-            for path in [&p.payload, &p.container, &p.read_only[0], &p.read_write[0]] {
+            for path in [
+                &p.payload,
+                &p.container,
+                p.darwin_cache.as_ref().unwrap(),
+                &p.read_only[0],
+                &p.read_write[0],
+            ] {
                 assert!(
                     !profile.text.contains(&*path.to_string_lossy()),
                     "{} was spliced into the text",
