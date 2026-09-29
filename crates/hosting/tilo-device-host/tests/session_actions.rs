@@ -48,9 +48,18 @@ async fn request(
     )
 }
 async fn start(state: &Path, ready: &Path) -> (Host, serde_json::Value, String) {
+    start_with(state, ready, &[]).await
+}
+/// [`start`] with extra environment for the host process.
+async fn start_with(
+    state: &Path,
+    ready: &Path,
+    env: &[(&str, &str)],
+) -> (Host, serde_json::Value, String) {
     let executable = std::env::var_os("TILO_DEVICE_HOST_TEST_BINARY")
         .unwrap_or_else(|| env!("CARGO_BIN_EXE_tilo-device-host").into());
     let child = Command::new(executable)
+        .envs(env.iter().copied())
         .arg("run")
         .arg(state)
         .arg(ready)
@@ -1402,7 +1411,14 @@ async fn checked_application_catalogue(
         .unwrap();
     let mut remote = owner.peer().clone();
     drop(owner);
-    let (mut host, metadata, cap) = start(&state, &ready).await;
+    // The desktop close below must reach the remote without the host's idle
+    // checkpoint flush; with that flush disabled, any removal it sees proves it.
+    let idle_disabled: &[(&str, &str)] = if multiple_writers {
+        &[("TILO_HOST_IDLE_CHECKPOINT_MS", "86400000")]
+    } else {
+        &[]
+    };
+    let (mut host, metadata, cap) = start_with(&state, &ready, idle_disabled).await;
     let origin = metadata["fixture_origin"].as_str().unwrap();
     let key = SigningKey::from_bytes(&[92; 32]);
     let complete_request = proof(origin, &cap, &key, 92).await;
@@ -3474,22 +3490,13 @@ async fn desktop_close_through_broker(
             .any(|t| t.id == tab)
     };
     let started = Instant::now();
-    // Optimized builds enforce the interactive budget. Debug proof validation
-    // is substantially slower while the fixture publishes its initial records.
-    let budget =
-        if cfg!(debug_assertions) && std::env::var_os("TILO_DEVICE_HOST_TEST_BINARY").is_none() {
-            8
-        } else {
-            2
-        };
-    tokio::time::timeout(Duration::from_secs(budget), async {
-        invoke_and_observe_until(client, remote, session, invocation, operation, |remote| {
-            !present(remote)
-        })
-        .await;
+    // The host runs with its idle checkpoint flush disabled, so the removal
+    // can only arrive through the close's own publication. How long that
+    // takes is not what this proves; the hang bound catches a missing one.
+    invoke_and_observe_until(client, remote, session, invocation, operation, |remote| {
+        !present(remote)
     })
-    .await
-    .expect("close must remove the app from the replicated desktop without the idle timer");
+    .await;
     assert!(!present(remote));
     eprintln!(
         "Confirmed desktop removal in {} ms",
