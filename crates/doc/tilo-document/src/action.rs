@@ -414,6 +414,14 @@ pub enum RichTextAction {
     RejectChanges { id: Option<String> },
     /// Resolve a comment by removing both its anchor mark and record.
     ResolveComment { id: String },
+    /// Insert `text` at `at` and mark it as a tracked insertion by `author`.
+    TrackInsert {
+        block: String,
+        at: usize,
+        text: String,
+        author: String,
+        date: String,
+    },
     /// Add a durable root comment anchored to one exact body range. The comment
     /// and its first body block are minted inside `apply`, so replay gets the
     /// same stable CRDT ids as the originating action.
@@ -487,7 +495,8 @@ impl RichTextAction {
             | Self::RejectChanges { .. }
             | Self::ResolveComment { .. }
             | Self::AddComment { .. }
-            | Self::ReplyToComment { .. } => ActionDomain::Review,
+            | Self::ReplyToComment { .. }
+            | Self::TrackInsert { .. } => ActionDomain::Review,
         }
     }
 }
@@ -1105,6 +1114,21 @@ impl<'a> ActionValidator<'a> {
                         .comments
                         .iter()
                         .any(|comment| comment.id == *id)
+            }
+            RichTextAction::TrackInsert {
+                block,
+                at,
+                text,
+                author,
+                date,
+            } => {
+                self.block_len(RegionKind::Body, block)
+                    .is_some_and(|len| *at <= len)
+                    && !text.is_empty()
+                    && Self::safe_text(text)
+                    && !author.trim().is_empty()
+                    && author.chars().count() <= 256
+                    && date.chars().count() <= 128
             }
             RichTextAction::AddComment {
                 block,
@@ -2251,6 +2275,15 @@ fn apply_review_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             apply_review_changes(dm, id.as_deref(), false);
         }
         RichTextAction::ResolveComment { id } => apply_resolve_comment(dm, id),
+        RichTextAction::TrackInsert {
+            block,
+            at,
+            text,
+            author,
+            date,
+        } => {
+            let _ = dm.track_insert(block, *at, text, author, date);
+        }
         RichTextAction::AddComment {
             block,
             start,

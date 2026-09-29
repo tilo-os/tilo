@@ -2892,6 +2892,9 @@ fn word_action_anchor(action: &RichTextAction, _focus: &str) -> tilo_actions::In
         RichTextAction::ResolveComment { id } => tilo_actions::InteractionAnchor::Objects {
             ids: vec![id.clone()],
         },
+        RichTextAction::TrackInsert {
+            block, at, text, ..
+        } => comment_text_anchor(block, *at, at.saturating_add(text.chars().count())),
         RichTextAction::AddComment {
             block, start, end, ..
         } => comment_text_anchor(block, *start, *end),
