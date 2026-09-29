@@ -4,7 +4,10 @@
 #   podman run --rm --entrypoint /bin/bash localhost/tilo:latest \
 #       /usr/libexec/tilo/boot-chain-test.sh
 #
-# or from the source tree with OS_ROOT pointing at an unpacked rootfs. The
+# or from the source tree with OS_ROOT pointing at an unpacked rootfs, or with
+# `--source` against this repository's os/ tree, which has the units and configs
+# but no kernel and no enablement symlinks (checks needing those are skipped;
+# the in-image run keeps them). The
 # checks exist because the image once shipped without an initramfs while also
 # offering `tilo-install --encrypt`, a combination in which the kernel reaches the
 # LUKS device and then has no userspace to open it.
@@ -15,6 +18,11 @@
 
 set -uo pipefail
 
+source_tree=0
+if [ "${1:-}" = --source ]; then
+  source_tree=1
+  OS_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+fi
 OS_ROOT="${OS_ROOT:-/}"
 fail=0
 ok()   { printf 'ok    %s\n' "$*"; }
@@ -23,7 +31,9 @@ bad()  { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 # 1. Exactly one kernel version. A second one means an orphan modules directory
 #    survived a kernel swap, and ostree/bootc pick a version rather than fail.
 mapfile -t kvers < <(ls -1 "$OS_ROOT/usr/lib/modules" 2>/dev/null)
-if [ "${#kvers[@]}" -eq 1 ]; then
+if [ "$source_tree" = 1 ]; then
+  : # the kernel comes from the build
+elif [ "${#kvers[@]}" -eq 1 ]; then
   ok "one kernel version: ${kvers[0]}"
 else
   bad "expected exactly one /usr/lib/modules entry, found ${#kvers[@]}: ${kvers[*]:-none}"
@@ -212,7 +222,11 @@ fi
 # Ask systemctl rather than guessing which wants directory contains the link.
 # The path fallback keeps this invariant useful in a minimal unpacked root.
 growfs_enabled=""
-if command -v systemctl >/dev/null 2>&1; then
+if [ "$source_tree" = 1 ]; then
+  # Enabled by the build (os/Containerfile); os/tests/boot_performance_gate_test.sh
+  # checks that it does.
+  growfs_enabled=yes
+elif command -v systemctl >/dev/null 2>&1; then
   case "$(systemctl --root="$OS_ROOT" is-enabled tilo-growfs-sysroot.timer 2>/dev/null)" in
     enabled|enabled-runtime|static) growfs_enabled=yes ;;
     *) growfs_enabled=no ;;
