@@ -375,6 +375,9 @@ pub enum RichTextAction {
         region: RegionKind,
         blocks: Vec<String>,
     },
+    /// Insert one empty paragraph when `region` has no blocks. A no-op when
+    /// the region already has a write target, so a replay does not add another.
+    EnsureRegionBlock { region: RegionKind },
     /// Move body paragraphs `blocks`, in the order given, to directly after
     /// `after`, or to the start of the body when `after` is `None`: a
     /// dragged paragraph, or a run of them. Each keeps its id, text and
@@ -440,6 +443,7 @@ impl RichTextAction {
             | Self::ContinueParagraph { .. }
             | Self::RemoveBlocks { .. }
             | Self::RemoveRegionBlocks { .. }
+            | Self::EnsureRegionBlock { .. }
             | Self::ReplaceBody { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
@@ -792,6 +796,7 @@ impl<'a> ActionValidator<'a> {
                 matches!(region, RegionKind::Header | RegionKind::Footer)
                     && self.unique_existing(*region, blocks)
             }
+            RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
             _ => false,
         }
@@ -1799,6 +1804,13 @@ fn apply_remove_blocks(dm: &mut DocMut, blocks: &[String]) {
     apply_remove_region_blocks(dm, Region::Body, blocks);
 }
 
+fn apply_ensure_region_block(dm: &mut DocMut, region: Region) {
+    if !tilo_doc::model::region_blocks_in_order(dm.doc, dm.c, region).is_empty() {
+        return;
+    }
+    dm.insert_block_in(region, None, "paragraph");
+}
+
 fn apply_remove_region_blocks(dm: &mut DocMut, region: Region, blocks: &[String]) {
     let mut sorted = blocks.to_vec();
     sorted.sort();
@@ -1967,6 +1979,9 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
         RichTextAction::RemoveBlocks { blocks } => apply_remove_blocks(dm, blocks),
         RichTextAction::RemoveRegionBlocks { region, blocks } => {
             apply_remove_region_blocks(dm, region.to_region(), blocks);
+        }
+        RichTextAction::EnsureRegionBlock { region } => {
+            apply_ensure_region_block(dm, region.to_region());
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
         _ => {}

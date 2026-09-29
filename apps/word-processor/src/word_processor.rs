@@ -223,31 +223,26 @@ impl WordProcessor {
     /// real one (clamped). Creates an empty paragraph in an empty header/footer.
     /// Returns the resolved caret block id.
     fn ensure_region_block(&mut self, state: &mut AutoCommit) -> String {
-        let Some(containers) = self.containers.clone() else {
+        if self.containers.is_none() {
             return String::new();
-        };
+        }
         let blocks = self.region_blocks_in_order(state);
         if blocks.is_empty() {
-            // Body always has a block (bind seeds one); header/footer may be empty.
-            let new = if let Some(ids) = self.ids.as_mut() {
-                let mut dm = DocMut {
-                    doc: state,
-                    c: &containers,
-                    ids,
-                };
-                Some(dm.insert_block_in(self.region, None, "paragraph"))
-            } else {
-                None
+            let action = crate::actions::RichTextAction::EnsureRegionBlock {
+                region: self.action_region(),
             };
-            if let Some(id) = new {
-                self.caret = Caret {
-                    block: id.clone(),
-                    offset: 0,
-                };
-                self.selection_anchor = None;
-                return id;
+            if !self.apply_rich(state, action) {
+                return String::new();
             }
-            return String::new();
+            let Some(id) = self.region_blocks_in_order(state).into_iter().next() else {
+                return String::new();
+            };
+            self.caret = Caret {
+                block: id.clone(),
+                offset: 0,
+            };
+            self.selection_anchor = None;
+            return id;
         }
         if blocks.contains(&self.caret.block) {
             let len = self.region_block_len(state, &self.caret.block);
@@ -1903,9 +1898,6 @@ impl WordProcessor {
         if !self.apply_rich(state, action) {
             return;
         }
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
         let remaining = self.ordered_blocks(state);
         match before.or_else(|| remaining.first().cloned()) {
             Some(t) => {
@@ -1916,13 +1908,12 @@ impl WordProcessor {
                 };
             }
             None => {
-                if let Some(ids) = self.ids.as_mut() {
-                    let mut dm = DocMut {
-                        doc: state,
-                        c: &containers,
-                        ids,
-                    };
-                    let id = dm.insert_block(None, "paragraph");
+                let action = crate::actions::RichTextAction::EnsureRegionBlock {
+                    region: crate::actions::RegionKind::Body,
+                };
+                if self.apply_rich(state, action)
+                    && let Some(id) = self.ordered_blocks(state).into_iter().next()
+                {
                     self.caret = Caret {
                         block: id,
                         offset: 0,
@@ -2063,21 +2054,16 @@ impl WordProcessor {
             self.seed_styles(state);
             c
         };
-        // A document always has somewhere to write. On the framework path
-        // [`tilo_document::RichText::initialize`] already seeded one empty
-        // paragraph; AppendParagraph refuses empty text, so there is no
-        // action that creates a blank body without crates/doc changes.
-        // Standalone / import paths that reach an empty body still need a
-        // write target — that remaining DocMut is the bootstrap gap.
-        if tilo_doc::model::blocks_in_order(state, &containers).is_empty()
-            && let Some(ids) = self.ids.as_mut()
-        {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.insert_block(None, "paragraph");
+        // A document always has somewhere to write. The framework seed and
+        // this action both insert one empty paragraph, and a replay is a
+        // no-op once a block exists.
+        if tilo_doc::model::blocks_in_order(state, &containers).is_empty() {
+            let _ = self.apply_rich(
+                state,
+                crate::actions::RichTextAction::EnsureRegionBlock {
+                    region: crate::actions::RegionKind::Body,
+                },
+            );
         }
         self.reconcile(state);
     }
