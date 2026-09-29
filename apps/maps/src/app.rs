@@ -30,9 +30,8 @@ use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tilo_actions::{
-    ActionContract, ActionFailure, ActionOutput, ActionSpec, Availability, DiscoveryScope,
-    ExecutionMode, InvocationId, InvocationUpdate, OperationKind, PermissionRequirement, Resource,
-    ResultSpec, RetryPolicy,
+    ActionFailure, ActionOutput, ExecutionMode, InvocationId, InvocationUpdate, OperationKind,
+    Resource, ResultSpec,
 };
 use ui::tokens::Metrics;
 use ui::tokens::spacing::Spacing;
@@ -1273,6 +1272,21 @@ impl MapsApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Maps>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Test helper: stage ranked search hits that are not document state.
+    #[cfg(test)]
+    pub(crate) fn seed_search_results_for_test(&mut self, results: Vec<crate::model::Place>) {
+        self.model.results = results;
     }
 
     /// Toggle the traffic overlay. Turning it on triggers a refresh so the
@@ -5741,32 +5755,27 @@ impl Widget for MapsApp {
 }
 
 impl ui::resources::PublishesResources for MapsApp {
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the saved
-    /// places, the active route, and the offline regions currently in the shared
-    /// document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only live search hits and POIs.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        use ui::tilo_resource::Resource as _;
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
         let mut resources = self.publish_resources(doc);
         if resources.is_empty() {
-            resources.push(Resource::new("maps.workspace", "maps.workspace", "Maps"));
+            let state = crate::resource::Maps::read(doc).unwrap_or_default();
+            resources.push(ui::tilo_resource::publish::<crate::resource::Maps>(
+                "maps.workspace",
+                "Maps",
+                &state,
+            ));
         }
         if let Some(workspace) = resources.first_mut() {
             workspace
                 .children
-                .extend(self.model.results.iter().take(12).map(|place| {
-                    Resource::new(
-                        format!("maps.search-result:{}", place.id),
-                        "maps.search-result",
-                        place.name.clone(),
-                    )
-                }));
-            workspace.children.extend(
-                self.nearby_pois()
-                    .into_iter()
-                    .take(12)
-                    .map(|poi| Resource::new(format!("maps.poi:{}", poi.id), "maps.poi", poi.name)),
-            );
+                .extend(self.live_search_and_poi_resources_undecorated());
         }
         for resource in &mut resources {
             self.decorate_live_resource(resource);
@@ -5791,11 +5800,23 @@ impl ui::resources::PublishesResources for MapsApp {
         })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
+        use ui::tilo_resource::Resource as _;
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
         let mut resource = self
             .publish_resource(doc, id)
             .or_else(|| {
-                (id == "maps.workspace")
-                    .then(|| Resource::new("maps.workspace", "maps.workspace", "Maps"))
+                (id == "maps.workspace").then(|| {
+                    let state = crate::resource::Maps::read(doc).unwrap_or_default();
+                    ui::tilo_resource::publish::<crate::resource::Maps>(
+                        "maps.workspace",
+                        "Maps",
+                        &state,
+                    )
+                })
             })
             .or_else(|| {
                 id.strip_prefix("maps.search-result:").and_then(|place_id| {
