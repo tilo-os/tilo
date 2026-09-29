@@ -22,6 +22,8 @@ ed25519-dalek.workspace = true
 base64.workspace = true
 web-time = { version = "1", features = ["serde"] }
 collab-types = { path = "../collab-types" }
+# The one change a Commenter may make to a room's record index.
+tilo-room-index = { path = "../room-index" }
 tilo-desktop-model = { path = "../../session/desktop-model" }
 # The shared neighbour wire vocabulary (`NeighbourMsg`, colorimetry, HDR metadata).
 neighbour-wire = { path = "../neighbour-wire" }

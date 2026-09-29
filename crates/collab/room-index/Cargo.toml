@@ -1,0 +1,27 @@
+[package]
+name = "tilo-room-index"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "A room's record index as every holder checks it: its shared genesis and the one change a Commenter may make, adding their own comment records."
+
+[lib]
+name = "tilo_room_index"
+path = "src/lib.rs"
+
+# Pure document checks. The toolkit, the action broker and the room core
+# link it, including in the browser.
+
+[dependencies]
+automerge.workspace = true
+tilo-automerge.workspace = true
+collab-types = { path = "../collab-types" }
+
+[lints]
+workspace = true
+
+# The browser builds this crate for wasm32, where the workspace-hack's native
+# feature set does not build.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+workspace-hack = { version = "0.1" }

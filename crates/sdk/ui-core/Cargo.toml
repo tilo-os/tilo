@@ -186,6 +186,8 @@ media = { path = "../../media/core" }
 # `CollabRequest::SignedSyncIncremental` /
 # `CollabEvent::SignedCRDTIncremental`.
 collab-types = { path = "../../collab/collab-types" }
+# A room's record index and the one change a Commenter may make to it.
+tilo-room-index = { path = "../../collab/room-index" }
 channel-crypto = { path = "../../collab/channel-crypto" }
 # The canonical document model. `history_source` reads a live document's
 # change graph through `tilo_resource::history`, materialises past versions

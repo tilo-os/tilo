@@ -15724,9 +15724,20 @@ dependencies = [
  "tilo-automerge",
  "tilo-automerge-isolate",
  "tilo-desktop-model",
+ "tilo-room-index",
  "tilo-user-identity",
  "uuid",
  "web-time",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-room-index"
+version = "0.1.0"
+dependencies = [
+ "automerge",
+ "collab-types",
+ "tilo-automerge",
  "workspace-hack",
 ]
 
@@ -15962,6 +15973,7 @@ dependencies = [
  "tilo-host",
  "tilo-reference",
  "tilo-resource",
+ "tilo-room-index",
  "tilo-rt",
  "tilo-seal",
  "tilo-search",

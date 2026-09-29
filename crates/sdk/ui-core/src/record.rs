@@ -63,7 +63,7 @@ const META: &str = "tilo:record";
 /// `RecordId` is a user/application name; it is not an authority boundary.
 const ROOM: &str = "room";
 /// Key, in a room's index document, of the map of record references.
-const INDEX: &str = "tilo:records";
+use tilo_room_index::INDEX;
 /// Key, in a record's meta map, of the identities it was adopted from.
 const FORMERLY: &str = "formerly";
 
@@ -77,7 +77,7 @@ const MAX_ROOM_INDEX_KEYS_SCANNED: usize = MAX_DISCOVERED_ROOM_RECORDS * 4;
 pub const MAX_LISTED_COMMENTS: usize = 4096;
 const MAX_COMMENT_INDEX_KEYS_SCANNED: usize = MAX_LISTED_COMMENTS * 4;
 const MAX_RECORD_ID_BYTES: usize = 1024;
-const MAX_RECORD_KIND_BYTES: usize = 64;
+use tilo_room_index::MAX_RECORD_KIND_BYTES;
 const MAX_RECORD_RELATION_BYTES: usize = 64;
 /// Prefix of a file identity by filesystem record (see [`RecordId`]).
 const FILE_RECORD_PREFIX: &str = "file-record:";
@@ -307,14 +307,7 @@ fn valid_record_id(s: &str, depth: usize) -> bool {
             .is_some_and(|next| valid_record_id(target, next))
 }
 
-fn valid_label(value: &str, max: usize) -> bool {
-    !value.is_empty()
-        && value.len() <= max
-        && value.bytes().enumerate().all(|(i, byte)| {
-            (byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
-                && (i != 0 || byte.is_ascii_alphabetic())
-        })
-}
+use tilo_room_index::valid_label;
 
 impl std::fmt::Display for RecordId {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1055,41 +1048,10 @@ pub mod room {
         Transactable, object_at, str_at, string_at,
     };
 
-    /// The actor that makes every room's index map. Never a device's: no
-    /// one writes as it, it only ever makes the one change in
-    /// [`index_genesis`].
-    const INDEX_GENESIS_ACTOR: [u8; 16] = *b"tilo-room-index\0";
-
-    /// The change that makes a room's index map — byte for byte the same on
-    /// every peer, so it hashes the same. Two members who each bring the
-    /// first record into an empty room both apply this one change and end up
-    /// holding one index; had each made its own map under the same key, one
-    /// map would win and the other's entries would be hidden behind it.
-    fn index_genesis() -> Vec<automerge::Change> {
-        thread_local! {
-            static GENESIS: Vec<automerge::Change> = {
-                let mut genesis = AutoCommit::new()
-                    .with_actor(automerge::ActorId::from(INDEX_GENESIS_ACTOR.as_slice()));
-                let made = genesis.put_object(&ROOT, INDEX, ObjType::Map);
-                debug_assert!(made.is_ok(), "an empty document takes a root map");
-                genesis.commit_with(automerge::transaction::CommitOptions::default().with_time(0));
-                genesis.get_changes(&[])
-            };
-        }
-        GENESIS.with(Clone::clone)
-    }
-
-    /// Whether `change` is [`index_genesis`], which every room shares and
-    /// anyone may bring: it holds nothing but the empty index.
-    pub(super) fn is_index_genesis(change: &automerge::Change) -> bool {
-        index_genesis()
-            .iter()
-            .any(|genesis| genesis.hash() == change.hash())
-    }
-
-    fn made_by_genesis(index: &ObjId) -> bool {
-        matches!(index, ObjId::Id(_, actor, _) if actor.to_bytes() == INDEX_GENESIS_ACTOR.as_slice())
-    }
+    pub use tilo_room_index::{
+        comment_references_delta, comment_references_only, local_changes_are_comment_references,
+    };
+    use tilo_room_index::{index_genesis, index_ro, made_by_genesis};
 
     /// The change that makes record `id`'s entry in the room index, of type
     /// `kind` — like [`index_genesis`], byte for byte the same on every peer:
@@ -1134,13 +1096,6 @@ pub mod room {
         }
         tilo_automerge::ApplyIncoming::apply_incoming(doc, index_genesis()).ok()?;
         index_ro(doc)
-    }
-
-    fn index_ro(doc: &AutoCommit) -> Option<ObjId> {
-        match object_at(doc, &ROOT, INDEX, ObjType::Map) {
-            ObjectAt::Object(object) => Some(object),
-            ObjectAt::Missing | ObjectAt::Invalid => None,
-        }
     }
 
     /// Bring a record name into this room. Keyed by record id (not appended
@@ -1324,132 +1279,6 @@ pub mod room {
             .collect();
         out.sort();
         out
-    }
-
-    /// Whether the incremental change `delta`, applied to `index`, does
-    /// nothing but add index entries for comment records `author` owns —
-    /// the only room-index change a `Comment`-class envelope may carry.
-    ///
-    /// The check reads the change's operations, not the resulting state, so
-    /// an operation hidden by a concurrent conflict cannot slip through. An
-    /// allowed change makes an entry map under the existing index keyed by
-    /// the author's comment record, and puts a string `kind` in a map that
-    /// the same change made. Anything else — another key, another object, a
-    /// delete, a change whose dependencies are missing — is refused. `index`
-    /// is left untouched.
-    pub fn comment_references_only(index: &AutoCommit, delta: &[u8], author: &[u8; 32]) -> bool {
-        let mut after = index.clone();
-        let before_heads = after.get_heads();
-        let missing_before = after.get_missing_deps(&[]).len();
-        if tilo_automerge::ApplyIncoming::load_incoming(&mut after, delta).is_err()
-            || after.get_missing_deps(&[]).len() != missing_before
-        {
-            return false;
-        }
-        // A change may bring the index only as the shared genesis: any
-        // other creation would sit beside the room's and hide one of them.
-        let Some(index_obj) = index_ro(&after) else {
-            return false;
-        };
-        if index_ro(index).is_none() && !made_by_genesis(&index_obj) {
-            return false;
-        }
-        changes_are_comment_references(&index_obj, &after.get_changes(&before_heads), author)
-    }
-
-    /// Whether this document's changes after `since` do nothing but add index
-    /// entries for comment records `author` owns — how an SDK decides to sign
-    /// its own pending room-index delta `Comment` rather than `Splice`.
-    pub fn local_changes_are_comment_references(
-        index: &mut AutoCommit,
-        since: &[automerge::ChangeHash],
-        author: &[u8; 32],
-    ) -> bool {
-        let Some(index_obj) = index_ro(index) else {
-            return false;
-        };
-        let changes = index.get_changes(since);
-        changes_are_comment_references(&index_obj, &changes, author)
-    }
-
-    /// Whether the incremental change `delta` does nothing but add entries
-    /// for comment records `author` owns to the room index every room shares
-    /// — decided from the change alone, so a broker that holds no index can
-    /// refuse a `Comment`-class index change before it goes further. The
-    /// holder of the index still checks it against its state
-    /// ([`comment_references_only`]).
-    pub fn comment_references_delta(delta: &[u8], author: &[u8; 32]) -> bool {
-        let Some(changes) = tilo_automerge::coverage::changes_in(delta) else {
-            return false;
-        };
-        let mut shared = AutoCommit::new();
-        if tilo_automerge::ApplyIncoming::apply_incoming(&mut shared, index_genesis()).is_err() {
-            return false;
-        }
-        let Some(index_obj) = index_ro(&shared) else {
-            return false;
-        };
-        changes_are_comment_references(&index_obj, &changes, author)
-    }
-
-    fn changes_are_comment_references(
-        index_obj: &ObjId,
-        changes: &[automerge::Change],
-        author: &[u8; 32],
-    ) -> bool {
-        use automerge::legacy::{Key, ObjectId, OpType};
-
-        let ObjId::Id(index_counter, index_actor, _) = index_obj else {
-            return false;
-        };
-        let author = collab_types::Ed25519PublicKey::from_bytes(*author);
-        if changes.is_empty() {
-            return false;
-        }
-        for change in changes {
-            if is_index_genesis(change) {
-                continue;
-            }
-            let change = change.decode();
-            let start = change.start_op.get();
-            let mut made_entries: Vec<u64> = Vec::new();
-            for (offset, op) in change.operations.iter().enumerate() {
-                let Some(counter) = u64::try_from(offset)
-                    .ok()
-                    .and_then(|offset| start.checked_add(offset))
-                else {
-                    return false;
-                };
-                if op.insert {
-                    return false;
-                }
-                let allowed = match (&op.obj, &op.key, &op.action) {
-                    (ObjectId::Id(obj), Key::Map(key), OpType::Make(ObjType::Map))
-                        if obj.counter() == *index_counter
-                            && obj.actor() == index_actor
-                            && collab_types::is_comment_record_of(key.as_str(), &author) =>
-                    {
-                        made_entries.push(counter);
-                        true
-                    }
-                    (
-                        ObjectId::Id(obj),
-                        Key::Map(key),
-                        OpType::Put(automerge::ScalarValue::Str(kind)),
-                    ) => {
-                        key.as_str() == "kind"
-                            && *obj.actor() == change.actor_id
-                            && made_entries.contains(&obj.counter())
-                            && RecordKind::new(kind.to_string()).is_valid()
-                    }
-                    _ => false,
-                };
-                if !allowed {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     /// Copy, the explicit verb: mints a new record id rather than reusing

@@ -1824,6 +1824,10 @@ impl StatePeer {
             now
         };
         let role = self.authorize_document(&source, &app_id, &envelope, authorization_time)?;
+        // A comment record takes changes from the device it names only, and a
+        // `Comment` change goes nowhere else but the room route.
+        collab_types::check_document_route(&record_id, envelope.op_class, &envelope.author)
+            .map_err(err)?;
         let payload = collab_types::validate_whole_document_payload_route(
             &app_id,
             &cluster_id,
@@ -1947,6 +1951,24 @@ impl StatePeer {
             },
         };
         candidate.channel = validated_channel;
+        // A `Comment` change on the room route may only add entries for
+        // comment records its author owns; this replica holds the index, so
+        // it checks the change against it.
+        if route.record.is_empty() && envelope.op_class == OpClass::Comment {
+            let DocumentMutation::Incremental(delta) = &mutation else {
+                return Err("a comment on the room index must be an incremental change".into());
+            };
+            if !tilo_room_index::comment_references_only(
+                &candidate.doc,
+                delta,
+                envelope.author.as_bytes(),
+            ) {
+                return Err(
+                    "a comment on the room index may only add the author's own comment records"
+                        .into(),
+                );
+            }
+        }
         if let DocumentMutation::Snapshot(bytes) = &mutation
             && !local_app
         {
@@ -2322,6 +2344,34 @@ impl StatePeer {
         self.receive(key.verifying_key().to_bytes(), message.clone(), now)?;
         Ok(message)
     }
+    /// The class this device signs its own `mutation` of `route` with, the
+    /// one the room admits it under: `Comment` on a comment record, and on
+    /// the room route when the change only adds entries for comment records
+    /// this device owns; `Splice` everywhere else.
+    fn local_op_class(
+        &self,
+        route: &Route,
+        mutation: &DocumentMutation,
+        author: &Ed25519PublicKey,
+    ) -> OpClass {
+        if !route.record.is_empty() {
+            return collab_types::document_op_class_for_record(&route.record);
+        }
+        let DocumentMutation::Incremental(delta) = mutation else {
+            return OpClass::Splice;
+        };
+        let index = self
+            .core
+            .documents
+            .get(route)
+            .map_or_else(AutoCommit::new, |entry| entry.doc.clone());
+        if tilo_room_index::comment_references_only(&index, delta, author.as_bytes()) {
+            OpClass::Comment
+        } else {
+            OpClass::Splice
+        }
+    }
+
     #[expect(
         clippy::needless_pass_by_value,
         reason = "callers hand over freshly built mutations, as `signed_mutation` takes ownership"
@@ -2339,6 +2389,7 @@ impl StatePeer {
             app: app.into(),
             record: record.into(),
         };
+        let op_class = self.local_op_class(&route, &mutation, &author);
         let seq = self
             .core
             .documents
@@ -2353,7 +2404,7 @@ impl StatePeer {
             collab_types::document_artifact_id(app, &self.core.room, record),
             author,
             collab_types::document_attestation_id(app, &self.core.room, record),
-            OpClass::Splice,
+            op_class,
             now,
             seq,
         );
