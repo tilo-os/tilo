@@ -1350,11 +1350,69 @@ jobs:
             ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
           cache-to: ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
-      # Build and export the compile stages (the Rust builder and its inputs)
-      # before anything else. A registry cache is only written when its build
-      # succeeds, so a later rootfs, UKI or installation failure must not
-      # discard hours of compilation. The arguments match the image build
-      # exactly; the next step reuses these results from local BuildKit state.
+      # The build toolchain first, cached on its own, then the compile, which
+      # goes through the compiler cache. A registry cache is only written when
+      # its build succeeds; the compiler cache keeps compiled crates even when a
+      # later step fails. The arguments match the image build exactly; the next
+      # steps reuse these results from local BuildKit state.
+      - name: Build and cache the build toolchain
+        id: toolchain-stage
+        if: matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && steps.wpe-stage.outcome != 'failure'
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: builder-base
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_CARGO_TIMINGS=${{ env.TILO_RUST_LTO == 'off' && '1' || '' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+          # The toolchain is the builder stage up to the workspace sources. A
+          # publication skips this step: it neither imports nor writes layer
+          # caches, since a cached layer keeps the file times of the build
+          # that made it and any older than this commit escape
+          # rewrite-timestamp's clamp (run 48898).
+          cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }},mode=min,ignore-error=true
+
       - name: Build and cache the compile stages
         id: compile-stages
         if: matrix.role != 'reproduce' && steps.wpe-stage.outcome != 'failure'
@@ -1405,14 +1463,10 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          # A publication neither imports nor writes layer caches. A cached
-          # layer keeps the file times of the build that made it; any older
-          # than this commit escape rewrite-timestamp's clamp, so the release
-          # differed from its uncached reproduction (run 48898). Its compiles
-          # still go through the compiler cache.
-          cache-from: |
-            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          # No layer cache: the compile goes through the compiler cache, and its
+          # layer, the whole build output, took up to ten minutes to upload
+          # (run 49176) for a next build that hardly ever has the same sources.
+          # The steps below take its results from this builder.
 
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
@@ -1474,12 +1528,7 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          # The compile scope too: BuildKit's garbage collection can drop the
-          # compile step's local records before this step runs, and without
-          # them it compiles the Rust workspace again (run 48581).
-          cache-from: |
-            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
-            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
           cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
@@ -1613,19 +1662,13 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          # Registry-backed layer cache: each run starts with empty BuildKit
-          # storage. mode=max keeps intermediate stages (WPE engine, builder
-          # toolchain, Windows and media inputs), not only final-image layers.
-          # The compile stages were already built and exported above, so this
-          # reuses them locally and exports the remaining stages.
-          # It exports nothing, so imports cost no cache normalization
-          # (moby/buildkit#6008); they cover local records BuildKit's garbage
-          # collection dropped since the steps above.
+          # The compile results are this builder's own; the rootfs and the
+          # tool stages come from their scopes. It exports nothing, so imports
+          # cost no cache normalization (moby/buildkit#6008).
           cache-from: |
-            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
             ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
             ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
-          # No cache export: the rootfs and compile steps above wrote theirs.
+          # No cache export: the steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
@@ -1704,7 +1747,6 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every branch build that gets
