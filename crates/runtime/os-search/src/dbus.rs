@@ -33,10 +33,10 @@ type Properties = HashMap<&'static str, Value<'static>>;
 /// # Errors
 ///
 /// Returns zbus errors registering either object.
-pub fn serve(
-    builder: zbus::connection::Builder<'_>,
+pub fn serve<'a>(
+    builder: zbus::connection::Builder<'a>,
     search: &Arc<OsSearch>,
-) -> zbus::Result<zbus::connection::Builder<'_>> {
+) -> zbus::Result<zbus::connection::Builder<'a>> {
     builder
         .serve_at(
             GNOME_PATH,
@@ -64,12 +64,9 @@ pub async fn serve_on_session_bus(search: &Arc<OsSearch>) -> zbus::Result<zbus::
         .await
 }
 
-fn open_quietly(search: &OsSearch, id: &str) -> impl Future<Output = ()> + Send + '_ {
-    let id = id.to_owned();
-    async move {
-        if let Err(error) = search.open(&id).await {
-            tracing::info!(?error, "a host search result did not open");
-        }
+async fn open_quietly(search: &OsSearch, id: &str) {
+    if let Err(error) = search.open(id).await {
+        tracing::info!(?error, "a host search result did not open");
     }
 }
 
