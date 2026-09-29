@@ -8,24 +8,19 @@ FROM ${TOOLS_IMAGE} AS tools
 
 # cargo-hakari checks that crates/workspace-hack matches the dependency graph.
 # Compile the pinned release with the reviewed builder toolchain; only the
-# binary ships. The build passes the shared compiler cache: its location as
-# build args, its credential as BuildKit secrets that never enter a layer.
+# binary ships. The build passes the runner's compiler cache (the job's
+# Actions cache URL and token) as BuildKit secrets that never enter a layer.
 # Without them the stage compiles uncached.
 FROM ${TOOLS_IMAGE} AS hakari
 ARG CARGO_HAKARI_VERSION=0.9.39
-ARG SCCACHE_BUCKET=
-ARG SCCACHE_ENDPOINT=
-ARG SCCACHE_REGION=
-ARG SCCACHE_S3_USE_SSL=
-ARG SCCACHE_S3_KEY_PREFIX=
-RUN --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
-    if [ -n "$SCCACHE_BUCKET" ] && [ -s /run/secrets/aws_access_key_id ]; then \
-      export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL SCCACHE_S3_KEY_PREFIX \
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
+    if [ -s /run/secrets/actions_cache_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
+      export SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-ci-fast-v1 \
         SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_DIRECT=false RUSTUP_AUTO_INSTALL=0 \
         RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
-        AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id)" \
-        AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key)"; \
+        ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url)" \
+        ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token)"; \
     fi \
     && cargo install --locked --root /opt/cargo-hakari cargo-hakari --version "${CARGO_HAKARI_VERSION}" \
     && { [ -z "${RUSTC_WRAPPER:-}" ] || sccache --show-stats; } \
