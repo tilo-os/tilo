@@ -79,6 +79,29 @@ class EspWrite(unittest.TestCase):
                 self.assertEqual(result.returncode, 1, result.stderr)
         self.assertEqual(self.run_plan([], caller="someone-else").returncode, 2)
 
+    def test_the_signer_only_replaces_managed_artefacts(self):
+        signer = self.plans / "secureboot-sign"
+        signer.mkdir(mode=0o700)
+        signer.chmod(0o700)
+        (self.esp / "EFI/Linux/bootc").mkdir()
+        (self.esp / "EFI/Linux/bootc/uki.efi").write_bytes(b"MZ unsigned")
+
+        def sign(dst, data=b"MZ signed"):
+            (signer / "signed.efi").write_bytes(data)
+            (signer / "plan.json").write_text(json.dumps({"ops": [{
+                "op": "install", "file": "signed.efi",
+                "sha256": hashlib.sha256(data).hexdigest(), "dst": dst}]}))
+            return subprocess.run([str(HELPER), "secureboot-sign"], env=self.env(),
+                                  capture_output=True, text=True)
+
+        self.assertEqual(sign("EFI/Linux/bootc/uki.efi").returncode, 0)
+        self.assertEqual((self.esp / "EFI/Linux/bootc/uki.efi").read_bytes(), b"MZ signed")
+        # A new .efi would be a new boot menu entry: the signer may not add one.
+        self.assertRefused(sign("EFI/Linux/bootc/new.efi"), "may only replace")
+        self.assertFalse((self.esp / "EFI/Linux/bootc/new.efi").exists())
+        # Nor touch loader entries, or anything but an install.
+        self.assertRefused(sign("loader/entries/bootc_fedora-44-1.conf"), "may not install")
+
     def test_traversal_is_refused(self):
         for path in ("../outside", "EFI/../../outside", "/boot/EFI/tilo", "EFI//tilo", "EFI/./tilo"):
             with self.subTest(path=path):

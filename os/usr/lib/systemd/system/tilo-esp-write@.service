@@ -5,10 +5,10 @@
 # private mount namespace; the global mount stays read-only.
 [Unit]
 Description=Apply %i's staged changes to the ESP
+# No conflict with shutdown.target: the signer re-signs boot artefacts on the
+# way down (tilo-secureboot-sign-shutdown.service) and starts this then.
 DefaultDependencies=no
 RequiresMountsFor=/boot /var/lib/tilo
-Conflicts=shutdown.target
-Before=shutdown.target
 
 [Service]
 Type=oneshot
