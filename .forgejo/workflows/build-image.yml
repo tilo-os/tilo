@@ -792,10 +792,11 @@ jobs:
           } >> "$GITHUB_ENV"
           echo "::notice::Windows provider: with_windows=$with_windows"
 
-      # The shared setup gives the builder the runner pool's registries (the
-      # Oregon pull-through mirror and layer cache) and exports
-      # TILO_LAYER_CACHE_REGISTRY; the docker-container driver supports the
-      # registry cache export that must survive across ephemeral runners.
+      # The shared setup gives the builder the runner pool's registry mirrors.
+      # Layer caches go to the runner's Actions cache (type=gha): one scope
+      # per image, stage and architecture, private to this repository, and a
+      # pull request writes only its own scope. The BuildKit image is pinned
+      # (and prewarmed on the slots).
       #
       # The OS graph contains several large RPM and Rust stages. Letting
       # BuildKit run all of them at once exhausts the ephemeral runner's
@@ -809,18 +810,10 @@ jobs:
         id: buildx
         uses: ./.forgejo/actions/setup-buildx
         with:
+          driver-opts: image=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
           buildkitd-config-inline: |
             [worker.oci]
               max-parallelism = 1
-
-      # A board build's layers include its private firmware, so its layer
-      # cache must never reach the public registry.
-      - name: Keep the board layer cache private
-        if: needs.plan.outputs.hardware-profile == 'lenovo-83ed'
-        run: |
-          if [[ $TILO_LAYER_CACHE_REGISTRY == registry.tilo.so ]]; then
-            echo 'TILO_LAYER_CACHE_REGISTRY=code.tilo.so' >> "$GITHUB_ENV"
-          fi
 
       # Read the manifest through the builder that consumes the snapshot, so
       # its large RPM layer is pulled once, into BuildKit, instead of into
@@ -1095,97 +1088,31 @@ jobs:
           echo "TILO_GENERATION=$gen" >> "$GITHUB_ENV"
           echo "::notice::building generation $gen"
 
-      # Prefer the runner's compiler cache. When that set is incomplete, use
-      # this repository's cache secret. A missing cache compiles without it.
+      # The runner's compiler cache (sccache over the Actions cache protocol,
+      # infra docs/ci-caching.md) reaches the Rust compile as two BuildKit
+      # secrets. A slot without it compiles without the cache.
       #
       # A publication's primary lane uses it too. Any CI job can write that
       # cache, but the reproduction lane compiles with no cache at all and
       # the publication must match it byte for byte, so a planted object
-      # fails the gate instead of reaching a signed image. A publication
-      # does not require the cache: an outage compiles uncached.
+      # fails the gate instead of reaching a signed image.
       - name: Bind the runner compiler cache
         id: compiler-cache
-        env:
-          PUBLISH: ${{ steps.release-mode.outputs.publish }}
-          # Publications may use only their own cache: a bucket that only a
-          # main or v* token can reach through this OIDC role, and that no
-          # other principal can write (tilo/infra
-          # clusters/burst-eks-us-west-2/tilo-publication-cache.tf).
-          PUBLICATION_CACHE_ROLE_ARN: ${{ vars.TILO_PUBLICATION_CACHE_ROLE_ARN }}
-          PUBLICATION_CACHE_BUCKET: ${{ vars.TILO_PUBLICATION_CACHE_BUCKET }}
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
         run: |
           set -euo pipefail
-          if [[ $PUBLISH == true && -n ${PUBLICATION_CACHE_ROLE_ARN:-} ]]; then
-            [[ $PUBLICATION_CACHE_ROLE_ARN =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9+=,.@_-]+$ \
-               && $PUBLICATION_CACHE_BUCKET =~ ^[a-z0-9][a-z0-9.-]{2,62}$ ]] || {
-              echo '::error::TILO_PUBLICATION_CACHE_ROLE_ARN or TILO_PUBLICATION_CACHE_BUCKET is malformed'
-              exit 1
-            }
-            creds="$(./os/dev/publication-cache-credentials.sh "$PUBLICATION_CACHE_ROLE_ARN")"
-            key_id="$(jq -er .AccessKeyId <<<"$creds")"
-            secret="$(jq -er .SecretAccessKey <<<"$creds")"
-            token="$(jq -er .SessionToken <<<"$creds")"
-            echo "::add-mask::$secret"
-            echo "::add-mask::$token"
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
             {
-              printf 'TILO_PUBLICATION_AWS_ACCESS_KEY_ID=%s\n' "$key_id"
-              printf 'TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY=%s\n' "$secret"
-              printf 'TILO_PUBLICATION_AWS_SESSION_TOKEN=%s\n' "$token"
-            } >> "$GITHUB_ENV"
-            region="$(sed -E 's/^.*-([a-z]{2}-[a-z]+-[0-9])$/\1/' <<<"$PUBLICATION_CACHE_BUCKET")"
-            [[ $region =~ ^[a-z]{2}-[a-z]+-[0-9]$ ]]
-            {
-              echo 'mode=publication'
-              echo 'required=0'
-              printf 'bucket=%s\n' "$PUBLICATION_CACHE_BUCKET"
-              printf 'endpoint=https://s3.%s.amazonaws.com\n' "$region"
-              printf 'region=%s\n' "$region"
-              echo 'use_ssl=true'
-              echo 'prefix=tilo/publication/v1'
+              echo 'mode=shared'
               echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
-              echo 'aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID'
-              echo 'aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY'
-              echo 'aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN'
+              echo 'actions_cache_url=ACTIONS_CACHE_URL'
+              echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
               echo 'TILO_COMPILER_CACHE_SECRETS'
             } >> "$GITHUB_OUTPUT"
-            echo "::notice::publication: compiling through the publication-only cache $PUBLICATION_CACHE_BUCKET"
-            exit 0
+            echo "::notice::compiler cache: the runner's Actions cache"
+          else
+            printf '%s\n' 'mode=off' 'secret-envs=' >> "$GITHUB_OUTPUT"
+            echo "::notice::this slot provides no compiler cache; compiling without it"
           fi
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY; do
-            value="${!name:-}"
-            if [[ -z $value || $value == *$'\n'* ]]; then
-              {
-                echo 'mode=off'
-                echo 'required=0'
-                echo 'bucket='
-                echo 'endpoint='
-                echo 'region=auto'
-                echo 'use_ssl=false'
-                echo 'prefix=tilo/image/v1'
-                echo 'secret-envs='
-              } >> "$GITHUB_OUTPUT"
-              echo "::notice::runner compiler cache is not configured; compiling without it"
-              exit 0
-            fi
-          done
-          {
-            echo 'mode=shared'
-            if [[ $PUBLISH == true ]]; then echo 'required=0'; else echo 'required=1'; fi
-            printf 'bucket=%s\n' "$SCCACHE_BUCKET"
-            printf 'endpoint=%s\n' "$SCCACHE_ENDPOINT"
-            printf 'region=%s\n' "$SCCACHE_REGION"
-            printf 'use_ssl=%s\n' "$SCCACHE_S3_USE_SSL"
-            echo 'prefix=tilo/image/v1'
-            echo 'secret-envs<<TILO_COMPILER_CACHE_SECRETS'
-            echo 'aws_access_key_id=AWS_ACCESS_KEY_ID'
-            echo 'aws_secret_access_key=AWS_SECRET_ACCESS_KEY'
-            echo 'TILO_COMPILER_CACHE_SECRETS'
-          } >> "$GITHUB_OUTPUT"
-          echo "::notice::compiler cache: $SCCACHE_ENDPOINT bucket $SCCACHE_BUCKET prefix tilo/image/v1"
 
       - name: Extract image metadata (tags, labels)
         id: meta
@@ -1271,8 +1198,8 @@ jobs:
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
-          cache-from: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && format('type=registry,ref={0}/tilo/tilo-buildcache:{1}-wpe-{2},mode=max,ignore-error=true', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch, env.TILO_WPE_CACHE_KEY) || '' }}
+          cache-from: ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
       # Build and export the compile stages (the Rust builder and its inputs)
       # before anything else. A registry cache is only written when its build
@@ -1319,13 +1246,7 @@ jobs:
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
@@ -1335,9 +1256,9 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -1394,13 +1315,7 @@ jobs:
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           # The runner injects this bucket-scoped credential from a
           # least-privilege Kubernetes Secret. BuildKit exposes them only to
           # the Rust compile RUN; they never enter an image layer or build arg.
@@ -1415,9 +1330,9 @@ jobs:
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
           cache-from: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=max,ignore-error=true
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
@@ -1442,7 +1357,7 @@ jobs:
           build-args: |
             WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
           provenance: false
-          cache-to: type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-wpe-${{ env.TILO_WPE_CACHE_KEY }},mode=max,ignore-error=true
+          cache-to: type=gha,scope=tilo-os-wpe-${{ env.TILO_WPE_CACHE_KEY }}-${{ matrix.arch }},mode=max,ignore-error=true
 
       # The same image build without cache-from. Layers this builder already
       # holds are reused; the lazily imported ones are rebuilt. It writes every
@@ -1488,21 +1403,15 @@ jobs:
             TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
             TILO_GENERATION=${{ env.TILO_GENERATION }}
             TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
-            SCCACHE_BUCKET=${{ steps.compiler-cache.outputs.bucket }}
-            SCCACHE_ENDPOINT=${{ steps.compiler-cache.outputs.endpoint }}
-            SCCACHE_REGION=${{ steps.compiler-cache.outputs.region }}
-            SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}
-            SCCACHE_S3_USE_SSL=${{ steps.compiler-cache.outputs.use_ssl }}
             TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
-            TILO_REQUIRE_COMPILER_CACHE=${{ steps.compiler-cache.outputs.required }}
           secret-envs: |
             browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-to: |
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }}-compile,mode=max,ignore-error=true
-            type=registry,ref=${{ env.TILO_LAYER_CACHE_REGISTRY }}/tilo/tilo-buildcache:${{ matrix.arch }},mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=max,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
@@ -1717,10 +1626,7 @@ jobs:
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
           DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
           ARCH: ${{ matrix.arch }}
-          CACHE_BUCKET: ${{ steps.compiler-cache.outputs.bucket }}
-          CACHE_ENDPOINT: ${{ steps.compiler-cache.outputs.endpoint }}
-          CACHE_REGION: ${{ steps.compiler-cache.outputs.region }}
-          CACHE_USE_SSL: ${{ steps.compiler-cache.outputs.use_ssl }}
+          COMPILER_CACHE: ${{ steps.compiler-cache.outputs.mode }}
         run: |
           set -euo pipefail
           started=$(date +%s)
@@ -1729,11 +1635,9 @@ jobs:
           created="$(date -u -d "$created" +%Y-%m-%dT%H:%M:%SZ)"
           child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
           cache=()
-          if [[ -n $CACHE_BUCKET ]]; then
-            cache=(--build-arg "SCCACHE_BUCKET=$CACHE_BUCKET" --build-arg "SCCACHE_ENDPOINT=$CACHE_ENDPOINT"
-                   --build-arg "SCCACHE_REGION=$CACHE_REGION" --build-arg "SCCACHE_S3_USE_SSL=$CACHE_USE_SSL"
-                   --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
-                   --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
+          if [[ $COMPILER_CACHE == shared ]]; then
+            cache=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                   --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
           metadata="$(mktemp /var/tmp/tilo-vm-build.XXXXXX)"
           docker buildx build --builder "$BUILDER_NAME" --provenance=false \
@@ -1752,8 +1656,8 @@ jobs:
             --label "org.opencontainers.image.base.name=$base" \
             --label "org.opencontainers.image.base.digest=$DEV_BASE_DIGEST" \
             --label sh.tilo.dev.base-trust=integration \
-            --cache-from "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev" \
-            --cache-to "type=registry,ref=$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-buildcache:$ARCH-dev,mode=max,ignore-error=true" \
+            --cache-from "type=gha,scope=tilo-vm-dev-$ARCH" \
+            --cache-to "type=gha,scope=tilo-vm-dev-$ARCH,mode=max,ignore-error=true" \
             --metadata-file "$metadata" \
             --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,force-compression=true" \
             .

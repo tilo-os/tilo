@@ -83,56 +83,22 @@ class ImagePublicationTests(unittest.TestCase):
         self.bind = self.steps["Bind the runner compiler cache"]
 
     def test_image_publication_binds_no_cache_while_integration_builds_keep_it(self):
-        with self.subTest(phase='publication compiles through the shared cache without requiring it'):
-            values, _ = run_script(self.bind, {"PUBLISH": "true", **runner_cache()})
+        with self.subTest(phase="the bind passes the runner's Actions cache as secrets"):
+            values, _ = run_script(self.bind, {"ACTIONS_CACHE_URL": "http://10.0.0.5:8088/x/",
+                                               "ACTIONS_RUNTIME_TOKEN": "tok"})
             self.assertEqual(values["mode"], "shared")
-            self.assertEqual(values["required"], "0")
-            self.assertEqual(values["bucket"], "runner-sccache_bucket")
             self.assertEqual(values["secret-envs"].splitlines(), [
-                "aws_access_key_id=AWS_ACCESS_KEY_ID",
-                "aws_secret_access_key=AWS_SECRET_ACCESS_KEY",
+                "actions_cache_url=ACTIONS_CACHE_URL",
+                "actions_runtime_token=ACTIONS_RUNTIME_TOKEN",
             ])
-        with self.subTest(phase='publication uses only its own role scoped cache'):
-            fake = ('#!/bin/sh\n[ "$1" = arn:aws:iam::123456789012:role/pub ] || exit 9\n'
-                    'echo \'{"AccessKeyId":"ASIAPUB","SecretAccessKey":"s3cr3t","SessionToken":"tok"}\'\n')
-            values, text = run_script(self.bind, {
-                "PUBLISH": "true", **runner_cache(),
-                "PUBLICATION_CACHE_ROLE_ARN": "arn:aws:iam::123456789012:role/pub",
-                "PUBLICATION_CACHE_BUCKET": "tilo-publication-sccache-123456789012-us-west-2",
-            }, files={"os/dev/publication-cache-credentials.sh": fake})
-            self.assertEqual(values["mode"], "publication")
-            self.assertEqual(values["bucket"], "tilo-publication-sccache-123456789012-us-west-2")
-            self.assertEqual(values["region"], "us-west-2")
-            self.assertEqual(values["endpoint"], "https://s3.us-west-2.amazonaws.com")
-            self.assertEqual(values["prefix"], "tilo/publication/v1")
-            self.assertEqual(values["secret-envs"].splitlines(), [
-                "aws_access_key_id=TILO_PUBLICATION_AWS_ACCESS_KEY_ID",
-                "aws_secret_access_key=TILO_PUBLICATION_AWS_SECRET_ACCESS_KEY",
-                "aws_session_token=TILO_PUBLICATION_AWS_SESSION_TOKEN",
-            ])
-            self.assertEqual(values["TILO_PUBLICATION_AWS_ACCESS_KEY_ID"], "ASIAPUB")
-            # Nothing of the runner's shared cache reaches a publication.
-            self.assertNotIn("runner-", text)
-        with self.subTest(phase='publication credentials come from the oidc role alone'):
-            script = (ROOT / "os/dev/publication-cache-credentials.sh").read_text()
-            self.assertIn("audience=tilo-publication-cache", script)
-            self.assertIn("Action=AssumeRoleWithWebIdentity", script)
-            self.assertNotIn("AWS_ACCESS_KEY_ID", script)
-            self.assertNotIn("SCCACHE_", script)
-        with self.subTest(phase='integration builds keep the required shared cache'):
-            values, _ = run_script(self.bind, {"PUBLISH": "false", **runner_cache()})
-            self.assertEqual(values["mode"], "shared")
-            self.assertEqual(values["required"], "1")
-            self.assertEqual(values["bucket"], "runner-sccache_bucket")
-            self.assertEqual(values["secret-envs"].splitlines(), [
-                "aws_access_key_id=AWS_ACCESS_KEY_ID",
-                "aws_secret_access_key=AWS_SECRET_ACCESS_KEY",
-            ])
-        with self.subTest(phase='the bind follows the publication decision'):
-            self.assertIn("PUBLISH: ${{ steps.release-mode.outputs.publish }}", self.bind)
-            order = list(self.steps)
-            self.assertLess(order.index("Select build, validation, or publication mode"),
-                            order.index("Bind the runner compiler cache"))
+        with self.subTest(phase='a slot without the cache compiles without it'):
+            values, _ = run_script(self.bind, {})
+            self.assertEqual(values["mode"], "off")
+            self.assertEqual(values["secret-envs"], "")
+        with self.subTest(phase='no image build carries S3 cache settings or credentials'):
+            for forbidden in ("SCCACHE_BUCKET", "FALLBACK_AWS", "aws_access_key_id", "compiler_cache_env.sh",
+                              "TILO_PUBLICATION_CACHE"):
+                self.assertNotIn(forbidden, self.workflow)
         with self.subTest(phase='every image build takes its cache mode and credentials from the bind'):
             builds = {name: step for name, step in self.steps.items()
                       if "docker/build-push-action@" in step}
@@ -149,6 +115,7 @@ class ImagePublicationTests(unittest.TestCase):
                             self.assertNotIn(forbidden, step)
                         continue
                     self.assertIn("TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}", step)
+                    self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE", step)
                     self.assertIn("${{ steps.compiler-cache.outputs.secret-envs }}", step)
                     if name != "Build and cache the compile stages":
                         self.assertIn("browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY", step)
