@@ -2008,7 +2008,7 @@ impl ui::resources::PublishesResources for FirewallApp {
         clippy::expect_used,
         reason = "the empty string operation payload is always serializable"
     )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if !self.available {
             return vec![
                 tilo_actions::Resource::new(
@@ -2042,11 +2042,14 @@ impl ui::resources::PublishesResources for FirewallApp {
         if self.actions.is_hosted() {
             return Vec::new();
         }
-        let mut resources = self.publish_resources(doc);
-        if let Some(root) = resources.first_mut() {
-            root.actions.push(crate::actions::apply_effect_spec());
-        }
-        resources
+        let Some(config) = self.firewall_resource_ctx() else {
+            return Vec::new();
+        };
+        vec![ui::tilo_resource::publish::<crate::resource::Firewall>(
+            "firewall.config",
+            "Firewall",
+            &config,
+        )]
     }
 }
 
