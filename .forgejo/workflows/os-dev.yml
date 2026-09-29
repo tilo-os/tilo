@@ -10,6 +10,12 @@ name: Build / OS dev
 # (<ref> is main or pr-<number>), so `tilo-vm vm upgrade --from sha:<commit>`
 # moves a VM onto any pushed commit. No reproduction lane, no signing, no
 # release channel: those are Release / OS (build-image.yml), which this calls.
+#
+# A pull request builds only when its own diff touches the image (the
+# applicability gate below; Forgejo's paths filter also counts main's changes
+# merged into the branch), builds x86_64, and adds aarch64 when it changes an
+# architecture-specific input or carries the `os-arm64` label
+# (tools/ci/os_dev_arches.py). Main always builds both.
 on:
   push:
     branches: [main]
@@ -17,19 +23,73 @@ on:
     branches: [main]
     paths:
       - "os/**"
-      - "!os/docs/**"
-      - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"
+      - "tools/ci/os_dev_arches.py"
+      - "tools/ci/workflow_applicability.py"
+      - "tools/ci/prepare_pr_history.py"
 
-# A pull request's newest commit supersedes its running build. On main the
-# running build finishes and only the newest waiting commit follows it.
+# One run per pull request: its newest commit cancels the build of the one
+# before. On main the running build finishes and only the newest waiting
+# commit follows it.
 concurrency:
   group: os-dev-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  applicability:
+    uses: ./.forgejo/workflows/applicability.yml
+    with:
+      workflow: .forgejo/workflows/os-dev.yml
+      event: ${{ github.event_name }}
+
+  arches:
+    needs: applicability
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        true
+      }}
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:966b27dabfda95813588c06e38479de91e206f7179ae2c6230bff7f59e7466fc
+    outputs:
+      arches: ${{ steps.arches.outputs.arches }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          fetch-depth: 0
+      - id: arches
+        env:
+          EVENT: ${{ github.event_name }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ' ') }}
+        run: |
+          set -euo pipefail
+          args=(--event "$EVENT")
+          if [[ $EVENT == pull_request ]]; then
+            args+=(--base "$BASE" --head "$HEAD")
+            for label in $LABELS; do args+=(--label "$label"); done
+          fi
+          python3 -I tools/ci/os_dev_arches.py "${args[@]}"
+
   image:
+    needs: [applicability, arches]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name != 'pull_request' ||
+         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
+        needs.arches.result == 'success'
+      }}
     uses: ./.forgejo/workflows/build-image.yml
+    with:
+      arches: ${{ needs.arches.outputs.arches }}
     secrets: inherit
