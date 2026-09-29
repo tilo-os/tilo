@@ -45,6 +45,20 @@ fail() {
     namei -l "$profile" >&2 || true
     exit 1
 }
+# The daemon names no path with its errors; where strace is installed, a
+# failed start is rerun under it to show the refused calls.
+trace_daemon() {
+    command -v strace >/dev/null || return 0
+    rm -rf -- "$profile"
+    as_user strace -f -o "$work/runtime/daemon.strace" "$runtime" --daemon \
+        >/dev/null 2>&1 &
+    local traced=$!
+    sleep 20
+    kill "$traced" 2>/dev/null || true
+    wait "$traced" 2>/dev/null || true
+    echo "--- refused calls ---" >&2
+    grep -E 'E(ACCES|PERM)' "$work/runtime/daemon.strace" | tail -n 20 >&2 || true
+}
 
 case $mode in
 throwaway)
@@ -77,7 +91,7 @@ as_user "$runtime" --daemon >"$work/daemon.log" 2>&1 &
 daemon_pid=$!
 for _ in $(seq 120); do
     [[ -S $profile/native.sock ]] && break
-    kill -0 "$daemon_pid" 2>/dev/null || fail 'the daemon exited during startup'
+    kill -0 "$daemon_pid" 2>/dev/null || { trace_daemon; fail 'the daemon exited during startup'; }
     sleep 0.5
 done
 [[ -S $profile/native.sock ]] || fail 'the daemon did not bind its native endpoint'

@@ -18,24 +18,24 @@ requires_each() {
 }
 
 # The software Vulkan driver lets the headless app render in this container;
-# desktops carry their own GPU driver.
+# desktops carry their own GPU driver. strace only explains a failed start.
 case $package in
 *.deb)
-    apt-get install -y --no-install-recommends "$package" mesa-vulkan-drivers apparmor passwd
+    apt-get install -y --no-install-recommends "$package" mesa-vulkan-drivers apparmor passwd strace
     dpkg-deb --fsys-tarfile "$package" | tar -t | "$refuse_session_files"
     requires_each "$(dpkg-query -W -f='${Depends}' tilo-runtime)" \
         bubblewrap xdg-desktop-portal xdg-dbus-proxy
     apparmor_parser --skip-kernel-load --skip-cache /etc/apparmor.d/tilo-runtime-launcher
     ;;
 *.rpm)
-    dnf install -y "$package" mesa-vulkan-drivers shadow-utils util-linux
+    dnf install -y "$package" mesa-vulkan-drivers shadow-utils util-linux strace
     rpm -qlp "$package" | "$refuse_session_files"
     requires_each "$(rpm -q --requires tilo-runtime | paste -sd' ')" \
         bubblewrap xdg-desktop-portal xdg-dbus-proxy
     ;;
 *.pkg.tar.*)
     export TILO_RUNTIME_DIR=/usr/lib/tilo/runtime
-    pacman -S --noconfirm --needed vulkan-swrast
+    pacman -S --noconfirm --needed vulkan-swrast strace
     pacman -U --noconfirm "$package"
     pacman -Qlp "$package" | awk '{ print $2 }' | "$refuse_session_files"
     requires_each "$(pacman -Qi tilo-runtime | sed -n '/^Depends On/,/^Optional Deps/p' | paste -sd' ')" \
