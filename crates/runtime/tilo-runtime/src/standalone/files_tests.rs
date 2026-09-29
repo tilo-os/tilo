@@ -78,6 +78,53 @@ fn the_folder_and_the_profile_keep_the_workspace_files_across_restarts() {
 }
 
 #[test]
+fn the_workspace_files_are_served_read_only_on_the_profile_socket() {
+    let dir = tempfile::tempdir().unwrap();
+    let profile = dir.path().join("profile");
+    let folder = folder_in(&dir.path().join("home"), "Home");
+    crate::unix::private_directory(&profile).unwrap();
+    let host = Host::new(&profile);
+    let files = host.start(&profile, &folder, Projection::Folder);
+    std::fs::create_dir_all(folder.join("notes")).unwrap();
+    std::fs::write(folder.join("notes/plan.txt"), b"ship it").unwrap();
+    wait_for("the folder's file to reach the workspace", || {
+        persisted(&profile, "notes")
+    });
+
+    let socket = profile.join(crate::FILES_SOCKET);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    tokio::task::LocalSet::new().block_on(&runtime, async {
+        let fs = runtime_fs::connect(&socket).unwrap();
+        let deadline = tilo_test_env::hang_deadline();
+        let listing = loop {
+            let listing = fs.list("notes").await.unwrap();
+            if !listing.is_empty() || Instant::now() > deadline {
+                break listing;
+            }
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        };
+        assert_eq!(listing.len(), 1);
+        assert_eq!(listing[0].name, "plan.txt");
+        assert_eq!(listing[0].metadata.kind, runtime_fs::EntryKind::File);
+        let plan = fs
+            .open("notes/plan.txt", runtime_fs::OpenMode::Read)
+            .await
+            .unwrap();
+        assert_eq!(plan.read_all().await.unwrap(), b"ship it");
+        assert!(
+            fs.open("notes/plan.txt", runtime_fs::OpenMode::Write)
+                .await
+                .is_err()
+        );
+    });
+    drop(files);
+    assert!(!socket.exists(), "the socket goes with the files");
+}
+
+#[test]
 fn a_workspace_name_is_a_folder_name_or_replaced() {
     let home = Path::new("/home/ada");
     assert_eq!(folder_in(home, "Home"), home.join("Tilo/Home"));
