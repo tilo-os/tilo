@@ -1836,11 +1836,14 @@ fn open_image_resource(doc: &AutoCommit, image: &OpenImage) -> Resource {
 /// agents and search to resolve a late library item without a visual grid
 /// having first materialised it.
 fn library_resources(doc: &AutoCommit) -> Vec<Resource> {
-    let library = PhotosDoc::library(doc);
-    let mut root = library_root_resource();
-    for child in library_children(&library) {
-        root = root.with_child(child);
-    }
+    let state =
+        <crate::resource::Photos as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut root = ui::tilo_resource::publish::<crate::resource::Photos>(
+        "photos.library",
+        "Photo library",
+        &state,
+    );
+    root.children.insert(0, library_analysis_resource());
     vec![root]
 }
 
