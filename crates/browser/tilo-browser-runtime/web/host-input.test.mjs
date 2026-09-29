@@ -117,6 +117,17 @@ test('every wheel over the surface is the runtime\'s and page-unit wheels arrive
  assert.deepEqual({deltaX:pixels.deltaX,deltaY:pixels.deltaY,deltaMode:pixels.deltaMode,clientX:pixels.clientX,clientY:pixels.clientY,altKey:pixels.altKey},
   {deltaX:400,deltaY:-600,deltaMode:0,clientX:10,clientY:20,altKey:true});
 });
+test('a Safari trackpad swipe reaches the runtime whole and never the page, from its first event',async()=>{
+ const f=await fixture();const canvas=f.host.canvas;Object.assign(canvas,{clientWidth:800,clientHeight:600});
+ const seen=[];canvas.addEventListener('wheel',event=>seen.push(event));
+ const listener=canvas.listeners.get('wheel')[0];assert.equal(listener.options.passive,false,'a passive listener could not stop history swipes');
+ // WebKit coalesces a swipe into fewer, larger pixel deltas, mirrors them
+ // in legacy wheelDeltaX (-3x, inverted), and flags natural scrolling.
+ const swipe=[1,3,9,22,40,38,30,21,14,9,6,4,2,1,1];
+ const wheels=swipe.map(dx=>new WheelEvent('wheel',{cancelable:true,deltaX:dx,deltaY:0.25,wheelDeltaX:-3*dx,wheelDeltaY:0,webkitDirectionInvertedFromDevice:true}));
+ for(const event of wheels){canvas.dispatchEvent(event);assert.equal(event.defaultPrevented,true,`deltaX ${event.deltaX}`);}
+ assert.deepEqual(seen.map(event=>event.deltaX),swipe,'every delta reaches the runtime once, unscaled, in order');
+});
 test('the desktop search chord opens search from anywhere on the page and the browser never sees it',async()=>{
  const f=await fixture();const outside=new Node('input');f.document.body.append(outside);outside.focus();
  const canvasKeys=[];f.host.canvas.addEventListener('keydown',event=>canvasKeys.push(event.key));

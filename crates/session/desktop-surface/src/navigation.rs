@@ -491,9 +491,9 @@ pub struct Capabilities {
     pub scroll: bool,
     /// Per-window back and forward through the tab's own history.
     pub history: bool,
-    /// The surface takes sideways wheel input itself: a swipe steps focus
-    /// along the strip and otherwise pans it. A host must leave it the
-    /// wheel rather than turn it into `pan` commands.
+    /// The surface takes sideways wheel input itself: a trackpad swipe pans
+    /// the strip under the fingers and a mouse's wheel click steps focus. A
+    /// host must leave it the wheel rather than turn it into `pan` commands.
     pub swipe: bool,
 }
 

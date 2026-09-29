@@ -281,9 +281,12 @@ const SWIPE_GAP: Duration = Duration::from_millis(200);
 #[derive(Clone, Copy)]
 struct Swipe {
     direction: i32,
-    /// The gesture moved focus, so the rest of it is the strip's; else it
-    /// belongs to the content under the pointer.
+    /// The strip took the gesture (stepped focus or pans), so the rest of
+    /// it is the strip's; else it belongs to the content under the pointer.
     stepped: bool,
+    /// A trackpad's pixel-delta gesture, which pans the strip under the
+    /// fingers rather than stepping a window.
+    pan: bool,
     last: Instant,
 }
 
@@ -881,12 +884,14 @@ impl DesktopSurface {
         Some(self.shared.borrow().tree.active_workspace()?.id)
     }
 
-    /// Whether the strip takes this wheel event. As in the shell, a sideways
-    /// swipe steps focus one window along the strip before content sees it,
-    /// and falls through to content when there is no window that way. A
-    /// trackpad reports one swipe as many events, momentum included, so a
-    /// swipe steps once and the rest of it follows that first decision.
-    fn route_swipe(&mut self, delta: MouseScrollDelta, now: Instant) -> bool {
+    /// Whether the strip takes this wheel event. A trackpad's sideways swipe
+    /// (pixel deltas) pans the strip under the fingers, 1:1 and through its
+    /// momentum, when the strip can move that way; else it is the content's.
+    /// A mouse's sideways wheel click (line deltas) steps focus one window,
+    /// as in the shell, and falls through to content when there is no window
+    /// that way. One gesture arrives as many events and all of them follow
+    /// the decision its first one made.
+    fn route_swipe(&mut self, delta: MouseScrollDelta, scale_factor: f64, now: Instant) -> bool {
         if self
             .swipe
             .is_some_and(|swipe| now.saturating_duration_since(swipe.last) > SWIPE_GAP)
@@ -896,7 +901,12 @@ impl DesktopSurface {
         let Some((direction, past_threshold)) = sideways(delta) else {
             return false;
         };
+        if let MouseScrollDelta::PixelDelta(p) = delta {
+            // Winit reports the page's deltaX negated, in physical pixels.
+            return self.route_pan(-p.x / scale_factor.max(f64::EPSILON), direction, now);
+        }
         if let Some(swipe) = self.swipe.as_mut()
+            && !swipe.pan
             && swipe.direction == direction
         {
             swipe.last = now;
@@ -909,9 +919,37 @@ impl DesktopSurface {
         self.swipe = Some(Swipe {
             direction,
             stepped,
+            pan: false,
             last: now,
         });
         stepped
+    }
+
+    /// Move the shown strip `travel` logical pixels (positive toward later
+    /// windows) as part of a pan gesture. A reversal mid-gesture keeps
+    /// panning; the ends stop the strip without handing the rest of the
+    /// gesture to the app under the pointer.
+    fn route_pan(&mut self, travel: f64, direction: i32, now: Instant) -> bool {
+        let taken = if let Some(swipe) = self.swipe.as_mut()
+            && swipe.pan
+        {
+            swipe.last = now;
+            swipe.stepped
+        } else {
+            let taken = self.shown_row_ref().is_some_and(|row| can_pan(row, travel));
+            self.swipe = Some(Swipe {
+                direction,
+                stepped: taken,
+                pan: true,
+                last: now,
+            });
+            taken
+        };
+        if taken && let Some(row) = self.shown_row() {
+            let offset = row.scroll_x() + travel;
+            pan_row(row, offset);
+        }
+        taken
     }
 
     /// Focus the window `steps` along the shown strip, walking every tab of
@@ -1009,6 +1047,19 @@ fn pan_row(row: &mut GroupRow, offset: f64) -> bool {
     let moved = row.update_strip_pan(target - row.scroll_x());
     row.end_strip_pan(ui::time::now());
     moved
+}
+
+/// Whether `row` can pan `travel` from where it rests.
+fn can_pan(row: &GroupRow, travel: f64) -> bool {
+    if row.groups.iter().any(|g| g.maximized) {
+        return false;
+    }
+    let offset = row.scroll_x();
+    if travel > 0.0 {
+        offset < row.pan_max_scroll_x() - 0.5
+    } else {
+        travel < 0.0 && offset > 0.5
+    }
 }
 
 fn observe_ids(minter: &mut IdMinter, tree: &DesktopTree) {
@@ -1302,7 +1353,7 @@ impl Widget for DesktopSurface {
             return;
         }
         if let WindowEvent::MouseWheel { delta, .. } = event
-            && self.route_swipe(*delta, ui::time::now())
+            && self.route_swipe(*delta, ctx.scale_factor, ui::time::now())
         {
             *ctx.handled = true;
             return;
@@ -1508,39 +1559,46 @@ mod tests {
         start.checked_add(Duration::from_millis(ms)).unwrap()
     }
 
+    fn lines(dx: f32) -> MouseScrollDelta {
+        MouseScrollDelta::LineDelta(dx, 0.0)
+    }
+
     #[test]
-    fn one_trackpad_swipe_with_its_momentum_steps_one_window() {
+    fn one_run_of_sideways_wheel_clicks_steps_one_window() {
         let (mut surface, handle) = desktop(5);
         let t = ui::time::now();
-        // A swipe starts below the threshold, crosses it, then decays
-        // through momentum.
-        let swipe = [4.0, 12.0, 60.0, 90.0, 70.0, 40.0, 18.0, 6.0, 2.0, 1.0];
+        let clicks = [0.2, 1.0, 3.0, 1.0, 0.5];
         let taken: Vec<bool> = (0u64..)
-            .zip(swipe)
-            .map(|(i, dx)| surface.route_swipe(pixels(dx, 0.5), ms(t, 16 * i)))
+            .zip(clicks)
+            .map(|(i, dx)| surface.route_swipe(lines(dx), 1.0, ms(t, 16 * i)))
             .collect();
         assert_eq!(
             taken,
-            [false, false, true, true, true, true, true, true, true, true],
+            [false, true, true, true, true],
             "content keeps the sub-threshold lead-in; the strip keeps the rest"
         );
         assert_eq!(focused(&mut surface, &handle), 1);
 
         let t = ms(t, 1000);
         for i in 0..30 {
-            surface.route_swipe(pixels(80.0, 0.0), ms(t, 16 * i));
+            surface.route_swipe(lines(1.0), 1.0, ms(t, 16 * i));
         }
         assert_eq!(focused(&mut surface, &handle), 2, "however long it runs");
 
         let t = ms(t, 16 * 30 + 250);
         assert!(
-            surface.route_swipe(pixels(80.0, 0.0), t),
-            "a pause starts a new swipe"
+            surface.route_swipe(lines(1.0), 1.0, t),
+            "a pause starts a new run"
         );
         assert_eq!(focused(&mut surface, &handle), 3);
         assert!(
-            surface.route_swipe(pixels(-80.0, 0.0), ms(t, 16)),
-            "reversing mid-swipe is a new swipe"
+            surface.route_swipe(lines(-1.0), 1.0, ms(t, 16)),
+            "reversing mid-run is a new run"
+        );
+        assert_eq!(focused(&mut surface, &handle), 2);
+        assert!(
+            !surface.route_swipe(pixels(-80.0, 0.0), 1.0, ms(t, 32)),
+            "a trackpad swipe pans rather than steps, and an unlaid strip cannot pan"
         );
         assert_eq!(focused(&mut surface, &handle), 2);
     }
@@ -1551,7 +1609,7 @@ mod tests {
         let t = ui::time::now();
         for i in 0..10 {
             assert!(
-                !surface.route_swipe(pixels(80.0, 0.0), ms(t, 16 * i)),
+                !surface.route_swipe(lines(1.0), 1.0, ms(t, 16 * i)),
                 "a lone window's app scrolls sideways"
             );
         }
@@ -1559,7 +1617,7 @@ mod tests {
         let t = ms(t, 1000);
         for i in 0..10 {
             assert!(
-                !surface.route_swipe(pixels(-80.0, 0.0), ms(t, 16 * i)),
+                !surface.route_swipe(lines(-1.0), 1.0, ms(t, 16 * i)),
                 "and so does the first window's, backwards"
             );
         }
@@ -1575,13 +1633,13 @@ mod tests {
         .enumerate()
         {
             assert!(
-                !surface.route_swipe(delta, ms(t, 300 * i as u64)),
+                !surface.route_swipe(delta, 1.0, ms(t, 300 * i as u64)),
                 "{delta:?}"
             );
         }
         assert_eq!(focused(&mut surface, &handle), 0);
         assert!(
-            surface.route_swipe(MouseScrollDelta::LineDelta(1.0, 0.0), ms(t, 1000)),
+            surface.route_swipe(MouseScrollDelta::LineDelta(1.0, 0.0), 1.0, ms(t, 1000)),
             "a mouse's sideways wheel click steps like the shell's"
         );
         assert_eq!(focused(&mut surface, &handle), 1);
