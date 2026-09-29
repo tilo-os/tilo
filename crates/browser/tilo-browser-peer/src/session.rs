@@ -431,6 +431,7 @@ impl PeerHandle {
             barriers: Vec::new(),
             admission_since: None,
             delivered: BTreeMap::new(),
+            received: BTreeSet::new(),
             compactions: BTreeMap::new(),
         };
         task.update(|status| {
@@ -827,6 +828,9 @@ struct Task {
     /// Retained entry ids of every document delivered or published per
     /// route: what a snapshot of the route contains.
     delivered: BTreeMap<DocumentRoute, BTreeSet<[u8; 32]>>,
+    /// Entry ids delivered since this page last subscribed. A subscribe asks
+    /// for them again (a refresh wants the rooms whole), so it clears them.
+    received: BTreeSet<[u8; 32]>,
     /// Open compaction requests: room, route and the entries delivered when
     /// the request arrived.
     compactions: BTreeMap<[u8; 16], Compaction>,
@@ -1186,6 +1190,7 @@ impl Task {
         commands: &mut mpsc::UnboundedReceiver<Command>,
     ) -> Exit {
         let mut sent_ok = true;
+        self.received.clear();
         for workspace_id in &self.rooms {
             sent_ok &= client.send(self.subscribe(&client, *workspace_id)).is_ok();
         }
@@ -1236,6 +1241,7 @@ impl Task {
                         self.clear_admission_failure();
                         // A refresh asks for the rooms whole: no position.
                         self.positions.clear();
+                        self.received.clear();
                         if !self.resubscribe(&client) {
                             return Exit::Lost("host session saturated".into());
                         }
@@ -1289,6 +1295,7 @@ impl Task {
                 self.update(|status| {
                     status.rooms.entry(workspace_id).or_insert(false);
                 });
+                self.received.clear();
                 client
                     .is_none_or(|client| client.send(self.subscribe(client, workspace_id)).is_ok())
             }
@@ -1577,6 +1584,14 @@ impl Task {
                     cluster_id,
                     record: record_id,
                 };
+                // A room the host resumes after it lagged can replay an entry
+                // its live deliveries already carried; the page takes it once.
+                if self
+                    .received
+                    .contains(&tilo_relay_protocol::compaction::entry_id(&body))
+                {
+                    return;
+                }
                 let changes = self.channels.open(&route, now);
                 self.absorb(changes);
                 if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
@@ -1611,6 +1626,11 @@ impl Task {
                 let route = document.route.clone();
                 let entries = document.entries().to_vec();
                 self.emit(&PeerEvent::Document(Box::new(document)));
+                for entry in &entries {
+                    if self.received.len() < MAX_DELIVERED_ENTRIES {
+                        self.received.insert(*entry);
+                    }
+                }
                 self.note_delivered(&route, &entries);
             }
             Ok(None) => {}
