@@ -86,7 +86,7 @@ duplicates="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
 
 instructions="$(containerfile_instructions "$containerfile" | awk '
   $1 == "FROM" { stage=$NF; next }
-  stage == "rootfs" && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
+  (stage == "rootfs" || stage == "rootfs-base") && $1 ~ /^(ARG|COPY|RUN|ADD|ENV|LABEL|WORKDIR|USER|EXPOSE|VOLUME|STOPSIGNAL|HEALTHCHECK|SHELL|CMD|ENTRYPOINT)$/ { n++ }
   END { print n+0 }
 ')"
 # The existing image used 123; provider selection adds ARG, COPY and its

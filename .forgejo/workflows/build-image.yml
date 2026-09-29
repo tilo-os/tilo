@@ -1294,13 +1294,72 @@ jobs:
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
           cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
 
+      # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
+      # slow step. It changes only with os/ inputs, packages and the kernel;
+      # the image build below adds the build outputs on top of it.
+      - name: Build and cache the rootfs
+        id: rootfs-stage
+        if: steps.compile-stages.outcome == 'success'
+        continue-on-error: true
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        env:
+          SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
+          RUNTIME_BUNDLE_SIGNING_KEY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.RUNTIME_BUNDLE_SIGNING_KEY || '' }}
+          TAPP_PUBLISHER_IDENTITY: ${{ steps.release-mode.outputs.publish == 'true' && secrets.TAPP_PUBLISHER_IDENTITY || '' }}
+        with:
+          context: .
+          build-contexts: |
+            github-assets=os/external-assets/cache
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+          file: os/Containerfile
+          target: rootfs-base
+          push: false
+          build-args: |
+            SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
+            BASE_REF=${{ env.BASE_REF }}
+            RPMS_REF=${{ env.RPMS_REF }}
+            KERNEL_RPMS_REF=${{ env.KERNEL_RPMS_REF }}
+            WPE_BUILDROOT_REF=${{ env.WPE_BUILDROOT_REF }}
+            TILO_WINDOWS_ARCH=${{ matrix.arch }}
+            FEX_PAYLOAD_REF=${{ env.FEX_PAYLOAD_REF || 'scratch' }}
+            WINDOWS_GUEST_REF=${{ env.WINDOWS_GUEST_REF || 'scratch' }}
+            TILO_WITH_BROWSER=${{ env.TILO_WITH_BROWSER }}
+            TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}
+            TILO_HARDWARE_PROFILE=${{ needs.plan.outputs.hardware-profile }}
+            TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
+            TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
+            TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
+            TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
+            TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
+            TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
+            TILO_BROWSER_RUNTIME_PUBLISHER=${{ env.TILO_BROWSER_RUNTIME_PUBLISHER }}
+            TILO_GENERATION=${{ env.TILO_GENERATION }}
+            TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+            TILO_COMPILER_CACHE=${{ steps.compiler-cache.outputs.mode }}
+          # The runner injects this bucket-scoped credential from a
+          # least-privilege Kubernetes Secret. BuildKit exposes them only to
+          # the Rust compile RUN; they never enter an image layer or build arg.
+          secret-envs: |
+            browser_runtime_identity=RUNTIME_BUNDLE_SIGNING_KEY
+            browser_app_identity=TAPP_PUBLISHER_IDENTITY
+            ${{ steps.compiler-cache.outputs.secret-envs }}
+          provenance: false
+          cache-from: |
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
+          # Its own lineage only, the rootfs layers: mode=max over the whole
+          # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
+
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
       # run buildx writes an OCI archive for that gate; pull requests exercise
       # the complete build and registry cache without retaining output.
       - name: Build the Tilo image
         id: build
-        if: steps.compile-stages.outcome == 'success'
+        if: steps.rootfs-stage.outcome == 'success'
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
@@ -1365,17 +1424,13 @@ jobs:
           # reuses them locally and exports the remaining stages.
           cache-from: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
-          # The image's own layers suffice: the rootfs is its lineage, and the
-          # compile stages export their intermediate layers above. mode=max
-          # here held every rootfs layer in memory at once and exhausted the
-          # slot (a 32 GB BuildKit during "preparing build cache for export").
-          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=min,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
+          # No cache export: the rootfs and compile steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
       - name: Recognize a missing registry cache blob
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
         env:
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
         run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"
@@ -1402,7 +1457,7 @@ jobs:
       # cache tag, replacing the manifests that named the missing blob.
       - name: Build the Tilo image without the damaged layer cache
         id: build-uncached
-        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.build.outcome == 'failure')
+        if: matrix.role != 'reproduce' && (steps.wpe-stage.outcome == 'failure' || steps.compile-stages.outcome == 'failure' || steps.rootfs-stage.outcome == 'failure' || steps.build.outcome == 'failure')
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         env:
           SOURCE_DATE_EPOCH: ${{ env.SOURCE_DATE_EPOCH }}
@@ -1449,7 +1504,7 @@ jobs:
           provenance: false
           cache-to: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=min,ignore-error=true
+            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Dev VMs must not wait on release gating. Every branch build that gets
       # this far pushes its image, unsigned, to tilo-ci: a development-only
