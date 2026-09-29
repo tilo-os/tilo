@@ -47,8 +47,8 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
-its own affected-package check and fast-quality lint result; those runs are keyed
-to the exact event and commit and are not cancelled when a newer commit arrives.
+its own affected-package check and fast-quality lint result. A newer commit on the
+PR cancels the older revision's runs; every push to `main` keeps its own.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
