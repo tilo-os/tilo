@@ -37,8 +37,16 @@ esac
 # shellcheck disable=SC1091
 . "$TILO_OS_DIR/base-snapshot.env"
 _li_published_rpms=""
-if _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>/dev/null)"; then
-  _li_published_rpms="$_li_resolved"
+# A registry that cannot be reached must stop the build: taking it for "not
+# published" would switch the base to a local snapshot and rebuild everything.
+if [ -z "${RPMS_REF:-}" ]; then
+  _li_rc=0
+  _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>/dev/null)" || _li_rc=$?
+  case "$_li_rc" in
+    0) _li_published_rpms="$_li_resolved" ;;
+    3) "$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" --exists || true
+       die "local inputs: the RPM snapshot registry could not be asked (see above); retry, or set RPMS_REF" ;;
+  esac
 fi
 _li_pin="$(sed -n "s/^$_li_pin_var=//p" "$TILO_OS_DIR/kernel-snapshot.env")"
 _li_buildroot="$(sed -n "s/^$_li_buildroot_var=//p" "$TILO_OS_DIR/kernel-buildroot-snapshot.env")"
