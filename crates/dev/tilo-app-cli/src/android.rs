@@ -1864,21 +1864,7 @@ pub fn package(
         }
         found
     });
-    let build = build(
-        start,
-        &BuildRequest {
-            arch,
-            profile: request
-                .profile
-                .clone()
-                .unwrap_or_else(|| "release".to_owned()),
-            signing: Signing::Release(keystore),
-            bundle,
-            features: request.features.clone(),
-            no_default_features: request.no_default_features,
-        },
-    )?;
-    let spec = super::load_app_package_spec(build.app_dir.clone())?;
+    let spec = super::load_app_package_spec(app_dir)?;
     let dist = spec.app_dir.join("dist");
     let stem = format!(
         "{}-{}-{}",
@@ -1905,6 +1891,21 @@ pub fn package(
             );
         }
     }
+
+    let build = build(
+        start,
+        &BuildRequest {
+            arch,
+            profile: request
+                .profile
+                .clone()
+                .unwrap_or_else(|| "release".to_owned()),
+            signing: Signing::Release(keystore),
+            bundle,
+            features: request.features.clone(),
+            no_default_features: request.no_default_features,
+        },
+    )?;
 
     let (entrypoints, size) = pack_tapp(&spec, &build, arch, request, &parent, &output)?;
     std::fs::copy(&build.apk, &apk_out)?;
