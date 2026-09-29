@@ -527,6 +527,28 @@ mod tests {
     }
 
     #[test]
+    fn framework_history_apps_search_from_the_header_bar() {
+        let mut app = crate::app::framework_history_tests::native_chrome_app();
+        let commands = app.host_commands(false);
+        let mut driver = driver(&commands, crate::Theme::light());
+        driver.click_named("host-header-search").unwrap();
+        let requests = driver.root_mut::<HeaderBar>().take_requests();
+        let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
+            panic!("the search toggle hands back its command: {requests:?}");
+        };
+        assert!(
+            app.invoke_host_command(invocation),
+            "the palette's door opens it"
+        );
+        let search = app
+            .host_commands(false)
+            .into_iter()
+            .find(|command| command.group == CommandGroup::Search)
+            .unwrap();
+        assert!(!search.enabled, "the open palette answers its own shortcut");
+    }
+
+    #[test]
     fn framework_history_menu_opens_at_a_recent_change() {
         let mut app = crate::app::framework_history_tests::native_chrome_app();
         let commands = app.host_commands(true);

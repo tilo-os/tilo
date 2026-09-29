@@ -537,4 +537,30 @@ mod tests {
             "Hide History"
         );
     }
+
+    #[test]
+    fn framework_history_apps_search_from_the_title_bar_and_the_edit_menu() {
+        // SAFETY: as above; the menus never leave this thread.
+        let mtm = unsafe { MainThreadMarker::new_unchecked() };
+        let mut app = framework_history_tests::native_chrome_app();
+        let chosen: Rc<RefCell<Vec<ChromeRequest>>> = Rc::default();
+        let sink = Rc::clone(&chosen);
+        let chrome = MacChrome::new(mtm, move |request| sink.borrow_mut().push(request));
+        chrome.update(app.host_commands(false));
+        assert!(titles(&submenu(&chrome.menu_bar, "Edit")).contains(&"Search…".to_owned()));
+
+        let field = objc2_app_kit::NSSearchField::new(mtm);
+        field.setStringValue(&objc2_foundation::NSString::from_str("notes"));
+        let target = &*chrome.target;
+        let _: () = unsafe { msg_send![target, searchFieldDidStartSearching: &*field] };
+        let Some(ChromeRequest::Search(query)) = chosen.borrow_mut().pop() else {
+            panic!("the title-bar field hands its query over");
+        };
+        assert_eq!(query, "notes");
+        // What the runner does with it: the Search command, then the query.
+        assert!(
+            app.invoke_host_shortcut(crate::platform::HostShortcut::Search),
+            "the palette opens"
+        );
+    }
 }
