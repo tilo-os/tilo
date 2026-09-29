@@ -700,11 +700,40 @@ pub(crate) fn immediate(
     })
 }
 
-/// Frame-by-frame directory root. Deep records arrive through search or an
-/// exact stable-id resolver, preventing palette opens from allocating every
-/// request and variable action closure.
-pub fn provide_root_resources(_doc: &AutoCommit) -> Vec<Resource> {
-    vec![workspace_root().with_child(history_root())]
+/// Prompted workspace creates for [`tilo_resource::publish`]: ids are minted
+/// when the name is committed, then baked into the envelope so replay stays
+/// deterministic.
+pub(crate) fn workspace_bound_actions() -> Vec<ActionSpec> {
+    vec![
+        ActionSpec::prompted(
+            "new-collection",
+            "New collection",
+            "Collection name",
+            "e.g. Users API",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&create_collection_action(Uuid::new_v4(), name.trim())),
+        ),
+        ActionSpec::prompted(
+            "new-environment",
+            "New environment",
+            "Environment name",
+            "e.g. Production",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
+        ),
+    ]
+}
+
+/// Static workspace children for [`tilo_resource::publish`]: the active
+/// request Send Effect, contextual menus, and the history directory. Deep
+/// collection / request / environment records resolve by stable id.
+pub(crate) fn document_children() -> Vec<Resource> {
+    vec![
+        active_request_resource(),
+        request_menu_resource(),
+        environment_menu_resource(),
+        history_root(),
+    ]
 }
 
 fn history_root() -> Resource {
@@ -715,37 +744,30 @@ fn history_root() -> Resource {
     )
 }
 
-fn workspace_root() -> Resource {
-    let mut root = Resource::new(
-        "api_tester.workspace",
+/// Standalone / `--shots` / unit-test tree: [`tilo_resource::publish`] owns the
+/// workspace door. Deep records arrive through search or an exact stable-id
+/// resolver, preventing palette opens from allocating every request and
+/// variable action closure.
+pub fn provide_resources(state: &crate::resource::WorkspaceState) -> Vec<Resource> {
+    vec![ui::tilo_resource::publish::<crate::resource::ApiTester>(
         "api_tester.workspace",
         "API workspace",
-    );
-    root = root.with_child(active_request_resource());
-    root = root.with_child(request_menu_resource());
-    root = root.with_child(environment_menu_resource());
+        state,
+    )]
+}
 
-    // Workspace-level: create a collection / environment (prompted for a name;
-    // the id is minted once when the argument is committed, then baked into the
-    // envelope, so replay stays deterministic).
-    root = root.with_action(ActionSpec::prompted(
-        "new-collection",
-        "New collection",
-        "Collection name",
-        "e.g. Users API",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&create_collection_action(Uuid::new_v4(), name.trim())),
-    ));
-    root = root.with_action(ActionSpec::prompted(
-        "new-environment",
-        "New environment",
-        "Environment name",
-        "e.g. Production",
-        ExecutionLocus::ClientLocal,
-        move |name: &str| encode(&create_environment_action(Uuid::new_v4(), name.trim())),
-    ));
-
-    root
+/// Hosted-only extras that are not document state: a failed search-catalog
+/// refresh surfaces as a palette diagnostic. Response bodies and in-flight
+/// HTTP work stay widget-local and are never published.
+pub(crate) fn live_search_status_resources(error: Option<String>) -> Vec<Resource> {
+    match error {
+        Some(message) => vec![Resource::new(
+            "api_tester.search_status",
+            "api_tester.search_status",
+            format!("Search index unavailable: {message}"),
+        )],
+        None => Vec::new(),
+    }
 }
 
 /// One stable, secret-safe variable resource. Kept separate so environment
@@ -797,8 +819,11 @@ pub(crate) fn variable_resource(eid: Uuid, variable_id: &str, key: &str) -> Reso
 
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::ApiTesterApp {
+    /// Standalone / `--shots` / unit-test tree via [`tilo_resource::publish`].
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut roots = provide_root_resources(doc);
+        let state = <crate::resource::ApiTester as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut roots = provide_resources(&state);
         if let Some(error) = self.search_error_message()
             && let Some(root) = roots.first_mut()
         {
@@ -860,8 +885,7 @@ mod tests {
         // from Ctrl+K), plus the device-local current-request and contextual
         // menu resources, but no collection / environment records.
         {
-            let doc = AutoCommit::new();
-            let resources = provide_root_resources(&doc);
+            let resources = provide_resources(&crate::resource::WorkspaceState::default());
             assert_eq!(resources.len(), 1, "empty doc");
             let root = &resources[0];
             assert_eq!(root.kind, "api_tester.workspace", "empty doc");
@@ -955,6 +979,78 @@ mod tests {
                 "failed catalog refresh"
             );
         }
+    }
+
+    #[test]
+    fn resource_publish_owns_the_workspace_door_and_hosted_adds_no_second_tree() {
+        let state = crate::resource::WorkspaceState::default();
+        let published = ui::tilo_resource::publish::<crate::resource::ApiTester>(
+            "api_tester.workspace",
+            "API workspace",
+            &state,
+        );
+        let root_actions: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(root_actions.contains(&"new-collection"), "{root_actions:?}");
+        assert!(
+            root_actions.contains(&"new-environment"),
+            "{root_actions:?}"
+        );
+        assert_eq!(
+            published
+                .children
+                .iter()
+                .map(|child| child.kind.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "api_tester.active_request",
+                "api_tester.request_menu",
+                "api_tester.environment_menu",
+                "api_tester.history",
+            ],
+            "send / menus / history ride Resource::children"
+        );
+        assert!(
+            published.children[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "send"),
+            "active request publishes the Send Effect"
+        );
+
+        let mut app = crate::app::ApiTesterApp::new();
+        let doc = AutoCommit::new();
+        assert!(
+            !app.actions_are_hosted(),
+            "standalone tests stay on the local host"
+        );
+        let standalone = app.publish_resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "api_tester.workspace");
+        assert!(
+            standalone[0]
+                .actions
+                .iter()
+                .any(|action| action.id == "new-collection")
+        );
+
+        // Hosted surfaces must not republish the workspace door beside
+        // ResourceRoot's tilo_resource::publish. Search-catalog failures remain
+        // a widget-local diagnostic extra.
+        app.mark_actions_hosted_for_test();
+        assert!(app.actions_are_hosted());
+        let extras = ui::resources::PublishesResources::resources(&app, &doc);
+        assert!(
+            extras.is_empty(),
+            "hosted api-tester publishes only through the framework resource when search is healthy"
+        );
+
+        let collection = Collection::new("Duplicate");
+        let mut duplicate = collection.clone();
+        duplicate.name = "Conflicting duplicate".to_string();
+        app.refresh_search_records(&[collection, duplicate], &[]);
+        let extras = ui::resources::PublishesResources::resources(&app, &doc);
+        assert_eq!(extras.len(), 1);
+        assert_eq!(extras[0].kind, "api_tester.search_status");
     }
 
     /// Record edits address their target by id and change it in place.
