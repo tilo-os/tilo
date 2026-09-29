@@ -2212,6 +2212,54 @@ mod tests {
         assert_eq!(select("so.tilo.missing"), None);
     }
 
+    /// An agent's first request to a session is often an invocation, with no
+    /// search or palette before it to take in the index build.
+    #[test]
+    fn an_app_opens_by_its_address_without_any_search_first() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let source = ApplicationsTestSource::new(
+            vec![app("so.tilo.calculator", "Calculator")],
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+        );
+        let mut registry = SearchRegistry::new();
+        registry.register(Rc::new(ApplicationsProvider::with_test_source(source)));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        let resource = ResourceRef::new("applications", "so.tilo.calculator");
+        let deadline = std::time::Instant::now()
+            .checked_add(HANG_BOUND)
+            .expect("the hang bound fits in an Instant");
+        loop {
+            let opened = ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string());
+            if let Some(title) = opened {
+                assert_eq!(title, "Open Calculator");
+                return;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "invoking by address alone never takes in the finished index"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+    }
+
     #[test]
     fn source_backed_cold_query_does_no_application_index_work_before_refresh() {
         let source = ApplicationsTestSource::new(
