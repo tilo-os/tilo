@@ -140,13 +140,10 @@ over:
 - the `release` profile as declared, and the `CARGO_PROFILE_RELEASE_*`
   overrides,
 - the `Cargo.lock` digest,
-- every unit the core links that the app collection's graphs share, except
-  `tilo-browser-runtime` itself: package, features and Cargo's metadata hash
-  (package, features, profile, dependency graph; independent of the checkout
-  path), plus for workspace crates a digest of the source files rustc read
-  (from dep-info). A crate only the core uses exports nothing apps link
-  against, so an optional core feature that adds such crates without changing
-  a shared crate's features (`relay`) keeps the id and links the same apps.
+- every unit the core links except `tilo-browser-runtime` itself: package,
+  features and Cargo's metadata hash (package, features, profile, dependency
+  graph; independent of the checkout path), plus for workspace crates a digest
+  of the source files rustc read (from dep-info).
 
 The core crate is left out on purpose: apps reach it only through
 `tilo_runtime_register_app`, whose contract is versioned by `REGISTRATION` in

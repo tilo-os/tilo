@@ -19,12 +19,6 @@ static-apps = ["dep:notes", "dep:calculator", "dep:ebook", "dep:word-processor",
 # dependency, so a web core built with it keeps the default core's runtime ABI
 # and links the same app side modules.
 cloud = []
-# The page as a certified device of a tilo-relay room (`web/relay.mjs`):
-# device certification, the relay's HTTPS durable plane and the room's
-# documents replicated into the page's own mounts, whose apps stay the core's
-# and the registry's side modules. Optional, so the default web core does not
-# carry it.
-relay = ["dep:tilo-browser-peer", "dep:tilo-automerge", "dep:tokio"]
 # Link as the dynamic-linking main module that app side modules load against:
 # every symbol, the function table and the stack pointer exported, the table
 # growable, and the side-module registration entry points.
@@ -90,9 +84,6 @@ wasm-bindgen = "=0.2.108"
 wasm-bindgen-futures = "=0.4.58"
 js-sys = "=0.3.85"
 web-sys = { version = "=0.3.85", features = ["HtmlCanvasElement", "Window", "Document", "Element", "HtmlElement", "console"] }
-tilo-browser-peer = { path = "../tilo-browser-peer", default-features = false, optional = true }
-tilo-automerge = { workspace = true, optional = true }
-tokio = { workspace = true, features = ["sync"], optional = true }
 [dev-dependencies]
 tempfile.workspace = true
 tilo-automerge.workspace = true
@@ -100,4 +91,4 @@ tilo-automerge.workspace = true
 [package.metadata.cargo-machete]
 # tilo-app is linked into the web core for side modules and is not referenced
 # by name.
-ignored = ["tilo-app", "tilo-automerge", "tokio"]
+ignored = ["tilo-app"]
