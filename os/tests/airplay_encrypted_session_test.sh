@@ -77,6 +77,11 @@ set -euo pipefail
 dir="${TILO_AIRPLAY_FIXTURE_DIR:?}"
 scenario="${TILO_AIRPLAY_FIXTURE_SCENARIO:?}"
 echo "listening on 127.0.0.1:17000"
+# Pairing needs a connected sender: report nothing until one is ready for
+# its signals, as the real receiver would.
+while [[ ! -f "$dir/sender-ready" ]]; do
+  sleep 0.05
+done
 case "$scenario" in
   happy|teardown-stall|force-cleanup|media-stall)
     echo "stats: connections=1 info=1 pairing=1/1 fairplay=1 setup=1 feedback=0 teardown=0 events=0 video=0/0B audio=0/0B timing=0/0 digest_challenges=0"
@@ -129,6 +134,7 @@ dir="\${TILO_AIRPLAY_FIXTURE_DIR:?}"
 mode="$mode"
 if [[ "\$mode" == "ignore-term" ]]; then
   trap '' TERM
+  : >"\$dir/sender-ready"
   while true; do sleep 0.05; done
 fi
 term_handler() {
@@ -136,6 +142,7 @@ term_handler() {
   exit 0
 }
 trap term_handler TERM
+: >"\$dir/sender-ready"
 # Short sleeps so a deferred bash TERM trap runs promptly.
 while true; do
   sleep 0.05
