@@ -594,21 +594,26 @@ mod tests {
             );
         }
 
-        // Ctrl+K on the editor yields one `hex_editor.document` root exporting
-        // the byte-edit actions at the cursor. Drives the real resource hook.
+        // Ctrl+K yields the document door plus the cursor slice. Byte edits
+        // stay on the cursor, not on the document root.
         let (mut view, doc) = open_view(&[0x00, 0x11, 0x22, 0x33]);
         view.model_mut().move_to(1, false);
         let resources = ui::resources::resources(&view, &doc);
         assert_eq!(resources.len(), 1, "one open buffer");
         let root = &resources[0];
         assert_eq!(root.kind, "hex_editor.document");
-        let ids: Vec<&str> = root.actions.iter().map(|a| a.id.as_str()).collect();
+        let cursor = root
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor slice");
+        let ids: Vec<&str> = cursor.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"insert-byte"), "{ids:?}");
         assert!(ids.contains(&"overwrite-byte"), "{ids:?}");
         assert!(ids.contains(&"delete-byte"), "{ids:?}");
 
-        // The empty state still publishes the file-open effect, while
-        // buffer-only commands remain explicitly unavailable.
+        // The empty document still publishes open and save. Invoke time refuses
+        // save when no buffer is open; the door itself stays available.
         let view = HexView::empty();
         let doc = AutoCommit::new();
         let resources = ui::resources::resources(&view, &doc);
@@ -624,7 +629,7 @@ mod tests {
                 .actions
                 .iter()
                 .find(|action| action.id == "save")
-                .is_some_and(|action| !action.contract.availability.is_available())
+                .is_some_and(|action| action.contract.availability.is_available())
         );
 
         // A selection swaps the single-byte delete for a whole-range one.
@@ -632,7 +637,12 @@ mod tests {
         view.model_mut().move_to(2, false);
         view.model_mut().move_to(5, true); // select 2..=5
         let resources = ui::resources::resources(&view, &doc);
-        let ids: Vec<&str> = resources[0].actions.iter().map(|a| a.id.as_str()).collect();
+        let cursor = resources[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("selection slice");
+        let ids: Vec<&str> = cursor.actions.iter().map(|a| a.id.as_str()).collect();
         assert!(ids.contains(&"delete-selection"), "{ids:?}");
         assert!(
             !ids.contains(&"delete-byte"),
