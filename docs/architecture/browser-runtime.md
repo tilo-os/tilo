@@ -456,8 +456,11 @@ interface LiveLayer {
   readonly state: 'connecting' | 'live' | 'reconnecting' | 'unavailable' | 'closed';
   remoteState(nowMs?: number): Array<LiveRemoteState & {previews: Record<string, LivePreviewOp[]>}>;
   members(): string[];
+  people(): Array<{device: string; name: string; color?: string}>; // named by their presence
+  agents(): Array<{publisher: string; agentId: string; name: string}>;
+  readonly publisherId?: string; readonly agent?: string;
   onPresence(cb): () => void; onPreview(cb): () => void;
-  onMember(cb): () => void; onDurable(cb): () => void;
+  onMember(cb): () => void; onDurable(cb): () => void; onAgentActivity(cb): () => void;
 }
 ```
 
@@ -466,6 +469,28 @@ The value shapes are PR 541's `live.d.ts` (`LiveRecord`, `LiveDrag`,
 behind, drags snap on end or cancel, released drags are kept until the
 durable change or 5 s). Publishing is coalesced to at most 120 frames/s with
 loss repeats and a keepalive (`live-presence.mjs`, unchanged from 541).
+
+- The grant is asked for once the room admitted the device (`phase` is
+  `ready`); the relay refuses it before.
+- Every mount publishes through its own view of the layer
+  (`live-speakers.mjs`): the mount the person acted in last (pointer, key or
+  focus inside it) speaks, and says its caret again when it takes over, so
+  an idle or hidden mount never overwrites the person's caret.
+- A mount publishes the focused window's editor caret when keyboard focus
+  is outside that window (`tilo_desktop_surface::published_selection`).
+- `certifiedPeer.agentLive(agent)` is the layer of an agent the page runs:
+  its grant (`WasmPeer.liveGrant(room, agent)`, `/live/grant/agent`)
+  publishes under the agent's own namespace, labelled as the agent; a mount
+  with `agent` publishes through it.
+- `whenReady()`, `records()`, `hasRecord(app, record)` and
+  `whenRecord(app, record)` expose the room's admission and the records the
+  page holds. A package's room document is the record `''` on the wire, as
+  native peers send it.
+- `web/relay.mjs` `connectRelayPeer({origin, userPublicKey, room, label,
+  onPairingCode})` opens the profile's device key and connects in one call
+  (the API `tilo-room-service`'s `rooms.mjs` uses). A room on a loopback
+  `http:` origin is accepted for local review: WebTransport goes to its TLS
+  port (`webtransportPort`), the fallback to the plain origin.
 
 ### JS API Cloud targets
 
