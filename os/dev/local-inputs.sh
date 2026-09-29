@@ -19,6 +19,7 @@
 #                  (.forgejo/workflows/build-image.yml), never a production key.
 #   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
 #   browser        TILO_WITH_BROWSER=0 (the WPE engine is ~45 minutes cold).
+#   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
 #   Rust builder   TILO_CARGO_FRESHNESS=content: the builder keeps its target
 #                  cache and recompiles only what changed (os/Containerfile).
 #
@@ -44,6 +45,9 @@ mkdir -p "$_li_cache"
 
 : "${TILO_WITH_BROWSER:=0}"
 : "${TILO_ALLOW_EMPTY_SERIES:=1}"
+# No debug info in the in-image compile, as CI's dev image lane: it compiles
+# faster, and the same compile settings share that lane's compiler cache.
+: "${TILO_RUST_DEBUGINFO:=0}"
 if [ -z "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" ]; then
   # RFC 8032 test vector 1: public, non-production, for build validation only.
   TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
@@ -55,7 +59,7 @@ case " ${TILO_BUILD_ARGS:-} " in
   *TILO_CARGO_FRESHNESS=*) ;;
   *) TILO_BUILD_ARGS="${TILO_BUILD_ARGS:-} --build-arg TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" ;;
 esac
-export TILO_WITH_BROWSER TILO_ALLOW_EMPTY_SERIES TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY TILO_BUILD_ARGS
+export TILO_WITH_BROWSER TILO_ALLOW_EMPTY_SERIES TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY TILO_BUILD_ARGS TILO_RUST_DEBUGINFO
 
 # --- RPM snapshot --------------------------------------------------------------
 if [ -n "${RPMS_REF:-}" ]; then
