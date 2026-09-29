@@ -438,7 +438,10 @@ pub(in crate::store::host_work) fn directory_barrier(
 ) -> Result<(), HostWorkFailure> {
     #[cfg(test)]
     barrier_fault::check(directory)?;
-    directory.sync_all().map_err(io)
+    directory.sync_all().map_err(io)?;
+    #[cfg(test)]
+    barrier_fault::record(directory);
+    Ok(())
 }
 #[cfg(test)]
 pub(in crate::store::host_work) mod barrier_fault {
@@ -461,6 +464,54 @@ pub(in crate::store::host_work) mod barrier_fault {
         let result = callback();
         drop(guard);
         result
+    }
+    thread_local! { static BARRIERS: RefCell<Option<Vec<Barrier>>> = const { RefCell::new(None) }; }
+    /// One completed directory barrier: the directory's inode, and which of
+    /// the two transport entries it already held when it was made durable.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub(in crate::store::host_work) struct Barrier {
+        pub(in crate::store::host_work) inode: u64,
+        pub(in crate::store::host_work) staging: bool,
+        pub(in crate::store::host_work) snapshots: bool,
+    }
+    /// Every directory barrier completed on this thread inside `callback`.
+    pub(in crate::store::host_work) fn recorded<T>(
+        callback: impl FnOnce() -> T,
+    ) -> (T, Vec<Barrier>) {
+        let previous = BARRIERS.with(|slot| slot.replace(Some(Vec::new())));
+        let result = callback();
+        let barriers = BARRIERS
+            .with(|slot| slot.replace(previous))
+            .unwrap_or_default();
+        (result, barriers)
+    }
+    pub(super) fn record(directory: &File) {
+        let present = |name: &std::ffi::CStr| {
+            let mut stat = std::mem::MaybeUninit::<libc::stat>::uninit();
+            // SAFETY: a valid directory descriptor, a NUL-terminated name and
+            // an out-buffer for exactly one stat.
+            unsafe {
+                libc::fstatat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    stat.as_mut_ptr(),
+                    libc::AT_SYMLINK_NOFOLLOW,
+                ) == 0
+            }
+        };
+        let Ok(metadata) = directory.metadata() else {
+            return;
+        };
+        let barrier = Barrier {
+            inode: metadata.ino(),
+            staging: present(c"staging-v1"),
+            snapshots: present(c"snapshots-v1"),
+        };
+        BARRIERS.with(|slot| {
+            if let Some(barriers) = slot.borrow_mut().as_mut() {
+                barriers.push(barrier);
+            }
+        });
     }
     pub(super) fn check(directory: &File) -> Result<(), HostWorkFailure> {
         let metadata = directory.metadata().map_err(io)?;

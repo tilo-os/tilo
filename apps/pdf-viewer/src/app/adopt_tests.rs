@@ -12,7 +12,7 @@ use crate::model::FormEntry;
 
 fn engine_fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures")
         .join(name)
 }
 

@@ -326,10 +326,7 @@ impl Osd {
             OsdKind::Touchpad { enabled: false } => t("osd-touchpad-off"),
             OsdKind::PointerHeld { held: true } => t_args(
                 "osd-pointer-held",
-                &[(
-                    "chord",
-                    crate::compositor::pointer_lock::release_chord_label().into(),
-                )],
+                &[("chord", crate::compositor::release_chord_label().into())],
             ),
             OsdKind::PointerHeld { held: false } => t("osd-pointer-released"),
             OsdKind::MouseKeys { enabled: true } => t("osd-mouse-keys-on"),
@@ -337,10 +334,7 @@ impl Osd {
             OsdKind::InputSource(name) => name.as_str().to_string(),
             OsdKind::KeysCaptured { captured: true } => t_args(
                 "osd-keys-captured",
-                &[(
-                    "chord",
-                    crate::compositor::pointer_lock::release_chord_label().into(),
-                )],
+                &[("chord", crate::compositor::release_chord_label().into())],
             ),
             OsdKind::KeysCaptured { captured: false } => t("osd-keys-released"),
             OsdKind::PadMode { mode, modes } => t_args(

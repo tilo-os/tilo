@@ -343,11 +343,18 @@ impl DocOwner {
                 }
             }
         } else {
-            self.store.flush(Some(&self.key))?;
+            let durable = match self.store.flush(Some(&self.key)) {
+                Ok(()) => Some(heads.clone()),
+                // Read, but its host has not committed it yet (a peer's change
+                // stored for this record a moment ago): it is the document,
+                // durable once that commit lands.
+                Err(SeamError::Pending(_)) => None,
+                Err(error) => return Err(error.into()),
+            };
             Accepted {
-                heads: heads.clone(),
+                heads,
                 base: loaded.source.len(),
-                durable: Some(heads),
+                durable,
                 pending: None,
             }
         };

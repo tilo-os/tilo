@@ -11,6 +11,12 @@
 //! An app whose purpose is platform-specific declares that once in
 //! `tilo-app.toml` (`[platform] native = "<reason>"`) instead of excusing
 //! individual lines.
+//!
+//! The same scan records, separately, the standard-library APIs the web
+//! target (wasm32-unknown-unknown) has no implementation of: threads, the
+//! file system, processes, sockets and the system clock. They are portable
+//! across native platforms, so they do not fail the lint, but an app that uses
+//! one is not web-capable and `tilo-app build --platform web` refuses it.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt::Write as _;
@@ -59,6 +65,13 @@ const PLATFORM_PREDICATES: &[&str] = &[
     "windows",
 ];
 
+/// `std` modules the web target compiles but cannot run: every call panics or
+/// fails there.
+const NATIVE_ONLY_STD_MODULES: &[&str] = &["thread", "fs", "process", "net"];
+
+/// `std::time` items that read the system clock, which the web target lacks.
+const NATIVE_ONLY_STD_TIME: &[&str] = &["Instant", "SystemTime"];
+
 /// Platform crates an app reaches OS mechanisms through.
 const PLATFORM_CRATES_HINT: &str = "private-fs (owner-only files), atomic-file (durable \
      writes), xdg-paths (per-user directories), bounded-command (subprocesses), or `ui` host \
@@ -79,6 +92,8 @@ pub enum FindingKind {
     NativeDependency,
     /// An SDK feature that names one backend.
     NativeSdkFeature,
+    /// A `std` API with no implementation on the web target.
+    NativeOnlyStd,
 }
 
 /// One platform-specific site in an app.
@@ -102,6 +117,9 @@ pub struct PortabilityReport {
     /// The `[platform] native` reason, when the app declares one.
     pub native: Option<String>,
     pub findings: Vec<PortabilityFinding>,
+    /// Uses of `std` APIs the web target cannot run. They do not fail the
+    /// lint; they make the app native-only.
+    pub web: Vec<PortabilityFinding>,
     /// Number of Rust source files inspected.
     pub files: usize,
 }
@@ -117,10 +135,59 @@ impl PortabilityReport {
         }
     }
 
+    /// Whether the app can run on the web target: it is portable and calls no
+    /// `std` API the web target lacks.
+    #[must_use]
+    pub fn web_capable(&self) -> bool {
+        self.native.is_none() && self.findings.is_empty() && self.web.is_empty()
+    }
+
+    /// Why the app cannot run on the web target, one line per site; empty
+    /// when it can.
+    #[must_use]
+    pub fn render_web(&self) -> String {
+        let mut out = String::new();
+        if let Some(reason) = &self.native {
+            let _ = writeln!(out, "tilo-app.toml declares the app native: \"{reason}\"");
+        }
+        for finding in self.findings.iter().chain(&self.web) {
+            let _ = writeln!(
+                out,
+                "{}:{}: {}",
+                finding.path.display(),
+                finding.line,
+                finding.what
+            );
+        }
+        out
+    }
+
     /// A human-readable report: one diagnostic per finding with the lint name,
     /// location, source line and remedy.
     #[must_use]
     pub fn render(&self) -> String {
+        let mut out = self.render_findings();
+        if self.native.is_none() && self.findings.is_empty() && !self.web.is_empty() {
+            let _ = writeln!(
+                out,
+                "{LINT}: native-only: {} site(s) use std APIs the web target cannot run:",
+                self.web.len()
+            );
+            for finding in &self.web {
+                let _ = writeln!(
+                    out,
+                    "  {}:{}: {}",
+                    finding.path.display(),
+                    finding.line,
+                    finding.what
+                );
+            }
+            let _ = writeln!(out, "  = help: {}", source_help(FindingKind::NativeOnlyStd));
+        }
+        out
+    }
+
+    fn render_findings(&self) -> String {
         let mut out = String::new();
         let app = self.app_dir.display();
         match (&self.native, self.findings.is_empty()) {
@@ -197,6 +264,7 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
 
     let cargo = CargoFacts::read(app_dir)?;
     let mut findings = cargo.findings.clone();
+    let mut web = Vec::new();
     let roots = cargo.roots(app_dir);
     let mut files: usize = 0;
     for (file, tokens) in shipped_modules(&roots)? {
@@ -204,23 +272,30 @@ pub fn lint_app(app_dir: &Path) -> Result<PortabilityReport> {
         let relative = file.strip_prefix(app_dir).unwrap_or(&file).to_path_buf();
         let mut hits = Vec::new();
         scan_tokens(tokens, &cargo.native_idents, &mut hits);
-        findings.extend(
-            hits.into_iter()
-                .map(|(line, kind, what)| PortabilityFinding {
-                    path: relative.clone(),
-                    line,
-                    kind,
-                    help: source_help(kind),
-                    what,
-                }),
-        );
+        for (line, kind, what) in hits {
+            let finding = PortabilityFinding {
+                path: relative.clone(),
+                line,
+                kind,
+                help: source_help(kind),
+                what,
+            };
+            if kind == FindingKind::NativeOnlyStd {
+                web.push(finding);
+            } else {
+                findings.push(finding);
+            }
+        }
     }
-    findings.sort_by(|a, b| (&a.path, a.line, a.kind).cmp(&(&b.path, b.line, b.kind)));
-    findings.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.kind == b.kind);
+    for list in [&mut findings, &mut web] {
+        list.sort_by(|a, b| (&a.path, a.line, a.kind).cmp(&(&b.path, b.line, b.kind)));
+        list.dedup_by(|a, b| a.path == b.path && a.line == b.line && a.kind == b.kind);
+    }
     Ok(PortabilityReport {
         app_dir: app_dir.to_path_buf(),
         native: manifest.platform.native,
         findings,
+        web,
         files,
     })
 }
@@ -237,6 +312,10 @@ fn source_help(kind: FindingKind) -> String {
         }
         FindingKind::TargetCfg => "choose per-target implementations inside a platform crate; \
              app code compiles unchanged for every target"
+            .to_owned(),
+        FindingKind::NativeOnlyStd => "run background work through the SDK's tasks \
+             (`LatestTask`, `LatestRequest`), time through `ui::time`, and files and the network \
+             through `ui` host services; or keep the app native-only"
             .to_owned(),
         FindingKind::NativeDependency | FindingKind::NativeSdkFeature => String::new(),
     }
@@ -808,6 +887,53 @@ fn group_names_os(stream: &TokenStream) -> bool {
     (0..tokens.len()).any(|index| ident_is(&tokens, index, "os") && !continues_path(&tokens, index))
 }
 
+/// The native-only `std` API the path continuing at `index` (after `std::`)
+/// names, if any: a module such as `thread`, a clock such as `time::Instant`,
+/// or either inside a `use std::{...}` group.
+fn native_only_std(tokens: &[TokenTree], index: usize) -> Option<String> {
+    match tokens.get(index)? {
+        TokenTree::Ident(module) if NATIVE_ONLY_STD_MODULES.iter().any(|name| module == name) => {
+            Some(format!(
+                "`std::{module}` has no implementation on the web target"
+            ))
+        }
+        TokenTree::Ident(module)
+            if module == "time" && is_path_sep(tokens, index.saturating_add(1)) =>
+        {
+            match tokens.get(index.saturating_add(3))? {
+                TokenTree::Ident(item) if NATIVE_ONLY_STD_TIME.iter().any(|name| item == name) => {
+                    Some(format!(
+                        "`std::time::{item}` reads a clock the web target lacks"
+                    ))
+                }
+                TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+                    let items: Vec<TokenTree> = group.stream().into_iter().collect();
+                    (0..items.len())
+                        .find_map(|at| {
+                            NATIVE_ONLY_STD_TIME.iter().find(|name| {
+                                ident_is(&items, at, name) && !continues_path(&items, at)
+                            })
+                        })
+                        .map(|item| {
+                            format!("`std::time::{item}` reads a clock the web target lacks")
+                        })
+                }
+                _ => None,
+            }
+        }
+        TokenTree::Group(group) if group.delimiter() == Delimiter::Brace => {
+            let items: Vec<TokenTree> = group.stream().into_iter().collect();
+            (0..items.len()).find_map(|at| {
+                if continues_path(&items, at) {
+                    return None;
+                }
+                native_only_std(&items, at)
+            })
+        }
+        _ => None,
+    }
+}
+
 fn scan_tokens(
     stream: TokenStream,
     native: &BTreeSet<String>,
@@ -829,6 +955,9 @@ fn scan_tokens(
             && !continues_path(&tokens, index)
             && is_path_sep(&tokens, index.saturating_add(1))
         {
+            if let Some(what) = native_only_std(&tokens, index.saturating_add(3)) {
+                hits.push((line, FindingKind::NativeOnlyStd, what));
+            }
             match tokens.get(index.saturating_add(3)) {
                 Some(TokenTree::Ident(next)) if next == "os" => hits.push((
                     line,

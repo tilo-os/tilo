@@ -1,0 +1,29 @@
+[package]
+name = "tilo-file-provider"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+description = "The C bridge the macOS File Provider extension reads the runtime's workspace files through."
+
+# Linked as a static library into the Swift File Provider extension
+# (macos/); the rlib is what its tests exercise, on every host.
+[lib]
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+capnp.workspace = true
+libc.workspace = true
+runtime-fs = { path = "../runtime-fs" }
+runtime-portal = { path = "../runtime-portal" }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true, features = ["rt"] }
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+
+[lints]
+workspace = true

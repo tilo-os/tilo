@@ -1,0 +1,5 @@
+[
+  {"perform": {"target": "rows-table", "action": "focus"}},
+  {"perform": {"target": "rows-table", "semantic_target": "row:3:0", "action": "activate"}},
+  {"expect": {"target": "rows-table", "semantic_target": "row:3:0", "role": "row", "selected": true}}
+]

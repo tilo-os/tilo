@@ -32,6 +32,19 @@ pub(crate) fn mix8(a: Color, b: Color, t: f32) -> Color {
     Color::from_rgb8(l(a.r(), b.r()), l(a.g(), b.g()), l(a.b(), b.b()))
 }
 
+/// The accent ramp grown from one accent, with the primary and hover stops
+/// pinned so [`ACCENT_PRIMARY_IDX`] / [`ACCENT_HOVER_IDX`] land exactly on the
+/// chosen colours.
+fn accent_ramp(accent: Color, hover: Color) -> ColorRamp {
+    let mut ramp = ColorRamp::eased(
+        mix8(accent, Color::from_rgb8(0, 0, 0), 0.62),
+        mix8(accent, Color::WHITE, 0.85),
+    );
+    ramp.stops[ACCENT_HOVER_IDX] = hover;
+    ramp.stops[ACCENT_PRIMARY_IDX] = accent;
+    ramp
+}
+
 /// Composites `over` onto an opaque `ground`: a token's own RGBA says
 /// nothing about how it reads (`white/20` differs over black vs white), so
 /// every derivation below measures the composite, never the token.
@@ -356,14 +369,7 @@ impl Colors {
         };
         let neutral = ColorRamp::eased(n_lo, n_hi);
 
-        // Primary/hover stops pinned to the spec so ACCENT_PRIMARY_IDX /
-        // ACCENT_HOVER_IDX land exactly on the theme's chosen accent.
-        let mut accent = ColorRamp::eased(
-            mix8(p.accent, black, 0.62),
-            mix8(p.accent, Color::WHITE, 0.85),
-        );
-        accent.stops[ACCENT_HOVER_IDX] = p.accent_hover;
-        accent.stops[ACCENT_PRIMARY_IDX] = p.accent;
+        let accent = accent_ramp(p.accent, p.accent_hover);
 
         // Window ground = theme ground, so a window whose app painted
         // nothing matches its neighbour once that app fills `surfaces.base`.
@@ -437,6 +443,13 @@ impl Colors {
             border_white_10: border_overlay_subtle,
             border_white_20: border_overlay_strong,
         }
+    }
+
+    /// Re-accents the palette the way [`Self::themed`] accents a preset: the
+    /// ramp and the focus ring follow `accent`.
+    pub fn set_accent(&mut self, accent: Color, hover: Color) {
+        self.accent = accent_ramp(accent, hover);
+        self.border_focus = accent;
     }
 
     /// Replace the state-veneer tiers wholesale. Themes assembled outside

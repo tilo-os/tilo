@@ -248,3 +248,42 @@ fn appearance_reconcile_is_a_noop_when_off_and_applies_live_otherwise() {
         );
     }
 }
+
+#[test]
+fn host_appearance_rethemes_through_the_appearance_intent() {
+    use crate::host_appearance::{HostAppearance, Scheme};
+    let mut a = app();
+    let light = HostAppearance {
+        scheme: Some(Scheme::Light),
+        ..HostAppearance::default()
+    };
+    assert!(a.apply_host_appearance(light));
+    assert_eq!(a.theme.name, "Light");
+    assert_eq!(a.theme.bg_app, Theme::light().bg_app);
+    assert!(
+        !a.apply_host_appearance(light),
+        "an unchanged host is a no-op"
+    );
+
+    let accented = HostAppearance {
+        accent: Some([0xE0, 0x40, 0x80]),
+        ..light
+    };
+    assert!(
+        a.apply_host_appearance(accented),
+        "an accent change alone re-themes"
+    );
+    assert_eq!(
+        a.theme.accent_primary,
+        vello::peniko::Color::from_rgb8(0xE0, 0x40, 0x80)
+    );
+
+    assert!(a.apply_host_appearance(HostAppearance {
+        high_contrast: true,
+        reduce_motion: true,
+        ..accented
+    }));
+    assert!(a.high_contrast());
+    assert!(a.reduce_motion());
+    assert_eq!(a.theme.name, "High Contrast");
+}
