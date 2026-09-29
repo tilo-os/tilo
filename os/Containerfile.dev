@@ -197,14 +197,18 @@ ARG SCCACHE_ENDPOINT=""
 ARG SCCACHE_REGION="auto"
 ARG SCCACHE_S3_KEY_PREFIX="tilo/dev-image/v1"
 ARG SCCACHE_S3_USE_SSL="false"
-RUN --mount=type=cache,target=/build/.cargo-home \
+# Fedora's sccache has neither the S3 nor the GitHub Actions cache backend;
+# the compile runs the builder image's pinned full-feature client.
+RUN --mount=type=bind,from=rust-toolchain,source=/usr/local/bin/sccache,target=/usr/lib/tilo-dev-builder/bin/sccache \
+    --mount=type=cache,target=/build/.cargo-home \
     --mount=type=cache,id=tilo-dev-image-target,target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
     --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
-    trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
+    export PATH="/usr/lib/tilo-dev-builder/bin:$PATH" \
+    && trap 'status=$?; sccache --show-stats 2>/dev/null || true; exit "$status"' EXIT \
     && case "$TILO_DEV_RUST_LTO" in thin|off) ;; *) printf 'TILO_DEV_RUST_LTO must be thin or off\n' >&2; exit 1 ;; esac \
     && if [ -n "$SCCACHE_BUCKET" ]; then \
          export SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_KEY_PREFIX SCCACHE_S3_USE_SSL \
