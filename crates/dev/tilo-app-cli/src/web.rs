@@ -315,7 +315,13 @@ pub(crate) fn package_web(start: &Path, request: &PackageRequest) -> Result<Pack
     let packed =
         crate::pack::pack_manifest(manifest, resource_kinds, &payload, &staged, &identity)?;
     let entrypoints = vec![PathBuf::from(module_name)];
-    let size = crate::within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
+    let size = crate::within_budget(
+        &payload,
+        &entrypoints,
+        packed.bytes,
+        (budget, crate::PackagePlatform::Web),
+        &output,
+    )?;
     std::fs::rename(&staged, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(

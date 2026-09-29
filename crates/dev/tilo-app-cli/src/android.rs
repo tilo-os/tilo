@@ -364,10 +364,127 @@ pub struct ToolCheck {
     pub required: bool,
 }
 
+/// What an Android build needs from the system rather than the Android SDK,
+/// which `tilo-app setup android` cannot install.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemTool {
+    /// `javac`, `keytool` and `jarsigner`: a JDK 17 or newer.
+    Jdk,
+    Zip,
+    Unzip,
+}
+
+/// A family of systems, by the package manager that installs a [`SystemTool`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageManager {
+    /// Fedora, RHEL and their kin.
+    Dnf,
+    /// Debian, Ubuntu and their kin.
+    Apt,
+    /// Homebrew on macOS.
+    Brew,
+}
+
+impl PackageManager {
+    pub const ALL: [Self; 3] = [Self::Dnf, Self::Apt, Self::Brew];
+
+    /// This machine's, from `/etc/os-release` on Linux; `None` when the
+    /// system is none of the families.
+    #[must_use]
+    pub fn detect() -> Option<Self> {
+        if cfg!(target_os = "macos") {
+            return Some(Self::Brew);
+        }
+        std::fs::read_to_string("/etc/os-release")
+            .ok()
+            .and_then(|text| Self::from_os_release(&text))
+    }
+
+    /// The family `os-release` names in `ID`, else in `ID_LIKE`.
+    #[must_use]
+    pub fn from_os_release(text: &str) -> Option<Self> {
+        let value = |key: &str| {
+            text.lines()
+                .find_map(|line| line.strip_prefix(key))
+                .map(|value| value.trim().trim_matches(['"', '\'']).to_owned())
+                .unwrap_or_default()
+        };
+        let (id, like) = (value("ID="), value("ID_LIKE="));
+        id.split_whitespace()
+            .chain(like.split_whitespace())
+            .find_map(|id| match id {
+                "fedora" | "rhel" | "centos" | "rocky" | "almalinux" | "amzn" | "ol" => {
+                    Some(Self::Dnf)
+                }
+                "debian" | "ubuntu" => Some(Self::Apt),
+                _ => None,
+            })
+    }
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Dnf => "Fedora/RHEL (dnf)",
+            Self::Apt => "Debian/Ubuntu (apt)",
+            Self::Brew => "macOS (brew)",
+        }
+    }
+
+    fn package(self, tool: SystemTool) -> &'static str {
+        match (self, tool) {
+            (Self::Dnf, SystemTool::Jdk) => "java-21-openjdk-devel",
+            (Self::Apt, SystemTool::Jdk) => "openjdk-17-jdk-headless",
+            (Self::Brew, SystemTool::Jdk) => "openjdk@21",
+            (_, SystemTool::Zip) => "zip",
+            (_, SystemTool::Unzip) => "unzip",
+        }
+    }
+
+    /// The one command that installs `tools`.
+    #[must_use]
+    pub fn install_command(self, tools: &[SystemTool]) -> String {
+        let packages = tools
+            .iter()
+            .map(|tool| self.package(*tool))
+            .collect::<Vec<_>>()
+            .join(" ");
+        match self {
+            Self::Dnf => format!("sudo dnf install -y {packages}"),
+            Self::Apt => format!("sudo apt-get install -y {packages}"),
+            Self::Brew => format!("brew install {packages}"),
+        }
+    }
+}
+
+/// How to install `tools` on a system of `manager`'s family, or on each
+/// family when the system is unknown.
+#[must_use]
+pub fn system_install_hint(manager: Option<PackageManager>, tools: &[SystemTool]) -> String {
+    let jdk = if tools.contains(&SystemTool::Jdk) {
+        " (then put the JDK's bin/ on PATH or set $JAVA_HOME if it is not)"
+    } else {
+        ""
+    };
+    let commands = manager.map_or_else(
+        || {
+            PackageManager::ALL
+                .iter()
+                .map(|manager| format!("{}: `{}`", manager.name(), manager.install_command(tools)))
+                .collect::<Vec<_>>()
+                .join("; ")
+        },
+        |manager| format!("`{}`", manager.install_command(tools)),
+    );
+    format!("{commands}{jdk}")
+}
+
 /// `tilo-app doctor --platform android`.
 #[derive(Debug, Clone)]
 pub struct DoctorReport {
     pub checks: Vec<ToolCheck>,
+    /// What is missing that only the system's package manager installs.
+    pub system_missing: Vec<SystemTool>,
+    pub package_manager: Option<PackageManager>,
 }
 
 impl DoctorReport {
@@ -389,6 +506,9 @@ impl DoctorReport {
             };
             let _ = writeln!(text, "  [{mark}] {}: {detail}", check.name);
         }
+        if let Some(install) = self.system_install() {
+            let _ = writeln!(text, "Install the system packages with {install}");
+        }
         text.push_str(if self.is_ready() {
             "Ready to build, install and package Android apps."
         } else {
@@ -397,11 +517,19 @@ impl DoctorReport {
         text
     }
 
+    /// The install command for everything in [`Self::system_missing`].
+    #[must_use]
+    pub fn system_install(&self) -> Option<String> {
+        (!self.system_missing.is_empty())
+            .then(|| system_install_hint(self.package_manager, &self.system_missing))
+    }
+
     #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         serde_json::json!({
             "platform": "android",
             "ready": self.is_ready(),
+            "system_install": self.system_install(),
             "checks": self.checks.iter().map(|check| serde_json::json!({
                 "name": check.name,
                 "found": check.found,
@@ -410,6 +538,45 @@ impl DoctorReport {
             })).collect::<Vec<_>>(),
         })
     }
+}
+
+/// The JDK and the zip tools, which only the system's packages provide.
+fn system_checks(
+    tools: &Toolchain,
+    package_manager: Option<PackageManager>,
+) -> (Vec<ToolCheck>, Vec<SystemTool>) {
+    let mut checks = Vec::new();
+    let mut system_missing = Vec::new();
+    for (name, tool) in [("javac", "javac"), ("keytool", "keytool")] {
+        let program = tools.java(tool);
+        let found = tool_runs(&program, if tool == "javac" { "-version" } else { "-help" })
+            .then(|| program.display().to_string());
+        if found.is_none() && !system_missing.contains(&SystemTool::Jdk) {
+            system_missing.push(SystemTool::Jdk);
+        }
+        checks.push(ToolCheck {
+            name,
+            found,
+            fix: format!(
+                "a JDK 17 or newer: {}",
+                system_install_hint(package_manager, &[SystemTool::Jdk])
+            ),
+            required: true,
+        });
+    }
+    for (name, tool) in [("zip", SystemTool::Zip), ("unzip", SystemTool::Unzip)] {
+        let found = find_on_path(name).map(|path| path.display().to_string());
+        if found.is_none() {
+            system_missing.push(tool);
+        }
+        checks.push(ToolCheck {
+            name,
+            found,
+            fix: system_install_hint(package_manager, &[tool]),
+            required: true,
+        });
+    }
+    (checks, system_missing)
 }
 
 /// Check everything an Android build, install and package needs.
@@ -466,24 +633,9 @@ pub fn doctor() -> DoctorReport {
         fix: format!("rustup target add {}", android_triples().join(" ")),
         required: true,
     });
-    let jdk = "a JDK 17 or newer (Fedora: java-21-openjdk-devel, Debian/Ubuntu: openjdk-21-jdk-headless, \
-               macOS: brew install openjdk@21), on PATH or as $JAVA_HOME";
-    for (name, tool) in [("javac", "javac"), ("keytool", "keytool")] {
-        let program = tools.java(tool);
-        checks.push(ToolCheck {
-            name,
-            found: tool_runs(&program, if tool == "javac" { "-version" } else { "-help" })
-                .then(|| program.display().to_string()),
-            fix: jdk.to_owned(),
-            required: true,
-        });
-    }
-    checks.push(ToolCheck {
-        name: "zip",
-        found: find_on_path("zip").map(|path| path.display().to_string()),
-        fix: "install Info-ZIP `zip` (and `unzip`) from the system's packages".to_owned(),
-        required: true,
-    });
+    let package_manager = PackageManager::detect();
+    let (system, system_missing) = system_checks(&tools, package_manager);
+    checks.extend(system);
     let adb = tools.adb();
     checks.push(ToolCheck {
         name: "adb",
@@ -501,7 +653,11 @@ pub fn doctor() -> DoctorReport {
         ),
         required: false,
     });
-    DoctorReport { checks }
+    DoctorReport {
+        checks,
+        system_missing,
+        package_manager,
+    }
 }
 
 fn android_triples() -> Vec<String> {
@@ -546,6 +702,17 @@ pub fn setup(options: SetupOptions) -> Result<DoctorReport> {
     })?;
     std::fs::create_dir_all(&sdk).with_context(|| format!("creating {}", sdk.display()))?;
     eprintln!("[tilo-app] Android SDK: {}", sdk.display());
+    let before = doctor();
+    if let Some(install) = before.system_install() {
+        eprintln!(
+            "[tilo-app] setup installs the Android SDK, not system packages; install those with {install}"
+        );
+        if before.system_missing.contains(&SystemTool::Unzip) && sdkmanager_path(&sdk).is_none() {
+            bail!(
+                "the Android command-line tools come as a zip, so install `unzip` first: {install}"
+            );
+        }
+    }
     let sdkmanager = ensure_sdkmanager(&sdk)?;
     let sdk_arg = format!("--sdk_root={}", sdk.display());
     let mut licenses = Command::new(&sdkmanager);
@@ -595,10 +762,15 @@ pub fn setup(options: SetupOptions) -> Result<DoctorReport> {
             sdk.display()
         );
     }
-    Ok(doctor())
+    let report = doctor();
+    if let Some(install) = report.system_install() {
+        eprintln!("[tilo-app] still missing from the system; install with {install}");
+    }
+    Ok(report)
 }
 
-fn ensure_sdkmanager(sdk: &Path) -> Result<PathBuf> {
+/// The SDK's `sdkmanager`, else one on PATH.
+fn sdkmanager_path(sdk: &Path) -> Option<PathBuf> {
     let script = if cfg!(windows) {
         "sdkmanager.bat"
     } else {
@@ -606,10 +778,14 @@ fn ensure_sdkmanager(sdk: &Path) -> Result<PathBuf> {
     };
     let installed = sdk.join("cmdline-tools/latest/bin").join(script);
     if installed.is_file() {
-        return Ok(installed);
+        return Some(installed);
     }
-    if let Some(on_path) = find_on_path("sdkmanager") {
-        return Ok(on_path);
+    find_on_path("sdkmanager")
+}
+
+fn ensure_sdkmanager(sdk: &Path) -> Result<PathBuf> {
+    if let Some(found) = sdkmanager_path(sdk) {
+        return Ok(found);
     }
     let host = if cfg!(target_os = "macos") {
         "mac"
@@ -636,7 +812,12 @@ fn ensure_sdkmanager(sdk: &Path) -> Result<PathBuf> {
     }
     std::fs::rename(work.path().join("cmdline-tools"), &latest)
         .with_context(|| format!("installing {}", latest.display()))?;
-    Ok(installed)
+    sdkmanager_path(sdk).with_context(|| {
+        format!(
+            "the command-line tools in {} have no sdkmanager",
+            latest.display()
+        )
+    })
 }
 
 fn download(url: &str, to: &Path) -> Result<()> {
@@ -1834,20 +2015,28 @@ fn set_epoch(dir: &Path) -> Result<()> {
     Ok(())
 }
 
-/// `tilo-app package --platform android`: a release-signed APK, the bundle
-/// when bundletool is there, and a signed `.tapp` carrying the APK for the
-/// registry, all in `dist/`.
+/// `tilo-app package --platform android`: for each architecture, a
+/// release-signed APK, the bundle when bundletool is there, and a signed
+/// `.tapp` carrying the APK for the registry, all in `dist/`. `--arch` picks
+/// one architecture; without it both are packaged, since the registry lists
+/// one build per architecture and a phone and an emulator want different ones.
 ///
 /// # Errors
 ///
-/// When the build, signing or packing fails, or an output exists without
-/// `force`.
+/// When the build, signing or packing fails, when an output exists without
+/// `force` (checked for every architecture before anything is built), or when
+/// `--output` names one file for several architectures.
 pub fn package(
     start: &Path,
     request: &PackageRequest,
     options: &PackageOptions,
-) -> Result<PackageOutcome> {
-    let arch = request.arch.unwrap_or(PackageArch::Aarch64);
+) -> Result<Vec<PackageOutcome>> {
+    let arches = request
+        .arch
+        .map_or_else(|| PackageArch::ALL.to_vec(), |arch| vec![arch]);
+    if arches.len() > 1 && request.output.is_some() {
+        bail!("--output names one package; add --arch aarch64 or --arch x86_64 to pick its build");
+    }
     let app_dir = super::resolve_app_dir(start)?;
     let keystore = options
         .keystore
@@ -1865,63 +2054,95 @@ pub fn package(
         found
     });
     let spec = super::load_app_package_spec(app_dir)?;
-    let dist = spec.app_dir.join("dist");
-    let stem = format!(
-        "{}-{}-{}",
-        spec.cargo_package,
-        PackagePlatform::Android.registry_name(),
-        arch.as_str()
-    );
-    let output = request.output.as_ref().map_or_else(
-        || dist.join(format!("{stem}.tapp")),
-        |path| super::absolute_from(&spec.app_dir, path),
-    );
-    let parent = output
-        .parent()
-        .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?
-        .to_path_buf();
-    std::fs::create_dir_all(&parent)?;
-    let apk_out = output.with_extension("apk");
-    let bundle_out = output.with_extension("aab");
-    for path in [&output, &apk_out, &bundle_out] {
-        if path.exists() && !request.force {
-            bail!(
-                "{} already exists; pass --force to replace it",
-                path.display()
-            );
+    let planned = arches
+        .into_iter()
+        .map(|arch| Ok((arch, PackagePaths::plan(&spec, request, arch)?)))
+        .collect::<Result<Vec<_>>>()?;
+    for (_, paths) in &planned {
+        for path in [&paths.output, &paths.apk, &paths.bundle] {
+            if path.exists() && !request.force {
+                bail!(
+                    "{} already exists; pass --force to replace it",
+                    path.display()
+                );
+            }
         }
     }
 
-    let build = build(
-        start,
-        &BuildRequest {
-            arch,
-            profile: request
-                .profile
-                .clone()
-                .unwrap_or_else(|| "release".to_owned()),
-            signing: Signing::Release(keystore),
-            bundle,
-            features: request.features.clone(),
-            no_default_features: request.no_default_features,
-        },
-    )?;
+    let mut outcomes = Vec::new();
+    for (arch, paths) in planned {
+        std::fs::create_dir_all(&paths.parent)?;
+        let build = build(
+            start,
+            &BuildRequest {
+                arch,
+                profile: request
+                    .profile
+                    .clone()
+                    .unwrap_or_else(|| "release".to_owned()),
+                signing: Signing::Release(keystore.clone()),
+                bundle,
+                features: request.features.clone(),
+                no_default_features: request.no_default_features,
+            },
+        )?;
+        let (entrypoints, size) =
+            pack_tapp(&spec, &build, arch, request, &paths.parent, &paths.output)?;
+        std::fs::copy(&build.apk, &paths.apk)?;
+        let mut artifacts = vec![paths.apk];
+        if let Some(bundle) = &build.bundle {
+            std::fs::copy(bundle, &paths.bundle)?;
+            artifacts.push(paths.bundle);
+        }
+        for artifact in &artifacts {
+            eprintln!("[tilo-app] wrote {}", artifact.display());
+        }
+        outcomes.push(PackageOutcome {
+            output: paths.output,
+            entrypoints,
+            size,
+        });
+    }
+    Ok(outcomes)
+}
 
-    let (entrypoints, size) = pack_tapp(&spec, &build, arch, request, &parent, &output)?;
-    std::fs::copy(&build.apk, &apk_out)?;
-    let mut artifacts = vec![apk_out];
-    if let Some(bundle) = &build.bundle {
-        std::fs::copy(bundle, &bundle_out)?;
-        artifacts.push(bundle_out);
+/// Where one architecture's package goes: the `.tapp`, and the `.apk` and
+/// `.aab` named after it.
+struct PackagePaths {
+    output: PathBuf,
+    parent: PathBuf,
+    apk: PathBuf,
+    bundle: PathBuf,
+}
+
+impl PackagePaths {
+    fn plan(
+        spec: &super::AppPackageSpec,
+        request: &PackageRequest,
+        arch: PackageArch,
+    ) -> Result<Self> {
+        let output = request.output.as_ref().map_or_else(
+            || {
+                spec.app_dir.join("dist").join(format!(
+                    "{}-{}-{}.tapp",
+                    spec.cargo_package,
+                    PackagePlatform::Android.registry_name(),
+                    arch.as_str()
+                ))
+            },
+            |path| super::absolute_from(&spec.app_dir, path),
+        );
+        let parent = output
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?
+            .to_path_buf();
+        Ok(Self {
+            apk: output.with_extension("apk"),
+            bundle: output.with_extension("aab"),
+            parent,
+            output,
+        })
     }
-    for artifact in &artifacts {
-        eprintln!("[tilo-app] wrote {}", artifact.display());
-    }
-    Ok(PackageOutcome {
-        output,
-        entrypoints,
-        size,
-    })
 }
 
 /// Sign a `.tapp` at `output` whose payload is the APK, under an android
@@ -1972,7 +2193,7 @@ fn pack_tapp(
         &payload,
         &entrypoints,
         packed.bytes,
-        crate::size::Budget::default(),
+        (crate::size::Budget::default(), PackagePlatform::Android),
         output,
     )?;
     std::fs::rename(&staged, output)
@@ -2596,5 +2817,98 @@ type = "gui"
             .map(|id| default_icon(id).get_pixel(96, 96).0)
             .collect();
         assert!(colours.len() > 1, "ids share one colour: {colours:?}");
+    }
+
+    #[test]
+    fn os_release_names_the_package_manager_family() {
+        let family = PackageManager::from_os_release;
+        assert_eq!(
+            family("NAME=\"Fedora Linux\"\nID=fedora\n"),
+            Some(PackageManager::Dnf)
+        );
+        assert_eq!(
+            family("ID=\"rocky\"\nID_LIKE=\"rhel centos fedora\"\n"),
+            Some(PackageManager::Dnf)
+        );
+        assert_eq!(
+            family("ID=ubuntu\nID_LIKE=debian\n"),
+            Some(PackageManager::Apt)
+        );
+        assert_eq!(
+            family("ID=linuxmint\nID_LIKE=\"ubuntu debian\"\n"),
+            Some(PackageManager::Apt)
+        );
+        assert_eq!(family("ID=arch\n"), None);
+        assert_eq!(family(""), None);
+    }
+
+    #[test]
+    fn missing_system_tools_get_one_exact_install_command() {
+        let all = [SystemTool::Jdk, SystemTool::Zip, SystemTool::Unzip];
+        assert_eq!(
+            PackageManager::Dnf.install_command(&all),
+            "sudo dnf install -y java-21-openjdk-devel zip unzip"
+        );
+        assert_eq!(
+            PackageManager::Apt.install_command(&all),
+            "sudo apt-get install -y openjdk-17-jdk-headless zip unzip"
+        );
+        assert_eq!(
+            PackageManager::Brew.install_command(&all),
+            "brew install openjdk@21 zip unzip"
+        );
+        assert_eq!(
+            system_install_hint(Some(PackageManager::Apt), &[SystemTool::Zip]),
+            "`sudo apt-get install -y zip`"
+        );
+
+        // An unknown system is told each family's command.
+        let unknown = system_install_hint(None, &[SystemTool::Jdk]);
+        for command in [
+            "`sudo dnf install -y java-21-openjdk-devel`",
+            "`sudo apt-get install -y openjdk-17-jdk-headless`",
+            "`brew install openjdk@21`",
+        ] {
+            assert!(unknown.contains(command), "{unknown}");
+        }
+        assert!(unknown.contains("$JAVA_HOME"), "{unknown}");
+    }
+
+    #[test]
+    fn the_doctor_report_ends_with_the_system_install_command() {
+        let check = |name: &'static str, found: bool| ToolCheck {
+            name,
+            found: found.then(|| format!("/usr/bin/{name}")),
+            fix: String::new(),
+            required: true,
+        };
+        let report = DoctorReport {
+            checks: vec![
+                check("javac", false),
+                check("zip", true),
+                check("unzip", false),
+            ],
+            system_missing: vec![SystemTool::Jdk, SystemTool::Unzip],
+            package_manager: Some(PackageManager::Dnf),
+        };
+        assert!(!report.is_ready());
+        assert!(
+            report.summary().contains(
+                "Install the system packages with `sudo dnf install -y java-21-openjdk-devel unzip`"
+            ),
+            "{}",
+            report.summary()
+        );
+        assert_eq!(
+            report.to_json()["system_install"].as_str(),
+            report.system_install().as_deref()
+        );
+        let ready = DoctorReport {
+            checks: vec![check("zip", true)],
+            system_missing: Vec::new(),
+            package_manager: None,
+        };
+        assert!(ready.system_install().is_none());
+        assert!(!ready.summary().contains("Install the system packages"));
     }
 }

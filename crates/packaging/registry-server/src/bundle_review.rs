@@ -45,7 +45,9 @@ impl InspectionPolicy {
             self.max_package_bytes.max(self.max_web_runtime_bytes)
         } else if registry_types::DESKTOP_PLATFORMS.contains(&version.target.platform.as_str()) {
             self.max_package_bytes
-                .max(tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES)
+                .max(tilo_app_package::platform_size_limit(
+                    &version.target.platform,
+                ))
         } else {
             self.max_package_bytes
         }
@@ -445,11 +447,12 @@ fn check_desktop_target(
     size: usize,
 ) -> Result<(), BundleReviewError> {
     check_signed_target(version, manifest)?;
-    if size as u64 > tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES {
+    let limit = tilo_app_package::platform_size_limit(&version.target.platform);
+    if size as u64 > limit {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
             size: size as u64,
-            limit: tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES,
+            limit,
         });
     }
     Ok(())

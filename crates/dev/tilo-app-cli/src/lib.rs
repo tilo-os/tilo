@@ -4819,7 +4819,12 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         return web::package_web(start, request);
     }
     if request.platform == PackagePlatform::Android {
-        return android::package(start, request, &android::PackageOptions::default());
+        if request.arch.is_none() {
+            bail!("an Android package is one architecture here; pass --arch aarch64 or x86_64");
+        }
+        return android::package(start, request, &android::PackageOptions::default())?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no Android package was built"));
     }
     let NativeTarget {
         spec,
@@ -4884,7 +4889,13 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
         &identity,
     )?;
     let entrypoints: Vec<PathBuf> = shipped.iter().map(|(_, path)| path.clone()).collect();
-    let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
+    let size = within_budget(
+        &payload,
+        &entrypoints,
+        packed.bytes,
+        (budget, request.platform),
+        &output,
+    )?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(
@@ -5230,10 +5241,11 @@ fn within_budget(
     payload: &Path,
     entrypoints: &[PathBuf],
     archive: u64,
-    budget: size::Budget,
+    (budget, platform): (size::Budget, PackagePlatform),
     output: &Path,
 ) -> Result<size::SizeReport> {
-    let size = size::SizeReport::measure(payload, entrypoints, archive, budget)?;
+    let limit = tilo_app_package::platform_size_limit(platform.registry_name());
+    let size = size::SizeReport::measure(payload, entrypoints, archive, budget, limit)?;
     eprintln!("{}", size.render());
     let overruns = size.overruns();
     if !overruns.is_empty() {
