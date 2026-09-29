@@ -819,22 +819,12 @@ impl ui::resources::PublishesResources for SpeedTestApp {
         if self.hosted {
             return self.live_run_extra();
         }
-        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
-        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
-            root.actions.push(spec);
-        }
-        if self.is_running()
-            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
-        {
-            root.actions.push(spec);
-        }
-        if let Some(spec) = action(
-            "change-region",
-            "Change test region",
-            &SpeedOperation::ChangeRegion,
-        ) {
-            root.actions.push(spec);
-        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::SpeedTest>(
+            "speed-test:root",
+            "Internet speed test",
+            &crate::resource::SpeedTestState,
+        );
+        root.children.extend(self.live_run_extra());
         vec![root]
     }
 }
