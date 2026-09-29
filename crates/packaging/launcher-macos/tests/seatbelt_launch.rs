@@ -439,6 +439,50 @@ fn a_save_replaces_the_picked_file_through_its_one_sibling() {
     assert_eq!(replace(&tokens), OK, "a second save failed");
 }
 
+/// A confined app captures through the broker it inherits: the descriptor
+/// passing and the stream survive the Seatbelt profile, and an undeclared
+/// device is refused.
+#[test]
+fn a_confined_app_captures_only_what_its_broker_grants() {
+    use std::sync::Arc;
+    use tilo_capture::DeviceKind;
+    use tilo_capture::broker::{Policy, Sources, serve};
+    let f = fixture();
+    let grants_dir = tempfile::tempdir().unwrap();
+    let grants = Arc::new(
+        tilo_capture::grants::DeviceGrants::open(&grants_dir.path().join("grants")).unwrap(),
+    );
+    let (app, runtime) = std::os::unix::net::UnixDatagram::pair().unwrap();
+    let policy: Arc<dyn Policy> = Arc::new(tilo_capture::grants::GrantPolicy {
+        grants,
+        room: "personal".into(),
+        app: PACKAGE.into(),
+        declared: vec![DeviceKind::Camera],
+        consent: |_| Ok(true),
+    });
+    let sources: Arc<dyn Sources> = Arc::new(tilo_capture::broker::synthetic::Devices);
+    std::thread::spawn(move || serve(&runtime, &policy, &sources));
+    let capture = |what: &str| {
+        let mut req = request_with(&f, &f.probe, "capture", OsString::from(what));
+        req.inherit_fds = vec![app.as_raw_fd()];
+        req.env = vec![(
+            OsString::from("TILO_SVC_CAPTURE_FD"),
+            OsString::from(app.as_raw_fd().to_string()),
+        )];
+        exit_code(&req)
+    };
+    assert_eq!(
+        capture("camera 640 480"),
+        OK,
+        "the granted camera did not stream"
+    );
+    assert_eq!(
+        capture("microphone 48000"),
+        REFUSED,
+        "an undeclared device was captured"
+    );
+}
+
 #[test]
 fn service_descriptors_are_inherited_and_nothing_else_is() {
     let f = fixture();
