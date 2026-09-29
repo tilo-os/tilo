@@ -913,14 +913,32 @@ jobs:
       # File mtimes are another matter: COPY keeps the checkout's and RUN
       # leaves the build's wall clock, so every OCI export below sets
       # rewrite-timestamp=true to clamp them to it as well.
+      #
+      # Build / OS dev is not reproduced, and every stage that declares
+      # SOURCE_DATE_EPOCH carries it in its cache key: the commit time would
+      # rebuild the whole package rootfs on every push. It takes the newest
+      # creation time of its base and package images instead, which moves only
+      # when those do (and never precedes an RPM signature the offline dnf
+      # clock checks). The commit time stays in image.created.
       - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)
+        env:
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
         run: |
+          set -euo pipefail
           epoch="$(git log -1 --format=%ct)"
-          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
           # metadata-action stamps image.created with the time it runs. The
           # publication and its independent rebuild run in separate jobs, so
           # both take the commit time instead and their configs can agree.
           echo "SOURCE_DATE_ISO=$(date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_ENV"
+          if [[ $DEV_BUILD == true ]]; then
+            epoch=0
+            for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do
+              created="$(date -u -d "$(skopeo inspect "docker://$ref" | jq -er .Created)" +%s)"
+              if (( created > epoch )); then epoch=$created; fi
+            done
+            (( epoch > 0 ))
+          fi
+          echo "SOURCE_DATE_EPOCH=$epoch" >> "$GITHUB_ENV"
 
       - name: Select build, validation, or publication mode
         id: release-mode
@@ -1796,8 +1814,9 @@ jobs:
           set -euo pipefail
           started=$(date +%s)
           base="registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST"
-          created="$(skopeo inspect "docker://$base" | jq -er .Created)"
-          created="$(date -u -d "$created" +%Y-%m-%dT%H:%M:%SZ)"
+          # tilo-vm refuses a base older than the VM's; its config carries
+          # the fixed dev epoch, so the commit time orders dev bases.
+          created="$SOURCE_DATE_ISO"
           child="registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci-$ARCH"
           cache=()
           if [[ $COMPILER_CACHE == shared ]]; then
