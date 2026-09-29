@@ -945,53 +945,18 @@ fn analyze_resource(label: &str, path: &std::path::Path) -> Option<Resource> {
 }
 
 impl ui::resources::PublishesResources for DiskUsageApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
         if self.hosted {
             return self.live_analyze_extras();
         }
-        let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
-        for place in &self.places {
-            if let Some(action) = operation_action(
-                &format!("analyze:{}", place.path.display()),
-                &format!("Analyze {}", place.label),
-                &DiskUsageOperation::Analyze {
-                    path: place.path.clone(),
-                },
-            ) {
-                root.actions.push(action);
-            }
-        }
-        if let Some(action) =
-            operation_action("choose", "Choose folder", &DiskUsageOperation::Choose)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) =
-                operation_action("home", "Show locations", &DiskUsageOperation::Home)
-        {
-            root.actions.push(action);
-        }
-        if !matches!(self.view, View::Home)
-            && let Some(action) = operation_action("back", "Go back", &DiskUsageOperation::Back)
-        {
-            root.actions.push(action);
-        }
-        if let View::Analysis(result) = &self.view {
-            for entry in &result.entries {
-                if entry.path.file_name().is_some_and(|name| name != ".")
-                    && let Some(action) = operation_action(
-                        &format!("analyze:{}", entry.path.display()),
-                        &format!("Analyze {}", entry.name),
-                        &DiskUsageOperation::Analyze {
-                            path: entry.path.clone(),
-                        },
-                    )
-                {
-                    root.actions.push(action);
-                }
-            }
-        }
+        let state = <crate::resource::DiskUsage as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::DiskUsage>(
+            "disk-usage:root",
+            "Disk Usage Analyzer",
+            &state,
+        );
+        root.children.extend(self.live_analyze_extras());
         vec![root]
     }
 }
