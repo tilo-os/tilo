@@ -23,10 +23,11 @@ on:
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"
 
-# The newest commit of a ref supersedes the build of the one before.
+# A pull request's newest commit supersedes its running build. On main the
+# running build finishes and only the newest waiting commit follows it.
 concurrency:
   group: os-dev-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   image:
