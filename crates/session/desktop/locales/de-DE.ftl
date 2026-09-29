@@ -373,6 +373,9 @@ activity-event-revoked-capabilities = { $count ->
         [one] Eine Berechtigung entzogen
        *[other] { $count } Berechtigungen entzogen
     }
+activity-event-created = Arbeitsbereich erstellt
+activity-event-created-named = Arbeitsbereich „{ $name }“ erstellt
+activity-event-updated = Arbeitsbereich aktualisiert
 activity-event-owner = Eigentümer des Arbeitsbereichs festgelegt
 activity-event-identity = Identität des Arbeitsbereichs zugewiesen
 activity-event-renamed = Arbeitsbereich umbenannt

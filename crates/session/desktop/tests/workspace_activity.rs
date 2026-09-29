@@ -35,6 +35,112 @@ fn workspace_activity_review_keeps_live_heads() {
     assert_eq!(tree.doc.get_heads(), before);
 }
 
+// A local desktop's room document, in the `contents` schema: its bookkeeping
+// (the id counter, the record index) listed as a change, or any storage key
+// shown as a row's words, must fail this regression.
+#[test]
+fn workspace_activity_names_room_events_and_leaves_bookkeeping_out() {
+    use automerge::{ObjType, transaction::CommitOptions};
+    let workspace = Workspace::new(WorkspaceId(3), "Reading group");
+    let mut doc = AutoCommit::new();
+    let stamp = |doc: &mut AutoCommit, at: i64| {
+        doc.commit_with(CommitOptions::default().with_time(1_800_000_000 + at));
+    };
+    doc.put(ROOT, "room", workspace.room.to_string()).unwrap();
+    doc.put(ROOT, "name", "Reading group").unwrap();
+    doc.put(ROOT, "owner", "You").unwrap();
+    doc.put(ROOT, "desktop_counter_v1", 3_u64).unwrap();
+    let owners = doc
+        .put_object(ROOT, "contents_owners_v1", ObjType::Map)
+        .unwrap();
+    doc.put(&owners, "0001", "device").unwrap();
+    let contents = doc.put_object(ROOT, "contents", ObjType::Map).unwrap();
+    let strip = doc
+        .put_object(&contents, "0001000000000003", ObjType::Map)
+        .unwrap();
+    doc.put(&strip, "name", "The Odyssey").unwrap();
+    doc.put(&strip, "order", 0_u64).unwrap();
+    let groups = doc.put_object(&strip, "groups", ObjType::Map).unwrap();
+    let open = |doc: &mut AutoCommit, group: &str, tab: &str, title: &str| {
+        let group = doc.put_object(&groups, group, ObjType::Map).unwrap();
+        doc.put(&group, "order", 0_u64).unwrap();
+        let tabs = doc.put_object(&group, "tabs", ObjType::Map).unwrap();
+        let tab = doc.put_object(&tabs, tab, ObjType::Map).unwrap();
+        doc.put(&tab, "title", title).unwrap();
+        doc.put(&tab, "order", 0_u64).unwrap();
+    };
+    open(
+        &mut doc,
+        "0001000000000001",
+        "0001000000000002",
+        "The Odyssey",
+    );
+    stamp(&mut doc, 0);
+    doc.put(ROOT, "desktop_counter_v1", 5_u64).unwrap();
+    let records = doc.put_object(ROOT, "records", ObjType::Map).unwrap();
+    doc.put(&records, "uuid:notes", "word_processor.document")
+        .unwrap();
+    open(
+        &mut doc,
+        "0001000000000004",
+        "0001000000000005",
+        "Word Processor",
+    );
+    stamp(&mut doc, 1);
+    doc.put(ROOT, "desktop_counter_v1", 6_u64).unwrap();
+    doc.put(&records, "uuid:chat", "chat.workspace").unwrap();
+    stamp(&mut doc, 2);
+    doc.put(ROOT, "layout_hint_v2", "wide").unwrap();
+    stamp(&mut doc, 3);
+    doc.delete(&groups, "0001000000000004").unwrap();
+    stamp(&mut doc, 4);
+    let mut tree = ActivitySnapshot::new(
+        DesktopTree {
+            active: workspace.id,
+            workspaces: vec![workspace],
+            ..Default::default()
+        },
+        doc,
+    )
+    .unwrap();
+
+    let mut pane = RoomActivityPane::new();
+    pane.refresh(&mut tree);
+    let mut rows = pane
+        .entries()
+        .iter()
+        .map(|row| (row.timestamp, row.summary.clone()))
+        .collect::<Vec<_>>();
+    rows.sort();
+    let summaries = rows.into_iter().map(|(_, s)| s).collect::<Vec<_>>();
+    assert_eq!(
+        summaries.len(),
+        4,
+        "the bookkeeping-only change is left out: {summaries:?}"
+    );
+    let [created, opened, updated, closed] = summaries.as_slice() else {
+        return;
+    };
+    assert!(
+        created.starts_with("Created the workspace") && created.contains("Reading group"),
+        "{created}"
+    );
+    assert!(
+        opened.starts_with("Opened") && opened.contains("Word Processor"),
+        "{opened}"
+    );
+    assert_eq!(updated, "Updated the workspace");
+    assert_eq!(closed, "Closed 1 window");
+    for summary in &summaries {
+        assert!(
+            !["_v1", "_v2", "contents", "counter", "records"]
+                .iter()
+                .any(|key| summary.contains(key)),
+            "a storage key in a row: {summary}"
+        );
+    }
+}
+
 #[test]
 fn workspace_activity_view_descriptors_use_exact_ids_and_opaque_workspace_payloads() {
     use tilo_desktop::activity::view_actions::*;
