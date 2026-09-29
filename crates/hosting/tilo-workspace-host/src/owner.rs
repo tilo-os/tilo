@@ -1287,7 +1287,7 @@ impl SessionOwner {
         app: &str,
         record: &str,
         open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
-        seal: &mut dyn FnMut(&[u8]) -> Result<(collab_types::EncryptionMetadata, Vec<u8>), String>,
+        seal: &mut tilo_peer_state::SealCheckpoint<'_>,
     ) -> Result<CommitReceipt> {
         self.require_owner_resource_scope()?;
         self.aggregate.require_writable()?;
