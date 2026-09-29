@@ -5,7 +5,8 @@ use crate::collab_broker::FanoutState;
 use crate::collab_core::{AuditEntry, BrokerChannels, apply_redaction_from_envelope};
 use crate::route::CrdtRoute;
 use collab_types::{
-    ArtifactKind, OpClass, RedactedMarker, SignedOp, ValidationError, validate_admitted_inbound_op,
+    ArtifactKind, ChannelState, OpClass, RedactedMarker, Role, SignedOp, ValidationError,
+    validate_admitted_inbound_op, validate_replayed_inbound_op,
 };
 use std::{
     sync::{Arc, Mutex},
@@ -20,7 +21,34 @@ pub struct RemoteDocument {
     pub cluster_id: String,
     pub record_id: String,
     pub role: collab_types::Role,
+    /// A workspace host replayed it from its retained, host-ordered history
+    /// (before answering the subscription): old by nature.
+    pub replayed: bool,
     pub envelope: SignedOp,
+}
+
+/// How far an admitted device's live op may be dated from this clock.
+const MAX_CLOCK_SKEW: Duration = Duration::from_secs(300);
+
+/// Validate one peer document op. Live traffic must be fresh; history a
+/// workspace host replayed is admitted however old it is, and stays
+/// protected against replay by the per-author sequence.
+///
+/// # Errors
+/// As `validate_admitted_inbound_op`, or `validate_replayed_inbound_op` for
+/// replayed history.
+pub fn validate_document(
+    envelope: &SignedOp,
+    role: Role,
+    replayed: bool,
+    state: &mut ChannelState,
+    now: std::time::SystemTime,
+) -> Result<(), ValidationError> {
+    if replayed {
+        validate_replayed_inbound_op(envelope, role, state, now, MAX_CLOCK_SKEW)
+    } else {
+        validate_admitted_inbound_op(envelope, role, state, now, MAX_CLOCK_SKEW)
+    }
 }
 
 /// Validate `document` and, when admitted, record it and fan it to the local
@@ -39,6 +67,7 @@ pub fn deliver(
         cluster_id,
         record_id,
         role,
+        replayed,
         envelope,
     } = document;
     let artifact = envelope.artifact;
@@ -59,12 +88,12 @@ pub fn deliver(
                 let state = ch.state_for(artifact);
                 state.artifacts.insert(artifact, ArtifactKind::Note);
                 state.artifact_apps.insert(artifact, app_id);
-                validate_admitted_inbound_op(
+                validate_document(
                     &envelope,
                     role,
+                    replayed,
                     state,
                     std::time::SystemTime::now(),
-                    Duration::from_secs(300),
                 )
             } else {
                 Err(ValidationError::DocumentRouteMismatch)
@@ -183,5 +212,48 @@ fn record_already_redacted(
                 at: std::time::SystemTime::now(),
             },
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
+
+    #[test]
+    fn a_host_replay_of_old_history_is_admitted_where_a_live_op_that_old_is_not() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[3; 32]);
+        let an_hour_ago = std::time::SystemTime::now() - Duration::from_secs(3600);
+        let mut op = SignedOp::new_unsigned(
+            DocumentMutation::Incremental(vec![1, 2, 3])
+                .encode()
+                .unwrap(),
+            document_artifact_id("notes", "room", "record"),
+            collab_types::Ed25519PublicKey::from_bytes(key.verifying_key().to_bytes()),
+            document_attestation_id("notes", "room", "record"),
+            OpClass::Splice,
+            an_hour_ago,
+            1,
+        );
+        collab_types::sign_op(&mut op, &key).unwrap();
+        let now = std::time::SystemTime::now();
+        let channel = || {
+            let mut state = ChannelState::default();
+            state.artifacts.insert(op.artifact, ArtifactKind::Note);
+            state
+        };
+        assert_eq!(
+            validate_document(&op, Role::Editor, false, &mut channel(), now),
+            Err(ValidationError::OutsideValidityWindow),
+        );
+        let mut state = channel();
+        assert_eq!(
+            validate_document(&op, Role::Editor, true, &mut state, now),
+            Ok(())
+        );
+        assert!(matches!(
+            validate_document(&op, Role::Editor, true, &mut state, now),
+            Err(ValidationError::ReplaySeq { .. })
+        ));
     }
 }
