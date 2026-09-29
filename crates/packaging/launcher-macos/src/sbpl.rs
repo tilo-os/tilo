@@ -31,6 +31,9 @@ pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
 pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
 pub const GATE_PORT_PARAM: &str = "NET_GATE_PORT";
 pub const READ_PARAM_PREFIX: &str = "READ_";
+/// The sandbox-extension class the runtime's chooser issues for a picked
+/// path (App Sandbox's user-selected read-write).
+pub const USER_SELECTED_EXTENSION: &str = "com.apple.app-sandbox.read-write";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
 
 /// Mach services an `AppKit` window needs beyond `system.sb`: `WindowServer`
@@ -137,6 +140,12 @@ pub fn render(policy: &SeatbeltPolicy) -> SeatbeltProfile {
             "(allow file-read* file-write* (subpath (param \"{name}\")))"
         ));
     }
+    // What the person picked in a chooser the runtime showed: a
+    // kernel-signed extension per path, consumed by the app.
+    out.rule(&format!(
+        "(allow file-read* file-write* (extension {}))",
+        quote(USER_SELECTED_EXTENSION)
+    ));
     // Path resolution stats every ancestor of a granted directory; the
     // metadata of those directories, not their listings, is what that needs.
     let roots: Vec<String> = out.params.iter().map(|(name, _)| name.clone()).collect();
