@@ -296,7 +296,7 @@ fn certified_roster_admission_reuses_the_policy_without_a_role_attestation() {
 /// tampered op signature, and an author who is not the attestation subject.
 #[test]
 fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_future() {
-    let f = fixture();
+    let mut f = fixture();
     let old = build_op(&f, OpClass::Splice, t(10), 3);
     let skew = Duration::from_secs(300);
     let an_hour_later = t(10 + 3600);
@@ -332,7 +332,7 @@ fn host_replayed_history_is_admitted_however_old_but_never_twice_or_from_the_fut
     let mut forged = old.clone();
     forged.payload.push(0xff);
     assert!(matches!(
-        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state.clone(), t(10), skew),
+        validate_replayed_inbound_op(&forged, Role::Editor, &mut f.state, t(10), skew),
         Err(ValidationError::BadOpSignature(_))
     ));
 }
