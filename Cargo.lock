@@ -15902,6 +15902,7 @@ dependencies = [
  "automerge",
  "base64",
  "blake3",
+ "channel-crypto",
  "collab-types",
  "ed25519-dalek 3.0.0",
  "flate2",
