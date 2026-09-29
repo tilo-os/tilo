@@ -153,6 +153,66 @@ impl ChannelMember {
         })
     }
 
+    /// This member's state sealed under `vault` together with its mirror
+    /// of the steward's journal, for a device that keeps state in a store
+    /// rather than files ([`Self::restore_in_memory`] reads it back).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the state cannot be encoded or sealed.
+    pub fn export_sealed(&self, vault: &VaultKey) -> Result<Vec<u8>> {
+        let exported = ExportedMember {
+            record: self.record.seal(vault)?,
+            frames: self.journal.frames().to_vec(),
+        };
+        postcard::to_allocvec(&exported).map_err(|error| Error::Serialization(error.to_string()))
+    }
+
+    /// An in-memory member restored from [`Self::export_sealed`]: its MLS
+    /// state and journal mirror as they were, so it neither asks again nor
+    /// loses the keys it held.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `bytes` do not open under `vault`, name another
+    /// channel, or hold a journal that does not verify.
+    pub fn restore_in_memory(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        steward: Ed25519PublicKey,
+        bytes: &[u8],
+        vault: &VaultKey,
+    ) -> Result<Self> {
+        let exported: ExportedMember =
+            postcard::from_bytes(bytes).map_err(|error| Error::Serialization(error.to_string()))?;
+        let record = MemberRecord::open_sealed(&exported.record, vault)?;
+        if let MemberRecord::Joined(group) = &record
+            && group.channel_id() != channel
+        {
+            return Err(Error::InvalidState(
+                "member state names another channel".into(),
+            ));
+        }
+        let mut journal = GovernanceJournal::in_memory();
+        for frame in exported.frames {
+            if !matches!(
+                journal.append_mirrored(channel, steward, frame)?,
+                MirrorAppend::Appended(_)
+            ) {
+                return Err(Error::InvalidState("exported journal is out of order".into()));
+            }
+        }
+        Ok(Self {
+            channel,
+            device,
+            steward,
+            journal,
+            record,
+            record_path: None,
+            buffered: BTreeMap::new(),
+        })
+    }
+
     /// The channel.
     pub fn channel_id(&self) -> ChannelId {
         self.channel
@@ -419,6 +479,13 @@ impl ChannelMember {
             issued_at,
         )))
     }
+}
+
+/// What [`ChannelMember::export_sealed`] writes.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ExportedMember {
+    record: Vec<u8>,
+    frames: Vec<MlsGovernanceFrameV1>,
 }
 
 impl std::fmt::Debug for ChannelMember {
