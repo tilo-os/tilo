@@ -123,7 +123,9 @@ pub fn page_heading(title: &str, subtitle: &str) -> El {
             .with_intrinsic_height()
             .with_gap(spacing().s1)
             .push(Box::new(
-                Text::new("SETTINGS").with_scaled_size(12.0).dimmed(),
+                Text::new(&crate::i18n::t("settings-page-eyebrow"))
+                    .with_scaled_size(12.0)
+                    .dimmed(),
             ))
             .push(Box::new(Text::new(title).with_scaled_size(24.0)))
             .push(Box::new(
