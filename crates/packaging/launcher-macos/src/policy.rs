@@ -25,9 +25,11 @@
 //! - **Device grants.** Cameras and microphones sit behind TCC on macOS, not
 //!   device nodes; the profile grants no TCC service, so a device grant is
 //!   not honoured (the app is denied, never widened).
-//! - **Filtered egress without a gate socket.** There is no network namespace
-//!   to hide the host network behind, so a host allowlist is only reachable
-//!   through the gate's Unix socket. With no gate, the launch is offline.
+//! - **Filtered egress without a gate.** There is no network namespace to
+//!   hide the host network behind, so a host allowlist is only reachable
+//!   through the gate's loopback port
+//!   ([`launcher::netgate::LoopbackGate`]). With no gate, the launch is
+//!   offline.
 
 use std::io;
 use std::path::{Path, PathBuf};
@@ -158,8 +160,8 @@ pub fn app_environment(container: &Path) -> Vec<(String, String)> {
 pub enum SeatbeltNetwork {
     /// No socket may be connected or bound, IP or filesystem.
     Denied,
-    /// Only this Unix socket — the egress gate — may be connected.
-    Gate(PathBuf),
+    /// Only this loopback TCP port — the egress gate — may be connected.
+    Gate(u16),
     /// IP traffic in and out, and the system resolver. Filesystem sockets
     /// stay denied: a shared host network is not the user's `ssh-agent`.
     Unrestricted,
@@ -176,8 +178,9 @@ pub struct PolicyInputs<'a> {
     pub container_dir: &'a Path,
     pub capabilities: &'a CapabilityPlan,
     pub egress: &'a EgressDecision,
-    /// The egress gate's socket, when [`EgressDecision::Filtered`] runs one.
-    pub gate_socket: Option<&'a Path>,
+    /// The egress gate's loopback port, when [`EgressDecision::Filtered`]
+    /// runs one.
+    pub gate_port: Option<u16>,
     /// The app's own per-user cache directory (see [`prepare_darwin_cache`]).
     pub darwin_cache: Option<&'a Path>,
 }
@@ -276,23 +279,16 @@ impl SeatbeltPolicy {
         let network = match inputs.egress {
             EgressDecision::Blocked => SeatbeltNetwork::Denied,
             EgressDecision::Unrestricted => SeatbeltNetwork::Unrestricted,
-            EgressDecision::Filtered(_) => match inputs.gate_socket.map(resolve_socket) {
-                Some(Ok(socket)) => SeatbeltNetwork::Gate(socket),
-                Some(Err(e)) => {
-                    not_enforced.push(format!(
-                        "filtered egress: the gate socket cannot be resolved ({e}); the app \
-                         is offline"
-                    ));
-                    SeatbeltNetwork::Denied
-                }
-                None => {
+            EgressDecision::Filtered(_) => {
+                if let Some(port) = inputs.gate_port {
+                    SeatbeltNetwork::Gate(port)
+                } else {
                     not_enforced.push(
-                        "filtered egress: no gate socket was provided; the app is offline"
-                            .to_string(),
+                        "filtered egress: no gate is running; the app is offline".to_string(),
                     );
                     SeatbeltNetwork::Denied
                 }
-            },
+            }
         };
 
         Ok(SeatbeltPolicy {
@@ -321,18 +317,6 @@ fn resolve_dir(role: &'static str, path: &Path) -> Result<PathBuf, PolicyError> 
         });
     }
     Ok(resolved)
-}
-
-/// A socket may not exist yet when the profile is built, so only its parent
-/// is resolved.
-fn resolve_socket(path: &Path) -> io::Result<PathBuf> {
-    let name = path
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
-    let parent = path
-        .parent()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no parent directory"))?;
-    Ok(std::fs::canonicalize(parent)?.join(name))
 }
 
 fn resolve_grants(paths: &[PathBuf], not_enforced: &mut Vec<String>) -> Vec<PathBuf> {
@@ -401,7 +385,7 @@ mod tests {
             container_dir: &layout.container,
             capabilities: plan,
             egress,
-            gate_socket: None,
+            gate_port: None,
             darwin_cache: None,
         }
     }
@@ -512,14 +496,11 @@ mod tests {
         assert_eq!(offline.network, SeatbeltNetwork::Denied);
         assert_eq!(offline.not_enforced.len(), 1);
 
-        let gate = l.root.join("gate.sock");
         let mut i = inputs(&l, &plan, &filtered);
-        i.gate_socket = Some(&gate);
+        i.gate_port = Some(9050);
         let gated = SeatbeltPolicy::resolve(&i).unwrap();
-        assert_eq!(
-            gated.network,
-            SeatbeltNetwork::Gate(std::fs::canonicalize(&l.root).unwrap().join("gate.sock"))
-        );
+        assert_eq!(gated.network, SeatbeltNetwork::Gate(9050));
+        assert!(gated.not_enforced.is_empty());
     }
 
     #[test]
