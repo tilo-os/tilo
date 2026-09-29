@@ -245,9 +245,7 @@ impl Capability {
             Self::NetworkHttp
             | Self::NetworkFetchProxy
             | Self::NetworkSockets
-            | Self::NetworkStatus => {
-                &["com.apple.security.network.client"]
-            }
+            | Self::NetworkStatus => &["com.apple.security.network.client"],
             Self::FilesOpen | Self::FilesSave | Self::FilesPaths => {
                 &["com.apple.security.files.user-selected.read-write"]
             }
