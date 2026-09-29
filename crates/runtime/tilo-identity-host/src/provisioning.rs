@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use ui::widget::identity_flow::IdentityRecord;
 
@@ -19,10 +20,49 @@ use ui::widget::identity_flow::IdentityRecord;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityStorage {
     /// The platform's secret store, or its explicitly reported private-file
-    /// fallback: what a real session uses.
+    /// fallback: what a real session uses. On macOS the device key and the
+    /// runtime's channel-state key are in the login Keychain too, with no
+    /// file fallback.
     Platform,
     /// Plain private files beside the record, for isolated test fixtures.
     Files,
+}
+
+/// Set (to anything) in a test's environment, it keeps every identity
+/// secret of the session in [`IdentityStorage::Files`], out of the user's
+/// login Keychain. A release build ignores it.
+pub use runtime_identity::FILE_SECRETS_ENV;
+
+impl IdentityStorage {
+    /// What this session keeps its identity secrets in.
+    #[must_use]
+    pub fn for_session() -> Self {
+        if runtime_identity::file_secrets_requested() {
+            Self::Files
+        } else {
+            Self::Platform
+        }
+    }
+
+    /// Where the device key is kept under this storage.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn device_key_custody(self) -> DeviceKeyCustody {
+        match self {
+            Self::Platform => DeviceKeyCustody::Keychain,
+            Self::Files => DeviceKeyCustody::File,
+        }
+    }
+
+    /// Where the device key is kept under this storage: a file, which Tilo
+    /// OS shares between the root filesystem daemon and the session.
+    #[cfg(not(target_os = "macos"))]
+    #[must_use]
+    pub fn device_key_custody(self) -> DeviceKeyCustody {
+        match self {
+            Self::Platform | Self::Files => DeviceKeyCustody::File,
+        }
+    }
 }
 
 fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
@@ -649,8 +689,7 @@ pub fn verify_collaboration_identity(
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let device = persist::read_device_key(&paths.device_privkey)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let device = persist::load_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)
@@ -673,11 +712,13 @@ pub fn verify_collaboration_identity(
 }
 
 /// Resolve the system identity root, with the same test/development override
-/// used by the filesystem synchroniser.
+/// used by the filesystem synchroniser, and this session's device-key
+/// custody ([`IdentityStorage::for_session`]).
 pub fn collaboration_identity_paths() -> IdentityPaths {
     std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
+        .with_device_key_custody(IdentityStorage::for_session().device_key_custody())
 }
 
 fn import_primary_identity(
@@ -1017,6 +1058,10 @@ mod tests {
         }
         // Phase `collaboration_setup_repairs_the_active_import_without_minting_primary`.
         {
+            // Selecting an identity secures it with the session's store; this
+            // fixture's store is files.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(FILE_SECRETS_ENV, "1");
             let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));

@@ -225,6 +225,21 @@ pub struct IdentityPaths {
     pub device_privkey: std::path::PathBuf,
     /// `<root>/device/cert.bin`
     pub device_cert: std::path::PathBuf,
+    /// Where the device key itself is kept.
+    pub device_key_custody: DeviceKeyCustody,
+}
+
+/// Where a layout keeps this device's private key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeviceKeyCustody {
+    /// A group-private file at [`IdentityPaths::device_privkey`]: the Tilo OS
+    /// layout, where the root filesystem daemon and the session share it.
+    #[default]
+    File,
+    /// The user's login Keychain. A key file an earlier build left at
+    /// [`IdentityPaths::device_privkey`] moves into it once, on first use.
+    #[cfg(target_os = "macos")]
+    Keychain,
 }
 
 impl IdentityPaths {
@@ -242,7 +257,15 @@ impl IdentityPaths {
             user_privkey: root.join("user-identity/privkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
+            device_key_custody: DeviceKeyCustody::File,
         }
+    }
+
+    /// This layout with its device key kept in `custody`.
+    #[must_use]
+    pub fn with_device_key_custody(mut self, custody: DeviceKeyCustody) -> Self {
+        self.device_key_custody = custody;
+        self
     }
 
     /// Ensure the two subdirectories exist (best-effort). Does not
@@ -258,7 +281,11 @@ impl IdentityPaths {
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
-        if let Some(parent) = self.device_privkey.parent() {
+        if let Some(parent) = self
+            .device_privkey
+            .parent()
+            .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
+        {
             #[cfg(windows)]
             private_fs::directory(parent)?;
             #[cfg(not(windows))]
@@ -567,6 +594,26 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
 }
 
+/// Read this device's key from wherever `paths` keeps it.
+///
+/// # Errors
+///
+/// As [`read_device_key`] for a key file. A Keychain that holds no key, or
+/// refuses or fails to answer, is an error: a missing device key is never
+/// replaced here.
+pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
+    match paths.device_key_custody {
+        DeviceKeyCustody::File => read_device_key(&paths.device_privkey),
+        #[cfg(target_os = "macos")]
+        DeviceKeyCustody::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
+            PersistError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the login Keychain holds no Tilo device key",
+            ))
+        }),
+    }
+}
+
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
 ///
 /// # Errors
@@ -621,6 +668,10 @@ pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     protect_secret_process()?;
+    #[cfg(target_os = "macos")]
+    if paths.device_key_custody == DeviceKeyCustody::Keychain {
+        return crate::keychain::load_or_create(paths);
+    }
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
@@ -866,6 +917,12 @@ pub fn adopt_device_key(
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
+    if paths.device_key_custody != DeviceKeyCustody::File {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only a device key file adopts an earlier subsystem key",
+        )));
+    }
     let path = paths.device_privkey.as_path();
     paths.ensure_directories()?;
     let sk = SigningKey::from_bytes(seed);
