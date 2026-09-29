@@ -1565,11 +1565,48 @@ async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
     workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now() + MOUNT_RETRY_MAX;
     workers.pump().unwrap();
     assert!(!mounted(&workers).contains(&key));
-    // Accepted again and due: the next pump mounts it.
+    // Accepted again and due: the next pumps join and mount it.
     drop(guard);
     workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now();
-    workers.pump().unwrap();
-    assert!(mounted(&workers).contains(&key));
+    tilo_test_env::wait_for("the retried worker to mount", || {
+        workers.pump().unwrap();
+        mounted(&workers).contains(&key).then_some(())
+    });
+    assert!(workers.skipped.is_empty());
+    workers.close().unwrap();
+}
+
+/// A worker's join runs off the owner loop: while the broker has not
+/// answered, every pump returns and the loop's other duties go on; the mount
+/// completes on a later pump once the join answers.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_join_never_blocks_the_owner_loop() {
+    let (directory, owner) = selected();
+    let guard = TestMountGuard::set(std::time::Duration::MAX, &[(WRITER, RECORD)]);
+    let (outbound, _network) = mpsc::channel(32);
+    let (mut workers, _documents) = AgentWorkers::start(directory.path(), owner, outbound)
+        .expect("one refused worker must not fail the whole mount");
+    let key = (WRITER.to_owned(), RECORD.to_owned());
+    assert!(!mounted(&workers).contains(&key));
+    drop(guard);
+    // The next join is held until the test releases it, as a broker that
+    // takes arbitrarily long to answer the primary route.
+    let (release, gate) = std::sync::mpsc::channel();
+    TEST_JOIN_GATE.with(|slot| *slot.borrow_mut() = Some(gate));
+    workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now();
+    // Each of these pumps would hang if it waited for the held join.
+    for _ in 0..20 {
+        workers.pump().unwrap();
+        workers.publications().unwrap();
+    }
+    assert!(workers.mounting(), "the held join is still under way");
+    assert!(!mounted(&workers).contains(&key));
+    release.send(()).unwrap();
+    tilo_test_env::wait_for("the released join to mount its worker", || {
+        workers.pump().unwrap();
+        mounted(&workers).contains(&key).then_some(())
+    });
+    assert!(!workers.mounting());
     assert!(workers.skipped.is_empty());
     workers.close().unwrap();
 }
@@ -1603,10 +1640,14 @@ async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete(
     assert!(workers.mounting());
     workers.set_transport_ready(true);
     assert!(!workers.publications().unwrap().ready);
-    for pass in 2..=rows {
+    // Each pass mounts at most one more worker; the joins run off the
+    // owner loop, so a pass never waits for one.
+    tilo_test_env::wait_for("every validated record to mount", || {
+        let before = workers.workers.len();
         workers.pump().unwrap();
-        assert_eq!(workers.workers.len(), pass);
-    }
+        assert!(workers.workers.len() <= before + 1, "one worker per pass");
+        (workers.workers.len() == rows && !workers.mounting()).then_some(())
+    });
     assert!(!workers.mounting());
     let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     while !workers.publications().unwrap().ready {
