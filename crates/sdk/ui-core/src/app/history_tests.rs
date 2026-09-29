@@ -20,6 +20,10 @@ fn app() -> App {
     state.commit_action(None, None);
     state.doc.put(ROOT, "body", "live").unwrap();
     state.commit_action(None, None);
+    app_on(state)
+}
+/// An app on `state` whose History is the framework's registered History.
+fn app_on(state: State) -> App {
     let registration = HistoryRegistration::new(
         &HISTORY,
         vec![HistorySourceRegistration::HostDocument {
@@ -7944,6 +7948,45 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert!(!has_open_button(&app));
+}
+
+#[test]
+fn a_documents_genesis_is_a_version_in_history_but_never_a_recent_change() {
+    use crate::host_chrome::model::CommandGroup;
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    store.create_record(&checkout).unwrap();
+    let mut state = State::from_doc(
+        store
+            .read(&checkout.id, automerge::AutoCommit::clone)
+            .unwrap(),
+    );
+    state.doc.put(ROOT, "body", "typed").unwrap();
+    state.commit_action(None, None);
+    let mut app = app_on(state);
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+
+    let rows = app
+        .history
+        .as_ref()
+        .unwrap()
+        .current_entries(&app.state.doc);
+    assert_eq!(rows.len(), 2);
+    assert!(
+        rows[0].is_genesis(),
+        "History keeps the version it was created as"
+    );
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .map(|command| command.label)
+        .collect();
+    assert_eq!(recent.len(), 1, "only the change someone made: {recent:?}");
+    assert!(recent[0].contains("Edited body"), "{recent:?}");
 }
 
 #[test]
