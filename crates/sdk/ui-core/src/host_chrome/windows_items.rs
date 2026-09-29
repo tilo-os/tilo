@@ -186,6 +186,23 @@ mod tests {
     }
 
     #[test]
+    fn framework_history_recent_changes_become_jump_tasks() {
+        let mut app = crate::app::framework_history_tests::native_chrome_app();
+        app.set_platform_conventions(PlatformConventions::new(Platform::Windows));
+        let titles: Vec<_> = jump_tasks(&app.host_commands(true))
+            .into_iter()
+            .map(|task| task.title)
+            .collect();
+        assert_eq!(titles[0], "Show History");
+        assert_eq!(
+            titles.len(),
+            3,
+            "History and two recent changes: {titles:?}"
+        );
+        assert!(titles[1..].iter().all(|title| title.contains(" · ")));
+    }
+
+    #[test]
     fn quoting_follows_command_line_to_argv() {
         assert_eq!(quote(r#"{"a":"b"}"#), r#""{\"a\":\"b\"}""#);
         assert_eq!(quote(r"C:\dir\"), r#""C:\dir\\""#);

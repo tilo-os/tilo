@@ -2722,7 +2722,7 @@ mod number_input_layout_tests;
 
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
-mod framework_history_tests;
+pub(crate) mod framework_history_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;
