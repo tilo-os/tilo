@@ -268,4 +268,21 @@ fn every_word_of_a_needle_begins_a_word_of_the_row() {
         &save,
         &page::needle_words("document, sav")
     ));
+    let format = action_row(
+        "sheet:1",
+        "format-cells",
+        vec![tilo_actions::ActionParam::optional(
+            "bold",
+            tilo_actions::ParamType::Boolean,
+            "Heavier text",
+        )],
+    );
+    assert!(page::matches_words(
+        &format,
+        &page::needle_words("bold cells")
+    ));
+    assert!(page::matches_words(
+        &format,
+        &page::needle_words("heavier text")
+    ));
 }

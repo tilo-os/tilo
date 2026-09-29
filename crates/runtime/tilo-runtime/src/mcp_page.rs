@@ -53,8 +53,8 @@ pub fn needle_words(needle: &str) -> Vec<String> {
         .collect()
 }
 
-/// Whether every word begins a word of the row's names: action id, label
-/// and description, resource label and kind, app id.
+/// Whether every word begins a word of the row's names: action id, label,
+/// description and parameters, resource label and kind, app id.
 pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
     let mut names = vec![
         row.resource.label.as_str(),
@@ -64,6 +64,9 @@ pub fn matches_words(row: &CatalogueRow, words: &[String]) -> bool {
     if let Some(action) = &row.action {
         names.extend([action.address.action.as_str(), action.action_label.as_str()]);
         names.extend(action.description.as_deref());
+        for param in &action.params {
+            names.extend([param.name.as_ref(), param.description.as_ref()]);
+        }
     }
     let tokens = names
         .iter()
