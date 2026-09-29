@@ -6,10 +6,14 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
 
 run() {
-  local label=$1
+  local label=$1 status=0
   shift
   printf '\n==> %s\n' "$label"
-  "$@"
+  "$@" || status=$?
+  if (( status != 0 )); then
+    printf '::error::repository policy check failed: %s (exit %s)\n' "$label" "$status"
+    exit "$status"
+  fi
 }
 
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
