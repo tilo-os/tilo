@@ -88,11 +88,8 @@ pub(crate) const HARNESS_WAIT: std::time::Duration = std::time::Duration::from_s
 
 fn apply_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
-    let (complete, outcome) = crate::agent_documents::apply_worker_document(
-        &owner,
-        pending,
-        std::time::Instant::now() + HARNESS_TURN,
-    );
+    let (complete, outcome) =
+        crate::agent_documents::apply_worker_document(&owner, pending, HARNESS_TURN);
     outcome.unwrap();
     // Opening Store here and in committed()/health() proves that the callback
     // released its exclusive Store lock before deferred worker completion.
@@ -311,7 +308,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
             );
             outcome.unwrap();
             commits += 1;
@@ -561,7 +558,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
             );
             outcome.unwrap();
             workers.committed().unwrap();
@@ -600,7 +597,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
         while let Ok(pending) = documents.try_recv() {
             let owner = reopened.owner.clone();
             let (complete, outcome) = pending.apply_scoped_fenced(
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
                 |route, certificate, mutation, authorization| {
                     let mut store = owner.store()?;
                     let bytes = store
@@ -1289,7 +1286,7 @@ fn registered_source_owner() -> (
 fn settle_startup_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = pending.apply_scoped_fenced(
-        tilo_test_env::hang_deadline(),
+        tilo_test_env::hang_bound(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("required worker custody");
             let record = route.record.as_deref().unwrap_or("");
