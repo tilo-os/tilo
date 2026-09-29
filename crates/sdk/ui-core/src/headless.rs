@@ -893,6 +893,17 @@ impl FrameHarness {
         self.layout_built = false;
     }
 
+    /// The app root's structure flag, and framework History's: it is laid
+    /// out as a separate root, so its replaced controls are not the app's.
+    fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
+    }
+
     /// Replace the whole root control of this harness. `node_map` holds raw
     /// pointers into the current tree and `focused` names a node of the
     /// current Taffy tree, so both are discarded before the old tree is
@@ -2247,7 +2258,7 @@ impl FrameHarness {
         // Event dispatch may replace controls before this frame starts. Old
         // node pointers are invalid in that case; retained controls carry their
         // own focus until the fresh map below recovers it.
-        let structure_changed = self.root.take_structure_dirty();
+        let structure_changed = self.take_composition_dirty();
         let focus = if self.node_map.is_empty() {
             // The first frame has no previous layout focus to transfer. A
             // component's restored application view owns its initial focus.
@@ -2294,17 +2305,20 @@ impl FrameHarness {
             .as_ref()
             .is_some_and(|history| history.captures_input());
         // A refresh may replace managed History controls. Discard every raw
-        // layout map before refreshing so no stale callback target survives.
-        if self.history.as_ref().is_some_and(|history| {
+        // layout map before refreshing so no stale callback target survives,
+        // and refresh only then: the History source changes on other threads,
+        // so a refresh after a negative check could still replace controls.
+        let refresh_history = self.history.as_ref().is_some_and(|history| {
             history.validate_root(self.root.as_ref()).is_err()
                 || history.needs_refresh(&self.state.doc, f64::from(self.viewport.0))
-        }) {
+        });
+        if refresh_history {
             self.discard_layout_tree();
             history_invalidated = true;
-        }
-        if let Some(history) = &mut self.history {
-            history.set_width(f64::from(self.viewport.0));
-            history.refresh(&self.state.doc);
+            if let Some(history) = &mut self.history {
+                history.set_width(f64::from(self.viewport.0));
+                history.refresh(&self.state.doc);
+            }
         }
         let returning_live = self
             .history
@@ -2349,7 +2363,7 @@ impl FrameHarness {
             || structure_changed
             || history_invalidated
             || standalone_history_topology_changed
-            || self.root.take_structure_dirty()
+            || self.take_composition_dirty()
             || crate::history_mode::embedded::needs_refresh(
                 self.root.as_ref(),
                 &self.state.doc,
@@ -2400,7 +2414,7 @@ impl FrameHarness {
                 // discard these raw maps without admitting or measuring them.
                 self.root.sync(&mut self.state.doc, &self.state.root);
                 let history_invalidated = self.invalidate_unsupported_history_owner();
-                if self.root.take_structure_dirty() || history_invalidated {
+                if self.take_composition_dirty() || history_invalidated {
                     self.node_map.clear();
                     return Ok((None, true));
                 }
@@ -2524,7 +2538,7 @@ impl FrameHarness {
                 profiler.record_since(crate::profiling::Pass::ApplyLayout, t_apply);
             }
             let history_invalidated = self.invalidate_unsupported_history_owner();
-            let dirty = self.root.take_structure_dirty() || history_invalidated;
+            let dirty = self.take_composition_dirty() || history_invalidated;
             let geometry = if viewport_changed {
                 composition_geometry(&self.taffy, self.root_node)?
             } else {
