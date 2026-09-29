@@ -392,8 +392,7 @@ the `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*`
 variables that point Cargo at its clang; `tools/ci/install-android-ndk.sh`
 does the same in a CI or image build. Elsewhere the CLI finds an NDK under
 `$ANDROID_NDK_HOME` or the SDK's `ndk/` and sets those variables itself.
-`rcargo` builds Android targets remotely like any other. Testing needs `adb`
-and an `x86_64` emulator image or a device.
+Testing needs `adb` and an `x86_64` emulator image or a device.
 
 ### Native Windows development
 
