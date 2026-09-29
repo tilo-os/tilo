@@ -363,6 +363,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/automerge-check.test.mjs",
   "crates/browser/tilo-browser-runtime/web/clipboard.test.mjs",
   "crates/browser/tilo-browser-runtime/web/cloud-identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/cloud-machine-linking.test.mjs",
   "crates/browser/tilo-browser-runtime/web/cloud-peer-session.test.mjs",
   "crates/browser/tilo-browser-runtime/web/cloud-peer-source.test.mjs",
