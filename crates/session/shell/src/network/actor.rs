@@ -321,6 +321,13 @@ pub enum NetEvent {
         replayed: bool,
         msg: NeighbourMsg,
     },
+    /// A document this device published earlier, which a workspace host
+    /// replayed from its retained history: how a device that lost its local
+    /// state gets its own changes back. Live echoes never arrive here.
+    OwnReplay {
+        ws: WorkspaceId,
+        msg: NeighbourMsg,
+    },
     PersonalFabric {
         ws: WorkspaceId,
         peer: PeerId,
@@ -2331,11 +2338,18 @@ impl ActorState {
                 Some(NetEvent::HostReady { ws, peer })
             }
             HostEvent::Live { from, frame } => Some(NetEvent::Live { ws, from, frame }),
+            HostEvent::Message {
+                author,
+                replayed: true,
+                msg: msg @ NeighbourMsg::AppDocument { .. },
+                ..
+            } if self.is_own_device(&author) => Some(NetEvent::OwnReplay { ws, msg }),
             HostEvent::Message { author, .. } if self.is_own_device(&author) => {
                 // The host replays retained state to every subscriber,
                 // including what this device published earlier; gossip never
                 // delivers a device its own messages, and nothing downstream
                 // holds this device's own certificate to authenticate them.
+                // Only its replayed documents come back (above).
                 None
             }
             HostEvent::Message {
@@ -5066,9 +5080,15 @@ mod tests {
 
     /// Each device's certificate reaches the others through the host, which
     /// retains it; a device resubscribing receives the other member's again
-    /// but never its own, which nothing on this side could authenticate.
+    /// but never its own, which nothing on this side could authenticate. Its
+    /// own documents do come back, marked as its own: a device that lost its
+    /// local state gets its earlier changes from the host's history.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one device's publish, restart and replay"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn host_replays_member_certificates_but_not_this_devices_own() {
+    async fn host_replays_member_certificates_and_own_documents_but_not_own_certificate() {
         let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
         let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
         let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
@@ -5091,7 +5111,8 @@ mod tests {
             workspace_revocations: HashMap::new(),
             identity_paths: None,
         };
-        let (_cmd_a, _rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+        let signer = b_key.clone();
+        let (_cmd_a, mut rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
             a,
             lookup_a,
             identity(a_key, a_cert),
@@ -5101,6 +5122,44 @@ mod tests {
             &relay,
             HEARTBEAT_INTERVAL,
         )
+        .await;
+        let artifact = collab_types::document_artifact_id("so.tilo.notes", "room", "record");
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"b's earlier change".to_vec())
+                .encode()
+                .unwrap(),
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes(b_device),
+            collab_types::AttestationId::default(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &signer).unwrap();
+        cmd_b
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 7,
+                    app_id: "so.tilo.notes".into(),
+                    cluster_id: "room".into(),
+                    record_id: "record".into(),
+                    envelope: Box::new(op.clone()),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("the host fans B's document to A", async {
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::AppDocument { .. },
+                    ..
+                }) = rx_a.recv().await
+                {
+                    break;
+                }
+            }
+        })
         .await;
         drop(cmd_b);
 
@@ -5127,20 +5186,33 @@ mod tests {
             .await
             .unwrap();
         let mut hellos = Vec::new();
+        let mut own = Vec::new();
         let deadline = tokio::time::Instant::now() + Duration::from_secs(3);
         while let Ok(Some(event)) = tokio::time::timeout_at(deadline, replay_events.recv()).await {
-            if let NetEvent::Msg {
-                peer,
-                msg: NeighbourMsg::IdentityHello { cert, .. },
-                ..
-            } = event
-            {
-                assert_eq!(*peer.as_bytes(), cert.device_public_key);
-                hellos.push(cert.device_public_key);
+            match event {
+                NetEvent::Msg {
+                    peer,
+                    msg: NeighbourMsg::IdentityHello { cert, .. },
+                    ..
+                } => {
+                    assert_eq!(*peer.as_bytes(), cert.device_public_key);
+                    hellos.push(cert.device_public_key);
+                }
+                NetEvent::Msg {
+                    peer,
+                    msg: NeighbourMsg::AppDocument { .. },
+                    ..
+                } => assert_ne!(*peer.as_bytes(), b_device, "not as another member's"),
+                NetEvent::OwnReplay {
+                    msg: NeighbourMsg::AppDocument { envelope, .. },
+                    ..
+                } => own.push(*envelope),
+                _ => {}
             }
         }
         assert!(hellos.contains(&a_device), "A's certificate is replayed");
         assert!(!hellos.contains(&b_device), "B's own certificate is not");
+        assert_eq!(own, [op], "B's own document comes back from the host");
     }
 
     /// Native shells are live members of their workspace host: a presence
