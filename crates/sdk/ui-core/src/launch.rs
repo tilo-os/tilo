@@ -34,15 +34,19 @@ mod android_env;
 /// executable, so there is no process `main`. Invoked once at the top level
 /// of an app's `main.rs`, this defines the `android_main` the activity calls,
 /// which prepares the process and runs that same `main`. On every other
-/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
-/// as a `cdylib` example.
+/// target it expands to nothing. `tilo-app build --platform android` builds
+/// the file as a `cdylib` example. `android_main!(entry)` runs `entry`
+/// instead of `main`, as `dev_reload_entry!` does for an app library.
 #[macro_export]
 macro_rules! android_main {
     () => {
+        $crate::android_main!(main);
+    };
+    ($entry:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
         fn android_main(app: $crate::launch::android::AndroidApp) {
-            $crate::launch::android::run_main(app, main);
+            $crate::launch::android::run_main(app, $entry);
         }
     };
 }

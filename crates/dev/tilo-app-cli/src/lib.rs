@@ -22,6 +22,7 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod android;
 pub mod ci;
 pub mod examples;
 mod json;
@@ -529,16 +530,19 @@ pub enum PackagePlatform {
     Macos,
     /// A WebAssembly side module of the browser's toolkit core.
     Web,
+    /// The app's library in an APK whose `NativeActivity` enters it.
+    Android,
 }
 
 impl PackagePlatform {
     /// Every platform, in the order `check --platform all` visits them.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Tilo,
         Self::Linux,
         Self::Windows,
         Self::Macos,
         Self::Web,
+        Self::Android,
     ];
 
     /// The platform's name on the command line.
@@ -550,6 +554,7 @@ impl PackagePlatform {
             Self::Windows => "windows",
             Self::Macos => "macos",
             Self::Web => "web",
+            Self::Android => "android",
         }
     }
 
@@ -563,6 +568,10 @@ impl PackagePlatform {
     pub fn ensure_runs_here(self, arch: Option<PackageArch>) -> Result<()> {
         let os = match self {
             Self::Web => return Ok(()),
+            Self::Android => bail!(
+                "an android build runs on a device or an emulator, not here; \
+                 `tilo-app run --platform android` installs it on one"
+            ),
             Self::Tilo | Self::Linux => "linux",
             Self::Windows => "windows",
             Self::Macos => "macos",
@@ -598,6 +607,7 @@ impl PackagePlatform {
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
             Self::Web => registry_types::WEB_PLATFORM,
+            Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
 
@@ -610,13 +620,14 @@ impl PackagePlatform {
             Self::Windows => format!("{arch}-pc-windows-msvc"),
             Self::Macos => format!("{arch}-apple-darwin"),
             Self::Web => "wasm32-unknown-unknown".to_owned(),
+            Self::Android => format!("{arch}-linux-android"),
         }
     }
 
     const fn executable_suffix(self) -> &'static str {
         match self {
             Self::Windows => ".exe",
-            Self::Tilo | Self::Linux | Self::Macos | Self::Web => "",
+            Self::Tilo | Self::Linux | Self::Macos | Self::Web | Self::Android => "",
         }
     }
 }
@@ -629,6 +640,8 @@ pub enum PackageArch {
 }
 
 impl PackageArch {
+    pub const ALL: [Self; 2] = [Self::Aarch64, Self::X86_64];
+
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
@@ -4333,6 +4346,9 @@ pub fn plan_platform_clippy(
     if platform == PackagePlatform::Web {
         bail!("the web platform is checked by building it");
     }
+    if platform == PackagePlatform::Android {
+        bail!("the android platform is checked by `android::clippy`");
+    }
     let Some(arch) = arch.or_else(PackageArch::host) else {
         bail!(
             "cannot tell which architecture to check on {}; pass --arch",
@@ -4802,6 +4818,9 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     if request.platform == PackagePlatform::Web {
         return web::package_web(start, request);
     }
+    if request.platform == PackagePlatform::Android {
+        return android::package(start, request, &android::PackageOptions::default());
+    }
     let NativeTarget {
         spec,
         desktop,
@@ -4979,6 +4998,9 @@ impl NativeBuild {
 pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
     if request.platform == PackagePlatform::Web {
         bail!("a web build is `tilo-app build --platform web`, not a native build");
+    }
+    if request.platform == PackagePlatform::Android {
+        bail!("an Android build is `android::build`: an APK, not executables");
     }
     let started = Instant::now();
     let target = NativeTarget::resolve(start, request)?;
