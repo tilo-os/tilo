@@ -461,7 +461,7 @@ jobs:
     needs: [plan, authorize-publish]
     name: apps / ${{ matrix.arch }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 240
+    timeout-minutes: 180
     # App feature sets include native media, graphics and portal bindings.
     # Keep those system headers in the versioned CI builder image instead of
     # resolving distro packages independently in every release job.
