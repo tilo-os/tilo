@@ -9,7 +9,7 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2161,16 +2161,11 @@ impl TerminalWidget {
             state,
         );
         if self.grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid") {
-                self.grid_id = Some(id);
-            } else {
-                // If the doc rejects this `put_object` there is no grid to
-                // stand up; bail rather than unwrap into a panic.
-                let Ok(id) = state.put_object(root, "terminal_grid", ObjType::List) else {
-                    return;
-                };
-                self.grid_id = Some(id);
-            }
+            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid")
+            else {
+                return;
+            };
+            self.grid_id = Some(id);
         }
         let Some(grid_id) = self.grid_id.clone() else {
             return;
@@ -2178,16 +2173,11 @@ impl TerminalWidget {
         Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) =
-                state.get(root, "terminal_grid_alt")
-            {
-                self.alt_grid_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_grid_alt", ObjType::List) else {
-                    return;
-                };
-                self.alt_grid_id = Some(id);
-            }
+            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid_alt")
+            else {
+                return;
+            };
+            self.alt_grid_id = Some(id);
         }
         let Some(alt_grid_id) = self.alt_grid_id.clone() else {
             return;
@@ -2201,25 +2191,18 @@ impl TerminalWidget {
         );
 
         if self.links_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links") {
-                self.links_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_links", ObjType::Map) else {
-                    return;
-                };
-                self.links_id = Some(id);
-            }
+            let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links")
+            else {
+                return;
+            };
+            self.links_id = Some(id);
         }
         if self.images_id.is_none() {
-            if let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
-            {
-                self.images_id = Some(id);
-            } else {
-                let Ok(id) = state.put_object(root, "terminal_images", ObjType::List) else {
-                    return;
-                };
-                self.images_id = Some(id);
-            }
+            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
+            else {
+                return;
+            };
+            self.images_id = Some(id);
         }
 
         // Adopt (or seed) a shared pane id so both peers of a shared terminal
