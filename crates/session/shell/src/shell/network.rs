@@ -1127,6 +1127,9 @@ pub struct ShellNetwork {
     /// each [`Self::tick`]. `Mutex`-wrapped so `tick` can take `&self`
     /// while shared behind `Arc<ShellNetwork>`.
     pub event_rx: Mutex<mpsc::Receiver<NetEvent>>,
+    /// Wakes the session's event loop when an event arrives, so an idle
+    /// compositor still folds in what peers and the room's host send.
+    event_wake: Arc<std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>>,
     /// Topics already subscribed in the actor. Avoids sending a Join command on
     /// every app delta while still allowing rooms accepted after startup.
     joined_topics: Mutex<std::collections::HashSet<u64>>,
@@ -1537,7 +1540,20 @@ impl ShellNetwork {
         let replica = Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree)));
 
         // Capacity matches `Actor::spawn`'s command-channel default.
-        let (event_tx, event_rx) = mpsc::channel(64);
+        let (event_tx, mut arriving) = mpsc::channel(64);
+        let (delivered, event_rx) = mpsc::channel(64);
+        let event_wake: Arc<std::sync::OnceLock<Box<dyn Fn() + Send + Sync>>> = Arc::default();
+        let wake = Arc::clone(&event_wake);
+        runtime.spawn(async move {
+            while let Some(event) = arriving.recv().await {
+                if delivered.send(event).await.is_err() {
+                    break;
+                }
+                if let Some(wake) = wake.get() {
+                    wake();
+                }
+            }
+        });
 
         let pending_invitations_path = pending_invites_path(keypair_path);
         let personal_continuity_path = personal_continuity_path(keypair_path);
@@ -1569,6 +1585,7 @@ impl ShellNetwork {
             replica,
             event_tx,
             event_rx: Mutex::new(event_rx),
+            event_wake,
             joined_topics: Mutex::new(std::collections::HashSet::new()),
             workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
             workspace_control_relays: Mutex::new(std::collections::HashSet::new()),
@@ -1888,9 +1905,12 @@ impl ShellNetwork {
             .unwrap_or_default()
     }
 
-    /// Wake the compositor loop whenever legacy-window traffic (a stream, or
-    /// a viewer's input) arrives, so an idle headless session answers at once.
+    /// Wake the compositor loop whenever a network event arrives for
+    /// [`Self::tick`], and whenever legacy-window traffic (a stream, or a
+    /// viewer's input) arrives, so an idle headless session answers at once.
     pub fn set_wake(&self, wake: crate::session_runtime::Wake) {
+        let events = Arc::clone(&wake);
+        let _ = self.event_wake.set(Box::new(move || events()));
         let _ = self
             .cmd_tx
             .try_send(NetCmd::SetWake(crate::network::actor::LoopWake(wake)));
@@ -6100,6 +6120,7 @@ pub(crate) fn shell_network_for_test(
         replica: Arc::new(Mutex::new(WorkspaceTreeReplica::new(1, tree))),
         event_tx,
         event_rx: Mutex::new(event_rx),
+        event_wake: Arc::default(),
         joined_topics: Mutex::new(joined_topics),
         workspace_control_direct: Mutex::new(std::collections::HashSet::new()),
         workspace_control_relays: Mutex::new(std::collections::HashSet::new()),

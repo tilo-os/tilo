@@ -35,7 +35,9 @@ pub(crate) fn install(
             continue;
         };
         let primary = crate::desktop::opens_package_primary(&row.app_id);
-        let checkout = if primary && row.record_id.is_empty() {
+        // A package primary exists for apps that do not open one here too:
+        // a native member's process opens it first (the room's owner creates it).
+        let checkout = if row.record_id.is_empty() {
             RecordCheckout::package_primary(definition.record_kind.clone())
         } else {
             RecordCheckout::new(
@@ -332,6 +334,36 @@ mod tests {
             )
             .unwrap())
         );
+    }
+    #[test]
+    fn a_package_primary_of_an_app_that_opens_windows_is_admitted() {
+        // A native member's Notes process opens its package primary, which
+        // the room's owner creates beside the window records.
+        let (mut state, key, now) = state();
+        let app = notes::definition();
+        let checkout = RecordCheckout::package_primary(app.record_kind.clone());
+        let scratch =
+            RecordOwners::portable(PortableStorage::new("primary", state.room()).unwrap())
+                .open(app.app_id, state.room())
+                .unwrap();
+        scratch
+            .reserve_record(&checkout)
+            .unwrap()
+            .initialize(notes::notebook::initialize_empty)
+            .unwrap();
+        let bytes = scratch
+            .read(&checkout.id, |doc| doc.clone().save())
+            .unwrap();
+        state
+            .publish_document(app.app_id, "", bytes, &key, now)
+            .unwrap();
+        let cache = PortableStorage::new("test", "primary").unwrap();
+        install(&cache, &state, [13; 32]).unwrap();
+        RecordOwners::portable(cache)
+            .open(app.app_id, state.room())
+            .unwrap()
+            .try_open_record(&checkout)
+            .unwrap();
     }
     #[test]
     fn invalid_later_app_cannot_partially_stage_earlier_admitted_record() {

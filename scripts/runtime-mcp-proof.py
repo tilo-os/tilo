@@ -259,7 +259,8 @@ def run_proof(args, root, profile):
         client = Client([str(binaries['tilo-runtime-mcp']), '--profile', str(profile), '--apps', str(root / 'apps.json')], root)
         owned_pids.add(client.process.pid)
         print(f'host_pid={client.process.pid} evidence={root}', flush=True)
-        client.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {}, 'clientInfo': {'name': 'native-proof', 'version': '1'}})
+        # The proof reads full rows (descriptors and contracts).
+        client.request('initialize', {'protocolVersion': '2025-06-18', 'capabilities': {'experimental': {'so.tilo.mcp': {'detail': 'full'}}}, 'clientInfo': {'name': 'native-proof', 'version': '1'}})
         client.request('tools/list', {})
         (root / 'profile').mkdir()
         shutil.copy2(profile / 'workspace.json', root / 'profile/workspace.json')

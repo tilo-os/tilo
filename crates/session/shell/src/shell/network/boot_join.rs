@@ -8,6 +8,10 @@ use std::time::{Duration, Instant};
 
 /// A file holding one invitation text to redeem at startup.
 pub const JOIN_INVITATION_FILE_ENV: &str = "TILO_SHELL_JOIN_INVITATION_FILE";
+/// Set when the host's operator makes this session an administrator of the
+/// room once it has joined: startup then waits for that authority before the
+/// session serves agents, whose first acts may need it.
+pub const JOIN_ADMINISTRATOR_ENV: &str = "TILO_SHELL_JOIN_ADMINISTRATOR";
 const JOIN_DEADLINE: Duration = Duration::from_secs(60);
 const POLL: Duration = Duration::from_millis(250);
 
@@ -27,12 +31,58 @@ impl ShellNetwork {
         let Some(path) = std::env::var_os(JOIN_INVITATION_FILE_ENV) else {
             return;
         };
-        match self.boot_join(Path::new(&path)) {
-            Ok(BootJoin::Joined(room)) => tracing::info!(%room, "boot join: room joined"),
+        let room = match self.boot_join(Path::new(&path)) {
+            Ok(BootJoin::Joined(room)) => {
+                tracing::info!(%room, "boot join: room joined");
+                room
+            }
             Ok(BootJoin::AlreadyMember(room)) => {
                 tracing::info!(%room, "boot join: already a member");
+                room
             }
-            Err(error) => tracing::warn!(%error, "boot join failed"),
+            Err(error) => {
+                tracing::warn!(%error, "boot join failed");
+                return;
+            }
+        };
+        if std::env::var_os(JOIN_ADMINISTRATOR_ENV).is_some() {
+            match self.await_administration(&room) {
+                Ok(()) => tracing::info!(%room, "boot join: administering the room"),
+                Err(error) => tracing::warn!(%room, %error, "boot join: not an administrator"),
+            }
+        }
+    }
+
+    /// Wait until the joined `room` names this session an administrator.
+    fn await_administration(&self, room: &str) -> Result<(), String> {
+        let target = RoomId::parse(room).ok_or("invitation names an invalid room")?;
+        let tree = self
+            .replica
+            .lock()
+            .map_err(|_| "native replica unavailable")?
+            .tree
+            .clone();
+        let person = crate::shell::state::local_user_id_for_room(&target);
+        let deadline = Instant::now()
+            .checked_add(JOIN_DEADLINE)
+            .ok_or("boot join deadline overflows")?;
+        loop {
+            // Startup has not reached the event loop yet: fold in what the
+            // host sent here.
+            self.tick();
+            let now = SystemTime::now()
+                .duration_since(SystemTime::UNIX_EPOCH)
+                .map_err(|error| error.to_string())?
+                .as_secs();
+            if tree.read().desktop.workspaces.iter().any(|workspace| {
+                workspace.room == target && workspace.may_administer_at(&person, now)
+            }) {
+                return Ok(());
+            }
+            if Instant::now() >= deadline {
+                return Err("the workspace host did not make this session an administrator".into());
+            }
+            std::thread::sleep(POLL);
         }
     }
 
