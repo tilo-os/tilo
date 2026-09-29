@@ -56,16 +56,25 @@ fn lineage_len(state: &Path, author: &[u8; 32]) -> usize {
     })
 }
 
+/// Resident set size in MiB, 0 where it cannot be read (CI images ship no
+/// `ps`; Linux reads it from procfs).
 fn rss_mib() -> u64 {
-    let out = std::process::Command::new("ps")
-        .args(["-o", "rss=", "-p", &std::process::id().to_string()])
-        .output()
-        .unwrap();
-    String::from_utf8_lossy(&out.stdout)
-        .trim()
-        .parse::<u64>()
-        .unwrap_or(0)
-        / 1024
+    let kib = std::fs::read_to_string("/proc/self/status")
+        .ok()
+        .and_then(|status| {
+            status
+                .lines()
+                .find_map(|line| line.strip_prefix("VmRSS:"))
+                .and_then(|value| value.trim().trim_end_matches("kB").trim().parse().ok())
+        })
+        .or_else(|| {
+            let out = std::process::Command::new("ps")
+                .args(["-o", "rss=", "-p", &std::process::id().to_string()])
+                .output()
+                .ok()?;
+            String::from_utf8_lossy(&out.stdout).trim().parse().ok()
+        });
+    kib.unwrap_or(0) / 1024
 }
 
 fn apply(doc: &mut AutoCommit, mutation: DocumentMutation) {
