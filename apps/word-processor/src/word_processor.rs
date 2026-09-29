@@ -2207,56 +2207,6 @@ impl WordProcessor {
 
     #[allow(
         dead_code,
-        reason = "low-level mark helper kept for region edits not yet on RichTextAction"
-    )]
-    fn region_add_mark(
-        &mut self,
-        state: &mut AutoCommit,
-        block: &str,
-        start: usize,
-        end: usize,
-        name: &str,
-        value: tilo_doc::document::MarkValue,
-    ) {
-        let Some(containers) = self.containers.clone() else {
-            return;
-        };
-        let region = self.region;
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            match region {
-                Region::Body => match value {
-                    tilo_doc::document::MarkValue::Bool(v) => {
-                        dm.add_mark(block, start, end, name, v)
-                    }
-                    tilo_doc::document::MarkValue::Int(n) => {
-                        dm.add_mark(block, start, end, name, n)
-                    }
-                    tilo_doc::document::MarkValue::Str(s) => {
-                        dm.add_mark(block, start, end, name, s.as_str());
-                    }
-                },
-                r => match value {
-                    tilo_doc::document::MarkValue::Bool(v) => {
-                        dm.add_mark_in(r, block, start, end, name, v);
-                    }
-                    tilo_doc::document::MarkValue::Int(n) => {
-                        dm.add_mark_in(r, block, start, end, name, n);
-                    }
-                    tilo_doc::document::MarkValue::Str(s) => {
-                        dm.add_mark_in(r, block, start, end, name, s.as_str());
-                    }
-                },
-            }
-        }
-    }
-
-    #[allow(
-        dead_code,
         reason = "clear-mark helper kept for region edits not yet on RichTextAction"
     )]
     fn region_remove_mark(
