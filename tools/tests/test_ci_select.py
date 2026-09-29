@@ -943,7 +943,7 @@ class SelectorTests(unittest.TestCase):
             # Rust packages even though every change was CI orchestration or its test.
             changes = [
                 ".forgejo/workflows/check.yml",
-                ".forgejo/workflows/legacy-app-e2e.yml",
+                ".forgejo/workflows/ci-legacy-apps.yml",
                 ".forgejo/workflows/release-relay.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
@@ -983,7 +983,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             for path in (
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
                 "tools/ci/verify-native-mold.sh",
@@ -996,7 +996,7 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/tests/test_builder_candidate_workflow.py",
                 "tools/ci/native-mold-linker.sh",
@@ -1012,7 +1012,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "tools/tests/test_cargo_download_cache_action.py",
             ]
             plan = ci_select.make_plan(self.metadata, self.root, changes, 2)
@@ -1022,7 +1022,7 @@ class SelectorTests(unittest.TestCase):
             self.install_quality_helpers()
             self.install_control_inputs()
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/tests/test_builder_candidate_workflow.py",
                 "os/tests/release_pipeline_invariants.sh",
                 "os/tests/workflow_dependency_invariants.sh",
@@ -1120,7 +1120,7 @@ class SelectorTests(unittest.TestCase):
             recipe.parent.mkdir(parents=True, exist_ok=True)
             recipe.write_text("FROM scratch\n")
             changes = [
-                ".forgejo/workflows/build-builder-image.yml",
+                ".forgejo/workflows/build-ci-builder.yml",
                 "os/Containerfile.builder",
                 "os/external-assets/github-assets.tsv",
                 "os/tests/test_builder_candidate_workflow.py",
