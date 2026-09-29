@@ -236,7 +236,7 @@ const MAX_SCENE_BYTES: usize = 128 << 20;
 /// allowed a full 128 MiB binding, the renderer alone could reach 900 MB.
 const MAX_BUMP_BUDGET_BYTES: u64 = 128 << 20;
 /// The scratch budget under `conservative_gpu`.
-const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 64 << 20;
+const CONSERVATIVE_BUMP_BUDGET_BYTES: u64 = 32 << 20;
 
 fn scene_within_limits(scene: &vello::Scene) -> Result<(), String> {
     let encoding = scene.encoding();
