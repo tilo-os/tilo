@@ -451,13 +451,22 @@ impl WordProcessor {
         if format.import(bytes, &mut dm, &mut inputs).is_err() {
             return false;
         }
-        // The document only names its images; keep them before adopting it.
+        // The document only names its images; keep them before the shared write.
         if let Err(error) = self.content.put_inputs(&inputs) {
             eprintln!("word-processor: could not keep the opened file's images: {error}");
             return false;
         }
-        *state = staged;
-        self.ids = Some(ids);
+        let Some(format) = Self::import_format(format) else {
+            return false;
+        };
+        let action = crate::actions::RichTextAction::ReplaceFormatted {
+            format,
+            bytes: bytes.to_vec(),
+        };
+        if !self.apply_rich(state, action) {
+            return false;
+        }
+        self.ids = Some(tilo_doc::model::seeded_id_gen(state, &containers));
         let blocks = tilo_doc::model::blocks_in_order(state, &containers);
         match blocks.first() {
             Some(first) => {
@@ -470,6 +479,18 @@ impl WordProcessor {
         }
         self.clear_anchor();
         true
+    }
+
+    fn import_format(format: crate::WpFormat) -> Option<crate::actions::ImportFormat> {
+        match format {
+            crate::WpFormat::Markdown => Some(crate::actions::ImportFormat::Markdown),
+            crate::WpFormat::Text => Some(crate::actions::ImportFormat::Text),
+            crate::WpFormat::Html => Some(crate::actions::ImportFormat::Html),
+            crate::WpFormat::Rtf => Some(crate::actions::ImportFormat::Rtf),
+            crate::WpFormat::Docx => Some(crate::actions::ImportFormat::Docx),
+            crate::WpFormat::Odt => Some(crate::actions::ImportFormat::Odt),
+            crate::WpFormat::Pdf | crate::WpFormat::Epub => None,
+        }
     }
 
     /// Load the document's stylesheet from the **CRDT styles container** (the

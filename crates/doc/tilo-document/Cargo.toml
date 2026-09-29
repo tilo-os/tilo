@@ -9,7 +9,7 @@ description = "Rich text as a tilo-resource resource: the typed action vocabular
 [dependencies]
 tilo-doc = { path = "../tilo-doc" }
 # `ReplaceBody` imports its Markdown into the document.
-tilo-doc-codecs = { path = "../tilo-doc-codecs", default-features = false, features = ["markdown"] }
+tilo-doc-codecs = { path = "../tilo-doc-codecs", default-features = false, features = ["markdown", "html", "rtf", "docx", "odt"] }
 automerge.workspace = true
 serde.workspace = true
 serde_json.workspace = true
