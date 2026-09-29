@@ -882,8 +882,32 @@ fn install(
     if let Some(rt) = checked.runtime_ref() {
         println!("  runtime  : {rt}");
     }
+    #[cfg(all(unix, not(target_os = "macos")))]
+    register_search_providers();
     println!("run with:  tilo-install run {}", checked.id());
     Ok(())
+}
+
+/// Let GNOME Shell and `KRunner` search the resources the runtime beside this
+/// binary admits. Best effort: an app installs and runs without it.
+#[cfg(all(unix, not(target_os = "macos")))]
+fn register_search_providers() {
+    let Some(runtime) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("tilo-runtime")))
+        .filter(|runtime| runtime.is_file())
+    else {
+        return;
+    };
+    let written = data_home_root()
+        .map_err(|error| error.to_string())
+        .and_then(|data| {
+            tilo_os_search::linux_files::write(&data, &runtime).map_err(|error| error.to_string())
+        });
+    match written {
+        Ok(()) => println!("  search   : GNOME Shell and KRunner find its resources"),
+        Err(error) => eprintln!("tilo-install: host search not registered: {error}"),
+    }
 }
 
 /// What an install would change, printed instead of doing it.
