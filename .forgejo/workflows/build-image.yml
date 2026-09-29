@@ -1215,16 +1215,37 @@ jobs:
       # The engine's layer cache is addressed by everything that goes into
       # it, so a build of any other commit with the same engine inputs finds
       # it: in effect a prebuilt artifact, rebuilt only when an input changes.
-      - name: Address the browser engine cache by its inputs
+      #
+      # Normally no build compiles it at all: build-buildroots.yml publishes
+      # each architecture's engine, signed and pinned in
+      # os/wpe-stage-snapshot.env and labelled with its inputs, and every lane,
+      # the reproduction lane included, takes that stage when its label matches
+      # this checkout's inputs.
+      - name: Take the browser engine from its pinned stage, or address its cache
+        if: env.TILO_WITH_BROWSER == '1'
+        env:
+          ARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
-          key="$({ printf '%s\n' "$WPE_BUILDROOT_REF"; cat os/Containerfile.wpe os/dev/build-wpe.sh os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
+          key="$(os/dev/wpe-stage-key.sh "$ARCH")"
           echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
+          name="WPE_STAGE_${ARCH^^}_REF"
+          stage="$(sed -n "s/^$name=//p" os/wpe-stage-snapshot.env)"
+          if [[ $stage =~ ^registry\.tilo\.so/tilo/tilo-wpe-stage@sha256:[0-9a-f]{64}$ ]]; then
+            cosign verify --key keys/cosign.pub "$stage" >/dev/null
+            label="$(skopeo inspect "docker://$stage" | jq -r '.Labels["org.tilo.wpe.inputs"] // empty')"
+            if [[ $label == "$key" ]]; then
+              echo "TILO_WPE_STAGE_REF=$stage" >> "$GITHUB_ENV"
+              echo "::notice::browser engine from its pinned stage $stage"
+              exit 0
+            fi
+            echo "::warning::the pinned engine stage was built from other inputs ($label, not $key); compiling it"
+          fi
           echo "::notice::browser engine cache key $key"
 
       - name: Build and cache the browser engine stage
         id: wpe-stage
-        if: env.TILO_WITH_BROWSER == '1'
+        if: env.TILO_WITH_BROWSER == '1' && env.TILO_WPE_STAGE_REF == ''
         continue-on-error: true
         uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
         with:
@@ -1260,7 +1281,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           target: native-builder-payload
           push: false
@@ -1324,7 +1345,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
@@ -1427,7 +1448,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
@@ -1536,7 +1557,7 @@ jobs:
           context: .
           build-contexts: |
             github-assets=os/external-assets/cache
-            ${{ steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest) || '' }}
+            ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
           outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true

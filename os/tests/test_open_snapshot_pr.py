@@ -330,5 +330,46 @@ class KernelBuildrootSnapshotPullRequestTests(unittest.TestCase):
                     run_main(self.argv(**overrides))
 
 
+
+class WpeStageSnapshotPullRequestTests(unittest.TestCase):
+    x86_ref = "registry.tilo.so/tilo/tilo-wpe-stage@sha256:" + "c" * 64
+    arm_ref = "registry.tilo.so/tilo/tilo-wpe-stage@sha256:" + "d" * 64
+
+    def test_wpe_stage_snapshot_pull(self):
+        contents = MODULE.wpe_stage_contents(self.x86_ref, self.arm_ref)
+        digest = hashlib.sha256(contents.encode()).hexdigest()
+        branch = "automation/wpe-stage-snapshot-" + digest[:16]
+        argv = [
+            str(SCRIPT), "--server", "https://forge.invalid",
+            "--repository", "tilo/tilo", "--branch", branch,
+            "--snapshot-digest", digest, "wpe-stage",
+            "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
+        ]
+        with self.subTest(phase="main_creates_digest_bound_pull"):
+            result, request = run_main(argv)
+            self.assertEqual(result, 0)
+            payload = request.call_args.args[5]
+            self.assertEqual(payload["head"], branch)
+            self.assertEqual(payload["title"], "build(os): refresh native WPE engine stages")
+        restart_fixture(self)
+        with self.subTest(phase="promotion_writes_the_canonical_pin_file"):
+            self.assertEqual(print_pins("wpe-stage", self.x86_ref, self.arm_ref), contents)
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn("wpe-stage) key=WPE_STAGE label=\"WPE engine\" promote_kind=wpe-stage", script)
+        restart_fixture(self)
+        with self.subTest(phase="committed_pins_use_the_canonical_names"):
+            committed = (REPO / "os/wpe-stage-snapshot.env").read_text()
+            refs = dict(line.split("=", 1) for line in committed.splitlines()
+                        if line and not line.startswith("#"))
+            self.assertEqual(set(refs), {"WPE_STAGE_X86_64_REF", "WPE_STAGE_AARCH64_REF"})
+        restart_fixture(self)
+        with self.subTest(phase="rejects_buildroot_or_mutable_refs"):
+            for arm in ("registry.tilo.so/tilo/tilo-wpe-buildroot@sha256:" + "d" * 64,
+                        "registry.tilo.so/tilo/tilo-wpe-stage:latest", self.x86_ref):
+                bad = list(argv)
+                bad[-1] = arm
+                with self.subTest(arm=arm), self.assertRaises(SystemExit):
+                    run_main(bad)
+
 if __name__ == "__main__":
     unittest.main()
