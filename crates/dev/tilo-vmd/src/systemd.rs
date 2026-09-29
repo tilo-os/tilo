@@ -332,6 +332,21 @@ impl Apply for SystemdApply {
         .map(|out| out.trim().to_owned())
     }
 
+    fn reset_desktop_state(&mut self, user: &str) -> Result<(), DaemonError> {
+        let home = home_of(user).unwrap_or_else(|| format!("/home/{user}"));
+        let tilo = Path::new(&home).join(".config/tilo");
+        for file in ["state.json", "state.automerge"] {
+            let path = tilo.join(file);
+            match std::fs::remove_file(&path) {
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => {
+                    return Err(DaemonError::io(format!("remove {}", path.display()))(error));
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
     fn release_seat(&mut self, _slot: &str, seat: &str) -> Result<(), DaemonError> {
         let device = Path::new(VKMS_CONFIGFS).join(seat);
         if device.exists() {

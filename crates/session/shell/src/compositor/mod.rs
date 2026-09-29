@@ -26,6 +26,7 @@ pub mod client_input;
 pub mod controller_nav;
 pub mod cursor;
 pub mod dev_env;
+pub mod dev_test_identity;
 #[cfg(target_os = "linux")]
 pub mod device_rotation;
 pub mod drag_feedback;
