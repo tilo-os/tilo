@@ -1291,7 +1291,6 @@ jobs:
           provenance: false
           cache-from: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
           cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
 
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
@@ -1347,7 +1346,6 @@ jobs:
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
           cache-from: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
@@ -1422,9 +1420,9 @@ jobs:
           # toolchain, Windows and media inputs), not only final-image layers.
           # The compile stages were already built and exported above, so this
           # reuses them locally and exports the remaining stages.
-          cache-from: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
+          # Nothing to import: the steps above left every stage in this
+          # builder, and each imported chain inflates BuildKit's cache
+          # normalization (moby/buildkit#6008).
           # No cache export: the rootfs and compile steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
