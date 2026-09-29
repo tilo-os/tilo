@@ -37,7 +37,7 @@ use serde::{Deserialize, Serialize};
 use tilo_actions::{
     ActionContract, ActionError, ActionParam, ActionRegistry, ActionSpec, ConfirmationPolicy,
     DiscoveryScope, Doc, EncodedAction, ExecutionLocus, OperationKind, ParamType,
-    PermissionRequirement, Resource, RetryPolicy, RiskLevel,
+    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
 };
 
 use crate::doc::FirewallDoc;
@@ -47,6 +47,7 @@ use crate::model::{
 
 /// Registry `type_id` for every firewall action.
 pub const FIREWALL_ACTION_TYPE: &str = "firewall.action";
+pub const FIREWALL_APPLY_TYPE: &str = "firewall.apply";
 
 /// Every collaborative operation the firewall exports on its shared ruleset.
 ///
@@ -265,6 +266,35 @@ fn rule_label(r: &Rule) -> String {
     } else {
         format!("{base} (disabled)")
     }
+}
+
+/// Push the stored configuration through `firewall-cmd` / the host apply path.
+/// Published from [`crate::resource::Firewall::local_operations`] so hosted
+/// surfaces keep the palette row without a second config root.
+#[allow(
+    clippy::expect_used,
+    reason = "the empty string operation payload is always serializable"
+)]
+pub fn apply_effect_spec() -> ActionSpec {
+    ActionSpec::operation(
+        "apply",
+        "Apply firewall configuration",
+        OperationKind::Effect,
+        FIREWALL_APPLY_TYPE,
+        &"",
+    )
+    .expect("firewall apply payload is serializable")
+    .with_contract(ActionContract {
+        permission: PermissionRequirement::Admin,
+        risk: RiskLevel::Privileged,
+        confirmation: ConfirmationPolicy::Confirm,
+        retry: RetryPolicy::Idempotent,
+        discovery: DiscoveryScope::Launchable,
+        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+        result: ResultSpec::Job,
+        tags: vec!["security".into(), "firewall".into()],
+        ..ActionContract::default()
+    })
 }
 
 #[allow(

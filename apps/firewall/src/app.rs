@@ -757,6 +757,16 @@ impl FirewallApp {
         self.actions.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
     /// test.
     #[cfg(test)]
@@ -2026,34 +2036,15 @@ impl ui::resources::PublishesResources for FirewallApp {
                 ),
             ];
         }
-        // The framework root publishes the config document. The widget tree
-        // would be a second door. Recovery above stays — it is not in the
-        // resource children.
+        // The framework root publishes the config document (including apply).
+        // When hosted and available, return nothing — recovery above stays as
+        // the only live extra (it is not in Resource::children).
         if self.actions.is_hosted() {
             return Vec::new();
         }
         let mut resources = self.publish_resources(doc);
         if let Some(root) = resources.first_mut() {
-            root.actions.push(
-                tilo_actions::ActionSpec::operation(
-                    "apply",
-                    "Apply firewall configuration",
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &"",
-                )
-                .expect("firewall apply payload is serializable")
-                .with_contract(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    retry: tilo_actions::RetryPolicy::Idempotent,
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
+            root.actions.push(crate::actions::apply_effect_spec());
         }
         resources
     }
