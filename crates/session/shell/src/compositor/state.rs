@@ -4544,6 +4544,9 @@ impl XdgShellHandler for State {
                     host_launch_title,
                 )
             };
+            crate::shell::launcher::note_launch_presented(&crate::shell::persist::durable_app_id(
+                surface_id, &app_id,
+            ));
             // Mirror the rename onto the chrome-side tab the input router mounted (or its still-pending adoption).
             self.client_input.note_app_id(surface_id, app_id);
         }
