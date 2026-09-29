@@ -784,10 +784,40 @@ fn a_query_answers_compact_by_default_and_matches_every_word_of_a_needle() {
             1,
             "{found}"
         );
-        let missed = tool(
+        assert!(
+            found["structuredContent"].get("partial_match").is_none(),
+            "{found}"
+        );
+        // No row has every word: the rows with the most of them, flagged.
+        let partial = tool(
             &mut server,
             "tilo_query",
             json!({"peer_id":71,"needle":"note zebra"}),
+        )
+        .await;
+        assert_eq!(
+            partial["structuredContent"]["resources"][0]["resource"], "test.note:1",
+            "{partial}"
+        );
+        assert_eq!(
+            partial["structuredContent"]["partial_match"], true,
+            "{partial}"
+        );
+        let full_miss = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"needle":"note zebra","detail":"full"}),
+        )
+        .await;
+        assert_eq!(
+            full_miss["structuredContent"]["rows"],
+            json!([]),
+            "version 1 rows match every word: {full_miss}"
+        );
+        let missed = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"needle":"quokka zebra"}),
         )
         .await;
         assert_eq!(
@@ -843,7 +873,7 @@ fn a_session_can_pin_the_full_rows_it_parses() {
         let reply = server.handle(init(json!({}))).await.unwrap();
         assert_eq!(
             reply["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["version"],
-            2
+            3
         );
         let reply = server
             .handle(init(
