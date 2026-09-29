@@ -560,7 +560,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
         ed25519_dalek::VerifyingKey::from_bytes(&peer_now.authority().device_public_key).unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -613,7 +613,7 @@ async fn cloud_https_loopback_product_data_survives_owner_reopen() {
     })
     .unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &renew.encode().unwrap()),
         )
@@ -1370,7 +1370,7 @@ async fn baseline_snapshot(client: &Client, root: &Path) -> CommitBoundary {
         ed25519_dalek::VerifyingKey::from_bytes(&peer(root).authority().device_public_key).unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -1895,7 +1895,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
             .unwrap();
     let request = SnapshotRequest::new(SnapshotOperation::Baseline).unwrap();
     let (status, body) = client
-        .post(
+        .post_retrying(
             "/peer/v3/snapshots",
             framed(MessageType::SnapshotManifest, &request.encode().unwrap()),
         )
@@ -1950,7 +1950,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     // With no progress served since the restart it answers the identical
     // current manifest (never SnapshotRequired, never a silent extension).
     let (status, body) = client
-        .post("/peer/v3/snapshots", renew(manifest.digest()))
+        .post_retrying("/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(
         status,
@@ -1987,7 +1987,7 @@ async fn cloud_https_snapshot_pin_recovers_after_actual_restart() {
     // Progress served after the restart qualifies a real renewal: same pin
     // and content, strictly later expiry.
     let (status, body) = client
-        .post("/peer/v3/snapshots", renew(manifest.digest()))
+        .post_retrying("/peer/v3/snapshots", renew(manifest.digest()))
         .await;
     assert_eq!(
         status,
