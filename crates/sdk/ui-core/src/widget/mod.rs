@@ -179,6 +179,23 @@ pub(crate) fn collect_widget_resources(
     visit(widget, doc, None, resources);
 }
 
+/// Every resource `widget`'s subtree publishes, as the host's action
+/// catalogue collects them. A host that embeds components under its own
+/// root (a desktop surface) reads what its search offers through this.
+pub fn published_resources(widget: &dyn Widget, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    let mut resources = Vec::new();
+    collect_widget_resources(widget, doc, &mut resources);
+    resources
+}
+
+/// Every search provider the components in `widget`'s subtree publish, each
+/// once, as weak proxies the components keep owning.
+pub fn published_search_providers(
+    widget: &dyn Widget,
+) -> Vec<Box<dyn crate::search::SearchProvider>> {
+    crate::bound_dispatch::search_providers(widget)
+}
+
 /// Test traversal probe; production callers retain bound provenance.
 #[cfg(test)]
 pub(crate) fn resolve_widget_resource(
@@ -1391,6 +1408,16 @@ pub trait Widget {
             }
         }
         false
+    }
+
+    /// Which directions [`Self::on_nav_gesture`] would consume now. A widget
+    /// that owns history overrides this beside `on_nav_gesture`.
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.children()
+            .into_iter()
+            .fold(crate::gesture::NavAvailability::default(), |seen, child| {
+                seen.or(child.nav_availability())
+            })
     }
 
     /// One-shot (reading MUST clear it) signal to move focus to this

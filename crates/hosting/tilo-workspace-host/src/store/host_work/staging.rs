@@ -133,6 +133,15 @@ impl HostWorkInventory {
         root: &File,
         workspace: u64,
     ) -> Result<StagingDirectory, HostWorkFailure> {
+        self.reconciled_directories(root, workspace)
+            .map(|(staging, _)| staging)
+    }
+    /// Staging and the snapshot root, both reconciled, behind one barrier.
+    pub(super) fn reconciled_directories(
+        &self,
+        root: &File,
+        workspace: u64,
+    ) -> Result<(StagingDirectory, File), HostWorkFailure> {
         if workspace == 0 {
             return Err(HostWorkFailure::Unavailable);
         }
@@ -150,10 +159,10 @@ impl HostWorkInventory {
         }
         let directory = open_at(root, c"staging-v1", libc::O_RDONLY | libc::O_DIRECTORY)?;
         private(&directory, true)?;
+        let snapshot_directory = super::snapshot::create_root(root)?;
         // A previous mkdir may have succeeded before its parent sync failed.
-        // Existing visibility is not evidence that this entry is durable.
+        // Existing visibility is not evidence that either entry is durable.
         files::directory_barrier(root)?;
-        let snapshot_directory = super::snapshot::open_root(root)?;
         let result = StagingDirectory {
             directory,
             key,
@@ -168,7 +177,7 @@ impl HostWorkInventory {
         if existing.is_some_and(|i| state.slots[i].has_live_leases()) {
             // Live workers retain registered full totals. Their private files
             // cannot be truncated or reclaimed by a concurrent reopen scan.
-            return Ok(result);
+            return Ok((result, snapshot_directory));
         }
         let previous = existing
             .map(|i| state.slots[i].reserved_bytes())
@@ -213,7 +222,7 @@ impl HostWorkInventory {
         state.slots[index].stages = recovered;
         state.slots[index].snapshots = snapshots;
         state.disk = disk;
-        Ok(result)
+        Ok((result, snapshot_directory))
     }
 }
 impl SessionStore {

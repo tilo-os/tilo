@@ -6638,7 +6638,7 @@ mod tests {
             let original = dir.path().join("paper.pdf");
             let fixture = concat!(
                 env!("CARGO_MANIFEST_DIR"),
-                "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
+                "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
             );
             std::fs::copy(fixture, &original).expect("copy the Typst fixture");
 
@@ -9089,7 +9089,7 @@ mod tests {
     /// The Typst-typeset text fixture shared with the engine's tests.
     const LATIN_PDF: &str = concat!(
         env!("CARGO_MANIFEST_DIR"),
-        "/../../crates/doc/pdf/tests/fixtures/latin.pdf"
+        "/../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"
     );
 
     fn open_latin_raster() -> Option<PdfApp> {

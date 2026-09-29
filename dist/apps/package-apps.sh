@@ -82,6 +82,9 @@ mapfile -t app_binaries < <(
         '.catalog[] | $root + "/" + .binary' "$plan"
 )
 "$repo_root/os/scripts/verify-elf-hardening.sh" "${app_binaries[@]}"
+# Compiling needs no publisher identity; a caller can build here and sign in a
+# second invocation, whose Cargo builds are then already fresh.
+[[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0
 
 runtime_version=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("apps require different runtimes") end | sub("^tilo-runtime/"; "")' "$plan")
 [[ $runtime_version =~ ^[0-9A-Za-z][0-9A-Za-z._+-]*$ ]]

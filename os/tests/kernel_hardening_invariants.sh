@@ -267,6 +267,10 @@ for required in \
     || bad "required kernel setting missing: $required"
 done
 
+# Without kernel NFS the base image's NFS userspace can only fail at boot.
+grep -Fq 'RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils' "$image_recipe" \
+  && grep -Fq '        nfs-common-utils rpcbind \' "$image_recipe" \
+  || bad 'the image keeps NFS userspace the kernel cannot serve (rpc_pipefs fails at boot)'
 grep -Fq '"preempt=full"' "$repo/os/usr/lib/bootc/kargs.d/03-boot.toml" \
   || bad 'signed UKI command line does not pin full dynamic preemption'
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
@@ -539,14 +543,34 @@ for required in \
   'ProcSubset=pid' \
   'CapabilityBoundingSet=' \
   'AmbientCapabilities=' \
-  'ReadWritePaths=/boot' \
+  'StateDirectory=tilo/esp-plan/boot-entries' \
+  'StateDirectoryMode=0700' \
   'ReadOnlyPaths=/var/lib/tilo/secureboot' \
   'SystemCallFilter=@system-service' \
   'SystemCallFilter=~@privileged @resources'; do
   grep -Fqx "$required" "$boot_entries_unit" \
     || bad "boot-entry maintenance sandbox is missing: $required"
 done
-[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to the ESP'
+# /boot stays read-only: the unit stages plans, and only the ESP writer, with
+# CAP_SYS_ADMIN for its private remount alone, applies them.
+grep -q '^ReadWritePaths=.*/boot' "$boot_entries_unit" \
+  && bad 'boot-entry maintenance writes the ESP itself'
+esp_writer_unit="$repo/os/usr/lib/systemd/system/tilo-esp-write@.service"
+for required in \
+  'ExecStart=/usr/libexec/tilo-esp-write %i' \
+  'PrivateMounts=yes' \
+  'NoNewPrivileges=yes' \
+  'ProtectSystem=strict' \
+  'ReadWritePaths=/boot /var/lib/tilo/esp-plan/%i' \
+  'PrivateNetwork=yes' \
+  'CapabilityBoundingSet=CAP_SYS_ADMIN' \
+  'AmbientCapabilities=' \
+  'RestrictAddressFamilies=AF_UNIX' \
+  'SystemCallFilter=@system-service @mount'; do
+  grep -Fqx "$required" "$esp_writer_unit" \
+    || bad "ESP writer sandbox is missing: $required"
+done
+[ "$fail" -ne 0 ] || ok 'boot-entry maintenance is confined to staged, validated ESP plans'
 
 game_planner="$repo/crates/windows/compat-service/src/plan.rs"
 game_executor="$repo/crates/windows/compat-service/src/execute.rs"
@@ -630,7 +654,7 @@ grep -Fq 'exit 1' "$audit" \
 for required in \
   "CONFIG_BPF_LSM=y" \
   "CONFIG_DEBUG_INFO_BTF=y" \
-  "*:bpf:*)"; do
+  "*,bpf,*)"; do
   grep -Fq "$required" "$audit" \
     || bad "runtime audit does not verify the systemd BPF-LSM prerequisite: $required"
 done
@@ -665,7 +689,7 @@ for required in \
   'NoNewPrivileges=yes' \
   'ProtectSystem=strict' \
   'ProtectHome=yes' \
-  'PrivateNetwork=yes' \
+  'RestrictAddressFamilies=AF_UNIX' \
   'PrivateTmp=yes' \
   'TimeoutStartSec=2min' \
   'DevicePolicy=closed' \
@@ -678,6 +702,11 @@ for required in \
   grep -Fqx "$required" "$audit_unit" \
     || bad "security audit sandbox is missing: $required"
 done
+# The audit inspects the host: a private network namespace has its own sysctl
+# defaults, and ProtectKernelModules= hides the running kernel's config.
+if grep -Eqx 'PrivateNetwork=yes|ProtectKernelModules=yes' "$audit_unit"; then
+  bad 'security audit sandbox hides the host state it verifies'
+fi
 if grep -Eq 'CAP_SYS_PTRACE|CAP_SYSLOG|/proc/\$fspid/maps' "$audit_unit" "$audit"; then
   bad 'read-only security audit retains process-inspection or kernel-log capabilities'
 fi

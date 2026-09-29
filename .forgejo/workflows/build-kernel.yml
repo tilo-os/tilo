@@ -174,31 +174,33 @@ jobs:
             v4l2loopback-0.15.3-a7e4a4d.tar.gz
             sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz
 
-      # The runner's compiler cache (infra docs/ci-caching.md), for pull
-      # requests only. Every other run publishes a kernel that signed OS
-      # images install, and any CI job can write that cache, so a published
-      # kernel compiles with the cache off and receives no cache settings.
+      # The runner's compiler cache (infra docs/ci-caching.md). Pull requests
+      # read and write it (their own scope, plus main's). Every other run
+      # publishes a kernel that signed OS images install, so it never reads
+      # the cache: it compiles every object and writes them (populate), which
+      # is where pull requests' hits come from.
       - name: Bind the runner compiler cache
         env:
           PULL_REQUEST: ${{ github.event_name == 'pull_request' }}
         run: |
           set -euo pipefail
-          if [[ $PULL_REQUEST != true ]]; then
-            printf '%s\n' KERNEL_COMPILER_CACHE=off KERNEL_REQUIRE_COMPILER_CACHE=0 KERNEL_COMPILER_CACHE_SECRETS= >> "$GITHUB_ENV"
-            echo '::notice::publication: compiling the kernel without the shared compiler cache'
-          elif [[ -z ${ACTIONS_CACHE_URL:-} || -z ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+          if [[ -z ${ACTIONS_CACHE_URL:-} || -z ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
             printf '%s\n' KERNEL_COMPILER_CACHE=off KERNEL_REQUIRE_COMPILER_CACHE=0 KERNEL_COMPILER_CACHE_SECRETS= >> "$GITHUB_ENV"
             echo "::notice::this slot provides no compiler cache; compiling the kernel without it"
-          else
-            {
-              echo 'KERNEL_COMPILER_CACHE=shared'
-              echo 'KERNEL_REQUIRE_COMPILER_CACHE=1'
-              echo 'KERNEL_COMPILER_CACHE_SECRETS<<TILO_COMPILER_CACHE_SECRETS'
-              echo 'actions_cache_url=ACTIONS_CACHE_URL'
-              echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
-              echo 'TILO_COMPILER_CACHE_SECRETS'
-            } >> "$GITHUB_ENV"
+            exit 0
           fi
+          if [[ $PULL_REQUEST == true ]]; then
+            printf '%s\n' KERNEL_COMPILER_CACHE=shared KERNEL_REQUIRE_COMPILER_CACHE=1 >> "$GITHUB_ENV"
+          else
+            printf '%s\n' KERNEL_COMPILER_CACHE=populate KERNEL_REQUIRE_COMPILER_CACHE=0 >> "$GITHUB_ENV"
+            echo '::notice::publication: compiling every kernel object and writing it to the compiler cache, reading none'
+          fi
+          {
+            echo 'KERNEL_COMPILER_CACHE_SECRETS<<TILO_COMPILER_CACHE_SECRETS'
+            echo 'actions_cache_url=ACTIONS_CACHE_URL'
+            echo 'actions_runtime_token=ACTIONS_RUNTIME_TOKEN'
+            echo 'TILO_COMPILER_CACHE_SECRETS'
+          } >> "$GITHUB_ENV"
 
       # The shared setup gives the builder the runner pool's registries.
       - name: Set up buildx
@@ -414,9 +416,9 @@ jobs:
           set -euo pipefail
           probe="$RUNNER_TEMP/tilo-secureboot-probe-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           # The same compiler-cache mode as the kernel build, so the probe
-          # reuses its compile; a publication passes no cache credential.
+          # reuses its compile.
           cache_secrets=()
-          if [[ $KERNEL_COMPILER_CACHE == shared ]]; then
+          if [[ $KERNEL_COMPILER_CACHE != off ]]; then
             cache_secrets=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
                            --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi

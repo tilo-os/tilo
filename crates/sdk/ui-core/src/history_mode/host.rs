@@ -60,6 +60,15 @@ impl PendingControlCallback {
     }
 }
 
+/// The children a [`HistoryHost`] layout presents.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct Composition {
+    toolbar: u64,
+    review: bool,
+    timeline: Option<bool>,
+    preview: Option<super::PreviewSide>,
+}
+
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent presentation, focus and refresh flags are not mutually exclusive modes"
@@ -109,6 +118,10 @@ pub struct HistoryHost {
     #[cfg(test)]
     pending_control_callbacks: HashMap<String, PendingControlCallback>,
     toolbar_dirty: bool,
+    /// Bumped whenever the retained toolbar is replaced.
+    toolbar_generation: u64,
+    /// The composition the last layout build admitted, if any.
+    built_composition: Option<Composition>,
     live_root_lifetime: uuid::Uuid,
     control_domain: Option<crate::ControlDomain>,
     control_lease: Option<crate::control_custody::SuspensionLease>,
@@ -246,6 +259,8 @@ impl HistoryHost {
             #[cfg(test)]
             pending_control_callbacks: HashMap::new(),
             toolbar_dirty: false,
+            toolbar_generation: 0,
+            built_composition: None,
             live_root_lifetime: uuid::Uuid::new_v4(),
             control_domain: None,
             control_lease: None,
@@ -1223,6 +1238,7 @@ impl HistoryHost {
             .with_intrinsic_height();
         if self.invalid_owner {
             self.toolbar = toolbar.push(Box::new(Text::new("history-mode-unavailable")));
+            self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
             return;
         }
         if self.selected.is_empty() {
@@ -1461,6 +1477,25 @@ impl HistoryHost {
         }
         self.toolbar = toolbar;
         self.toolbar_dirty = false;
+        self.toolbar_generation = self.toolbar_generation.wrapping_add(1);
+    }
+    /// What this host's layout presents: which widgets its children are.
+    pub(super) fn composition(&self) -> Composition {
+        Composition {
+            toolbar: self.toolbar_generation,
+            review: self.review.is_some(),
+            timeline: self.show_timeline().then(|| self.timeline_available()),
+            preview: self.show_preview().then_some(self.side),
+        }
+    }
+    pub(super) fn admit_composition(&mut self) {
+        self.built_composition = Some(self.composition());
+    }
+    /// Whether this host replaced or swapped a child since its layout was
+    /// built: every raw layout map into it is then stale.
+    pub(super) fn composition_changed(&self) -> bool {
+        self.built_composition
+            .is_some_and(|built| built != self.composition())
     }
     pub(crate) fn live_visible(&self) -> bool {
         let external = self

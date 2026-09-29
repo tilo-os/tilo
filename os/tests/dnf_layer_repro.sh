@@ -129,6 +129,10 @@ assert 'clean-dnf-layer-state' in source.split('FROM ${BASE_REF} AS rootfs-base\
 from pathlib import Path
 assert '/usr/libexec/tilo/clean-dnf-layer-state' in (
     Path(sys.argv[1]).parent / 'scripts/finalize-rpmdb.sh').read_text(encoding='utf-8')
+# A WAL-mode rpmdb cannot be opened on the read-only /usr of the booted image.
+finalize = (Path(sys.argv[1]).parent / 'scripts/finalize-rpmdb.sh').read_text(encoding='utf-8')
+assert 'PRAGMA journal_mode=DELETE' in finalize
+assert finalize.index('PRAGMA journal_mode=DELETE') > finalize.rindex('rpm -qf')
 
 # Each rootfs RUN that performs a DNF transaction must finalize before its
 # layer snapshot. The separate uki-tools stage never enters the rootfs image.

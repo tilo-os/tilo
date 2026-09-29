@@ -122,6 +122,7 @@ decoupled, so one can be hosted elsewhere and render locally. See `rooms.md`.
 | `storage.md` | unified storage, sync, records, history and caching (design for review) |
 | `security.md` | sandbox, permissions, capability grants |
 | `hosts.md` | host interfaces: time, background work, platform services, storage, transport, actions, desktop model |
+| `network.md` | `tilo-net`: HTTP, WebSocket, WebTransport, sockets, status, and the fetch-proxy contract |
 | `search.md` | providers and per-resource-type rendering |
 | `agents.md` | agent identity, access, tasks, providers, local models and MCP |
 | `../system-extensions-and-local-models.md` | optional runtime/driver packs and one-click local inference |

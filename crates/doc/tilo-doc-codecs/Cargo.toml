@@ -4,9 +4,11 @@ autotests = false
 name = "tilo-doc-codecs"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Import/export projections between file formats and qdoc document resources, plus the format-provider registry"
+repository.workspace = true
+homepage.workspace = true
 
 [features]
 # Every format is on by default. A crate that imports or exports only some formats depends on
@@ -29,13 +31,13 @@ ods = ["office"]
 office = ["dep:zip", "dep:bounded-zip", "dep:quick-xml"]
 
 [dependencies]
-tilo-doc = { path = "../tilo-doc" }
+tilo-doc = { version = "0.1.0", path = "../tilo-doc" }
 # A rich-text field's HTML is read and written under its own map of a larger document.
 automerge.workspace = true
-tilo-content = { path = "../../system/content", default-features = false }
+tilo-content = { version = "0.1.0", path = "../../system/content", default-features = false }
 thiserror.workspace = true
 base64 = { workspace = true, optional = true }
-bounded-zip = { path = "../bounded-zip", optional = true }
+bounded-zip = { version = "0.1.0", path = "../bounded-zip", optional = true }
 pulldown-cmark = { version = "0.12", default-features = false, optional = true }
 quick-xml = { workspace = true, optional = true }
 zip = { workspace = true, optional = true }
