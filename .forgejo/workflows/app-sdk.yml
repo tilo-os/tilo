@@ -136,6 +136,18 @@ jobs:
           cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
       - name: Calculator for Linux
         run: bash tools/ci/measure.sh "Calculator for Linux" -- target/debug/tilo-app build --target linux apps/calculator
+      # The generated app compiles its whole graph into its own target
+      # directory. The container's /tmp is on the small overlay behind the
+      # root filesystem, so the app goes beside the checkout on the
+      # workspace's disk, and before the .tapp step's runtime build.
+      - name: A generated app builds outside the repository (native and wasm32)
+        run: |
+          export TMPDIR="${GITHUB_WORKSPACE%/*}/app-sdk-outside"
+          mkdir -p "$TMPDIR"
+          df -h /tmp "$TMPDIR"
+          rustup target add wasm32-unknown-unknown
+          bash tools/ci/measure.sh "generated app outside the repository" -- \
+            cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
       - name: Calculator .tapp
         # A Tilo OS .tapp links the toolkit from runtime-dylib, so this step
         # compiles the whole runtime: about 1,050 crates in a profile nothing
@@ -153,11 +165,6 @@ jobs:
             target/debug/tilo-app package --target linux apps/calculator \
             --output "$RUNNER_TEMP/calculator.tapp" --force
           test -s "$RUNNER_TEMP/calculator.tapp"
-      - name: A generated app builds outside the repository (native and wasm32)
-        run: |
-          rustup target add wasm32-unknown-unknown
-          bash tools/ci/measure.sh "generated app outside the repository" -- \
-            cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
       - name: Report compiler cache
         if: always()
         run: bash tools/ci/sccache.sh report || true
