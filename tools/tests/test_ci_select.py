@@ -45,6 +45,32 @@ class SelectorTests(unittest.TestCase):
             package("collab-types", "collab-types"),
         ]}
 
+    def test_a_recheck_keeps_only_what_the_base_changes_reach(self):
+        with self.subTest(phase="the plan narrows to packages the base's own changes reach"):
+            self.setUp()
+            full = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2)
+            delta = ci_select.make_plan(self.metadata, self.root, ["middle/src/lib.rs"], 2)
+            self.assertEqual(delta["reached"], ["leaf", "middle"])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], ["leaf", "middle"])
+            self.assertLess(set(narrowed["tested"]), set(full["tested"]))
+            self.assertTrue(set(narrowed["tested"]) <= {"leaf", "middle"})
+            self.assertIn("re-check", narrowed["reason"])
+        with self.subTest(phase="a base change reaching nothing the pull request checks leaves nothing to run"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["docs/notes.md"], 2)
+            self.assertEqual(delta["reached"], [])
+            narrowed = ci_select.make_plan(self.metadata, self.root, ["base/src/lib.rs"], 2,
+                                           only={"packages": set(delta["reached"]), "suites": set()})
+            self.assertEqual(narrowed["selected"], [])
+            self.assertFalse(narrowed["rust_required"])
+        with self.subTest(phase="a repository-wide base change reaches everything"):
+            self.setUp()
+            delta = ci_select.make_plan(self.metadata, self.root, ["Cargo.lock"], 2)
+            self.assertTrue(delta["full"])
+            self.assertEqual(delta["reached"], delta["selected"])
+
     def test_path_suites_and_declared_readers_select_what_their_inputs_reach(self):
         with self.subTest(phase='hermetic suites follow changed paths and run all when asked'):
             self.setUp()
