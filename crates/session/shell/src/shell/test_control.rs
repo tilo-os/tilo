@@ -786,7 +786,25 @@ fn key_down_or_up(key: &str, pressed: bool) -> (Response, Vec<PlannedAction>) {
 fn type_text(text: &str) -> (Response, Vec<PlannedAction>) {
     // A `KeyTag::Char` reaches a Wayland client as a bare evdev keycode with no case (35 is `h` or `H` purely by whether Shift is held), so Shift must bracket it like real hardware. Chrome's own widgets read the synthesised `text` field and show the capital regardless, so this bug is invisible there — a focused client gets the lowercase letter, and typing "Hello" lands as "hello".
     let mut actions = Vec::with_capacity(text.chars().count().saturating_mul(2));
-    for c in text.chars() {
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        // A line break or tab in typed text is the key that makes one, as a
+        // person typing it would press; `\r\n` is one line break.
+        let control = match c {
+            '\r' if chars.peek() == Some(&'\n') => continue,
+            '\n' | '\r' => Some(NamedKeyTag::Enter),
+            '\t' => Some(NamedKeyTag::Tab),
+            _ => None,
+        };
+        if let Some(named) = control {
+            for pressed in [true, false] {
+                actions.push(PlannedAction::KeyboardKey {
+                    key: KeyTag::Named(named),
+                    pressed,
+                });
+            }
+            continue;
+        }
         let tag = KeyTag::Char(c);
         let shift = KeyTag::Named(NamedKeyTag::Shift);
         // Shifted punctuation needs the same bracket as letters — both reach the client as a keyboard position, not a character. See `client_input::unshifted`.
@@ -1834,6 +1852,39 @@ mod tests {
                         },
                     ]
                 );
+            }
+
+            // Phase `line_breaks_and_tabs_in_typed_text_press_enter_and_tab`.
+            {
+                let state = StaticState::new(&[]);
+                let (_, actions) = dispatch_command(
+                    &Command::Type {
+                        text: "a\nb\r\nc\td\r".to_string(),
+                    },
+                    &state,
+                );
+                let pressed: Vec<KeyTag> = actions
+                    .iter()
+                    .filter_map(|action| match action {
+                        PlannedAction::KeyboardKey { key, pressed: true } => Some(*key),
+                        _ => None,
+                    })
+                    .collect();
+                let enter = KeyTag::Named(NamedKeyTag::Enter);
+                assert_eq!(
+                    pressed,
+                    vec![
+                        KeyTag::Char('a'),
+                        enter,
+                        KeyTag::Char('b'),
+                        enter,
+                        KeyTag::Char('c'),
+                        KeyTag::Named(NamedKeyTag::Tab),
+                        KeyTag::Char('d'),
+                        enter,
+                    ]
+                );
+                assert_eq!(actions.len(), pressed.len() * 2, "every press is released");
             }
 
             // Phase `typing_a_capital_holds_shift_around_it`.
