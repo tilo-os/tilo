@@ -305,3 +305,18 @@ history-action-stale-cursor = The history changed since this page. List it again
 history-action-unknown-entry = That change isn't in this document's history.
 history-action-unknown-session = That preview isn't open.
 history-action-invalid = That History request isn't valid.
+
+# Command palette chrome: footer key hints, result count and empty states.
+palette-name = Command palette
+palette-results = Results
+palette-hint-navigate = Navigate
+palette-hint-open = Open
+palette-hint-run = Run
+palette-hint-close = Close
+palette-result-count = { $count ->
+    [one] 1 result
+   *[other] { $count } results
+}
+palette-empty = Nothing to show
+palette-no-results = No results for “{ $query }”
+palette-no-results-hint = Try fewer words, or widen the scope
