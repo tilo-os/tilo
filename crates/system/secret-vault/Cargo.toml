@@ -12,15 +12,15 @@ path = "src/lib.rs"
 
 [dependencies]
 private-fs = { path = "../private-fs" }
-bounded-command = { path = "../bounded-command" }
+# Holds the vault key: the Secret Service on Linux, the Keychain on macOS.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 tracing.workspace = true
 # `tilo-seal` seals the vault and mints its keys; `zeroize` wipes key
 # material read from custody and decrypted plaintext.
 tilo-seal = { path = "../tilo-seal" }
 zeroize.workspace = true
-# The Secret Service stores the vault key as lower-case hex.
+# The secret store holds the vault key as lower-case hex.
 hex.workspace = true
-workspace-hack = { version = "0.1" }
 
 [target.'cfg(windows)'.dependencies]
 # Serializes key creation between processes.
@@ -34,3 +34,7 @@ tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

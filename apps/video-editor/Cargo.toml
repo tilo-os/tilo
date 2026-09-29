@@ -39,7 +39,7 @@ taffy.workspace = true
 # `gst` feature so the default fleet build (and `--shots`) compiles without
 # the gstreamer-1.0 dev headers present. ffmpeg is intentionally not a dep.
 gstreamer = { workspace = true, optional = true }
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
 thumbnail = { path = "../../crates/media/thumbnail" }

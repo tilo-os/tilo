@@ -20,7 +20,7 @@ thin = ["dep:runtime-dylib"]
 
 [dependencies]
 hex.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 bounded-command = { path = "../../crates/system/bounded-command" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # One owner for ~/.config/tilo/settings.json.
@@ -74,7 +74,7 @@ tilo-model-gateway = { path = "../../crates/agent/model-gateway" }
 # The audio graph client: enumerate the PipeWire/WirePlumber node graph and
 # route per-application streams. The Sound pane drives audio routing
 # through it (default features only — no gstreamer decode stack pulled in).
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 # Trait passes (`sync`, `build_layout`, `handle_event`) mention these crates
 # in their signatures; we re-export them at the same versions the sibling
 # native apps pin so a shared `target/` cache hits across crates.
@@ -84,7 +84,7 @@ winit.workspace = true
 taffy.workspace = true
 tracing.workspace = true
 rustls = { workspace = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net" }
+tilo-net = { path = "../../crates/platform/tilo-net" }
 # Account probes speak DAV through the shared bounded client and IMAP through
 # async-imap, the client Mail uses, on a per-probe current-thread runtime.
 tilo-dav = { path = "../../crates/system/tilo-dav" }

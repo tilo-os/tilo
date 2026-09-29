@@ -16,8 +16,8 @@ use tilo_relay_protocol::Envelope;
 use tilo_relay_protocol::auth::{self, AuthError, Hello, HelloAck2};
 use tilo_relay_protocol::certify::CertifyReply;
 use tilo_relay_protocol::web::{
-    API_PREFIX, EventsPage, EventsRequest, LiveGrant, MAX_POLL_MS, SessionChallenge, SessionFinish,
-    SessionGrant,
+    API_PREFIX, AgentLiveGrantRequest, EventsPage, EventsRequest, LiveGrant, MAX_POLL_MS,
+    SessionChallenge, SessionFinish, SessionGrant,
 };
 use tilo_user_identity::{CertificationRequest, DeviceCert, RevocationList};
 use tokio::sync::{mpsc, watch};
@@ -120,6 +120,31 @@ pub async fn live_grant(
     workspace_id: u64,
 ) -> Result<LiveGrant, LinkError> {
     call(client, "/live/grant", Some(session), encode(&workspace_id)?).await
+}
+
+/// A live-plane grant for agent `agent_id` this device runs in
+/// `workspace_id`: it publishes under the agent's own namespace.
+///
+/// # Errors
+///
+/// Returns [`LinkError::Refused`] when this device is not admitted there.
+pub async fn agent_live_grant(
+    client: &dyn HttpClient,
+    session: &str,
+    workspace_id: u64,
+    agent_id: String,
+) -> Result<LiveGrant, LinkError> {
+    let request = AgentLiveGrantRequest {
+        workspace_id,
+        agent_id,
+    };
+    call(
+        client,
+        "/live/grant/agent",
+        Some(session),
+        encode(&request)?,
+    )
+    .await
 }
 
 /// An authenticated HTTPS session with the host.

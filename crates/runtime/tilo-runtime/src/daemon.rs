@@ -671,6 +671,7 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         S::start_reporting(profile, &mut stage)?
     };
     let host = session.action_host()?;
+    let search = crate::os_search::start(host.clone(), session.room(), session.actor())?;
     let computer = crate::computer::Computer::from_env(profile)?.map(Arc::new);
     let path = profile.join("native.sock");
     // Session already owns runtime.lock. Only that owner may remove a stale
@@ -710,38 +711,67 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         pid: std::process::id(),
         room: session.room().to_owned(),
     };
-    let joiner = session.joiner();
-    let active = Arc::new(AtomicUsize::new(0));
-    for stream in listener.incoming() {
-        let stream = stream?;
-        if active.load(Ordering::Relaxed) >= 64 {
-            drop(stream);
-            continue;
+    let endpoint = Endpoint {
+        host,
+        room: session.room().to_owned(),
+        actor: session.actor().to_owned(),
+        status,
+        computer,
+        joiner: session.joiner(),
+        search,
+    };
+    endpoint.accept(&listener)
+}
+
+/// What every native connection is served with.
+struct Endpoint<H> {
+    host: H,
+    room: String,
+    actor: String,
+    status: Status,
+    computer: Option<Arc<crate::computer::Computer>>,
+    joiner: Option<crate::Joiner>,
+    /// Opens the host search results another process was handed.
+    search: Arc<tilo_os_search::OsSearch>,
+}
+
+impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
+    /// Serve each connection to `listener` on its own thread, at most 64 at once.
+    fn accept(self, listener: &UnixListener) -> io::Result<()> {
+        let active = Arc::new(AtomicUsize::new(0));
+        for stream in listener.incoming() {
+            let stream = stream?;
+            if active.load(Ordering::Relaxed) >= 64 {
+                drop(stream);
+                continue;
+            }
+            let host = self.host.clone();
+            let room = self.room.clone();
+            let actor = self.actor.clone();
+            let status = self.status.clone();
+            let computer = self.computer.clone();
+            let joiner = self.joiner.clone();
+            let search = Arc::clone(&self.search);
+            let active = Arc::clone(&active);
+            active.fetch_add(1, Ordering::Relaxed);
+            let slot = ConnectionSlot(active);
+            std::thread::Builder::new()
+                .name("tilo-native-mcp".into())
+                .spawn(move || {
+                    let _slot = slot;
+                    if let Err(error) = serve_connection(
+                        stream,
+                        McpServer::new(host, room, actor).with_computer(computer),
+                        &status,
+                        joiner.as_ref(),
+                        &search,
+                    ) {
+                        tracing::debug!(%error, "native runtime client disconnected");
+                    }
+                })?;
         }
-        let host = host.clone();
-        let room = session.room().to_owned();
-        let actor = session.actor().to_owned();
-        let status = status.clone();
-        let computer = computer.clone();
-        let joiner = joiner.clone();
-        let active = Arc::clone(&active);
-        active.fetch_add(1, Ordering::Relaxed);
-        let slot = ConnectionSlot(active);
-        std::thread::Builder::new()
-            .name("tilo-native-mcp".into())
-            .spawn(move || {
-                let _slot = slot;
-                if let Err(error) = serve_connection(
-                    stream,
-                    McpServer::new(host, room, actor).with_computer(computer),
-                    &status,
-                    joiner.as_ref(),
-                ) {
-                    tracing::debug!(%error, "native runtime client disconnected");
-                }
-            })?;
+        Ok(())
     }
-    Ok(())
 }
 struct ConnectionSlot(Arc<AtomicUsize>);
 impl Drop for ConnectionSlot {
@@ -755,6 +785,7 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     mut server: McpServer<H>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
+    search: &tilo_os_search::OsSearch,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -775,6 +806,11 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
                 Ok(value) if value.get("native") == Some(&json!("join")) => {
                     Some(answer_join(joiner, &value))
                 }
+                Ok(value) if value.get("native") == Some(&json!(tilo_host_search::OPEN)) => Some(
+                    runtime
+                        .block_on(answer_open(search, &value))
+                        .map_err(io::Error::other)?,
+                ),
                 Ok(value) => runtime
                     .block_on(server.handle(value))
                     .map_err(io::Error::other)?,
@@ -786,6 +822,19 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
         if let Some(reply) = reply {
             write_reply(&mut stream, &reply)?;
         }
+    }
+}
+
+/// A native open request's answer: a host search result another process of
+/// this runtime was handed (a Spotlight click reaches the bundle's app),
+/// opened after the same re-check as any other.
+pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Value) -> Value {
+    let Some(entry) = request.get("entry").and_then(Value::as_str) else {
+        return json!({"error": "an open request needs an entry"});
+    };
+    match search.open(entry).await {
+        Ok(()) => json!({"opened": true}),
+        Err(error) => json!({"error": format!("{error:?}")}),
     }
 }
 

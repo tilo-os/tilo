@@ -49,7 +49,7 @@ fn capture_waits_for_production_visual_work_and_fails_when_unfinished() {
     // itself pinned in the store, so the import is a different PDF.)
     let bytes = std::fs::read(
         std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../crates/doc/pdf/tests/fixtures/latin.pdf"),
+            .join("../../crates/platform/tilo-pdf/tests/fixtures/latin.pdf"),
     )
     .expect("fixture bytes");
     assert!(

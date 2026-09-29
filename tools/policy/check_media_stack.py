@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Keep GStreamer the only media stack: no in-tree codec crates.
 
-GStreamer (through `crates/media/core`) is the one media stack. It selects
+GStreamer (through `crates/platform/tilo-media`) is the one media stack. It selects
 hardware encoders and decoders first, then royalty-free software ones, and
 reaches H.264 in software only through Cisco's openh264 binary, which the
 system's `openh264` GStreamer plugin loads at runtime. Compiling a codec into

@@ -1044,6 +1044,24 @@ impl SearchProvider for ApplicationsProvider {
         self.revision()
     }
 
+    /// An address is looked up in the whole snapshot. An empty query's first
+    /// page holds [`SearchBudget::PALETTE`] rows, fewer than a desktop has
+    /// apps, so resolving through it left every later app unreachable by id.
+    fn resolve(&self, id: &str, ctx: SearchContext<'_>) -> Option<SearchResult> {
+        if !ctx.wanted.contains(&ResourceKind::Application) {
+            return None;
+        }
+        let snapshot = self.snapshot()?;
+        snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.is_addressed_by(id))
+            .find_map(|entry| {
+                self.entry_row(&ctx, &snapshot, entry, provider_score(0))
+                    .filter(|row| row.id == id)
+            })
+    }
+
     fn query_page(
         &self,
         ctx: SearchContext<'_>,
@@ -1094,30 +1112,8 @@ impl SearchProvider for ApplicationsProvider {
                 considered = considered.saturating_add(1);
                 continue;
             };
-            let score = [Some(provider_score(hit.rank.unwrap_or(0)))];
-            let mut rows = match entry {
-                ApplicationEntry::Installed(app) => self.installed_rows(
-                    ctx.needle,
-                    vec![app.clone()],
-                    &score,
-                    ctx.chrome.open_target,
-                ),
-                ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
-                    vec![record.clone()],
-                    &score,
-                    &snapshot.installed_ids,
-                    ctx.chrome.open_target,
-                ),
-                ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
-                    ctx.needle,
-                    vec![app.clone()],
-                    &score,
-                    &snapshot.installed_ids,
-                    &snapshot.host_app_ids,
-                    ctx.chrome.open_target,
-                ),
-            };
-            let Some(row) = rows.pop() else {
+            let score = provider_score(hit.rank.unwrap_or(0));
+            let Some(row) = self.entry_row(&ctx, &snapshot, entry, score) else {
                 considered = considered.saturating_add(1);
                 continue;
             };
@@ -1148,7 +1144,56 @@ impl SearchProvider for ApplicationsProvider {
     }
 }
 
+impl ApplicationEntry {
+    /// Whether the row this entry contributes is addressed by `id`, decided
+    /// without building the row.
+    fn is_addressed_by(&self, id: &str) -> bool {
+        match self {
+            Self::Installed(app) => app.package_id == id,
+            Self::Dynamic(record) => record.id == id,
+            Self::Catalogue(app) => id
+                .strip_prefix("app:")
+                .is_some_and(|package_id| package_id == app.package_id),
+        }
+    }
+}
+
 impl ApplicationsProvider {
+    /// The one row `entry` contributes to a page, built exactly as a search
+    /// would build it.
+    fn entry_row(
+        &self,
+        ctx: &SearchContext<'_>,
+        snapshot: &ApplicationsSnapshot,
+        entry: &ApplicationEntry,
+        score: i32,
+    ) -> Option<SearchResult> {
+        let score = [Some(score)];
+        let mut rows = match entry {
+            ApplicationEntry::Installed(app) => self.installed_rows(
+                ctx.needle,
+                vec![app.clone()],
+                &score,
+                ctx.chrome.open_target,
+            ),
+            ApplicationEntry::Dynamic(record) => self.dynamic_results_for_membership(
+                vec![record.clone()],
+                &score,
+                &snapshot.installed_ids,
+                ctx.chrome.open_target,
+            ),
+            ApplicationEntry::Catalogue(app) => self.catalogue_results_for_membership(
+                ctx.needle,
+                vec![app.clone()],
+                &score,
+                &snapshot.installed_ids,
+                &snapshot.host_app_ids,
+                ctx.chrome.open_target,
+            ),
+        };
+        rows.pop()
+    }
+
     fn revision(&self) -> String {
         let (installed, catalogue, host, dynamic) = self.source_generation();
         let ready = self.snapshot.borrow().as_ref().is_some_and(|snapshot| {
@@ -2090,6 +2135,81 @@ mod tests {
         refresh_until_ready(&provider, &ctx);
         assert!(provider.search_revision(&ctx).starts_with("ready:"));
         assert_ne!(provider.search_revision(&ctx), initial_revision);
+    }
+
+    #[test]
+    fn every_application_is_addressable_past_the_first_palette_page() {
+        use crate::shell::chrome_state::SearchScope;
+        use crate::shell::search::SearchRegistry;
+        use crate::shell::search::action_api::{ActionCatalog, AllVisible, ResourceRef};
+        use std::rc::Rc;
+
+        let count = SearchBudget::PALETTE.max_results + 12;
+        let installed = (0..count)
+            .map(|index| {
+                app(
+                    &format!("so.tilo.fixture-{index:03}"),
+                    &format!("Fixture {index:03}"),
+                )
+            })
+            .collect();
+        let source = ApplicationsTestSource::new(
+            installed,
+            vec![offered("so.tilo.store-only", "Store Only", None)],
+            Vec::new(),
+            Vec::new(),
+        );
+        let provider = Rc::new(ApplicationsProvider::with_test_source(source));
+        let chrome = chrome_rc();
+        let doc = AutoCommit::new();
+        {
+            let chrome = chrome.borrow();
+            let ctx = SearchContext {
+                needle: "",
+                wanted: &[ResourceKind::Application],
+                chrome: &chrome,
+                doc: &doc,
+                doc_root: &automerge::ROOT,
+            };
+            refresh_until_ready(&provider, &ctx);
+            assert!(
+                provider
+                    .query_page(ctx, None, SearchBudget::PALETTE)
+                    .results
+                    .len()
+                    < count,
+                "the fixture must not fit on the first page"
+            );
+        }
+        let mut registry = SearchRegistry::new();
+        registry.register(provider);
+        let select = |id: &str| {
+            let resource = ResourceRef::new("applications", id);
+            ActionCatalog::build_for_resource(
+                &registry,
+                &resource,
+                SearchScope::All,
+                None,
+                &chrome.borrow(),
+                &doc,
+                &automerge::ROOT,
+                &AllVisible,
+            )
+            .select(&resource)
+            .map(|action| action.title().to_string())
+        };
+        let last = format!("so.tilo.fixture-{:03}", count - 1);
+        assert_eq!(
+            select(&last).as_deref(),
+            Some(format!("Open Fixture {:03}", count - 1).as_str()),
+            "an installed app past the first page must still open by its address"
+        );
+        assert!(
+            select("app:so.tilo.store-only").is_some_and(|title| title.contains("Store Only")),
+            "a catalogue offer past the first page must still resolve"
+        );
+        assert_eq!(select("so.tilo.store-only"), None);
+        assert_eq!(select("so.tilo.missing"), None);
     }
 
     #[test]

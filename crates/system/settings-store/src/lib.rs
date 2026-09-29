@@ -55,9 +55,12 @@ pub mod keyboard_shortcuts;
 pub mod magnifier;
 pub mod notification_policy;
 pub mod roaming_provenance;
+mod source;
 pub mod system_sounds;
 #[cfg(feature = "watch")]
 pub mod watch;
+
+pub use source::{HostDocument, SettingsSource, install_source, installed_source, merge_section};
 
 /// The file name under the Tilo config root.
 const FILE: &str = "settings.json";
@@ -96,12 +99,34 @@ pub fn settings_path() -> Option<PathBuf> {
 
 /// Read and parse the whole document. Returns an empty object for a missing, unreadable or
 /// malformed file, so callers never distinguish "absent" from "broken" — both mean "use
-/// defaults".
+/// defaults". A host-installed [`SettingsSource`] replaces the file.
 pub fn load() -> Map<String, Value> {
+    if let Some(source) = installed_source() {
+        return source.load();
+    }
     match settings_path() {
         Some(p) => load_at(&p),
         None => Map::new(),
     }
+}
+
+/// Identifies one version of the settings document, for readers that cache it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsStamp {
+    /// The settings file's modification time.
+    Modified(std::time::SystemTime),
+    /// A host-installed source's [`SettingsSource::revision`].
+    Revision(u64),
+}
+
+/// The current [`SettingsStamp`]: the installed source's revision, else the file's
+/// modification time. `None` when there is no readable file.
+pub fn stamp() -> Option<SettingsStamp> {
+    if let Some(source) = installed_source() {
+        return Some(SettingsStamp::Revision(source.revision()));
+    }
+    let modified = std::fs::metadata(settings_path()?).ok()?.modified().ok()?;
+    Some(SettingsStamp::Modified(modified))
 }
 
 /// [`load`] from an explicit path. Exposed so tests can drive a scratch file without
@@ -157,8 +182,12 @@ fn object_section(mut doc: Map<String, Value>, name: &str) -> Map<String, Value>
 /// # Errors
 ///
 /// Returns an error if no config directory is available (see
-/// [`config_root`]), or [`update_section_at`] fails.
+/// [`config_root`]), or [`update_section_at`] fails. With a host-installed
+/// [`SettingsSource`], the source's error.
 pub fn update_section(name: &str, values: Map<String, Value>) -> std::io::Result<()> {
+    if let Some(source) = installed_source() {
+        return source.update_section(name, values);
+    }
     let Some(path) = settings_path() else {
         return Err(std::io::Error::other("no config directory available"));
     };
@@ -176,19 +205,7 @@ pub fn update_section_at(
     values: Map<String, Value>,
 ) -> std::io::Result<()> {
     let mut doc = load_at(path);
-    let entry = doc
-        .entry(name.to_string())
-        .or_insert_with(|| Value::Object(Map::new()));
-    // A section on disk as the wrong type is replaced rather than merged into — there's nothing
-    // to preserve in a value we cannot read.
-    if !entry.is_object() {
-        *entry = Value::Object(Map::new());
-    }
-    if let Some(obj) = entry.as_object_mut() {
-        for (k, v) in values {
-            obj.insert(k, v);
-        }
-    }
+    merge_section(&mut doc, name, values);
     write_atomic(path, &Value::Object(doc))
 }
 

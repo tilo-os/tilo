@@ -24,7 +24,7 @@ impl App {
             return self.close_admission.dialog.is_some();
         }
         if encoded.type_id == SEARCH_OPERATION {
-            return self.history_chrome_enabled && self.document_history.has_search();
+            return self.document_history.has_search();
         }
         if encoded.type_id == HISTORY_OPERATION {
             return self.history_chrome_enabled || self.history.is_some();
@@ -206,6 +206,9 @@ impl App {
         if !self.history_chrome_enabled {
             let mut resources = self.close_admission.resources();
             resources.extend(self.framework_history_resource());
+            if self.document_history.has_search() {
+                resources.push(crate::standalone_history_host::search_resource());
+            }
             return resources;
         }
         let revision = self.document_history.revision();
@@ -263,7 +266,7 @@ impl App {
             return self.invoke_close_encoded(encoded);
         }
         if encoded.type_id == SEARCH_OPERATION {
-            if !self.history_chrome_enabled || !self.document_history.has_search() {
+            if !self.document_history.has_search() {
                 return Err("Search host is unavailable".into());
             }
             serde_json::from_slice::<()>(&encoded.payload)
@@ -868,7 +871,12 @@ impl App {
             self.layout.structure_dirty = true;
         } else if self.native_document_chrome {
             self.enable_document_history_chrome();
+        }
+        if self.native_document_chrome {
+            // Search is the palette, whichever History the document has; the
+            // host's chrome presents it, so the window draws no copy.
             self.document_history.remove_in_window_controls();
+            self.document_history.enable_search(self.input.platform);
         }
     }
 
@@ -876,19 +884,22 @@ impl App {
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
         let history = self.history.as_ref()?;
-        let mut resource =
-            crate::standalone_history_host::history_resource(true, history.is_open());
-        resource.actions.retain(|action| action.id != "open_at");
-        Some(resource)
+        Some(crate::standalone_history_host::history_resource(
+            true,
+            history.is_open(),
+        ))
     }
 
     fn invoke_framework_history(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        let history = self.history.as_ref().ok_or("History is unavailable")?;
+        let history = self.history.as_mut().ok_or("History is unavailable")?;
         match serde_json::from_slice(&encoded.payload) {
             Ok(HistoryCommand::Open) if history.request_open() => {}
+            Ok(HistoryCommand::OpenAt { entry })
+                if crate::standalone_history_host::decode_entry(&entry)
+                    .is_ok_and(|entry| history.request_open_at(entry)) => {}
             Ok(HistoryCommand::Hide) => history.request_close(),
             _ => return Err("Unsupported History operation".into()),
         }
