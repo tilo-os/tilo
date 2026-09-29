@@ -296,7 +296,7 @@ async fn watching_carries_changes_without_being_asked() {
     std::fs::write(fx.local("watched.txt"), b"seen").unwrap();
     fx.write_remote("from-workspace.txt", b"arrived");
 
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    let deadline = tilo_test_env::hang_deadline();
     while fx.remote("watched.txt").as_deref() != Some(b"seen".as_slice())
         || std::fs::read(fx.local("from-workspace.txt"))
             .ok()
