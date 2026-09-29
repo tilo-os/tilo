@@ -193,7 +193,7 @@ impl Harness {
         Self::serve_reconciled(f, true).await
     }
     async fn serve_reconciled(mut f: Fixture, reconciled: bool) -> Self {
-        let (listener, udp) = super::bind_https_pair().await;
+        let (listener, udp) = crate::https::bind_https_pair().await;
         let address = listener.local_addr().unwrap();
         let origin = format!("https://127.0.0.1:{}", address.port());
         let now = f.now;

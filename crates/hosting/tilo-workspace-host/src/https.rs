@@ -281,6 +281,23 @@ struct Parsed {
     proof: Option<Vec<u8>>,
 }
 
+/// A loopback TCP listener and UDP socket on one port, as HTTPS and HTTP/3
+/// share it. Holding the TCP port reserves nothing on UDP, where a parallel
+/// test may already hold that number, so a taken UDP port draws a new pair.
+#[cfg(all(test, feature = "media"))]
+pub(crate) async fn bind_https_pair() -> (tokio::net::TcpListener, std::net::UdpSocket) {
+    loop {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        match std::net::UdpSocket::bind(listener.local_addr().unwrap()) {
+            Ok(udp) => return (listener, udp),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("bind the HTTP/3 half: {error}"),
+        }
+    }
+}
+
 #[cfg(test)]
 fn check_origin(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     if parts.headers.contains_key("cookie") {

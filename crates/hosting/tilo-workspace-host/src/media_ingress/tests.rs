@@ -122,7 +122,7 @@ async fn command(
 #[tokio::test]
 async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody() {
     let mut f = Fixture::new();
-    let (listener, udp) = super::bind_https_pair().await;
+    let (listener, udp) = crate::https::bind_https_pair().await;
     let address = listener.local_addr().unwrap();
     let origin = format!("https://127.0.0.1:{}", address.port());
     f.current
@@ -586,7 +586,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
 #[tokio::test]
 async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
     let mut f = Fixture::new();
-    let (listener, udp) = super::bind_https_pair().await;
+    let (listener, udp) = crate::https::bind_https_pair().await;
     let origin = format!(
         "https://127.0.0.1:{}",
         listener.local_addr().unwrap().port()
