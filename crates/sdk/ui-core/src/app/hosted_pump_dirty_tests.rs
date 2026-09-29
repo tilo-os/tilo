@@ -14,7 +14,10 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
 
     crate::testing::inert_widget_methods!(
         unregistered_leaf_layout,
@@ -29,14 +32,17 @@ impl Widget for HostedPumpProbe {
             self.label = label;
         }
     }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE]
+    }
+}
+
+impl crate::undo::UndoPoints for HostedPumpProbe {
     fn needs_commit(&self) -> bool {
         self.commit.get()
     }
     fn on_commit(&mut self) {
         self.commit.set(false);
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[COUNTER_TYPE]
     }
 }
 

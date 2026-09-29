@@ -1361,32 +1361,6 @@ pub trait Widget {
     fn opening(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        let mut needed = false;
-        self.for_each_child(&mut |child| {
-            if !needed {
-                needed = child.needs_commit();
-            }
-        });
-        needed
-    }
-    /// Drain semantic provenance for the native transaction currently asking
-    /// the host to commit. Use this for CRDT-native edits such as flowing text;
-    /// replayable discrete operations should continue through `ActionHost`.
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.children_mut()
-            .into_iter()
-            .find_map(Widget::take_commit_context)
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-    fn get_state(&self) -> Option<String> {
-        None
-    }
-    fn set_state(&mut self, _state: &str) {}
 
     /// `(caret_byte, text)`, byte offset on a char boundary. The host diffs
     /// this before/after an event so caret-only moves (arrows, Home/End)
@@ -2801,18 +2775,10 @@ pub(crate) mod control_result_probe {
         crate::provides!(
             dyn crate::widget::controls::ActionControls,
             dyn crate::resources::PublishesResources,
-            dyn crate::component_lifecycle::ComponentLifecycle
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::undo::UndoPoints
         );
 
-        fn needs_commit(&self) -> bool {
-            self.dirty_typing
-        }
-        fn on_commit(&mut self) {
-            self.observed
-                .commits
-                .set(self.observed.commits.get().saturating_add(1));
-            self.dirty_typing = false;
-        }
         fn poll_resource_operation(
             &mut self,
             invocation: tilo_actions::InvocationId,
@@ -2892,6 +2858,18 @@ pub(crate) mod control_result_probe {
             } else {
                 ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
             }))
+        }
+    }
+
+    impl crate::undo::UndoPoints for Probe {
+        fn needs_commit(&self) -> bool {
+            self.dirty_typing
+        }
+        fn on_commit(&mut self) {
+            self.observed
+                .commits
+                .set(self.observed.commits.get().saturating_add(1));
+            self.dirty_typing = false;
         }
     }
 

@@ -558,7 +558,8 @@ mod component_adapter {
             dyn crate::presence::capability::PublishesPresence,
             dyn crate::record::capability::RecordScoped,
             dyn crate::view::capability::ViewState,
-            dyn crate::component_lifecycle::ComponentLifecycle
+            dyn crate::component_lifecycle::ComponentLifecycle,
+            dyn crate::undo::UndoPoints
         );
 
         // A component's diagnostic probe observes its own record, the
@@ -1103,35 +1104,6 @@ mod component_adapter {
             };
             root.opening()
         }
-        fn needs_commit(&self) -> bool {
-            // Consumed under the canonical record admission.
-            false
-        }
-        fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-            // Consumed under the canonical record admission.
-            None
-        }
-        fn on_commit(&mut self) {
-            // Consumed under the canonical record admission.
-        }
-        fn get_state(&self) -> Option<String> {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return None;
-            };
-            let root = self.component.root.as_deref()?;
-            root.get_state()
-        }
-        fn set_state(&mut self, state: &str) {
-            let binding = self.component.callback_binding();
-            let Ok(_entry) = binding.enter() else {
-                return;
-            };
-            let Some(root) = self.component.root.as_deref_mut() else {
-                return;
-            };
-            root.set_state(state);
-        }
         fn text_review(&self) -> Option<(usize, String)> {
             let binding = self.component.callback_binding();
             let Ok(_entry) = binding.enter() else {
@@ -1468,6 +1440,38 @@ mod component_adapter {
                 return;
             };
             root.draw_overlay(scene, transform, text_renderer, theme, presence);
+        }
+    }
+
+    impl crate::undo::UndoPoints for BoundAppWidget {
+        fn needs_commit(&self) -> bool {
+            // Consumed under the canonical record admission.
+            false
+        }
+        fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
+            // Consumed under the canonical record admission.
+            None
+        }
+        fn on_commit(&mut self) {
+            // Consumed under the canonical record admission.
+        }
+        fn get_state(&self) -> Option<String> {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return None;
+            };
+            let root = self.component.root.as_deref()?;
+            crate::undo::get_state(root)
+        }
+        fn set_state(&mut self, state: &str) {
+            let binding = self.component.callback_binding();
+            let Ok(_entry) = binding.enter() else {
+                return;
+            };
+            let Some(root) = self.component.root.as_deref_mut() else {
+                return;
+            };
+            crate::undo::set_state(root, state);
         }
     }
 

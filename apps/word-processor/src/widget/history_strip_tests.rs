@@ -223,7 +223,7 @@ fn history_versions_preview_and_restore_without_editing() {
 
         assert_eq!(wp.history.preview_text(), Some("first"));
         assert_eq!(body(state), "first and second", "previewing edits nothing");
-        assert!(!wp.needs_commit(), "previewing is not an edit");
+        assert!(!ui::undo::needs_commit(wp), "previewing is not an edit");
     }
 
     // Phase: clicking_restore_returns_the_earlier_text_as_a_new_version.
@@ -260,10 +260,13 @@ fn history_versions_preview_and_restore_without_editing() {
         let rb = wp.history.restore_button_rect().center();
         click(wp, state, rb);
 
-        assert!(wp.needs_commit(), "the restore asks the host to commit it");
+        assert!(
+            ui::undo::needs_commit(wp),
+            "the restore asks the host to commit it"
+        );
         // This is what `App::commit_action` does on the next frame.
         state.commit_action(None, None);
-        wp.on_commit();
+        ui::undo::on_commit(wp);
 
         assert_eq!(body(state), "first", "the earlier content is back");
 

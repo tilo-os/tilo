@@ -404,6 +404,97 @@ pub fn handle_local_undo_request(
         .any(|child| handle_local_undo_request(child, request))
 }
 
+/// A widget whose native edits (flowing text, a drag) mark undo points, and
+/// which restores its ephemeral state (caret, selection) around them.
+pub trait UndoPoints: crate::widget::Widget {
+    /// Whether an edit in this subtree asks the host to commit an undo point.
+    fn needs_commit(&self) -> bool {
+        let mut needed = false;
+        self.for_each_child(&mut |child| {
+            if !needed {
+                needed = needs_commit(child);
+            }
+        });
+        needed
+    }
+
+    /// Drain semantic provenance for the native transaction asking the host
+    /// to commit. Use this for document-native edits such as flowing text;
+    /// replayable discrete operations go through `ActionHost`.
+    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
+        self.children_mut()
+            .into_iter()
+            .find_map(take_commit_context)
+    }
+
+    /// The host committed an undo point.
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            on_commit(child);
+        }
+    }
+
+    /// Ephemeral state (caret, selection) saved with an undo point.
+    fn get_state(&self) -> Option<String> {
+        None
+    }
+
+    /// Restore ephemeral state saved by [`Self::get_state`].
+    fn set_state(&mut self, _state: &str) {}
+}
+
+/// Whether an edit under `widget` asks for an undo point.
+pub fn needs_commit(widget: &dyn crate::widget::Widget) -> bool {
+    if let Some(points) = crate::widget::capability::capability::<dyn UndoPoints>(widget) {
+        return points.needs_commit();
+    }
+    let mut needed = false;
+    widget.for_each_child(&mut |child| {
+        if !needed {
+            needed = needs_commit(child);
+        }
+    });
+    needed
+}
+
+/// Drain the provenance of the edit asking for an undo point under `widget`.
+pub fn take_commit_context(
+    widget: &mut dyn crate::widget::Widget,
+) -> Option<tilo_actions::ActionContext> {
+    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
+    {
+        return points.take_commit_context();
+    }
+    widget
+        .children_mut()
+        .into_iter()
+        .find_map(take_commit_context)
+}
+
+/// Tell every widget under `widget` that an undo point was committed.
+pub fn on_commit(widget: &mut dyn crate::widget::Widget) {
+    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(&mut *widget)
+    {
+        points.on_commit();
+        return;
+    }
+    for child in widget.children_mut() {
+        on_commit(child);
+    }
+}
+
+/// `widget`'s ephemeral state.
+pub fn get_state(widget: &(impl crate::widget::Widget + ?Sized)) -> Option<String> {
+    crate::widget::capability::capability::<dyn UndoPoints>(widget)?.get_state()
+}
+
+/// Restore `widget`'s ephemeral state.
+pub fn set_state(widget: &mut (impl crate::widget::Widget + ?Sized), state: &str) {
+    if let Some(points) = crate::widget::capability::capability_mut::<dyn UndoPoints>(widget) {
+        points.set_state(state);
+    }
+}
+
 /// The bracket the others descend from, or `None` when there were none.
 ///
 /// A change graph has no total order over heads, so "earliest" is asked of the

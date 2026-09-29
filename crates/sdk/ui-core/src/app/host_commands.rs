@@ -56,7 +56,7 @@ impl App {
             return;
         }
         // Otherwise round-tripping document undo/redo loses caret position.
-        let current_meta = self.root_widget.get_state();
+        let current_meta = crate::undo::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|x| *x == id));

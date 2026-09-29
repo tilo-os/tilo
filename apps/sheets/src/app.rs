@@ -5649,7 +5649,8 @@ impl Widget for SheetsApp {
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
-        dyn ui::presence::capability::PublishesPresence
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6384,11 +6385,12 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
+}
 
+impl ui::undo::UndoPoints for SheetsApp {
     fn needs_commit(&self) -> bool {
         self.pending.commit
     }
-
     fn on_commit(&mut self) {
         self.pending.commit = false;
     }

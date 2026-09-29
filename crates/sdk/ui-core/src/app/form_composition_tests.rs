@@ -40,7 +40,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
     form_layout(&mut app, 900);
     let first = app.focusable_order[0];
     app.set_focused_node(Some(first));
-    app.mutate_node(first, |widget| widget.set_state("8:b:2"))
+    app.mutate_node(first, |widget| crate::undo::set_state(widget, "8:b:2"))
         .unwrap();
     for (width, placement) in [(340, None), (900, Some(LabelPlacement::Above)), (900, None)] {
         let root = app
@@ -57,7 +57,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
         assert_eq!(
             app.inspect_node(focused, |widget| (
                 widget.test_id().map(str::to_owned),
-                widget.get_state()
+                crate::undo::get_state(widget)
             ))
             .unwrap(),
             (Some("name".into()), Some("8:b:2".into()))

@@ -5421,7 +5421,8 @@ impl Widget for MonitorApp {
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5812,14 +5813,6 @@ impl Widget for MonitorApp {
         true
     }
 
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-    }
-
     /// Ask for a 60 Hz frame only for a short-lived visual need. Periodic
     /// sampling uses [`Self::next_wake_deadline`] instead, so an idle Monitor
     /// sleeps between its selected sampling intervals rather than repainting
@@ -5867,6 +5860,15 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::undo::UndoPoints for MonitorApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
     }
 }
 

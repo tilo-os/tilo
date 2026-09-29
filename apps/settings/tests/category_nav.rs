@@ -104,7 +104,7 @@ fn row_rect(app: &SettingsApp, label: &str) -> Option<Rect> {
 fn row_is_active(app: &SettingsApp, label: &str) -> bool {
     fn walk(w: &dyn Widget, label: &str, out: &mut bool) {
         if w.name() == "SidebarRow" && w.test_id() == Some(label) {
-            *out = w.get_state().as_deref() == Some("active");
+            *out = ui::undo::get_state(w).as_deref() == Some("active");
         }
         for c in w.children() {
             walk(c, label, out);
@@ -139,7 +139,7 @@ fn renders_something(app: &mut SettingsApp) -> bool {
 /// navigation exactly one row — the target — must be active.
 fn active_row_count(app: &SettingsApp) -> usize {
     fn walk(w: &dyn Widget, n: &mut usize) {
-        if w.name() == "SidebarRow" && w.get_state().as_deref() == Some("active") {
+        if w.name() == "SidebarRow" && ui::undo::get_state(w).as_deref() == Some("active") {
             *n = n.saturating_add(1);
         }
         for c in w.children() {
