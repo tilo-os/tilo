@@ -1,17 +1,21 @@
 //! File Explorer as a [`tilo_resource::Resource`]: no replayable CRDT actions
-//! (see [`crate::actions`]); folder presentation and filesystem jobs are
-//! View/Effect operations. Path-scoped catalogue rows still need the live
-//! folder listing, so the surface publishes them when not framework-hosted.
+//! (see [`crate::actions`]); folder presentation, places Open, templates, and
+//! filesystem jobs are View/Effect operations published from this resource.
+//! Path-scoped live listing rows stay on the surface when not framework-hosted,
+//! and are the only extras [`PublishesResources`] returns when hosted.
 
 use std::rc::Rc;
 
 use serde::{Deserialize, Serialize};
 use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec, OperationKind};
+use ui::tilo_actions::{Action, ActionError, ActionRegistry, ActionSpec};
 use ui::tilo_resource::{Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::files_app::FileExplorerWidget;
+use crate::files_app::{
+    FileExplorerWidget, folder_palette_operations, load_published_places,
+    published_place_resources, published_template_resources,
+};
 
 /// Empty document vocabulary — Files does not mint CRDT mutations.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,27 +47,15 @@ impl Resource for FileExplorer {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        // Path-independent folder jobs. Path-bound entry rows stay on the
-        // surface until the shared filesystem file resource owns them.
-        [
-            (
-                "refresh",
-                "Refresh folder",
-                OperationKind::Effect,
-                "files.refresh",
-            ),
-            (
-                "new-folder",
-                "New folder",
-                OperationKind::Effect,
-                "files.new-folder",
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, kind, type_id)| {
-            ActionSpec::operation(id, label, kind, type_id, &"").ok()
-        })
-        .collect()
+        // Path-independent folder Views/Effects. Live listing rows and remote
+        // accounts stay on the surface; places/templates are children below.
+        folder_palette_operations()
+    }
+
+    fn children(_state: &()) -> Vec<tilo_actions::Resource> {
+        let mut children = published_place_resources(&load_published_places());
+        children.extend(published_template_resources());
+        children
     }
 }
 
@@ -83,7 +75,11 @@ impl ResourceApp for FileExplorerShell {
 }
 
 impl ResourceSurface<FileExplorer> for FileExplorerWidget {
-    fn present(&mut self, _state: &Rc<()>) {}
+    fn present(&mut self, _state: &Rc<()>) {
+        // Empty on purpose: Files holds path, selection, clipboard and rename
+        // draft as process-local state. Wiping that here would drop unsynced
+        // local interaction that never lived in the Automerge document.
+    }
 
     fn attach(&mut self, _cx: SurfaceCx<FileExplorer>) {
         self.set_framework_hosted(true);
@@ -93,4 +89,130 @@ impl ResourceSurface<FileExplorer> for FileExplorerWidget {
 /// Live launch on the framework host.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<FileExplorerShell>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use automerge::AutoCommit;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn resource_publish_owns_places_and_folder_ops() {
+        let published = ui::tilo_resource::publish::<FileExplorer>("files", "Folder", &());
+        assert_eq!(published.kind, "files.folder");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in [
+            "refresh",
+            "new-folder",
+            "paste",
+            "go-to",
+            "up",
+            "back",
+            "forward",
+            "sort-name",
+            "list",
+            "grid",
+            "add-favorite",
+            "remove-favorite",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+            );
+        }
+        let refresh = published
+            .actions
+            .iter()
+            .find(|action| action.id == "refresh")
+            .expect("refresh");
+        assert_eq!(refresh.kind, OperationKind::Effect);
+        assert_eq!(refresh.operation_type.as_deref(), Some("files.refresh"));
+        let go_to = published
+            .actions
+            .iter()
+            .find(|action| action.id == "go-to")
+            .expect("go-to");
+        assert_eq!(go_to.kind, OperationKind::View);
+
+        let place_children: Vec<_> = published
+            .children
+            .iter()
+            .filter(|child| child.kind == "files.place")
+            .collect();
+        assert!(
+            !place_children.is_empty(),
+            "publish must advertise place Open children: {:?}",
+            published
+                .children
+                .iter()
+                .map(|c| c.kind.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            place_children
+                .iter()
+                .all(|place| place.actions.iter().any(|a| a.id == "open")),
+            "each place child carries Open"
+        );
+
+        let mut widget = FileExplorerWidget::new();
+        let mut doc = AutoCommit::new();
+        widget.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(
+            !widget.is_framework_hosted(),
+            "standalone stays on the local host"
+        );
+        let standalone = widget.resources(&doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "files.folder");
+        assert!(
+            standalone[0]
+                .actions
+                .iter()
+                .any(|a| a.id == "refresh" || a.id == "paste"),
+            "standalone still publishes the folder root"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("notes.txt"), b"x").unwrap();
+        widget.navigate(directory.path().to_path_buf());
+        widget.sync(&mut doc, &ui::automerge::ROOT);
+
+        widget.set_framework_hosted(true);
+        assert!(widget.is_framework_hosted());
+        let extras = widget.resources(&doc);
+        assert!(
+            extras.iter().all(|r| r.kind != "files.folder"),
+            "hosted must not republish files.folder beside ResourceRoot: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|r| r.kind == "files.entry" && r.label == "notes.txt"),
+            "hosted still publishes live listing rows: {:?}",
+            extras
+                .iter()
+                .map(|r| (r.kind.as_str(), r.label.as_str()))
+                .collect::<Vec<_>>()
+        );
+        let entry = extras
+            .iter()
+            .find(|r| r.kind == "files.entry")
+            .expect("entry row");
+        let entry_ids: Vec<_> = entry.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in ["open", "rename", "trash", "copy", "cut"] {
+            assert!(
+                entry_ids.contains(&expected),
+                "live entry missing `{expected}`: {entry_ids:?}"
+            );
+        }
+        assert!(
+            extras.iter().all(|r| r.kind != "files.place"),
+            "places ride publish, not hosted extras"
+        );
+    }
 }
