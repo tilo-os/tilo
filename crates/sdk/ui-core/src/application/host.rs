@@ -541,7 +541,7 @@ impl ApplicationHost {
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
                     || saved.record_id != checkout.id.as_str()
-                    || saved.record_kind != checkout.kind.as_str()
+                    || !checkout.kind.names(&saved.record_kind)
             })
         {
             return Err(LaunchError::BindingMismatch);
@@ -565,7 +565,7 @@ impl ApplicationHost {
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if saved.app_id != package_id
-            || saved.record_kind != definition.record_kind.as_str()
+            || !definition.record_kind.names(&saved.record_kind)
             || id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
