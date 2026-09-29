@@ -18009,29 +18009,73 @@ impl Widget for ShellOverlayHost {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = Instant::now();
+        self.wake_deadline_sources(Instant::now())
+            .into_iter()
+            .filter_map(|(_, deadline)| deadline)
+            .min()
+    }
+}
+
+impl ShellOverlayHost {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
         [
-            self.onboarding
-                .as_ref()
-                .and_then(Widget::next_wake_deadline),
-            self.content.next_wake_deadline(),
-            self.sidebar
-                .as_ref()
-                .and_then(|sidebar| sidebar.next_wake_deadline()),
-            self.chrome.as_ref().and_then(|chrome| {
-                self.notification_stack
-                    .next_wake_deadline(&ChromeNotifications::new(chrome))
-            }),
-            self.chrome
-                .as_ref()
-                .and_then(|chrome| chrome.borrow().osd)
-                .and_then(|osd| osd.next_wake_deadline_at(now)),
-            self.now_playing_wake_deadline(now),
-            self.window_previews_wake_deadline(now),
+            (
+                "onboarding",
+                self.onboarding
+                    .as_ref()
+                    .and_then(Widget::next_wake_deadline),
+            ),
+            ("content", self.content.next_wake_deadline()),
+            (
+                "sidebar",
+                self.sidebar
+                    .as_ref()
+                    .and_then(|sidebar| sidebar.next_wake_deadline()),
+            ),
+            (
+                "notification",
+                self.chrome.as_ref().and_then(|chrome| {
+                    self.notification_stack
+                        .next_wake_deadline(&ChromeNotifications::new(chrome))
+                }),
+            ),
+            (
+                "osd",
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().osd)
+                    .and_then(|osd| osd.next_wake_deadline_at(now)),
+            ),
+            ("now-playing", self.now_playing_wake_deadline(now)),
+            ("window-previews", self.window_previews_wake_deadline(now)),
         ]
-        .into_iter()
-        .flatten()
-        .min()
+    }
+
+    /// Which of the host's sources hold a wake deadline at or before `due`;
+    /// for the desktop's widget tree, the deepest widgets holding it.
+    pub(crate) fn wake_deadline_owners(&self, due: Instant) -> Vec<String> {
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let mut owners = Vec::new();
+        for (name, deadline) in self.wake_deadline_sources(Instant::now()) {
+            if deadline.is_none_or(|at| at > limit) {
+                continue;
+            }
+            if name == "content" {
+                owners.extend(
+                    crate::shell::animation_diagnostics::wake_deadline_leaves(
+                        self.content.as_ref(),
+                        due,
+                    )
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+                );
+            } else {
+                owners.push(name.to_string());
+            }
+        }
+        owners
     }
 }
 

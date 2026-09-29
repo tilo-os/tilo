@@ -1914,6 +1914,73 @@ impl FrameBuilder {
         self.host.content_animating_leaves()
     }
 
+    /// Who holds [`Self::next_wake_deadline`]: chrome sources by name, and
+    /// widgets by path. Empty when nothing will wake the loop. Allocates, so
+    /// only diagnostics and tests call it.
+    pub fn wake_deadline_owners(&self) -> Vec<String> {
+        let Some(due) = self.next_wake_deadline() else {
+            return Vec::new();
+        };
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
+        let mut owners = self.host.wake_deadline_owners(due);
+        for (_, surface) in &self.floating_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if holds(
+            self.osk_overlay
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
+        ) {
+            owners.push("osk".to_string());
+        }
+        if holds(self.chrome.borrow().window_transfers.next_poll()) {
+            owners.push("window-transfers".to_string());
+        }
+        owners
+    }
+
+    /// Paths to the deepest widgets asking for animation frames, host
+    /// sources by label; empty when the loop may idle. For tests and
+    /// diagnostics.
+    pub fn animation_owners(&self) -> Vec<String> {
+        let demand = self.animation_demand();
+        let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
+            .filter(|label| *label != "content")
+            .map(str::to_string)
+            .collect();
+        if demand.host & (1 << 10) != 0 {
+            owners.extend(
+                self.content_animating_leaves()
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+            );
+        }
+        for (_, surface) in &self.floating_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if demand.osk {
+            owners.push("osk".to_string());
+        }
+        owners
+    }
+
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
         AnimationDemand {
             host: self.host.animation_demand_bits(Instant::now()),
