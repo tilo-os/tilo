@@ -7,9 +7,12 @@
 #   buildroot-snapshot.sh record KIND ARCH        verify its signature, write refs/ARCH.env
 #   buildroot-snapshot.sh promote KIND            propose both pins through protected main
 #
-# KIND is kernel or wpe. Each kind builds os/Containerfile.KIND-buildroot into
-# registry.tilo.so/tilo/tilo-KIND-buildroot and pins both architectures in
-# os/KIND-buildroot-snapshot.env.
+# KIND is kernel, wpe or wpe-stage. kernel and wpe build
+# os/Containerfile.KIND-buildroot into registry.tilo.so/tilo/tilo-KIND-buildroot
+# and pin both architectures in os/KIND-buildroot-snapshot.env. wpe-stage
+# compiles the WPE engine (os/Containerfile.wpe, target wpe-stage) on the pinned
+# WPE buildroot into registry.tilo.so/tilo/tilo-wpe-stage, pinned in
+# os/wpe-stage-snapshot.env, so OS image builds never compile it.
 set -euo pipefail
 
 die() { printf 'buildroot-snapshot: %s\n' "$*" >&2; exit 1; }
@@ -32,6 +35,13 @@ wpe_inputs=(
   os/external-assets/github-assets.tsv
   os/dev/cache-github-assets.sh
 )
+wpe_stage_inputs=(
+  os/Containerfile.wpe
+  os/dev/build-wpe.sh
+  os/wpe-buildroot-snapshot.env
+  os/external-assets/github-assets.tsv
+  os/dev/cache-github-assets.sh
+)
 
 kind_vars() {
   case "$1" in
@@ -39,11 +49,19 @@ kind_vars() {
             inputs=("${common_inputs[@]}" "${kernel_inputs[@]}") ;;
     wpe) key=WPE_BUILDROOT label=WPE promote_kind=wpe
          inputs=("${common_inputs[@]}" "${wpe_inputs[@]}") ;;
+    wpe-stage) key=WPE_STAGE label="WPE engine" promote_kind=wpe-stage
+         inputs=("${common_inputs[@]}" "${wpe_stage_inputs[@]}")
+         image=registry.tilo.so/tilo/tilo-wpe-stage pins=os/wpe-stage-snapshot.env
+         return ;;
     *) die "unknown buildroot kind: $1" ;;
   esac
   image="registry.tilo.so/tilo/tilo-$1-buildroot"
   pins="os/$1-buildroot-snapshot.env"
 }
+
+# The key OS builds compare with a pinned engine's label: the engine's inputs.
+# build-image.yml computes the same (os/dev/wpe-stage-key.sh).
+wpe_stage_key() { "$(dirname "${BASH_SOURCE[0]}")/wpe-stage-key.sh" "$1"; }
 
 arch_key() {
   case "$1" in
@@ -55,7 +73,7 @@ arch_key() {
 
 changed() {
   local before=$1 after=$2 kinds=() kind
-  for kind in kernel wpe; do
+  for kind in kernel wpe wpe-stage; do
     kind_vars "$kind"
     if [[ ! $before =~ ^[0-9a-f]{40}$ || $before =~ ^0+$ ]] \
        || ! git diff --quiet "$before" "$after" -- "${inputs[@]}"; then
@@ -71,6 +89,22 @@ audit() {
   kind_vars "$kind"
   [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || die "invalid digest: $digest"
   ref="$image@$digest"
+  if [ "$kind" = wpe-stage ]; then
+    # A scratch image: copy its markers out instead of running it.
+    local container probe
+    probe="$(mktemp -d)"
+    container="$(docker create --entrypoint /none "$ref")"
+    docker cp "$container:/usr/lib/tilo/wpe-stage-arch" "$probe/arch"
+    docker cp "$container:/wpe/usr/lib" "$probe/lib"
+    docker rm "$container" >/dev/null
+    test "$(cat "$probe/arch")" = "$arch"
+    find "$probe/lib" -name 'libWPEWebKit-2.0.so*' -print -quit | grep -q .
+    rm -rf "$probe"
+    test "$(docker image inspect --format '{{index .Config.Labels "org.tilo.wpe.inputs"}}' "$ref")" \
+      = "$(wpe_stage_key "$arch")"
+    printf 'TILO_BUILDROOT_REF=%s\n' "$ref" >> "$GITHUB_ENV"
+    return 0
+  fi
   actual_arch="$(docker run --rm --entrypoint cat "$ref" "/usr/lib/tilo/$kind-buildroot-arch")"
   test "$actual_arch" = "$arch"
   # The package manifest, and no repository to fall back to.
@@ -136,7 +170,7 @@ promote() {
   . "$x86"; . "$arm"
   x86=${!x86_name} arm=${!arm_name}
   for ref in "$x86" "$arm"; do
-    [[ $ref =~ ^registry\.tilo\.so/tilo/tilo-$kind-buildroot@sha256:[0-9a-f]{64}$ ]] \
+    [[ $ref =~ ^${image//./\\.}@sha256:[0-9a-f]{64}$ ]] \
       || die "not an immutable $label buildroot reference: $ref"
     cosign verify --key keys/cosign.pub "$ref" >/dev/null
   done
