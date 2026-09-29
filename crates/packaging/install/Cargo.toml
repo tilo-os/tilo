@@ -38,6 +38,10 @@ app-registry = { path = "../app-registry" }
 tilo-rt.workspace = true
 workspace-hack = { version = "0.1" }
 
+# Registers the runtime's GNOME Shell and KRunner search providers.
+[target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
+tilo-os-search = { path = "../../runtime/os-search" }
+
 [dev-dependencies]
 getrandom.workspace = true
 ed25519-dalek.workspace = true
