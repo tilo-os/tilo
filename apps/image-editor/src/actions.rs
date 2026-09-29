@@ -43,8 +43,21 @@ pub fn register(r: &mut ActionRegistry) {
 }
 
 /// Nested project catalogue for [`crate::resource::ImageEditor::children`].
+/// Adjustment Document ops (remove, set-*, move) ride these children through
+/// `tilo_resource::publish`; View reveal ops stay on the same child rows.
 pub(crate) fn project_children(project: &Project) -> Vec<Resource> {
     resource(project).children
+}
+
+/// Root Document operations for [`crate::resource::ImageEditor::bound_actions`].
+/// Add-exposure / add-contrast / … mint their node id at publish time so the
+/// palette and agents apply the same collaborative graph edit.
+pub(crate) fn project_bound_document_actions(project: &Project) -> Vec<ActionSpec> {
+    resource(project)
+        .actions
+        .into_iter()
+        .filter(|spec| spec.kind == OperationKind::Document)
+        .collect()
 }
 
 /// Root View/Effect operations for [`crate::resource::ImageEditor::local_operations`].

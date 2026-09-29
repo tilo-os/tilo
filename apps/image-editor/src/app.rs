@@ -481,17 +481,68 @@ impl ImageEditorApp {
     }
 
     /// Show the project graph the framework resource already holds.
-    /// An empty projection does not wipe a graph that has not been published yet.
+    /// An empty / blank projection does not wipe a graph that has not been
+    /// published yet (local source path or adjustments that never reached the
+    /// shared document).
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::model::Project) {
-        if state.name.is_empty()
-            && state.operations.is_empty()
-            && !self.project.operations.is_empty()
-        {
+        if Self::is_blank_projection(state) && self.has_unpublished_local_edits() {
             return;
         }
         self.project = state.clone();
         self.rendered_project = None;
         self.rebuild_crop_editor();
+    }
+
+    fn is_blank_projection(project: &Project) -> bool {
+        crate::actions::source_path(project).is_empty()
+            && !project
+                .graph
+                .nodes
+                .keys()
+                .any(|id| id.as_str() != "source" && id.as_str() != "output")
+    }
+
+    fn has_unpublished_local_edits(&self) -> bool {
+        !Self::is_blank_projection(&self.project)
+    }
+
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// deferring the project door to `tilo_resource::publish`.
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test / attach override so [`PublishesResources`] can keep only live
+    /// extras beside ResourceRoot.
+    #[cfg(test)]
+    pub(crate) fn set_framework_hosted(&mut self, hosted: bool) {
+        self.actions.set_hosted_for_test(hosted);
+    }
+
+    /// Seed a project that has not been written through the framework resource.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_project_for_test(&mut self, project: Project) {
+        self.project = project;
+        self.rendered_project = None;
+        self.rebuild_crop_editor();
+    }
+
+    /// Adjustment node ids currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_adjustment_ids_for_test(&self) -> Vec<String> {
+        self.project
+            .graph
+            .nodes
+            .keys()
+            .filter(|id| id.as_str() != "source" && id.as_str() != "output")
+            .cloned()
+            .collect()
+    }
+
+    /// Source path currently held on the local project surface.
+    #[cfg(test)]
+    pub(crate) fn local_source_path_for_test(&self) -> String {
+        crate::actions::source_path(&self.project).to_owned()
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
@@ -2997,13 +3048,24 @@ impl ui::search::capability::SearchSource for ImageEditorApp {
 }
 
 impl ui::resources::PublishesResources for ImageEditorApp {
+    /// Standalone / `--shots` / unit tests publish through
+    /// [`tilo_resource::publish`]. When the framework hosts the surface, that
+    /// door already owns the project — crop drag and in-flight export stay on
+    /// the widget and are not ActionSpec resources today.
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the project and its adjustments. The
-        // widget tree would be a second door.
         if self.actions.is_hosted() {
             return Vec::new();
         }
-        vec![crate::actions::resource(&self.project)]
+        let label = if self.project.name.is_empty() {
+            "Image Editor"
+        } else {
+            self.project.name.as_str()
+        };
+        vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+            crate::actions::PROJECT_RESOURCE_ID,
+            label,
+            &self.project,
+        )]
     }
 }
 
