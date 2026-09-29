@@ -297,7 +297,13 @@ class AppReleaseWorkflowContract(unittest.TestCase):
                         result = subprocess.run(['bash', bash_path(script)])
                     self.assertEqual(0 if allowed else 1, result.returncode)
             selection = plan.split('        id: plan\n', 1)[1].split('\n      - ', 1)[0]
-            self.assertNotIn('steps.builder.outputs', selection)
+            # Only main pushes, which always resolve a builder, compare it with
+            # the prior collection's builder; PR selection never reads it.
+            self.assertEqual(1, selection.count('steps.builder.outputs'))
+            self.assertIn('BUILDER: ${{ steps.builder.outputs.image }}', selection)
+            pushed = selection.split('if [[ $GITHUB_EVENT_NAME == push ]]', 1)
+            self.assertEqual(2, len(pushed))
+            self.assertNotIn('"${BUILDER:-}"', pushed[0])
             provenance = plan.split('      - name: Retain trusted coordinator plan provenance\n', 1)[1]
             self.assertIn("if: github.event.inputs.coordinator_intent != ''", provenance)
             self.assertIn('RESOLVED_BUILDER: ${{ steps.builder.outputs.image }}', provenance)
@@ -402,7 +408,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
             self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
             self.assertIn("*.webp) expected_type='image/webp'", publish)
-            self.assertIn('done < "$registry_media_urls"', publish)
+            # Every media URL is checked, eight at a time, and any failure fails.
+            self.assertIn('tr \'\\t\' \'\\n\' < "$registry_media_urls"', publish)
+            self.assertIn("| xargs -d '\\n' -n 2 -P 8 bash -c 'check_media \"$1\" \"$2\"' _", publish)
             self.assertIn('metadata="$registry_metadata/$name.json"', publish)
             self.assertIn('--metadata "$metadata"', publish)
             self.assertIn('--data-binary "@$request"', publish)

@@ -9,7 +9,10 @@ description = "In-process HTTP/1.1 responder for tests: scripted replies, record
 # Test fixtures only; deliberately free of dependencies so every crate can take
 # it as a dev-dependency without widening its build.
 [dependencies]
-workspace-hack = { version = "0.1" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

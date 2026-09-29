@@ -58,7 +58,7 @@ class InitramfsModulePolicyTests(unittest.TestCase):
             self.write('usr/libexec/' + name, '#!/bin/sh\nexit 0\n', executable=True)
         self.write('usr/lib/systemd/system/tilo-growfs-sysroot.service',
                    'ConditionPathIsMountPoint=/sysroot\n'
-                   'ExecStart=/usr/lib/systemd/systemd-growfs /sysroot\n')
+                   "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'\n")
         self.write('usr/lib/systemd/system/tilo-growfs-sysroot.timer',
                    'Unit=tilo-growfs-sysroot.service\nOnBootSec=5s\n')
         self.write('usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf',

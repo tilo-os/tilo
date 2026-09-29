@@ -1,0 +1,30 @@
+[package]
+name = "example-graph-screens"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license.workspace = true
+
+[lib]
+name = "example_graph_screens"
+path = "src/lib.rs"
+
+[[bin]]
+name = "example-graph-screens"
+path = "src/main.rs"
+
+[features]
+thin = ["dep:runtime-dylib"]
+
+[dependencies]
+runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
+workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app", default-features = false }
+
+[lints]
+workspace = true

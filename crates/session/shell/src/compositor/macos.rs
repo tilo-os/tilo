@@ -96,7 +96,18 @@ pub fn parse(args: &[String]) -> Result<Option<Options>, String> {
                 match flag.as_str() {
                     "--state-dir" => options.state_dir = value.into(),
                     "--files-dir" => options.files_dir = value.into(),
-                    _ => options.shots = Some(value.into()),
+                    _ => {
+                        let path = PathBuf::from(value);
+                        if path.is_dir() {
+                            return Err(format!(
+                                "--shots writes one PNG file, but {} is a directory; name a \
+                                 file such as {}",
+                                path.display(),
+                                path.join("shell.png").display()
+                            ));
+                        }
+                        options.shots = Some(path);
+                    }
                 }
             }
             _ => return Err(format!("unsupported macOS option {flag:?}; see --help")),

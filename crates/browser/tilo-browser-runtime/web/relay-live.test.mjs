@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayLive, relayLiveCarriers} from './relay-live.mjs';
+import {createRelayLive, createSpeakers, relayLiveCarriers} from './relay-live.mjs';
 
 const ROOM = 'aa'.repeat(32);
 const ME = 'bb'.repeat(32);
@@ -16,11 +16,18 @@ const codec = {
   liveRecordTrack: record => `ops/${JSON.parse(record).record}`,
 };
 
+const AGENT = 'dd'.repeat(32);
+
 function fakePeer() {
   const durable = [];
+  const grants = [];
   return {
     durable,
-    liveGrant: async room => JSON.stringify({token: '0102', room: ROOM, publisher: ME, expiresAtNs: (Date.now() + 3_600_000) * 1e6, asked: room}),
+    grants,
+    liveGrant: async (room, agent) => {
+      grants.push({room, agent});
+      return JSON.stringify({token: '0102', room: ROOM, publisher: agent ? AGENT : ME, expiresAtNs: (Date.now() + 3_600_000) * 1e6});
+    },
     takeDurableEvents: () => JSON.stringify(durable.splice(0)),
   };
 }
@@ -95,6 +102,80 @@ test('a member\'s caret reaches remoteState and its label reaches the overlay\'s
   carriers.handlers.member(THEM, false);
   assert.deepEqual(live.api.remoteState(), []);
   live.stop();
+});
+
+test('the grant waits until the room admitted the device', async () => {
+  const peer = fakePeer();
+  let admit;
+  const live = createRelayLive(peer, codec, 'room-uuid', {
+    endpoint: 'https://room.test:9700/moq/live', carriers: fakeCarriers(), ready: new Promise(resolve => { admit = resolve; }),
+  });
+  await settle();
+  assert.equal(peer.grants.length, 0);
+  assert.equal(live.api.available, false);
+  admit();
+  await settle();
+  assert.deepEqual(peer.grants, [{room: 'room-uuid', agent: undefined}]);
+  assert.equal(live.api.state, 'live');
+  live.stop();
+});
+
+test('an agent layer publishes under the agent grant, and agents are told apart from people', async () => {
+  const peer = fakePeer();
+  const carriers = fakeCarriers();
+  const agent = createRelayLive(peer, codec, 'room-uuid', {
+    endpoint: 'https://room.test:9700/moq/live', carriers, agent: 'Reading agent', participant: {label: 'Reading agent', color: '#8e4ec6'},
+  });
+  await settle();
+  assert.deepEqual(peer.grants, [{room: 'room-uuid', agent: 'Reading agent'}]);
+  assert.deepEqual(carriers.options.namespace, ['tilo-live', ROOM, AGENT]);
+  agent.api.publishPresence({focus: WRITER, selection: {anchor: '03', head: '03'}});
+  await settle();
+  assert.equal(carriers.sent.presence.at(-1).frame.participant.kind, 'agent');
+  agent.stop();
+
+  // A person's layer sees the agent as an agent, not as a member.
+  const personCarriers = fakeCarriers();
+  const person = createRelayLive(fakePeer(), codec, 'room-uuid', {endpoint: 'https://room.test:9700/moq/live', carriers: personCarriers});
+  await settle();
+  const activity = [];
+  person.api.onAgentActivity(value => activity.push(value));
+  personCarriers.handlers.member(AGENT, true);
+  personCarriers.handlers[`presence:${AGENT}`](frame({kind: 'presence', frame: {
+    seq: 1, sentAtMs: Date.now(), focus: WRITER, pointer: null, selection: {anchor: '03', head: '03'}, drag: null,
+    participant: {kind: 'agent', label: 'Reading agent', color: '#8e4ec6', activity: null},
+  }}), performance.now());
+  assert.deepEqual(person.api.agents(), [{publisher: AGENT, agentId: 'Reading agent', name: 'Reading agent'}]);
+  assert.deepEqual(person.members(), []);
+  assert.equal(activity[0].name, 'Reading agent');
+  person.stop();
+});
+
+test('mounts sharing a layer: the one acted in speaks, and an action that moved nothing does not take over', () => {
+  const published = [];
+  const layer = {api: {state: 'live', publishPresence: partial => { published.push(partial); return true; }, publishPreview: () => true}};
+  const speakers = createSpeakers();
+  const notes = speakers.mount();
+  const chat = speakers.mount();
+  const idle = speakers.mount();
+  const NOTES = {app: 'so.tilo.word-processor', record: 'notes'};
+  const CHAT = {app: 'so.tilo.chat', record: 'general'};
+  // The first to publish speaks until another mount is acted in.
+  assert.equal(chat.view(layer).publishPresence({focus: CHAT, selection: {anchor: 'c0', head: 'c0'}}), true);
+  // An edit in the notes moves their caret: the notes speak.
+  notes.acted();
+  assert.equal(notes.view(layer).publishPresence({focus: NOTES, selection: {anchor: 'n9', head: 'n9'}}), true);
+  // Posting in Chat left its caret where it was: the notes keep speaking.
+  chat.acted();
+  assert.equal(chat.view(layer).publishPresence({focus: CHAT, selection: {anchor: 'c0', head: 'c0'}}), false);
+  // An idle mount's state republish is dropped.
+  assert.equal(idle.view(layer).publishPresence({focus: null, selection: null}), false);
+  assert.deepEqual(published.at(-1).focus, NOTES);
+  // Input claims at once; releasing hands the layer back.
+  chat.claim(layer);
+  assert.equal(chat.view(layer).publishPresence({pointer: [1, 2]}), true);
+  chat.release();
+  assert.equal(idle.view(layer).publishPresence({focus: null, selection: null}), true);
 });
 
 test('durable events from the peer drop previews and reach onDurable', async () => {

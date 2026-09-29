@@ -32,6 +32,7 @@ mod daemon;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;
+mod os_search;
 pub mod profile;
 pub mod standalone;
 pub mod unix;
@@ -48,6 +49,8 @@ tilo_automerge_isolate::test_worker!();
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
+/// The profile's workspace files, served read only (`tilo-file-provider`).
+pub const FILES_SOCKET: &str = "files.sock";
 
 /// Joins a room another host governs from an invitation, answering the
 /// joined room's id.

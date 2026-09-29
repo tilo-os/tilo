@@ -21,7 +21,7 @@ path = "src/bin/tilo-runtime.rs"
 
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 advisory-lock = { path = "../../system/advisory-lock" }
 atomic-file = { path = "../../system/atomic-file" }
 automerge.workspace = true
@@ -56,10 +56,15 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
-# The document-media capability over the content store, without the mount.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+# The document-media capability over the content store, and the workspace
+# files mirrored into a folder where nothing mounts them.
+tilo-fs = { package = "fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
+# The one per-user index the host's own search reads.
+tilo-os-search = { path = "../os-search" }
+# The native request an app hands a host search result back with.
+tilo-host-search = { path = "../../platform/tilo-host-search" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
 # Joined rooms: their enrolled replicas, invitation redemption and relay sessions.
 tilo-joined-room = { path = "../../collab/tilo-joined-room" }
@@ -74,9 +79,19 @@ tracing-subscriber.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
 
+# Mounts the workspace files where this user can mount FUSE.
+[target.'cfg(target_os = "linux")'.dependencies]
+fuser.workspace = true
+
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 launcher-macos = { path = "../../packaging/launcher-macos" }
+# The file chooser a confined app asks this runtime to show.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The camera and microphone a confined app asks this runtime to capture.
+tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
+# The login Keychain keeps the channel-state key.
+tilo-secrets = { path = "../../platform/tilo-secrets" }
 
 [dev-dependencies]
 # The steward channel fixtures owner tests seal writes with.

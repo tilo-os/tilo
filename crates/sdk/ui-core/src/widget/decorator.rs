@@ -436,6 +436,10 @@ pub trait Decorator {
         self.inner_mut().on_nav_gesture(dir, state, path)
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.inner().nav_availability()
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         self.inner_mut().take_focus_reset()
     }
@@ -961,6 +965,10 @@ impl<T: Decorator> Widget for T {
         path: &ModelPath,
     ) -> bool {
         Decorator::on_nav_gesture(self, dir, state, path)
+    }
+
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        Decorator::nav_availability(self)
     }
 
     fn take_focus_reset(&mut self) -> bool {

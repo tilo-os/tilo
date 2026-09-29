@@ -159,6 +159,31 @@ podman_epoch_args() {
   fi
 }
 
+# The creation time of an image, in seconds since the epoch: from local storage
+# when it is there, else from its registry.
+tilo_image_epoch() {
+  local created
+  created="$(podman image inspect --format '{{.Created.Unix}}' "$1" 2>/dev/null)" \
+    || created="$(skopeo inspect --format '{{.Created.Unix}}' "docker://$1" 2>/dev/null)" \
+    || return 1
+  [[ "$created" =~ ^[1-9][0-9]*$ ]] || return 1
+  printf '%s\n' "$created"
+}
+
+# When the source of a local image was made, as an RFC 3339 UTC time: its
+# org.tilo.source-date-epoch label (the commit time; a local build's layers may
+# be dated by its base instead, TILO_LAYER_EPOCH=base), else the image's
+# creation time. Empty when neither is readable.
+tilo_image_source_time() {
+  local epoch
+  epoch="$(podman image inspect --format '{{index .Labels "org.tilo.source-date-epoch"}}' "$1" 2>/dev/null || true)"
+  if [[ "$epoch" =~ ^[1-9][0-9]*$ ]]; then
+    date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
+  else
+    podman image inspect --format '{{.Created.UTC.Format "2006-01-02T15:04:05Z"}}' "$1" 2>/dev/null || true
+  fi
+}
+
 # Flags every local `podman build` of an OS image takes:
 #   --jobs  independent stages build in parallel (podman's default is one at a
 #           time; BuildKit in CI already runs them concurrently).
