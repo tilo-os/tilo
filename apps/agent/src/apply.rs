@@ -670,24 +670,17 @@ impl Editor {
         if spans.is_empty() {
             return;
         }
-        let Ok(c) = tilo_doc::model::open(&self.doc, &automerge::ROOT) else {
-            return;
+        let action = word_processor::actions::RichTextAction::SetMark {
+            region: word_processor::actions::RegionKind::Body,
+            spans: spans
+                .into_iter()
+                .map(|(block, start, end)| word_processor::actions::Span { block, start, end })
+                .collect(),
+            name: tilo_doc::schema::MARK_AUTHOR.to_string(),
+            value: Some(word_processor::actions::MarkVal::Str(self.author.clone())),
+            also_clear: Vec::new(),
         };
-        let mut ids = tilo_doc::IdGen::new(self.doc.get_actor().to_hex_string());
-        let mut dm = tilo_doc::DocMut {
-            doc: &mut self.doc,
-            c: &c,
-            ids: &mut ids,
-        };
-        for (id, start, end) in spans {
-            dm.add_mark(
-                &id,
-                start,
-                end,
-                tilo_doc::schema::MARK_AUTHOR,
-                self.author.as_str(),
-            );
-        }
+        let _ = action.apply_under(&mut self.doc, &automerge::ROOT);
     }
 
     /// How many ancestor changes this replica is waiting for.
