@@ -251,19 +251,28 @@ fn census(path: &Path) -> (usize, u64, usize, u64) {
     }
     (count, bytes, unique.len(), unique.values().sum())
 }
+/// Reported totals of a tree the running relay keeps writing: an entry
+/// renamed or removed while it is walked is not part of this snapshot.
 fn tree_totals(path: &Path) -> (usize, u64) {
-    if !path.exists() {
-        return (0, 0);
+    fn present<T>(path: &Path, result: std::io::Result<T>) -> Option<T> {
+        match result {
+            Ok(value) => Some(value),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => panic!("walk {}: {error}", path.display()),
+        }
     }
-    fs::read_dir(path)
-        .unwrap()
-        .map(|entry| {
-            let entry = entry.unwrap();
-            if entry.file_type().unwrap().is_dir() {
+    let Some(entries) = present(path, fs::read_dir(path)) else {
+        return (0, 0);
+    };
+    entries
+        .filter_map(|entry| {
+            let entry = present(path, entry)?;
+            let metadata = present(path, entry.metadata())?;
+            Some(if metadata.is_dir() {
                 tree_totals(&entry.path())
             } else {
-                (1, entry.metadata().unwrap().len())
-            }
+                (1, metadata.len())
+            })
         })
         .fold((0, 0), |a, b| (a.0 + b.0, a.1 + b.1))
 }
@@ -280,7 +289,32 @@ fn peak_rss_bytes() -> u64 {
         rss * 1024
     }
 }
-fn report(
+/// Whether every retained lineage holds only the generation its `CURRENT`
+/// names. The relay collects superseded generations in bounded steps after
+/// publishing, so a tree still being collected reads as not yet collected.
+fn collected(workspace: &Path) -> bool {
+    let generation = |name: &str| name.len() == 32 && name.bytes().all(|b| b.is_ascii_hexdigit());
+    let mut lineages = vec![workspace.join("shell-selected-v1")];
+    if let Ok(entries) = fs::read_dir(workspace.join("retained/v2")) {
+        lineages.extend(entries.flatten().map(|entry| entry.path()));
+    }
+    lineages
+        .iter()
+        .filter(|lineage| lineage.exists())
+        .all(|lineage| {
+            let Ok(current) = fs::read_to_string(lineage.join("CURRENT")) else {
+                return false;
+            };
+            fs::read_dir(lineage).is_ok_and(|entries| {
+                entries.flatten().all(|entry| {
+                    let name = entry.file_name();
+                    let name = name.to_string_lossy();
+                    !generation(&name) || name == current
+                })
+            })
+        })
+}
+async fn report(
     owner: &SessionOwner,
     offline: usize,
     cut: &str,
@@ -291,6 +325,12 @@ fn report(
             .unwrap()
             .to_string(),
     );
+    tilo_test_env::within("the relay to collect superseded generations", async {
+        while !collected(&workspace) {
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+    })
+    .await;
     let files = census(&workspace);
     let retained = tree_totals(&workspace.join("retained"));
     let selected = tree_totals(&workspace.join("shell-selected-v1"));
@@ -359,7 +399,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
         publish(&owner, &native).unwrap();
         let output = converge(&session, &mut receiver, &owner).await;
         output.assert_live_full_basis(&owner);
-        report(&owner, offline, "baseline", &output);
+        report(&owner, offline, "baseline", &output).await;
         let mut offline_peer = receiver.clone();
         let mut full_counts = BTreeSet::new();
         for round in 0..6 {
@@ -379,7 +419,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
             publish(&owner, &native).unwrap();
             let output = converge(&session, &mut receiver, &owner).await;
             output.assert_live_full_basis(&owner);
-            let files = report(&owner, offline, &format!("refresh-{round}"), &output);
+            let files = report(&owner, offline, &format!("refresh-{round}"), &output).await;
             full_counts.insert(files.2);
             assert_eq!(
                 files.2,
@@ -409,7 +449,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 output.frames, 2,
                 "small commit output must be room plus touched app"
             );
-            report(&owner, offline, &format!("commit-{round}"), &output);
+            report(&owner, offline, &format!("commit-{round}"), &output).await;
             if round == 2 {
                 native.into_client().close().await;
                 native = host.connect(&owner).await.unwrap();
@@ -422,7 +462,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 let mut new_peer = fresh(&owner);
                 let output = replay(&session, &mut [&mut receiver, &mut new_peer]).await;
                 assert!(exact(&receiver, owner.peer()) && exact(&new_peer, owner.peer()));
-                report(&owner, offline, "reconnect", &output);
+                report(&owner, offline, "reconnect", &output).await;
             }
         }
         population_counts.push(full_counts);
@@ -453,7 +493,7 @@ async fn actual_owner_growth_is_independent_of_offline_population_and_replays_ex
                 "final heads, room heads or exact receipts differ"
             );
         }
-        report(&owner, offline, "restart-final", &output);
+        report(&owner, offline, "restart-final", &output).await;
         println!(
             "owner_growth_final {}",
             serde_json::json!({"offline":offline,"replay_ms":start.elapsed().as_millis(),"heads":owner.peer().rows(),"exact_receipts":owner.peer().rows().iter().map(|row| owner.peer().durable_coverage(&row.app_id,&row.record_id).unwrap()).collect::<Vec<_>>()})
