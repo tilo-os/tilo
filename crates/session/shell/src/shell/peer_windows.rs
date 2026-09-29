@@ -13,7 +13,7 @@
 use crate::shell::launcher;
 use crate::shell::state::WorkspaceAuthority as _;
 use crate::shell::state::{
-    GroupId, ResourceRef, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
+    GroupId, ResourceRef, RoomId, StripId, TabId, TileContent, Verb, Workspace, WorkspaceTree,
 };
 use crate::shell::tab_binding::Placement;
 
@@ -60,6 +60,24 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         if !item.local && workspace.owner.is_none() {
             continue;
         }
+        // A governed room's window opens the record its owner created for
+        // it; wait until this device has admitted it.
+        if !item.local && tree.requires_native_owner(workspace.room) {
+            match prepare_hosted_record(tree, &item) {
+                Ok(true) => {}
+                Ok(false) => {
+                    tracing::debug!(tab = ?item.tab, app = %item.app_id, "governed window waits for its record");
+                    continue;
+                }
+                Err(refusal) => {
+                    tracing::debug!(tab = ?item.tab, app = %item.app_id, %refusal, "governed window cannot open");
+                    if set_note(tree, item.tab, refusal) {
+                        decided = true;
+                    }
+                    continue;
+                }
+            }
+        }
         let note = match open_for(tree, &item) {
             Ok(()) => {
                 started.push(item.app_id.clone());
@@ -72,6 +90,50 @@ pub fn examine(tree: &mut WorkspaceTree) -> bool {
         }
     }
     decided
+}
+
+/// Reads a governed room's committed record: (room, app, record) → bytes.
+type HostedRecordReader =
+    dyn Fn(RoomId, &str, &ui::record::RecordId) -> Result<Vec<u8>, String> + Send + Sync;
+static HOSTED_RECORDS: std::sync::OnceLock<Box<HostedRecordReader>> = std::sync::OnceLock::new();
+
+/// Install how this session reads the records of rooms another device governs.
+pub(crate) fn set_hosted_record_reader(reader: Box<HostedRecordReader>) {
+    let _ = HOSTED_RECORDS.set(reader);
+}
+
+/// Point `item`'s window at the record its governed room's owner created for
+/// the tab: keep that record in this device's profile of the app and name it
+/// in the saved view of the instance the tab launches as. `Ok(false)`
+/// while this device has not admitted the record yet.
+fn prepare_hosted_record(tree: &WorkspaceTree, item: &Pending) -> Result<bool, String> {
+    use crate::shell::record_hydration::{RecordAddress, keep, reopen_on};
+    let Some(ws) = tree.desktop.workspaces.get(item.workspace) else {
+        return Err("That workspace is gone".to_string());
+    };
+    let room = ws.room;
+    let Some(record) = tree
+        .room_tab_record(room, item.tab)
+        .and_then(|record| ui::record::RecordId::parse(&record))
+    else {
+        return Ok(false);
+    };
+    let (Some(reader), Some(data_home)) =
+        (HOSTED_RECORDS.get(), ::launcher::appdir::host_data_home())
+    else {
+        return Err("This workspace's records are not reachable here".to_string());
+    };
+    let Ok(bytes) = reader(room, &item.app_id, &record) else {
+        return Ok(false);
+    };
+    let address = RecordAddress {
+        room,
+        app_id: item.app_id.clone(),
+        record,
+    };
+    let kept = keep(&address, &data_home, &bytes)?;
+    reopen_on(&address, &data_home, item.tab, Some(&kept));
+    Ok(true)
 }
 
 /// Whether any peer window is still waiting to be examined.
@@ -198,6 +260,14 @@ fn open_for(tree: &mut WorkspaceTree, item: &Pending) -> Result<(), String> {
         bring_over_continued_record(item, ws.room)?;
     }
     stage_continuation_for_tab(tree, item);
+    // The instance runs as the tab, whose saved view names the record the
+    // room's owner created for it (`prepare_hosted_record`).
+    if !item.local
+        && tree.requires_native_owner(ws.room)
+        && tree.room_tab_record(ws.room, item.tab).is_some()
+    {
+        launcher::stage_continuation_record(ws.room, item.tab, item.tab);
+    }
     let launched = launcher::launch_in_workspace(&item.app_id, ws)
         .map(|_| ())
         .or_else(|err| {
