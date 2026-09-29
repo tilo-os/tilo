@@ -1576,11 +1576,16 @@ jobs:
       # Hand the rebuild's manifest digest to the publication lane of this run,
       # which waits for it before installing or signing anything. A failed
       # rebuild says so, so the publication fails instead of waiting it out.
+      #
+      # It reports even when the lane failed before its builder or registry
+      # login existed: it logs in itself and builds the one-label image with
+      # the default builder when this job never started its own.
       - name: Report the independent rebuild to the publication lane
         if: always() && matrix.role == 'reproduce'
         env:
           REPRO_OUTCOME: ${{ steps.repro.outcome }}
           BUILDER_NAME: ${{ steps.buildx.outputs.name }}
+          REGISTRY_PASSWORD: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           manifest=failed
@@ -1592,7 +1597,10 @@ jobs:
           fi
           context="$(mktemp -d)"
           printf 'FROM scratch\nLABEL org.tilo.reproduction.manifest=%s\n' "$manifest" > "$context/Containerfile"
-          docker buildx build --builder "$BUILDER_NAME" --provenance=false --push \
+          printf '%s' "$REGISTRY_PASSWORD" | docker login registry.tilo.so --username '${{ github.actor }}' --password-stdin
+          builder=()
+          [[ -z $BUILDER_NAME ]] || builder=(--builder "$BUILDER_NAME")
+          docker buildx build "${builder[@]}" --provenance=false --push \
             -f "$context/Containerfile" -t 'registry.tilo.so/tilo/tilo-repro:${{ github.sha }}-${{ github.run_id }}-${{ matrix.arch }}' "$context"
           echo "::notice::independent rebuild of ${{ matrix.arch }}: $manifest"
           [[ $manifest != failed ]]
