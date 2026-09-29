@@ -1,12 +1,14 @@
 # Publish a Tilo app
 
-Getting an app from `tilo-app package` into the store takes one key, one
-application for the namespace your app ids live in, and then one command per
-release:
+Getting an app from `tilo-app package` into the store takes the CLI, one key,
+one application for the namespace your app ids live in, and then one command
+per release ([Build a Tilo app](app-development.md) covers the app itself):
 
 ```bash
-tilo-app keys new                                  # once
-tilo-app apply --domain example.com --contact you@example.com   # once
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli   # once
+tilo-app new reading-list --id org.example.reading-list && cd reading-list
+tilo-app keys new                                                # once
+tilo-app apply --domain example.com --contact you@example.com    # once
 tilo-app package
 tilo-app publish
 ```

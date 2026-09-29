@@ -3439,6 +3439,8 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 template: Template::Starter,
             };
             let readme = app_readme(&spec);
+            assert!(readme.contains(&format!("{}\n", standalone::INSTALL_COMMAND)));
+            assert!(standalone::INSTALL_COMMAND.contains(standalone::DEFAULT_SDK_GIT));
             assert!(readme.contains("tilo-app check --fix\n"));
             assert!(
                 !readme.contains("tilo-app new notes"),
