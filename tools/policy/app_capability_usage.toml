@@ -1,0 +1,113 @@
+# What in an app's code shows that it uses a capability (tilo-caps).
+#
+# One table, two front ends, like app_portability_rules.toml:
+#   * tools/policy/check_app_capabilities.py (the CI gate) fails when an app
+#     uses a capability its tilo-app.toml does not declare;
+#   * `tilo-app check` / `tilo-app build` (crates/dev/tilo-app-cli/src/
+#     capability_usage.rs, which embeds this file) refuse the same app with the
+#     line to add, before anything compiles.
+#
+# A capability counts as declared when it is in `[capabilities] required` or
+# `optional`. Declaring more than the code shows is allowed (the table cannot
+# see a camera opened through GStreamer); using one without declaring it is
+# not, because macOS ends a process that uses a prompted service without its
+# usage string, and hosts grant only what the manifest lists.
+#
+# Evidence, all from shipped code only (tests, examples, benches, build.rs and
+# `#[cfg(test)]` items are exempt, as for the portability rules):
+#   crates    production dependencies, by package name (`*` matches a suffix);
+#   features  `package/feature` selections in a dependency or `[features]`;
+#   paths     `a::b` source paths, matched anywhere in a path, also as
+#             `a::{.., b, ..}` in a `use` group;
+#   methods   `.name(` method calls.
+
+schema = 1
+
+[uses."network.http"]
+crates = ["reqwest", "rustypipe", "ureq", "tilo-model-gateway"]
+features = ["tilo-net/http", "tilo-net/json", "tilo-net/blocking"]
+paths = ["tilo_net::Client", "tilo_net::http"]
+
+[uses."network.sockets"]
+crates = ["iroh", "iroh-base", "tilo-callstream"]
+features = ["tilo-net/sockets", "tilo-net/ws", "tilo-net/webtransport", "tilo-net/p2p"]
+paths = ["tilo_net::sockets", "tilo_net::ws", "tilo_net::webtransport", "tilo_net::p2p"]
+
+[uses."network.status"]
+paths = ["tilo_net::status"]
+
+[uses."files.open"]
+paths = ["PickRequest::open", "PickRequest::open_multiple"]
+methods = ["open_contents"]
+
+[uses."files.save"]
+paths = ["PickRequest::save"]
+methods = ["save_contents"]
+
+[uses."files.paths"]
+paths = ["std::fs", "PickRequest::directory", "portal::to_local_path", "tilo_files::native", "tilo_files::file_at", "tilo_files::canonicalize"]
+methods = ["pick_folder"]
+
+[uses."app-files"]
+crates = ["tilo-files", "tilo-paths", "tilo-content"]
+paths = ["ui::persist", "storage::AppFiles"]
+
+[uses.settings]
+crates = ["settings-store", "app-state"]
+paths = ["storage::Settings"]
+
+[uses.secrets]
+crates = ["tilo-secrets", "secret-vault", "accounts"]
+paths = ["ui::secrets", "tilo_secrets", "storage::secrets"]
+
+[uses.clipboard]
+crates = ["tilo-clipboard"]
+paths = ["ui::clipboard", "clipboard_copy", "clipboard_paste", "clipboard_paste_primary"]
+
+[uses."open-uri"]
+paths = ["portal::open_uri", "portal::send_open_uri", "portal::open_uri_with", "portal::open_uri_detached", "portal::LaunchRequest"]
+
+[uses.notifications]
+crates = ["tilo-notify"]
+features = ["ui/notifications"]
+paths = ["ui::notify", "tilo_notify"]
+
+[uses."media.decode"]
+crates = ["tilo-media", "gstreamer", "gstreamer-*", "thumbnail"]
+features = ["ui/gpu-video"]
+
+[uses."media.session"]
+features = ["ui/mpris", "ui/media-session"]
+paths = ["ui::mpris"]
+
+[uses.camera]
+crates = ["tilo-capture"]
+paths = ["tilo_capture"]
+
+[uses."screen-capture"]
+paths = ["ui::capture"]
+
+[uses.location]
+crates = ["tilo-location"]
+paths = ["ui::location", "tilo_location"]
+
+[uses.processes]
+crates = ["tilo-process", "portable-pty", "bounded-command"]
+paths = ["process::Command", "tilo_process"]
+
+[uses."system-info"]
+crates = ["sysinfo"]
+
+[uses.speech]
+crates = ["tts"]
+paths = ["ui::speech"]
+
+[uses.spellcheck]
+crates = ["spellcheck"]
+
+[uses.webview]
+features = ["ui/webview", "ui/webview-wpe"]
+paths = ["ui::webview"]
+
+[uses.threads]
+paths = ["thread::spawn", "thread::Builder", "spawn_thread"]

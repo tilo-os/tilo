@@ -11,7 +11,7 @@
 //! subtle tier, ≈ 10 for the medium one — `ui/src/tokens/colors.rs`).
 //!
 //! A case that cannot observe its subject fails: there is no adapter skip.
-//! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to dump every rendered PNG.
+//! Set `TILO_UI_SCREENSHOT_DIR=<path>` to dump every rendered PNG.
 
 #![allow(
     clippy::unwrap_used,
@@ -145,7 +145,7 @@ impl Rendered {
     }
 
     fn dump(&self, name: &str) {
-        let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+        let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
             return;
         };
         std::fs::create_dir_all(&dir).unwrap();

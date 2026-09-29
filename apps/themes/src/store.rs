@@ -60,51 +60,30 @@ pub const SECTION: &str = "appearance";
 /// Theme Studio's private artifact below Settings' canonical appearance state.
 pub const STUDIO_KEY: &str = "studio";
 
-/// Resolve the shared settings path. Delegating to [`settings_store`] is what
+fn appearance() -> ui::storage::Settings {
+    ui::storage::Settings::section(SECTION)
+}
+
+/// Resolve the shared settings path. Delegating to [`ui::storage`] is what
 /// keeps this in step with the Settings app rather than by hand.
 pub fn store_path() -> Option<PathBuf> {
-    settings_store::settings_path()
+    appearance().path()
 }
 
 /// Merge `spec` into `existing` (the current settings-document text, or
 /// empty) below `appearance.studio`, preserving Settings-owned preferences.
 /// Returns the pretty-printed document.
 pub fn to_json_merged(spec: &ThemeSpec, existing: &str) -> String {
-    let root: serde_json::Value = serde_json::from_str(existing).unwrap_or(serde_json::Value::Null);
-    // Coerce to a JSON object, discarding anything malformed rather than
-    // indexing into it and panicking — `existing` is a document another
-    // process (or an older schema version) may have written.
-    let mut obj = match root {
-        serde_json::Value::Object(map) => map,
-        _ => serde_json::Map::new(),
-    };
+    // Anything malformed reads as no settings, rather than being indexed
+    // into: `existing` is a document another process may have written.
+    let mut obj = ui::storage::parse_settings(existing);
     obj.insert("version".into(), serde_json::json!(1));
-
     let mut appearance = match obj.remove(SECTION) {
         Some(serde_json::Value::Object(map)) => map,
         _ => serde_json::Map::new(),
     };
-
-    let active = crate::model::builtin_theme(&spec.id)
-        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
-    appearance.insert("theme".into(), serde_json::json!(active));
-    if !spec.builtin {
-        appearance.insert(
-            "custom_theme".into(),
-            serde_json::to_value(spec.to_custom_spec()).unwrap_or(serde_json::Value::Null),
-        );
-    }
-    appearance.insert(
-        STUDIO_KEY.into(),
-        serde_json::json!({
-            "id": spec.id,
-            "name": spec.name,
-            "dark_base": spec.dark_base,
-            "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
-        }),
-    );
+    appearance.extend(appearance_values(spec));
     obj.insert(SECTION.into(), serde_json::Value::Object(appearance));
-
     serde_json::to_string_pretty(&serde_json::Value::Object(obj)).unwrap_or_else(|_| "{}".into())
 }
 
@@ -126,42 +105,71 @@ pub fn active_spec(text: &str) -> Option<ThemeSpec> {
     serde_json::from_value(theme).ok()
 }
 
+/// The `appearance` keys Theme Studio owns for `spec`: the active theme's
+/// name, a custom theme's definition, and the full spec below
+/// [`STUDIO_KEY`]. Every other key of the section is left as it is.
+fn appearance_values(spec: &ThemeSpec) -> serde_json::Map<String, serde_json::Value> {
+    let mut values = serde_json::Map::new();
+    let active = crate::model::builtin_theme(&spec.id)
+        .map_or_else(|| format!("custom:{}", spec.id), |theme| theme.name);
+    values.insert("theme".into(), serde_json::json!(active));
+    if !spec.builtin {
+        values.insert(
+            "custom_theme".into(),
+            serde_json::to_value(spec.to_custom_spec()).unwrap_or(serde_json::Value::Null),
+        );
+    }
+    values.insert(
+        STUDIO_KEY.into(),
+        serde_json::json!({
+            "id": spec.id,
+            "name": spec.name,
+            "dark_base": spec.dark_base,
+            "theme": serde_json::to_value(spec).unwrap_or(serde_json::Value::Null),
+        }),
+    );
+    values
+}
+
+fn studio_id(appearance: &serde_json::Map<String, serde_json::Value>) -> Option<String> {
+    appearance
+        .get(STUDIO_KEY)?
+        .get("id")?
+        .as_str()
+        .map(std::string::ToString::to_string)
+}
+
 /// Merge `spec` into the settings document at `path`, preserving foreign
-/// sections, and write it back. Creates the parent directory if needed.
-/// The path-explicit core of [`save`], factored out so it can be tested
-/// against a temp file without mutating process-global environment.
+/// sections and keys. The path-explicit form of [`save`], for tests that
+/// must not touch the configured settings.
 ///
 /// # Errors
 ///
-/// Returns an error if the parent directory cannot be created or the file cannot be written.
+/// Returns an error if the document cannot be written.
 pub fn save_to(path: &std::path::Path, spec: &ThemeSpec) -> std::io::Result<()> {
-    if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)?;
-    }
-    let existing = std::fs::read_to_string(path).unwrap_or_default();
-    std::fs::write(path, to_json_merged(spec, &existing))
+    appearance().in_file(path).update(appearance_values(spec))
 }
 
 /// The active theme id in the settings document at `path`, if any.
 pub fn load_active_id_from(path: &std::path::Path) -> Option<String> {
-    active_id(&std::fs::read_to_string(path).ok()?)
+    studio_id(&appearance().in_file(path).load())
 }
 
-/// Persist `spec` as the active OS theme, preserving foreign sections.
-/// Creates the `tilo` config directory if needed. Returns the path written.
+/// Persist `spec` as the active OS theme through the shared settings
+/// document (on the web, the page's profile), preserving every other
+/// section and key.
 ///
 /// # Errors
 ///
-/// Returns an error if the config directory cannot be determined or the file cannot be written.
-pub fn save(spec: &ThemeSpec) -> std::io::Result<PathBuf> {
-    let path = store_path().ok_or_else(|| std::io::Error::other("no config dir"))?;
-    save_to(&path, spec)?;
-    Ok(path)
+/// Returns an error if there is no settings document to write, or the
+/// write fails.
+pub fn save(spec: &ThemeSpec) -> std::io::Result<()> {
+    appearance().update(appearance_values(spec))
 }
 
-/// Load the active theme's id from the shared settings path, if any.
+/// Load the active theme's id from the shared settings document, if any.
 pub fn load_active_id() -> Option<String> {
-    load_active_id_from(&store_path()?)
+    studio_id(&appearance().load())
 }
 
 #[cfg(test)]

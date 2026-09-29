@@ -419,7 +419,7 @@ impl MigrationJournal {
         }
         let document = Document {
             version: 2,
-            operation: format!("{}-{:?}", std::process::id(), SystemTime::now()),
+            operation: format!("{}-{:?}", std::process::id(), ui::time::wall()),
             source: NativeName::encode(source_path.as_os_str()),
             destination: NativeName::encode(destination_path.as_os_str()),
             source_identity: directory_identity(&source)?,
@@ -1477,7 +1477,7 @@ mod tests {
             || {
                 let (_temp, source, output, journal) = fixture();
                 fs::create_dir(source.join("empty")).unwrap();
-                let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+                let time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
                 for p in [&source, &source.join("a"), &source.join("empty")] {
                     File::open(p)
                         .unwrap()
@@ -1903,7 +1903,7 @@ mod tests {
                     assert!(source.parent().unwrap().join("fifo-rejected").is_file());
                     break;
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     child.kill().unwrap();
                     child.wait().unwrap();
                     panic!("resume blocked opening a swapped FIFO");

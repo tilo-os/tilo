@@ -80,3 +80,10 @@ use ui::widget::Widget;
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(SheetsApp::new())
 }
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.sheets", app_root)
+        .component_actions(actions::register)
+        .as_definition("Sheets")
+}

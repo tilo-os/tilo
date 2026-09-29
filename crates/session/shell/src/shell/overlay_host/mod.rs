@@ -289,7 +289,7 @@ const SHORTCUT_GUIDE_ROWS: [(
     &str,
     settings_store::hardware::ShortcutAction,
     settings_store::hardware::ShortcutAction,
-); 7] = {
+); 8] = {
     use settings_store::hardware::ShortcutAction as A;
     [
         (
@@ -307,6 +307,11 @@ const SHORTCUT_GUIDE_ROWS: [(
         ),
         ("guide-row-move-group", A::MoveGroupLeft, A::MoveGroupRight),
         ("guide-row-resize", A::ResizeNarrower, A::ResizeWider),
+        (
+            "guide-row-move-group-strip",
+            A::MoveGroupToPreviousStrip,
+            A::MoveGroupToNextStrip,
+        ),
     ]
 };
 
@@ -6179,6 +6184,82 @@ impl ShellOverlayHost {
         changed
     }
 
+    /// Carry the focused group, whole, to the strip above (`direction < 0`)
+    /// or below, landing after that strip's focused group; focus follows
+    /// it. Clamps at the first and last strip rather than creating one.
+    pub fn move_focused_group_to_strip(&mut self, direction: i32) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let planned = (|| {
+            let st = chrome.borrow();
+            let tree = st.tree();
+            let source = tree
+                .desktop
+                .active_strip
+                .get(&tree.desktop.active)
+                .copied()?;
+            let group = tree.desktop.active_group_for(source)?;
+            let strips = &tree.desktop.active_workspace()?.strips;
+            let from = strips.iter().position(|strip| strip.id == source)?;
+            let to = match direction.signum() {
+                -1 => from.checked_sub(1)?,
+                1 => from.checked_add(1).filter(|to| *to < strips.len())?,
+                _ => return None,
+            };
+            let source_groups = &strips.get(from)?.window_groups;
+            let at = source_groups.iter().position(|g| g.id == group)?;
+            let heir = source_groups
+                .get(at.saturating_add(1))
+                .or_else(|| at.checked_sub(1).and_then(|left| source_groups.get(left)))
+                .map(|g| g.id);
+            let destination = strips.get(to)?;
+            let anchor = tree
+                .desktop
+                .active_group_for(destination.id)
+                .and_then(|id| destination.window_groups.iter().position(|g| g.id == id));
+            let before = anchor
+                .and_then(|i| destination.window_groups.get(i.saturating_add(1)))
+                .map(|g| g.id);
+            let plan = (source, heir, destination.id, group, before);
+            drop(tree);
+            drop(st);
+            Some(plan)
+        })();
+        let Some((source, heir, destination, group, before)) = planned else {
+            return false;
+        };
+        let carry = tilo_desktop::intents::SessionIntent::MoveGroup {
+            group,
+            to: destination,
+            before,
+        };
+        if Self::dispatch_desktop_intents(
+            &chrome,
+            [tilo_desktop::intents::DesktopIntent::Session(carry)],
+        ) == 0
+        {
+            return false;
+        }
+        {
+            let mut st = chrome.borrow_mut();
+            {
+                let mut tree = st.tree_mut();
+                tree.desktop.set_active_group(destination, group);
+                if let Some(heir) = heir {
+                    tree.desktop.set_active_group(source, heir);
+                }
+                tree.flush_to_disk();
+            }
+            st.focus_strip(destination);
+            st.bump();
+        }
+        if let Some(surface) = self.desktop_surface_mut() {
+            surface.reveal_on_next_layout(destination);
+        }
+        true
+    }
+
     #[allow(
         clippy::needless_pass_by_ref_mut,
         reason = "the row is mutated through this host's owned GroupRow pointer; the exclusive borrow keeps that mutation unaliased"
@@ -11046,6 +11127,8 @@ impl ShellOverlayHost {
                 ("j", false) => Some(ShortcutAction::NextStrip),
                 ("h", true) => Some(ShortcutAction::MoveGroupLeft),
                 ("l", true) => Some(ShortcutAction::MoveGroupRight),
+                ("k", true) => Some(ShortcutAction::MoveGroupToPreviousStrip),
+                ("j", true) => Some(ShortcutAction::MoveGroupToNextStrip),
                 _ => None,
             };
             if let Some(action) = action {
@@ -11072,6 +11155,12 @@ impl ShellOverlayHost {
                     ShortcutAction::MoveGroupRight => {
                         let _ = self.reorder_focused_group(1);
                     }
+                    ShortcutAction::MoveGroupToPreviousStrip => {
+                        let _ = self.move_focused_group_to_strip(-1);
+                    }
+                    ShortcutAction::MoveGroupToNextStrip => {
+                        let _ = self.move_focused_group_to_strip(1);
+                    }
                     _ => {}
                 }
                 *handled = true;
@@ -11085,6 +11174,8 @@ impl ShellOverlayHost {
             ShortcutAction::ResizeWider,
             ShortcutAction::MoveGroupLeft,
             ShortcutAction::MoveGroupRight,
+            ShortcutAction::MoveGroupToPreviousStrip,
+            ShortcutAction::MoveGroupToNextStrip,
             ShortcutAction::MoveGroupToPreviousDisplay,
             ShortcutAction::MoveGroupToNextDisplay,
             ShortcutAction::FocusPreviousWindow,
@@ -11146,6 +11237,12 @@ impl ShellOverlayHost {
                 }
                 ShortcutAction::MoveGroupRight => {
                     let _ = self.reorder_focused_group(1);
+                }
+                ShortcutAction::MoveGroupToPreviousStrip => {
+                    let _ = self.move_focused_group_to_strip(-1);
+                }
+                ShortcutAction::MoveGroupToNextStrip => {
+                    let _ = self.move_focused_group_to_strip(1);
                 }
                 ShortcutAction::MoveGroupToPreviousDisplay => {
                     if !repeat {

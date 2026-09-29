@@ -4,7 +4,7 @@
 //! every transient concern of a running talk: timer, blanking, presenter/notes
 //! views, cross-fades, and the pointer/key policy that chooses a command.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
@@ -161,7 +161,7 @@ impl Presentation {
     pub(crate) fn start(&mut self) {
         self.blank = Blank::None;
         self.transition = None;
-        self.started = Some(Instant::now());
+        self.started = Some(ui::time::now());
         self.paused_elapsed = None;
         self.paused_total = Duration::ZERO;
     }
@@ -181,7 +181,7 @@ impl Presentation {
     }
 
     pub(crate) fn start_transition(&mut self, from: usize) {
-        self.transition = Some((from, Instant::now()));
+        self.transition = Some((from, ui::time::now()));
         self.blank = Blank::None;
     }
 
@@ -348,7 +348,7 @@ impl Presentation {
     }
 
     fn reset_timer(&mut self) {
-        self.started = Some(Instant::now());
+        self.started = Some(ui::time::now());
         self.paused_elapsed = None;
         self.paused_total = Duration::ZERO;
     }

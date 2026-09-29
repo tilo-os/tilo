@@ -3531,14 +3531,14 @@ mod tests {
         doc.commit();
         let doc = &doc;
         let view = at(&ids[400], 4);
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..30 {
             type_text(&view, doc, "x").unwrap();
             delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
             delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
         }
         let local = started.elapsed();
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..20 {
             let c = qdoc::model::open(doc, &automerge::ROOT).unwrap();
             std::hint::black_box(qdoc::model::region_blocks_in_order(

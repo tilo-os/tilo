@@ -1279,6 +1279,35 @@ impl SessionOwner {
         self.replace_publication(&mut next, &messages)?;
         self.commit(next, candidate)
     }
+    /// Compact `app`/`record`'s sealed history as its channel's key holder,
+    /// through `open` and `seal` (see `StatePeer::compact_sealed_history`),
+    /// and publish the compaction with the record's receipt.
+    pub(crate) fn commit_sealed_compaction(
+        &mut self,
+        app: &str,
+        record: &str,
+        open: &mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>,
+        seal: &mut tilo_peer_state::SealCheckpoint<'_>,
+    ) -> Result<CommitReceipt> {
+        self.require_owner_resource_scope()?;
+        self.aggregate.require_writable()?;
+        let mut candidate = self.peer.clone();
+        candidate
+            .compact_sealed_history(
+                app,
+                record,
+                open,
+                seal,
+                &self.identity.native,
+                publication_time(),
+            )
+            .map_err(anyhow::Error::msg)?;
+        let mut next = self.aggregate.clone();
+        let transition = self.append_mutation_publication(&mut next, &mut candidate)?;
+        let receipt = self.commit(next, candidate)?;
+        self.install_live_publication_transition(transition);
+        Ok(receipt)
+    }
     pub fn receive(
         &mut self,
         origin: TransportOrigin,

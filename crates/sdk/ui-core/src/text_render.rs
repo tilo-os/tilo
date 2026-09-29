@@ -1553,7 +1553,7 @@ pub struct TextRenderer {
     /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, ShapedText>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
+    /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
     /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,

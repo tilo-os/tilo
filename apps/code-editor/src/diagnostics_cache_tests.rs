@@ -227,13 +227,13 @@ fn diagnostics_clone_witness_cost() {
         previous = history;
         app.refresh_diagnostics(&doc);
         let expected = app.panel.problems().to_vec();
-        let start = std::time::Instant::now();
+        let start = ui::time::now();
         for _ in 0..50 {
             app.refresh_diagnostics(&doc);
         }
         let cached = start.elapsed();
         assert_eq!(app.panel.problems(), expected);
-        let start = std::time::Instant::now();
+        let start = ui::time::now();
         for _ in 0..50 {
             app.refresh_diagnostics_at(&doc, None);
         }
