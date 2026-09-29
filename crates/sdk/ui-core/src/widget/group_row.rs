@@ -1633,7 +1633,7 @@ impl GroupRow {
         self.pans().iter().any(|pan| pan.snap_in_flight())
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;
     }
