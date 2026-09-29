@@ -173,6 +173,38 @@ impl ShellOverlayHost {
             .map(|o| (*o).clone())
     }
 
+    /// The focused display, while the desktop is partitioned; the primary
+    /// when focus names no display that is still connected.
+    pub(super) fn focused_output(&self) -> Option<OutputGeometry> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        let focused = {
+            let state = self.chrome.as_ref()?.borrow();
+            let tree = state.tree();
+            tree.desktop.outputs.focused_display()
+        };
+        let outputs = distinct_outputs(&self.outputs);
+        focused
+            .and_then(|id| outputs.iter().find(|o| o.id == id))
+            .or_else(|| outputs.first())
+            .map(|o| (*o).clone())
+    }
+
+    /// Where a desktop-wide overlay opens — palette, toasts, prompts,
+    /// help: the focused display, or the whole desktop when there is one.
+    pub fn overlay_area(&self) -> Rect {
+        self.focused_output().map_or(self.rect, |o| o.rect())
+    }
+
+    /// The display holding the full top bar, which the tray's popovers
+    /// hang from.
+    pub fn tray_area(&self) -> Rect {
+        self.primary_output()
+            .filter(|_| self.is_partitioned())
+            .map_or(self.rect, |p| p.rect())
+    }
+
     /// Wheel-disc slot plus its gap, sized for the display it sits on.
     pub(super) fn wheel_clearance(&self) -> f64 {
         if self.sidebar.is_none() {
@@ -386,9 +418,20 @@ impl ShellOverlayHost {
         } else {
             Vec::new()
         };
+        let presenting = self.focused_output();
+        let beside_rail = presenting
+            .as_ref()
+            .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
+            }
+            if let Some(launchpad) = surface
+                .empty_workspace_mut()
+                .and_then(ui::widget::Widget::as_any_mut)
+                .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+            {
+                launchpad.set_presentation_area(presenting.map(|o| o.rect()), beside_rail);
             }
             if let Some(bars) = surface
                 .display_chrome_mut()
@@ -641,6 +684,70 @@ impl ShellOverlayHost {
             chrome.borrow_mut().bump();
         }
         moved
+    }
+
+    /// Reordering past the last group on a display carries the group onto
+    /// the neighbouring display, where it lands beside the seam it crossed.
+    pub(super) fn carry_focused_group_across_seam(&mut self, direction: i32) -> bool {
+        if direction == 0 || !self.move_focused_group_to_display(direction) {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        let reorder = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let reorder = (|| {
+                let partition = &tree.desktop.outputs;
+                let strip_id = *tree.desktop.active_strip.get(&tree.desktop.active)?;
+                let group = tree.desktop.active_group_for(strip_id)?;
+                let display = partition.display_of(group)?;
+                let strip = tree
+                    .desktop
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find(|s| s.id == strip_id)?;
+                let current = strip.window_groups.iter().position(|g| g.id == group)?;
+                let mut neighbours = strip
+                    .window_groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.id != group && partition.display_of(g.id) == Some(display))
+                    .map(|(i, _)| i);
+                // `to` is the index after the group leaves its old slot.
+                let to = if direction > 0 {
+                    let first = neighbours.next()?;
+                    if first > current {
+                        first.saturating_sub(1)
+                    } else {
+                        first
+                    }
+                } else {
+                    let last = neighbours.next_back()?;
+                    if last < current {
+                        last.saturating_add(1)
+                    } else {
+                        last
+                    }
+                };
+                (to != current).then_some((strip_id, group, to))
+            })();
+            drop(tree);
+            reorder
+        };
+        if let Some((strip, group, to)) = reorder {
+            let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup { strip, group, to };
+            if Self::dispatch_desktop_intents(
+                &chrome,
+                [tilo_desktop::intents::DesktopIntent::Session(reorder)],
+            ) > 0
+            {
+                chrome.borrow_mut().bump();
+            }
+        }
+        true
     }
 
     /// The groups of the active strip on each display, in the order they
