@@ -4,10 +4,7 @@
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
-use ui::tilo_actions::{
-    ActionContract, ActionSpec, ConfirmationPolicy, DiscoveryScope, OperationKind,
-    PermissionRequirement, RetryPolicy, RiskLevel,
-};
+use ui::tilo_actions::{ActionSpec, OperationKind};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
@@ -35,46 +32,21 @@ impl Resource for Firewall {
         Ok(FirewallDoc::load(doc).unwrap_or_else(FirewallConfig::empty))
     }
 
+    fn bound_actions(state: &FirewallConfig) -> Vec<ActionSpec> {
+        // Start/stop and panic carry the current on/off. Static
+        // `local_operations` cannot see that.
+        crate::actions::provide_resources(state)
+            .into_iter()
+            .flat_map(|root| root.actions)
+            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
+            .collect()
+    }
+
     fn local_operations() -> Vec<ActionSpec> {
-        // Host Effects. Toggle payloads are conservative defaults; live
-        // surfaces bind the intended on/off from the current config. Apply
-        // pushes the stored ruleset through firewall-cmd — there is no drain
-        // queue today, so undo of a host apply is not a compensating document op.
-        let mut ops = [
-            (
-                "toggle-enabled",
-                "Toggle firewall",
-                "firewall.set-enabled",
-                true,
-            ),
-            (
-                "toggle-panic",
-                "Toggle panic mode",
-                "firewall.set-panic",
-                true,
-            ),
-        ]
-        .into_iter()
-        .filter_map(|(id, label, type_id, value)| {
-            Some(
-                ActionSpec::operation(id, label, OperationKind::Effect, type_id, &value)
-                    .ok()?
-                    .with_contract(ActionContract {
-                        permission: PermissionRequirement::Admin,
-                        risk: RiskLevel::Privileged,
-                        confirmation: ConfirmationPolicy::Confirm,
-                        retry: RetryPolicy::Idempotent,
-                        discovery: DiscoveryScope::Launchable,
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        tags: vec!["security".into(), "firewall".into()],
-                        ..ActionContract::default()
-                    }),
-            )
-        })
-        .collect::<Vec<_>>();
-        ops.push(crate::actions::apply_effect_spec());
-        ops
+        // Apply pushes the stored ruleset through firewall-cmd. There is no
+        // drain queue today, so undo of a host apply is not a compensating
+        // document op. The on/off toggles ride [`bound_actions`].
+        vec![crate::actions::apply_effect_spec()]
     }
 
     fn children(state: &FirewallConfig) -> Vec<tilo_actions::Resource> {
