@@ -493,6 +493,7 @@ impl TileSource for Apps {
                     .with_height(600.0)
                     .with_child(Box::new(ui::widget::Spacer::fixed(5000.0))),
             ),
+            caret if caret.starts_with("Caret") => Box::new(CaretProbe::new(caret)),
             _ => {
                 return TileHost::new(ui::widget::TileContent::Notice {
                     title: tab.title.clone(),
@@ -501,6 +502,92 @@ impl TileSource for Apps {
             }
         };
         TileHost::new(ui::widget::TileContent::App(Box::new(Hosted(content))))
+    }
+}
+
+/// An editor whose caret stays where it is without keyboard focus: its
+/// presence key is its title, its caret at 7.
+struct CaretProbe {
+    key: ui::presence::PresenceKey,
+    rect: ui::kurbo::Rect,
+}
+
+impl CaretProbe {
+    fn new(title: &str) -> Self {
+        Self {
+            key: ui::presence::PresenceKey::Tab { id: title.into() },
+            rect: ui::kurbo::Rect::ZERO,
+        }
+    }
+}
+
+impl ui::widget::Widget for CaretProbe {
+    ui::provides!(dyn ui::presence::capability::PublishesPresence);
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut ui::taffy::TaffyTree<()>,
+        _: &ui::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+    ) -> ui::taffy::NodeId {
+        taffy
+            .new_leaf(ui::taffy::Style {
+                flex_grow: 1.0,
+                ..Default::default()
+            })
+            .unwrap()
+    }
+
+    fn apply_layout(
+        &mut self,
+        taffy: &ui::taffy::TaffyTree<()>,
+        node: ui::taffy::NodeId,
+        origin: ui::kurbo::Point,
+    ) {
+        let layout = taffy.layout(node).copied().unwrap_or_default();
+        self.rect = ui::kurbo::Rect::from_origin_size(
+            (
+                origin.x + f64::from(layout.location.x),
+                origin.y + f64::from(layout.location.y),
+            ),
+            (f64::from(layout.size.width), f64::from(layout.size.height)),
+        );
+    }
+
+    fn draw(
+        &mut self,
+        _: &mut ui::vello::Scene,
+        _: ui::kurbo::Affine,
+        _: &mut ui::TextRenderer,
+        _: &ui::Theme,
+        _: &ui::presence::PresenceCtx,
+    ) {
+    }
+
+    fn name(&self) -> &'static str {
+        "CaretProbe"
+    }
+
+    fn get_rect(&self) -> ui::kurbo::Rect {
+        self.rect
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for CaretProbe {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.key.clone())
+    }
+
+    fn presence_payload(
+        &self,
+    ) -> Option<(
+        ui::presence::PresenceKey,
+        ui::collaboration::PresencePayload,
+    )> {
+        Some((
+            self.key.clone(),
+            ui::collaboration::PresencePayload::Caret { pos: 7 },
+        ))
     }
 }
 
@@ -1231,4 +1318,55 @@ fn a_window_is_built_under_its_tab_for_a_panic_hook() {
         assert_eq!(*running, Some(*tab));
     }
     assert_eq!(ui::widget::panic_scope::current(), None);
+}
+
+#[test]
+fn the_focused_windows_caret_is_published_even_when_keyboard_focus_is_elsewhere() {
+    let (mut driver, handle, _) = mount_apps(&["Caret A", "Caret B"]);
+    driver.relayout();
+    let caret = |title: &str| {
+        (
+            ui::presence::PresenceKey::Tab { id: title.into() },
+            ui::collaboration::PresencePayload::Caret { pos: 7 },
+        )
+    };
+    let routes: Vec<Route> = handle
+        .snapshot("g", vec![])
+        .entries
+        .into_iter()
+        .map(|entry| entry.route)
+        .collect();
+    assert_eq!(handle.snapshot("g", vec![]).active.unwrap(), routes[0]);
+    // Nothing holds keyboard focus: the focused window's editor caret.
+    assert_eq!(handle.published_selection(None), Some(caret("Caret A")));
+    // Keyboard focus left behind in the other window loses to it.
+    assert_eq!(
+        handle.published_selection(Some(caret("Caret B"))),
+        Some(caret("Caret A"))
+    );
+    dispatch(
+        &mut driver,
+        &handle,
+        serde_json::json!({"kind":"select","generation":"g","route":routes[1]}),
+    );
+    assert_eq!(handle.published_selection(None), Some(caret("Caret B")));
+    assert_eq!(
+        handle.published_selection(Some(caret("Caret B"))),
+        Some(caret("Caret B")),
+        "keyboard focus inside the focused window is published as is"
+    );
+}
+
+#[test]
+fn published_selection_prefers_keyboard_focus_inside_the_window() {
+    use tilo_desktop_surface::published_selection;
+    use ui::collaboration::PresencePayload;
+    let key = |id: &str| ui::presence::PresenceKey::Tab { id: id.into() };
+    let window = vec![(key("writer"), PresencePayload::Caret { pos: 40 })];
+    let stray = Some((key("elsewhere"), PresencePayload::Caret { pos: 0 }));
+    assert_eq!(published_selection(stray, &window), window.first().cloned());
+    let own = Some((key("writer"), PresencePayload::Caret { pos: 41 }));
+    assert_eq!(published_selection(own.clone(), &window), own);
+    assert_eq!(published_selection(own.clone(), &[]), own);
+    assert_eq!(published_selection(None, &[]), None);
 }

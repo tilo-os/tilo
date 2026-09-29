@@ -22,4 +22,4 @@
 pub mod navigation;
 pub mod surface;
 
-pub use surface::{DesktopHandle, DesktopSurface, TileSource, seed_tree};
+pub use surface::{DesktopHandle, DesktopSurface, TileSource, published_selection, seed_tree};

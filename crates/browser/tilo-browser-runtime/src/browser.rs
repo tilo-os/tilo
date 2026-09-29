@@ -1322,11 +1322,21 @@ impl Mount {
         Ok(())
     }
 
-    /// The focused editor's caret or selection as live selection anchors
-    /// (`{anchor, head}`, hex), for the page's live layer.
+    /// The published caret or selection as live selection anchors
+    /// (`{anchor, head}`, hex), for the page's live layer: the keyboard
+    /// focus's when it is in the focused window (or this mount's
+    /// application), else that window's editor caret
+    /// ([`tilo_desktop_surface::published_selection`]).
     fn focus_presence_value(&self) -> Option<serde_json::Value> {
         use ui::collaboration::PresencePayload;
-        let (key, payload) = self.frame.focus_presence()?;
+        let keyboard = self.frame.focus_presence();
+        let (key, payload) = match &self.desktop {
+            Some(desktop) => desktop.handle.published_selection(keyboard),
+            None => tilo_desktop_surface::published_selection(
+                keyboard,
+                &ui::presence::capability::subtree_presence(self.frame.root_widget()),
+            ),
+        }?;
         let (start, end) = match payload {
             PresencePayload::Caret { pos } => (pos, pos),
             PresencePayload::Selection { start, end } => (start, end),
