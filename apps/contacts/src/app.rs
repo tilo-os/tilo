@@ -8253,7 +8253,15 @@ impl ui::resources::PublishesResources for ContactsApp {
         if self.is_hosted() {
             return crate::resource::live_extras(self);
         }
-        self.publish_resources(doc)
+        let state = <crate::resource::Contacts as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Contacts>(
+            crate::resource::BOOK_RESOURCE_ID,
+            "Contacts",
+            &state,
+        );
+        root.children.extend(crate::resource::live_extras(self));
+        vec![root]
     }
     /// Resolve contacts outside the contextual palette page. This is the
     /// other half of bounded discovery: a search hit for contact 65,000 still
