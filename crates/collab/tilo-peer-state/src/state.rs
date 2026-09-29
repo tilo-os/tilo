@@ -37,6 +37,7 @@ pub use native_publication::NativePublicationCut;
 mod resources;
 mod sealed_compaction;
 pub use media_governance::VerifiedSecurityMetadataOnly;
+pub use sealed_compaction::SealCheckpoint;
 
 #[expect(
     clippy::needless_pass_by_value,

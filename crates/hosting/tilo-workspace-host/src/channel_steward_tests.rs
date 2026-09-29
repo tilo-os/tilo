@@ -264,6 +264,9 @@ fn the_host_keeps_sealed_writes_and_its_steward_compacts_them() {
     let editor = admit(&mut owner, 60, MemberRole::Editor, false);
     let channel = collab_types::document_channel_id(APP, &room, "");
     let artifact = collab_types::document_artifact_id(APP, &room, "");
+    // Exact admission evidence, which sealed history requires, comes with
+    // the delivery storage the device host selects.
+    owner.activate_delivery().unwrap();
     let steward = Steward::open(&owner).unwrap();
     let mut member = member_service(&editor, &directory.path().join("editor"), governor);
     let keys = admitted_keys(&owner, &steward, &mut member, channel);

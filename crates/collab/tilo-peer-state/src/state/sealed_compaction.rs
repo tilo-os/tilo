@@ -8,7 +8,10 @@ use super::{
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 
 type Floors = std::collections::HashMap<Ed25519PublicKey, u64>;
-type SealCheckpoint<'a> = dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
+/// A key holder sealing a compaction's snapshot under the channel's current
+/// epoch, with checkpoint retention.
+pub type SealCheckpoint<'a> =
+    dyn FnMut(&[u8]) -> Result<(EncryptionMetadata, Vec<u8>), String> + 'a;
 
 impl StatePeer {
     /// Compact `record`'s sealed history as the key holder of its channel
