@@ -44,13 +44,10 @@ if [ "$mode" = tag ]; then
   exit 0
 fi
 
-# A missing tool must not read as "not published" (exit 1).
-tools=(skopeo)
-[ "$mode" = exists ] || tools+=(cosign jq)
-for tool in "${tools[@]}"; do
-  command -v "$tool" >/dev/null \
-    || { printf 'resolve-rpm-snapshot: %s is required\n' "$tool" >&2; exit 3; }
-done
+# Without skopeo the lookup fails with "not found", which must not read as
+# "not published".
+command -v skopeo >/dev/null \
+  || { printf 'resolve-rpm-snapshot: skopeo is required\n' >&2; exit 3; }
 
 # Exit 1: the tag does not exist. Exit 3: the registry could not be asked, which
 # says nothing about the tag; a caller must not treat it as "not published".
@@ -74,6 +71,11 @@ fi
 . "$repo/os/base-snapshot.env"
 [[ "${BASE_REF:-}" =~ ^registry\.tilo\.so/tilo/fedora-bootc@sha256:[0-9a-f]{64}$ ]] \
   || { printf 'resolve-rpm-snapshot: BASE_REF is not a digest-pinned fedora-bootc\n' >&2; exit 1; }
+
+for tool in cosign jq; do
+  command -v "$tool" >/dev/null \
+    || { printf 'resolve-rpm-snapshot: %s is required\n' "$tool" >&2; exit 1; }
+done
 
 cosign verify --key "$repo/keys/cosign.pub" "$ref" >/dev/null \
   || { printf 'resolve-rpm-snapshot: signature does not verify for %s\n' "$ref" >&2; exit 1; }
