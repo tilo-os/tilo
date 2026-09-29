@@ -41,8 +41,10 @@ a file saved in the folder becomes a version in the workspace's history, and a
 document in a legacy format (`.md`, `.docx`, `.odt`, …) is imported through its
 codec. A file changed on both sides keeps the folder's version; the
 workspace's version stays in its history. Symbolic links in the folder are not
-imported. A profile the Tilo desktop serves has no such folder: the desktop
-projects its files itself.
+imported. On Linux, where `/dev/fuse` exists and `fusermount3` is on `PATH`,
+the workspace is mounted at that path instead (visible to this user only), and
+the folder takes over again whenever it cannot be. A profile the Tilo desktop
+serves has neither: the desktop projects its files itself.
 
 ## Assistant connection
 
