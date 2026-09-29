@@ -876,6 +876,10 @@ impl FileExplorerWidget {
         self.framework_hosted = hosted;
     }
 
+    #[allow(
+        dead_code,
+        reason = "called from this crate's tests; dependents compile the library without cfg(test)"
+    )]
     pub(crate) fn is_framework_hosted(&self) -> bool {
         self.framework_hosted
     }
@@ -4962,7 +4966,10 @@ fn merge_supported_path(path: &std::path::Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "txt" | "tilo-doc")
+            matches!(
+                extension.to_ascii_lowercase().as_str(),
+                "txt" | "qdoc" | "tilo-doc"
+            )
         })
 }
 
