@@ -1190,6 +1190,16 @@ impl ApiTesterApp {
         self.actions.attach(dispatcher);
     }
 
+    #[cfg(test)]
+    pub(crate) fn actions_are_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_actions_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// Dispatch one canonical action against the document's current projection.
     /// Presentation commands never flush the in-memory workspace first; the
     /// action owns the precise durable record it mutates, then we re-adopt the
@@ -4032,13 +4042,18 @@ impl ui::search::capability::SearchSource for ApiTesterApp {
 }
 
 impl ui::resources::PublishesResources for ApiTesterApp {
-    /// Publish the resource tree the shell's one Ctrl+K palette walks — the
-    /// collections, saved requests, environments, and variables currently in the
-    /// shared document. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// workspace door — keep only the search-catalog diagnostic when present.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.actions.is_hosted() {
+            return crate::actions::live_search_status_resources(self.search_error_message());
+        }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.publish_resource(doc, id)
     }
 }
 

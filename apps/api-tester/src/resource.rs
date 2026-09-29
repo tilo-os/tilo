@@ -1,15 +1,18 @@
 //! API Tester as a [`tilo_resource::Resource`]: one action vocabulary, one
-//! publish path. HTTP send is an Effect in [`Resource::local_operations`].
+//! publish path. Workspace create actions and the static request/menu/history
+//! children ride [`Resource::bound_actions`] / [`Resource::children`].
 
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ROOT};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
+use ui::tilo_actions::{ActionSpec, EncodedAction};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{API_TESTER_ACTION_TYPE, ApiTesterAction, active_request_resource, register};
+use crate::actions::{
+    API_TESTER_ACTION_TYPE, ApiTesterAction, document_children, register, workspace_bound_actions,
+};
 use crate::app::ApiTesterApp;
 use crate::doc::ApiDoc;
 
@@ -51,18 +54,21 @@ impl Resource for ApiTester {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Prompted new-collection / new-environment stay on the published tree
-        // (param `value`, continuation identity). Stub declarations here would
-        // shadow those prompts.
+        // Prompted new-collection / new-environment mint ids when the name is
+        // committed — see [`bound_actions`]. Typed declarations would lose that
+        // continuation identity.
         Vec::new()
     }
 
-    fn local_operations() -> Vec<ActionSpec> {
-        active_request_resource()
-            .actions
-            .into_iter()
-            .filter(|spec| matches!(spec.kind, OperationKind::View | OperationKind::Effect))
-            .collect()
+    fn bound_actions(_state: &WorkspaceState) -> Vec<ActionSpec> {
+        workspace_bound_actions()
+    }
+
+    fn children(_state: &WorkspaceState) -> Vec<tilo_actions::Resource> {
+        // Active request Send (Effect), contextual menus (View), and the
+        // history directory. Deep collection/request/environment records stay
+        // on the search catalog and resolve by stable id.
+        document_children()
     }
 
     fn search(state: &WorkspaceState) -> Vec<SearchEntry> {
@@ -107,9 +113,11 @@ impl ResourceSurface<ApiTester> for ApiTesterApp {
 
 /// Framework dispatcher for collections, environments, and saved requests.
 pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<ApiTester>>,
-    last: Option<EncodedAction>,
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<Dispatcher<ApiTester>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    pub(crate) hosted: bool,
+    pub(crate) last: Option<EncodedAction>,
 }
 
 impl Default for ActionSink {
@@ -117,6 +125,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
             last: None,
         }
     }
@@ -125,6 +134,11 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<ApiTester>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted
     }
 
     pub(crate) fn dispatch_with_context(
@@ -146,7 +160,7 @@ impl ActionSink {
     }
 
     pub(crate) fn last_dispatched(&self) -> Option<&EncodedAction> {
-        if self.framework.is_some() {
+        if self.is_hosted() {
             self.last.as_ref()
         } else {
             self.local.last_dispatched()
@@ -157,5 +171,11 @@ impl ActionSink {
     /// read the local host's rising edge.
     pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.local.take_committed()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 }
