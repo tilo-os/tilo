@@ -42,11 +42,7 @@ pub mod framework;
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {
-        #[cfg(target_os = "android")]
-        #[unsafe(no_mangle)]
-        fn android_main(app: $crate::launch::android::AndroidApp) {
-            $crate::launch::android::run_main(app, $crate::framework::run::<$app>);
-        }
+        $crate::android_main!($crate::framework::run::<$app>);
 
         #[cfg(feature = "thin")]
         extern crate runtime_dylib;
