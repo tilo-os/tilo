@@ -24,6 +24,8 @@ mod browser;
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
 #[cfg(target_arch = "wasm32")]
+mod crash;
+#[cfg(target_arch = "wasm32")]
 mod desktop;
 #[cfg(target_arch = "wasm32")]
 mod files;

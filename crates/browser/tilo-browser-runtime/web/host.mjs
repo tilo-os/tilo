@@ -8,6 +8,7 @@ import {acquireStorage} from './storage.mjs';
 import {createDurableHost} from './durable-host.mjs';
 import {semanticBridge} from './semantics.mjs';
 import {recoverableClose} from './close-recovery.mjs';
+import {createCrashQuarantine,crashAction} from './app-crash.mjs';
 import {createDesktopNavigation} from './desktop-navigation.mjs';
 import {createLiveCursors} from './live-cursors.mjs';
 import {isWebKit,webgpuRefusal} from './webgpu-safety.mjs';
@@ -22,6 +23,14 @@ export const APPLICATIONS=Object.freeze({desktop:'desktop',scratch:'so.tilo.brow
 let registry=new MountRegistry();
 const closures=new Set();
 const recoveryJobs=new Set();
+// The runtime's panic hook names the window whose application panicked; the
+// module is dead after it, so each mount restarts the page without that window.
+const crashes=createCrashQuarantine();
+const crashListeners=new Set();
+globalThis.__tiloRuntimePanic=raw=>{
+  let crash;try{crash=JSON.parse(raw);}catch{return;}
+  for(const listener of crashListeners)listener(crash);
+};
 const fontLoader=createFontLoader({baseURL:import.meta.url});
 const fonts=retryableMemo(()=>fontLoader.startup());
 // After the first presented frame, idle time fetches and verifies optional
@@ -66,7 +75,7 @@ export async function mountDesktop(target,options={}) {
   const navigationFocus={errors(){},update(){},close(){}};
   const presentationWaiters=new Set();
   const config={profile:'tilo-browser',device:'tilo-browser-device',room:'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',author:options.peer?undefined:'Browser user',instance:1,mac:/Mac/.test(navigator.platform),conservativeGpu:isWebKit(navigator),...options};
-  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;
+  delete config.peer;if(options.peer?.runtimeId!==undefined)config.peer=options.peer.runtimeId;delete config.settings;delete config.onNavigation;delete config.onStatus;delete config.signal;delete config.loadAsset;delete config.actionsV1;delete config.subscribeDesktopCommits;delete config.live;delete config.liveMembers;delete config.restartOnCrash;
   let unsubscribeDesktopCommits;
   let liveOverlay,liveCursors,liveCarets;
   let semantic,semanticKeys,hiddenKeys,composition,actionPalette,desktopCommands,desktopSpeculation,navigation,fontDemands,externalFocusEpoch=0,runtimeReady=false,desktopOwnership=false,localActivationGesture;
@@ -214,9 +223,15 @@ export async function mountDesktop(target,options={}) {
     });
     return flush;
   }
+  function onCrash(crash){
+    const action=crashAction(crash,crash.tab!=null&&crashes.record(config.room,crash));
+    report({phase:'crashed',crashedWindow:crash.tab??null,error:crash.message,restarting:action==='restart'&&options.restartOnCrash!==false});
+    if(action==='restart'&&options.restartOnCrash!==false)setTimeout(()=>location.reload(),250);
+  }
   let closeWrites=[];
   const cleanup=recoverableClose({
     begin(){
+      crashListeners.delete(onCrash);
       liveOverlay?.close();liveOverlay=undefined;liveCursors?.close();liveCursors=undefined;liveCarets?.();liveCarets=undefined;unsubscribeDesktopCommits?.();navigationFocus.close();navigation?.close();actionPalette?.close();desktopCommands?.close();desktopSpeculation?.close();semantic.close();closed=true;for(const waiter of presentationWaiters)waiter.reject(Error('mount disposed'));presentationWaiters.clear();listeners.abort();readyReject(Error('mount disposed'));
       if(id!==undefined)closeWrites=Array.from(runtime.close(id));
       surface.remove();
@@ -257,6 +272,8 @@ export async function mountDesktop(target,options={}) {
     // stacks two peaks under Safari's 600 MB limit.
     if(config.conservativeGpu)await settleBeforeGpu();
     if(!registry.current(token))throw Error('mount disposed');
+    runtime.quarantine_windows?.(JSON.stringify(crashes.entries(config.room)));
+    crashListeners.add(onCrash);
     id=runtime.mount(canvas,JSON.stringify(config),assets,entries,raw=>queueMicrotask(()=>update(raw)));
     inputScope.capture();
     const publishModifiers=event=>{if(inputScope.capture())runtime.modifiers(id,...modifierSnapshot(event));};

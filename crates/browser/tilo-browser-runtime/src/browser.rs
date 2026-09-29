@@ -288,6 +288,7 @@ fn proxy() -> Result<EventLoopProxy<u64>, JsValue> {
             web_sys::console::error_1(&js_sys::Error::new(&format!(
                 "Browser runtime panic: {panic}"
             )));
+            crate::crash::report(panic);
         }));
     });
     if let Some(p) = LOOP.with_borrow(Clone::clone) {

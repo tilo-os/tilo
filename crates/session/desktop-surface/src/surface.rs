@@ -415,7 +415,7 @@ impl DesktopSurface {
             }) else {
                 continue;
             };
-            *host = self.tiles.tile(workspace, model);
+            *host = build_tile(self.tiles.as_mut(), workspace, model);
             built = true;
             if ui::time::now().duration_since(started) >= BUILD_BUDGET {
                 break;
@@ -562,7 +562,7 @@ impl DesktopSurface {
             let Some(tab) = self.tiles.new_tab(workspace, id) else {
                 continue;
             };
-            let host = self.tiles.tile(workspace, &tab);
+            let host = build_tile(self.tiles.as_mut(), workspace, &tab);
             let Some(model) = find_group(&mut shared.tree, strip_id, group_id) else {
                 continue;
             };
@@ -837,7 +837,7 @@ impl DesktopSurface {
                 WindowWidth::Normal,
             );
             if let Some(host) = built.host_for_tab_mut(tab.id) {
-                *host = self.tiles.tile(workspace, tab);
+                *host = build_tile(self.tiles.as_mut(), workspace, tab);
             }
             row.insert_group(built, index);
         }
@@ -1107,7 +1107,7 @@ fn build_row_lazily(
                 let active = tab.id == group.active_tab;
                 if active && index == focus {
                     if let Some(host) = built.host_for_tab_mut(tab.id) {
-                        *host = tiles.tile(workspace, tab);
+                        *host = build_tile(tiles, workspace, tab);
                     }
                 } else {
                     deferred.push((!active, index.abs_diff(focus), tab.id));
@@ -1156,13 +1156,22 @@ fn build_row(
                 if let Some(host) = built.host_for_tab_mut(tab.id) {
                     *host = live
                         .remove(&tab.id)
-                        .unwrap_or_else(|| tiles.tile(workspace, tab));
+                        .unwrap_or_else(|| build_tile(tiles, workspace, tab));
                 }
             }
             built
         })
         .collect();
     GroupRow::new(groups)
+}
+
+/// `tab`'s content from `tiles`, its application named to a panic hook
+/// while it is built and whenever it runs.
+fn build_tile(tiles: &mut dyn TileSource, workspace: &Workspace, tab: &Tab) -> TileHost {
+    let _running = ui::widget::panic_scope::enter(Some(tab.id));
+    let host = tiles.tile(workspace, tab);
+    host.set_panic_scope(tab.id);
+    host
 }
 
 fn descriptor(tab: &Tab) -> TabDescriptor {
