@@ -649,8 +649,7 @@ fn bundle_moq_library(sdk_root: &Path, bundle: &Path) -> Result<()> {
     }
     // A development copy may have been linked from the page host's sources.
     if output.exists() {
-        std::fs::remove_file(&output)
-            .with_context(|| format!("replacing {}", output.display()))?;
+        std::fs::remove_file(&output).with_context(|| format!("replacing {}", output.display()))?;
     }
     run(
         ProcessCommand::new("npm")

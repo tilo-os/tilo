@@ -203,16 +203,14 @@ impl PeerSync {
         if !crate::shell::network::collab_host_configured() {
             return None;
         }
-        let network = match ShellNetwork::spawn(
-            tree.clone(),
-            &crate::shell::network::peer_key_path(),
-        ) {
-            Ok(network) => Arc::new(network),
-            Err(error) => {
-                tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
-                return None;
-            }
-        };
+        let network =
+            match ShellNetwork::spawn(tree.clone(), &crate::shell::network::peer_key_path()) {
+                Ok(network) => Arc::new(network),
+                Err(error) => {
+                    tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
+                    return None;
+                }
+            };
         let _ = network.join_default_workspace();
         let stop = Arc::new(AtomicBool::new(false));
         let pump = {
