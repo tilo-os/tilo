@@ -324,3 +324,65 @@ fn a_member_records_its_effect_receipt_once() {
         .is_err()
     );
 }
+
+#[test]
+fn a_room_with_assigned_profiles_still_admits_people() {
+    let (_temp, mut owner, service, session) = hosted_with_session();
+    make_administrator(&mut owner, &service, &session);
+    for command_ in [save_user_files(), assign_to_notes()] {
+        let request = command(&owner, &session, command_);
+        owner.commit_desktop_command(&request).unwrap();
+    }
+    owner.peer().validated_media_policy().unwrap();
+    let now = now_ns();
+    let administrator = owner.peer().authority().device_public_key;
+    let root = SigningKey::from_bytes(&[71; 32]);
+    let device = SigningKey::from_bytes(&[72; 32]);
+    let mut viewer = DeviceCert {
+        user_public_key: root.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "Viewer".into(),
+        capabilities: DeviceCapabilities::member(),
+        issued_at_ns: now.saturating_sub(1),
+        expires_at_ns: None,
+        signature: [0; 64],
+    };
+    sign_device_cert(&mut viewer, &root).unwrap();
+    let issued = service
+        .issue(
+            &mut owner,
+            administrator,
+            IssueInvitationRequest {
+                request_id: [81; 32],
+                role: MemberRole::Viewer,
+                recipient_user_public_key: None,
+                invitee_name: Some("Viewer".into()),
+                expires_at_ns: now + 120_000_000_000,
+            },
+            now,
+        )
+        .unwrap();
+    let challenge = service
+        .challenge(
+            &mut owner,
+            viewer.device_public_key,
+            JoinChallengeRequest {
+                signed_invitation: issued.signed_invitation,
+                device_cert: viewer.clone(),
+                request_id: [82; 32],
+            },
+            now + 1,
+        )
+        .unwrap()
+        .challenge;
+    service
+        .complete(
+            &mut owner,
+            viewer.device_public_key,
+            JoinCompleteRequest {
+                proof: sign_join_proof(challenge, &device).unwrap(),
+            },
+            now + 2,
+        )
+        .unwrap();
+}
