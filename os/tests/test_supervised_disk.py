@@ -373,8 +373,10 @@ class DetachedCreatorJob(unittest.TestCase):
                 request={'binding':self.binding(),'observation':{},'args':{},'helpers':base64.b64encode(b'not a zip').decode(),
                          'helper_revision':'d'*40,'helper_bundle_sha256':'e'*64}
                 path=job/'request.json';path.write_text(json.dumps(request));path.chmod(0o600)
+                # A hang bound: the job fsyncs its status twice, which a busy
+                # runner's disk can stretch past 15 s.
                 completed=subprocess.run([sys.executable,'-c',controller.GUEST_JOB,str(job),str(auth)],
-                                         capture_output=True,timeout=15)
+                                         capture_output=True,timeout=120)
                 self.assertEqual(completed.returncode,0)
                 self.assertFalse(auth.exists())
                 self.assertFalse(credentials.exists())

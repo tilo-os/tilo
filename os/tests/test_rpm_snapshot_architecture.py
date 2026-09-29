@@ -63,10 +63,12 @@ esac
         }
         if manifest is not None:
             environment["TEST_SNAPSHOT_PACKAGES"] = manifest.rstrip("\n")
+        # A hang bound, not a speed check: the script only starts a dozen
+        # short processes, which a loaded runner can stretch past 10 s.
         try:
             process = subprocess.run(
                 ["bash", "-x", str(self.script), "runtime", "example@sha256:fixture"],
-                env=environment, text=True, capture_output=True, timeout=10,
+                env=environment, text=True, capture_output=True, timeout=120,
             )
         except subprocess.TimeoutExpired as expired:
             # Runtime call log + bash -x: which child finished, which command hung.
