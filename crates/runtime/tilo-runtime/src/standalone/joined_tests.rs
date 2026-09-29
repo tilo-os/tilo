@@ -536,6 +536,7 @@ fn a_live_sdk_app_in_a_joined_room_gets_keys_from_the_governors_steward() {
     let session = super::super::Standalone::start_reporting(&profile, &mut |_| {}).unwrap();
     let (_, device) = tilo_identity_host::broker::trusted_current_device(session.room()).unwrap();
     let governor_root = profile.parent().unwrap().join("governor");
+    std::fs::create_dir_all(&governor_root).unwrap();
     let governing = tilo_rt::app()
         .block_on(Box::pin(HostedRoom::start(&governor_root)))
         .unwrap();
