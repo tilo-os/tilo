@@ -175,6 +175,7 @@ WORKDIR /build
 ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_DIR=/build/.sccache \
     RUSTC_WRAPPER=sccache \
+    SCCACHE_IDLE_TIMEOUT=0 \
     CARGO_INCREMENTAL=0 \
     LC_ALL=C.UTF-8 \
     TZ=UTC

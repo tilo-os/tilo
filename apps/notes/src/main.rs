@@ -119,10 +119,18 @@ fn prepare_component(
     _definition: &ui::application::ApplicationDefinition,
     args: &LaunchArgs,
 ) -> Result<ui::application::PreparedComponentInputs, LaunchError> {
-    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
     if args.shots.is_some() || args.responsive_matrix.is_some() {
-        notes::capture::prepare_fixture(args.scenario.as_deref(), inputs)
-    } else if args.native_audit {
+        let theme = ui::launch::shot_theme(args);
+        let mut text_renderer = ui::TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        let inputs = ui::application::ComponentRunnerInputs {
+            theme,
+            text_renderer,
+        };
+        return notes::capture::prepare_fixture(args.scenario.as_deref(), inputs);
+    }
+    let inputs = ui::application::ComponentRunnerInputs::from_native_process();
+    if args.native_audit {
         notes::capture::prepare_fixture(Some("first_note"), inputs)
     } else {
         notes::hosting::set_native_launch_target(args.positionals().first().cloned());

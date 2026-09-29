@@ -113,6 +113,8 @@ pub enum WpFormat {
     Odt,
     Docx,
     Markdown,
+    /// Plain text: each line is a paragraph, and nothing is markup.
+    Text,
     /// PDF — **export only** (rendered via the `qdoc-pdf` crate). Importing PDF is
     /// not supported and returns a clear error.
     Pdf,
@@ -142,6 +144,7 @@ impl WpFormat {
             Some("html" | "htm") => WpFormat::Html,
             Some("rtf") => WpFormat::Rtf,
             Some("epub") => WpFormat::Epub,
+            Some("txt" | "text") => WpFormat::Text,
             _ => WpFormat::Markdown,
         }
     }
@@ -159,6 +162,19 @@ impl WpFormat {
             WpFormat::Odt => qdoc_codecs::OdtCodec.import(bytes, dm, inputs),
             WpFormat::Docx => qdoc_codecs::DocxCodec.import(bytes, dm, inputs),
             WpFormat::Markdown => qdoc_codecs::MarkdownCodec.import(bytes, dm, inputs),
+            WpFormat::Text => {
+                let text = std::str::from_utf8(bytes)
+                    .map_err(|e| qdoc_codecs::CodecError::Parse(e.to_string()))?;
+                dm.bulk(|dm| {
+                    let mut previous: Option<String> = None;
+                    for line in text.lines() {
+                        let block = dm.insert_block(previous.as_deref(), "paragraph");
+                        dm.splice_text(&block, 0, 0, line);
+                        previous = Some(block);
+                    }
+                });
+                Ok(())
+            }
             WpFormat::Pdf => Err(qdoc_codecs::CodecError::Unsupported(
                 "opening PDF documents is not supported (PDF is export-only)".to_string(),
             )),
@@ -185,6 +201,15 @@ impl WpFormat {
             WpFormat::Odt => qdoc_codecs::OdtCodec.export(dr, content),
             WpFormat::Docx => qdoc_codecs::DocxCodec.export(dr, content),
             WpFormat::Markdown => qdoc_codecs::MarkdownCodec.export(dr, content),
+            WpFormat::Text => {
+                let lines: Vec<String> = dr
+                    .materialize()
+                    .blocks
+                    .into_iter()
+                    .map(|block| block.text)
+                    .collect();
+                Ok(format!("{}\n", lines.join("\n")).into_bytes())
+            }
             // PDF isn't a `FormatProvider` codec — it renders from the materialized
             // snapshot via `qdoc-pdf`. Map its error into the shared `CodecError`.
             WpFormat::Pdf => {
@@ -899,6 +924,43 @@ mod tests {
 
     /// `from_path` maps html, htm and rtf; HTML import opens the first heading; RTF import opens a paragraph and
     /// an RTF export then import round-trips text and bold.
+    /// A `.txt` file opens with one paragraph per line, markup characters
+    /// kept as text, and saves back to the same lines.
+    #[test]
+    fn plain_text_opens_one_paragraph_per_line_and_saves_back() {
+        let dir = std::env::temp_dir().join(format!("wp-txt-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("standup.txt");
+        let lines = [
+            "Standup 2026-09-24",
+            "# Maya: finished; next: review. Blocked: no",
+            "- Jonas: *sync* bug",
+            "",
+            "Priya: done",
+        ];
+        std::fs::write(&path, format!("{}\r\n", lines.join("\r\n"))).unwrap();
+        assert_eq!(WpFormat::from_path(&path), WpFormat::Text);
+        let (state, _, format) =
+            open_document(&path, tilo_content::ContentStore::memory()).unwrap();
+        assert_eq!(format, WpFormat::Text);
+        let c = qdoc::model::open(&state.doc, &state.root).unwrap();
+        let blocks = qdoc::model::materialize(&state.doc, &c).blocks;
+        let texts: Vec<&str> = blocks.iter().map(|b| b.text.as_str()).collect();
+        assert_eq!(texts, lines);
+        assert!(
+            blocks.iter().all(|b| b.kind == "paragraph"),
+            "nothing is read as markup"
+        );
+
+        let out = dir.join("out.txt");
+        save_document(&state, &out, WpFormat::Text, &tilo_content::NoContent).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(&out).unwrap(),
+            format!("{}\n", lines.join("\n"))
+        );
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,

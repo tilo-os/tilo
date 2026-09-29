@@ -20,7 +20,11 @@ ARG WPE_BUILDROOT_REF
 # CI restores these checksum-pinned archives before the build; local builds use
 # the same resumable verifier (os/dev/cache-github-assets.sh).
 FROM scratch AS external-assets
-COPY --from=github-assets / /
+# Only these three archives are WPE inputs. Copying the whole asset cache
+# invalidates the hour-long compile when an unrelated OS/Windows asset changes.
+COPY --from=github-assets /libwpe-1.16.3.tar.xz /
+COPY --from=github-assets /wpebackend-fdo-1.16.1.tar.xz /
+COPY --from=github-assets /wpewebkit-2.52.6.tar.xz /
 
 # The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
 # stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release

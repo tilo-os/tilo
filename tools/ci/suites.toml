@@ -395,6 +395,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/peer-media.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer-persistence.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer-recovery.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/relay-live.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
 

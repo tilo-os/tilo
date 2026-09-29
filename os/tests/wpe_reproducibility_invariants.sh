@@ -60,6 +60,63 @@ has "$image_script" 'WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}' \
   'image builds forward the explicit browser job budget'
 has "$wpe_recipe" 'TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1' \
   'production WPE compilation uses only the verified external cache'
+for archive in libwpe-1.16.3.tar.xz wpebackend-fdo-1.16.1.tar.xz wpewebkit-2.52.6.tar.xz; do
+  has "$wpe_recipe" "COPY --from=github-assets /$archive /" \
+    "$archive is the only kind of asset copied into the WPE stage"
+done
+if grep -Fq 'COPY --from=github-assets / /' "$wpe_recipe"; then
+  bad 'unrelated external assets invalidate the WPE compile cache'
+else
+  ok 'unrelated external assets stay out of the WPE compile cache key'
+fi
+key_fixture="$(mktemp -d)"
+mkdir -p "$key_fixture/os/dev" "$key_fixture/os/external-assets"
+cp "$repo/os/dev/wpe-stage-key.sh" "$key_fixture/os/dev/"
+cp "$repo/os/dev/build-wpe.sh" "$key_fixture/os/dev/"
+cp "$wpe_recipe" "$key_fixture/os/Containerfile.wpe"
+cp "$pins" "$key_fixture/os/wpe-buildroot-snapshot.env"
+cp "$manifest" "$key_fixture/os/external-assets/github-assets.tsv"
+key_before="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+legacy_before="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64 --legacy)"
+printf '%064d\tunrelated-test.tar.xz\thttps://example.invalid/unrelated\n' 0 \
+  >> "$key_fixture/os/external-assets/github-assets.tsv"
+key_after="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+legacy_after="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64 --legacy)"
+[[ $key_before == "$key_after" && $legacy_before != "$legacy_after" ]] \
+  && ok 'unrelated asset rows do not invalidate the WPE stage key' \
+  || bad 'unrelated asset row changed the WPE stage key'
+sed -i 's/^b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e\t/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t/' \
+  "$key_fixture/os/external-assets/github-assets.tsv"
+key_changed="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+[[ $key_changed != "$key_after" ]] \
+  && ok 'WPE archive digest changes invalidate the WPE stage key' \
+  || bad 'WPE archive digest change failed to invalidate the stage key'
+cp "$snapshot_script" "$key_fixture/os/dev/buildroot-snapshot.sh"
+git -C "$key_fixture" init -q
+git -C "$key_fixture" config user.name 'WPE key fixture'
+git -C "$key_fixture" config user.email 'wpe-fixture@tilo.invalid'
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm baseline
+fixture_before="$(git -C "$key_fixture" rev-parse HEAD)"
+printf '%064d\tanother-unrelated.tar.xz\thttps://example.invalid/another\n' 0 \
+  >> "$key_fixture/os/external-assets/github-assets.tsv"
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm unrelated
+fixture_after="$(git -C "$key_fixture" rev-parse HEAD)"
+stage_changes="$(cd "$key_fixture" && bash os/dev/buildroot-snapshot.sh changed "$fixture_before" "$fixture_after")"
+[[ $stage_changes == '[]' ]] \
+  && ok 'unrelated asset changes do not launch WPE buildroot or engine builds' \
+  || bad "unrelated asset change launched WPE builds: $stage_changes"
+sed -i 's/^aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t/' \
+  "$key_fixture/os/external-assets/github-assets.tsv"
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm wpe-source
+fixture_wpe="$(git -C "$key_fixture" rev-parse HEAD)"
+stage_changes="$(cd "$key_fixture" && bash os/dev/buildroot-snapshot.sh changed "$fixture_after" "$fixture_wpe")"
+[[ $stage_changes == '["wpe-stage"]' ]] \
+  && ok 'WPE archive changes launch the signed WPE stage build' \
+  || bad "WPE archive change did not launch the signed stage build: $stage_changes"
+rm -rf "$key_fixture"
 has "$container" 'os/Containerfile.wpe' \
   'OS recipe points at the isolated WPE compile recipe'
 if ! grep -Fq 'bash /build-wpe.sh build' "$container"; then ok 'OS Containerfile does not compile WPE'; else bad 'OS Containerfile still compiles WPE'; fi
@@ -111,7 +168,7 @@ has "$snapshot_workflow" 'else "runner" end' 'WPE snapshot builds on the native 
 has "$snapshot_workflow" '"runner-large-arm64"' 'the WPE engine stage compiles on the large native ARM64 runner'
 has "$snapshot_workflow" 'target: wpe-stage' 'the WPE engine stage is published from os/Containerfile.wpe'
 has "$repo/.forgejo/workflows/build-image.yml" "format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF)" 'OS builds take a pinned WPE engine stage'
-has "$repo/.forgejo/workflows/build-image.yml" 'if [[ $label == "$key" ]]; then' 'OS builds take the pinned engine only when its inputs match'
+has "$repo/.forgejo/workflows/build-image.yml" 'if [[ $label == "$key" || $label == "$legacy_key" ]]; then' 'OS builds take only a stage whose scoped or exact legacy inputs match'
 has "$snapshot_workflow" './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' \
   'WPE snapshot fails early when a native runner label points at the wrong architecture'
 has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
@@ -159,10 +216,13 @@ has "$snapshot_script" "aarch64) printf '%s_AARCH64_REF' \"\$key\" ;;" \
 # The script owns each buildroot's inputs: every one must trigger the workflow
 # and block a stale promotion.
 mapfile -t snapshot_inputs < <(
-  sed -n '/^common_inputs=(/,/^)/p; /^wpe_inputs=(/,/^)/p' "$snapshot_script" | grep -Ev '^[a-z_]+=\(|^\)$' | tr -d ' '
+  sed -n '/^common_inputs=(/,/^)/p; /^wpe_inputs=(/,/^)/p; /^wpe_stage_inputs=(/,/^)/p' "$snapshot_script" | grep -Ev '^[a-z_]+=\(|^\)$' | tr -d ' '
 )
-[ "${#snapshot_inputs[@]}" -ge 12 ] && ok 'WPE snapshot declares its inputs' || bad 'WPE snapshot input list is incomplete'
+[ "${#snapshot_inputs[@]}" -ge 16 ] && ok 'WPE snapshot declares its inputs' || bad 'WPE snapshot input list is incomplete'
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
+grep -Fq -- 'os/external-assets/github-assets.tsv' <<< "$trigger_block" \
+  && ok 'asset manifest changes run the WPE-specific plan' \
+  || bad 'asset manifest changes do not run the WPE-specific plan'
 for input in "${snapshot_inputs[@]}"; do
   grep -Fq -- "$input" <<< "$trigger_block" \
     && ok "$input triggers a snapshot and blocks stale promotion" \

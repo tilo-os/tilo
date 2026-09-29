@@ -2919,6 +2919,9 @@ impl Widget for TerminalWidget {
     fn name(&self) -> &'static str {
         "Terminal"
     }
+    fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
+        Some(self)
+    }
     fn get_rect(&self) -> Rect {
         self.rect
     }

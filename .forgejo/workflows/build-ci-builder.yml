@@ -178,8 +178,8 @@ jobs:
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: registry.tilo.so/tilo/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           cache-from: |
-            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+            type=gha,scope=tilo-builder-${{ matrix.arch }}
+            type=gha,scope=tilo-builder-candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
 
       # Forgejo's registry can reject the same blob when BuildKit pushes the
       # image and cache concurrently. Reuse the completed local BuildKit graph,
@@ -199,9 +199,9 @@ jobs:
             RUST_CHANNEL=${{ env.RUST_CHANNEL }}
           tags: registry.tilo.so/tilo/tilo-builder:native-${{ github.sha }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
           cache-from: |
-            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ matrix.arch }}
-            type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
-          cache-to: type=registry,ref=registry.tilo.so/tilo/tilo-builder-buildcache:${{ github.ref == 'refs/heads/main' && matrix.arch || format('candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max
+            type=gha,scope=tilo-builder-${{ matrix.arch }}
+            type=gha,scope=tilo-builder-candidate-${{ env.BUILDER_CACHE_REVISION }}-${{ matrix.arch }}
+          cache-to: type=gha,scope=${{ github.ref == 'refs/heads/main' && format('tilo-builder-{0}', matrix.arch) || format('tilo-builder-candidate-{0}-{1}', github.sha, matrix.arch) }},mode=max,ignore-error=true
 
       - name: Install checksum-pinned Cosign
         run: ./os/dev/install-cached-cosign.sh

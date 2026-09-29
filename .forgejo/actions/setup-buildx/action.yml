@@ -2,11 +2,10 @@ name: Set up buildx with the runner pool's registries
 description: >-
   Start a docker-container buildx builder whose buildkitd.toml combines the
   runner pool's registry configuration (/etc/buildkit/buildkitd.toml, when
-  the pool provides one: pull-through mirrors with upstream fallback and
-  the pool's layer-cache registry) with the caller's own daemon settings.
-  Exports TILO_LAYER_CACHE_REGISTRY, the registry that holds this pool's
-  BuildKit layer caches (registry.tilo.so when the pool names none, which
-  needs a registry.tilo.so login before any cache export).
+  the pool provides one: pull-through mirrors with upstream fallback) with
+  the caller's own daemon settings.
+  Layer caches use the runner's Actions cache: cache-to/cache-from
+  type=gha,scope=<image>.
 
 inputs:
   driver-opts:
@@ -66,13 +65,8 @@ runs:
           echo "::notice::persistent BuildKit builder $name"
         fi
         echo "name=$name" >> "$GITHUB_OUTPUT"
-        registry="${CI_LAYER_CACHE_REGISTRY:-registry.tilo.so}"
-        [[ $registry =~ ^[a-z0-9.-]+(:[0-9]+)?$ ]] || {
-          echo "::error::invalid layer-cache registry: $registry"; exit 1;
-        }
-        echo "TILO_LAYER_CACHE_REGISTRY=$registry" >> "$GITHUB_ENV"
         echo "path=$config" >> "$GITHUB_OUTPUT"
-        echo "::notice::BuildKit registries: $(grep -c '^\[registry' "$config" || true) pool entries; layer cache in $registry"
+        echo "::notice::BuildKit registries: $(grep -c '^\[registry' "$config" || true) pool entries"
     - id: buildx
       uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       with:

@@ -1526,3 +1526,20 @@ fn history_host_messages_exist_in_every_shipped_language() {
         }
     }
 }
+
+#[test]
+fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
+    let (driver, _, _) = versioned_driver((900, 650));
+    let spacing = driver.theme().tokens.spacing;
+    let button = driver.targets()["history-open"];
+    assert_eq!(
+        button.x0,
+        f64::from(spacing.s3),
+        "sibling step from the edge"
+    );
+    assert_eq!(
+        button.y0,
+        f64::from(spacing.s1),
+        "one control tall, not a band"
+    );
+}

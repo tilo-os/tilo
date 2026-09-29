@@ -23,6 +23,7 @@ aho-corasick = { version = "1" }
 arrayvec = { version = "0.7" }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
+base64 = { version = "0.22" }
 base64ct = { version = "1", default-features = false, features = ["alloc"] }
 bit-set = { version = "0.8" }
 bit-vec = { version = "0.8" }
@@ -228,6 +229,7 @@ aho-corasick = { version = "1" }
 arrayvec = { version = "0.7" }
 base16ct-6f8ce4dd05d13bba = { package = "base16ct", version = "0.2", default-features = false, features = ["alloc"] }
 base16ct-dff4ba8e3ae991db = { package = "base16ct", version = "1", default-features = false, features = ["alloc"] }
+base64 = { version = "0.22" }
 base64ct = { version = "1", default-features = false, features = ["alloc"] }
 bit-set = { version = "0.8" }
 bit-vec = { version = "0.8" }
