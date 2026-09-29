@@ -2202,28 +2202,20 @@ impl WordProcessor {
     }
 
     fn region_remove_block(&mut self, state: &mut AutoCommit, block: &str) {
-        if self.region == Region::Body {
-            if self.containers.is_none() || self.ids.is_none() {
-                return;
-            }
-            let action = crate::actions::RichTextAction::RemoveBlocks {
+        if self.containers.is_none() || self.ids.is_none() {
+            return;
+        }
+        let action = if self.region == Region::Body {
+            crate::actions::RichTextAction::RemoveBlocks {
                 blocks: vec![block.to_string()],
-            };
-            let _ = action.apply_under(state, &automerge::ROOT);
-            return;
-        }
-        let region = self.region;
-        let Some(containers) = self.containers.clone() else {
-            return;
+            }
+        } else {
+            crate::actions::RichTextAction::RemoveRegionBlocks {
+                region: self.action_region(),
+                blocks: vec![block.to_string()],
+            }
         };
-        if let Some(ids) = self.ids.as_mut() {
-            let mut dm = DocMut {
-                doc: state,
-                c: &containers,
-                ids,
-            };
-            dm.remove_block_in(region, block);
-        }
+        let _ = action.apply_under(state, &automerge::ROOT);
     }
 
     #[allow(

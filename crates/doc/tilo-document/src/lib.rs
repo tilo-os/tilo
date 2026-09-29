@@ -720,6 +720,22 @@ impl Resource for RichText {
         ]
     }
 
+    fn local_operations() -> Vec<tilo_actions::ActionSpec> {
+        [("editor", "Editor"), ("compact", "Compact editor")]
+            .into_iter()
+            .filter_map(|(id, label)| {
+                tilo_actions::ActionSpec::operation(
+                    id,
+                    label,
+                    tilo_actions::OperationKind::View,
+                    "tilo.rich-text.view",
+                    &id,
+                )
+                .ok()
+            })
+            .collect()
+    }
+
     /// The outline and what is on screen. A search over every paragraph of a
     /// long document reads the document; the editor offers that as its own
     /// Find.
