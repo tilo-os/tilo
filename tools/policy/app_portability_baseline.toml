@@ -392,7 +392,7 @@ W3 = 7
 
 [sdk.settings-store]
 R1 = 1
-W3 = 9
+W3 = 11
 
 [sdk.tilo-app]
 R1 = 17
