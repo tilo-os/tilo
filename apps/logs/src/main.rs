@@ -62,7 +62,8 @@ fn shot_root(args: &LaunchArgs) -> Result<Box<dyn Widget>, LaunchError> {
 }
 
 fn configure_app(app: &mut ui::App) {
-    logs::actions::register(app.action_registry_mut());
+    use ui::tilo_resource::Resource as _;
+    logs::Logs::register(app.action_registry_mut());
 }
 
 #[cfg(feature = "thin")]
