@@ -39,7 +39,7 @@ rustPlatform.buildRustPackage rec {
 
   # One fixed-output vendor closure avoids scheduling and copying each of the
   # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = lib.fakeHash;
+  cargoHash = "sha256-AIw/Bx7J64kxKHb0QVeX2sIxryWQh8Xw9/SekLFISbA=";
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
