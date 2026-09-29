@@ -49,11 +49,16 @@ ENV TILO_PDFIUM_LIB=/usr/lib64/libpdfium.so
 # in it), so nested containers share its network and run without cgroups; and
 # as it runs unconfined (spc_t), its nested containers do not relabel either: a
 # label they cannot use makes even their own /etc/resolv.conf unreadable.
+# Its root is not the host's root, so overlay mounts need userxattr: without it
+# podman's probe mount fails and every layer commit falls back to diffing the
+# whole tree instead of reading the upper directory, minutes per build step.
 RUN dnf install -y --setopt=install_weak_deps=False \
       podman fuse-overlayfs skopeo qemu-img dosfstools mtools btrfs-progs \
  && dnf clean all && rm -rf /var/cache/dnf \
  && mkdir -p /etc/containers/containers.conf.d \
- && printf '[containers]\nnetns = "host"\ncgroups = "disabled"\nlabel = false\n' > /etc/containers/containers.conf.d/50-nested.conf
+ && printf '[containers]\nnetns = "host"\ncgroups = "disabled"\nlabel = false\n' > /etc/containers/containers.conf.d/50-nested.conf \
+ && sed 's/^mountopt = .*/mountopt = "nodev,userxattr"/' /usr/share/containers/storage.conf > /etc/containers/storage.conf \
+ && grep -qx 'mountopt = "nodev,userxattr"' /etc/containers/storage.conf
 
 # cosign, which the OS build verifies its RPM snapshot and kernel with: the
 # pinned, checksum-verified release CI installs (os/dev/install-cached-cosign.sh).
