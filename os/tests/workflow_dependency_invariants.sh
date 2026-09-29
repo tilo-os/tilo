@@ -56,11 +56,11 @@ else
   fail=1
 fi
 
-if grep -Fq 'group: check-${{ github.event_name }}-${{ github.sha }}' "$check_workflow" \
-   && grep -Fq 'cancel-in-progress: false' "$check_workflow" \
-   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.sha }}' "$workflows/lint.yml" \
-   && grep -Fq 'cancel-in-progress: false' "$workflows/lint.yml"; then
-  printf 'ok    every check and lint event retains an independent result\n'
+if grep -Fq 'group: check-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$check_workflow" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$check_workflow" \
+   && grep -Fq 'group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}' "$workflows/lint.yml" \
+   && grep -Fq "cancel-in-progress: \${{ github.event_name == 'pull_request' }}" "$workflows/lint.yml"; then
+  printf 'ok    check and lint keep every push result and replace only superseded PR runs\n'
 else
   printf 'check or lint events may replace required results\n' >&2
   fail=1
