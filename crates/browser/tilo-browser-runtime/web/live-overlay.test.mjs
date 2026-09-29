@@ -390,6 +390,35 @@ test('overlay glue publishes focus-relative pointers and anchors, draws remotes 
   assert.equal(live.listeners.presence.size, 0);
 });
 
+test('a caret an action moved is published without input, and again once the runtime presents it', () => {
+  const doc = fakeDocument();
+  const surface = doc.createElement('div');
+  const live = fakeLive();
+  const frames = [];
+  let caret = '0101';
+  const overlay = createLiveOverlay({
+    surface, canvas: doc.createElement('canvas'), document: doc, live: () => live,
+    snapshot: () => JSON.stringify({...snapshotA, selection: {anchor: caret, head: caret}}),
+    requestFrame: callback => { frames.push(callback); return {}; }, cancelFrame: () => {},
+    setInterval: () => 1, clearInterval: () => {},
+  });
+  const run = () => { for (const callback of frames.splice(0)) callback(0); };
+  run();
+  const before = live.published.length;
+  run();
+  assert.equal(live.published.length, before, 'nothing changed: nothing published');
+  caret = '0140';
+  overlay.refresh();
+  run();
+  assert.deepEqual(live.published.at(-1).selection, {anchor: '0140', head: '0140'});
+  // The caret settles a frame later: the next presented frame republishes it.
+  caret = '0142';
+  overlay.wake();
+  run();
+  assert.deepEqual(live.published.at(-1).selection, {anchor: '0142', head: '0142'});
+  overlay.close();
+});
+
 test('overlay stays inert without a live client and attaches when it appears', () => {
   const doc = fakeDocument();
   const surface = doc.createElement('div');

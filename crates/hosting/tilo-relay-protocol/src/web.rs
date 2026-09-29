@@ -19,6 +19,7 @@
 //! | `/send` | `Vec<Envelope>` | `204` |
 //! | `/events` | [`EventsRequest`] | [`EventsPage`] (long-poll) |
 //! | `/live/grant` | workspace id `u64` | [`LiveGrant`] |
+//! | `/live/grant/agent` | [`AgentLiveGrantRequest`] | [`LiveGrant`] for [`agent_publisher`] |
 //! | `/live/fallback/{open,send,resume}` | live fallback frames | frame stream |
 //!
 //! Routes after the handshake carry the session token in
@@ -124,6 +125,33 @@ pub struct LiveGrant {
     pub expires_at_ns: u64,
 }
 
+/// A live grant for an agent this device runs: its presence and typing
+/// previews publish under [`agent_publisher`], not the device's own key.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentLiveGrantRequest {
+    /// The room's workspace, as for `/live/grant`.
+    pub workspace_id: u64,
+    /// The agent's id on this device, 1..=[`MAX_AGENT_ID_BYTES`] bytes.
+    pub agent_id: String,
+}
+
+/// Bound of [`AgentLiveGrantRequest::agent_id`].
+pub const MAX_AGENT_ID_BYTES: usize = 128;
+
+/// Publisher component of the live namespace of agent `agent_id` run by
+/// `device` in `room` (64 hex, [`live_room`]):
+/// `blake3(domain ‖ u64le(len room) ‖ room ‖ device ‖ agent_id)`. A digest,
+/// never a device key, so an agent's presence cannot pass for a device's.
+pub fn agent_publisher(room: &str, device: [u8; 32], agent_id: &str) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new();
+    hash.update(b"tilo-live-agent-publisher-v1\0");
+    hash.update(&(room.len() as u64).to_le_bytes());
+    hash.update(room.as_bytes());
+    hash.update(&device);
+    hash.update(agent_id.as_bytes());
+    *hash.finalize().as_bytes()
+}
+
 /// Room component of the live namespace of `workspace_id`.
 pub fn live_room(workspace_id: u64) -> String {
     let mut hash = blake3::Hasher::new();
@@ -134,3 +162,23 @@ pub fn live_room(workspace_id: u64) -> String {
 
 /// The first request of a session.
 pub type SessionHello = Hello;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agent_publishers_are_per_room_device_and_agent_and_never_the_device() {
+        let room = live_room(7);
+        let device = [3u8; 32];
+        let agent = agent_publisher(&room, device, "Reading agent");
+        assert_eq!(agent, agent_publisher(&room, device, "Reading agent"));
+        assert_ne!(agent, device);
+        assert_ne!(agent, agent_publisher(&room, device, "Other agent"));
+        assert_ne!(agent, agent_publisher(&room, [4u8; 32], "Reading agent"));
+        assert_ne!(
+            agent,
+            agent_publisher(&live_room(8), device, "Reading agent")
+        );
+    }
+}
