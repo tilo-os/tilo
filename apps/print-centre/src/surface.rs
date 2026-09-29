@@ -3440,61 +3440,11 @@ impl ui::resources::PublishesResources for PrintCentre {
         if self.hosted {
             return self.live_device_resources();
         }
-        let mut root = Resource::new("print-centre", "print-centre.dashboard", "Print Centre");
-        for (id, label, kind, command) in [
-            (
-                "refresh",
-                "Refresh printers and documents",
-                OperationKind::Effect,
-                "refresh",
-            ),
-            (
-                "open-dashboard",
-                "Open dashboard",
-                OperationKind::View,
-                "dashboard",
-            ),
-            (
-                "open-queue",
-                "Open print queue",
-                OperationKind::View,
-                "queue",
-            ),
-            (
-                "open-history",
-                "Open print history",
-                OperationKind::View,
-                "history",
-            ),
-            (
-                "run-diagnostics",
-                "Run printer diagnostics",
-                OperationKind::View,
-                "diagnostics",
-            ),
-            (
-                "find-printers",
-                "Find network printers",
-                OperationKind::Effect,
-                "discover",
-            ),
-            (
-                "print-document",
-                "Print a document",
-                OperationKind::View,
-                "print",
-            ),
-            (
-                "scan-document",
-                "Scan a document",
-                OperationKind::View,
-                "scan",
-            ),
-        ] {
-            if let Some(action) = resource_action(id, label, kind, command) {
-                root.actions.push(action);
-            }
-        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::PrintCentreResource>(
+            "print-centre",
+            "Print Centre",
+            &crate::resource::PrintCentreState,
+        );
         if let Some(snapshot) = &self.snapshot {
             if let Ok(queues) = &snapshot.queues {
                 root.children.extend(queues.iter().map(printer_resource));
