@@ -89,25 +89,47 @@ pub(crate) fn turn_budget() -> std::time::Duration {
     tilo_action_broker::owner_turn::STALL_BUDGET
 }
 
+/// The latched failure, and whether every failure recorded was a started
+/// owner turn that stalled.
 #[derive(Default)]
-struct Health(Mutex<Option<String>>);
+struct Health(Mutex<(Option<String>, bool)>);
 impl Health {
     fn fail(&self, reason: impl Into<String>) -> String {
-        let reason = reason.into();
+        self.record(reason.into(), false)
+    }
+    /// Fail closed because a started owner turn stopped making progress.
+    fn fail_stalled(&self, reason: impl Into<String>) -> String {
+        self.record(reason.into(), true)
+    }
+    fn record(&self, reason: String, stalled: bool) -> String {
         if let Ok(mut failed) = self.0.lock() {
-            failed.get_or_insert(reason.clone());
+            let (failure, only_stalls) = &mut *failed;
+            *only_stalls = if failure.is_none() {
+                stalled
+            } else {
+                *only_stalls && stalled
+            };
+            failure.get_or_insert(reason.clone());
         }
         reason
     }
     fn check(&self) -> Result<(), String> {
-        match &*self
+        match &self
             .0
             .lock()
             .map_err(|_| "owner commit health unavailable")?
+            .0
         {
             Some(reason) => Err(reason.clone()),
             None => Ok(()),
         }
+    }
+    fn own_failure(&self) -> Result<Option<(String, bool)>, String> {
+        let failed = self
+            .0
+            .lock()
+            .map_err(|_| "owner commit health unavailable")?;
+        Ok(failed.0.clone().map(|reason| (reason, failed.1)))
     }
 }
 #[derive(Clone)]
@@ -235,7 +257,7 @@ impl OwnerCommitService for OwnerCommitHandle {
                 TurnWait::Stalled => {
                     return Err(this
                         .health
-                        .fail("owner commit turn stalled; outcome unknown"));
+                        .fail_stalled("owner commit turn stalled; outcome unknown"));
                 }
             };
             receipt
@@ -436,6 +458,10 @@ impl Drop for PendingOwnerCommit {
 }
 
 impl OwnerCommitHandle {
+    /// The latched failure, and whether it came only from stalled turns.
+    pub(crate) fn own_failure(&self) -> Result<Option<(String, bool)>, String> {
+        self.health.own_failure()
+    }
     fn check_admission(&self, closed: bool) -> Result<(), String> {
         if closed {
             return Err("owner admission retired".into());
@@ -549,7 +575,7 @@ impl OwnerCommitHandle {
                 TurnWait::Stalled => {
                     return Err(Uncertain(
                         this.health
-                            .fail("desktop owner turn stalled; outcome unknown"),
+                            .fail_stalled("desktop owner turn stalled; outcome unknown"),
                     ));
                 }
             };

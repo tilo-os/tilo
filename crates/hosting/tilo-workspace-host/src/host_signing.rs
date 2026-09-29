@@ -199,6 +199,21 @@ impl HostSigning {
     pub(crate) fn close_admission(&self) -> Result<(), String> {
         self.shared.close_admission()
     }
+    /// Whether signing has failed, and only because started owner turns
+    /// stalled (never because an owner reported an uncertain result).
+    pub(crate) fn failed_only_by_stalls(&self) -> Result<bool, String> {
+        let mut failed = false;
+        for (_, stalled) in [self.shared.own_failure()?, self.ordinary.own_failure()?]
+            .into_iter()
+            .flatten()
+        {
+            if !stalled {
+                return Ok(false);
+            }
+            failed = true;
+        }
+        Ok(failed)
+    }
     /// Quiescence never clears a terminal signing failure or consumes a receipt.
     pub(crate) fn retirement_ready(&self) -> Result<bool, String> {
         self.shared.health()?;
