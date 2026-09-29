@@ -681,14 +681,17 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
     && build_phase rust-release \
+    # Without LTO nothing merges the units again, so a dev build splits the
+    # large crates (shell's library alone ran 180 s at eight) further.
+    && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
     && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
