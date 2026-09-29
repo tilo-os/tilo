@@ -787,7 +787,9 @@ pub fn tool_definitions() -> Vec<Value> {
     let effect = json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true});
     vec![
         json!({"name":"computer","description":"Pixel fallback for windows that publish no typed action (use tilo_query/tilo_invoke first). One action; returns the post-action screenshot. Coordinates are pixels in the last screenshot's frame; take a screenshot before acting","inputSchema":action,"annotations":effect}),
-        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":action,"minItems":1,"maxItems":MAX_BATCH}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
+        // Each step takes the `computer` tool's arguments; restating that
+        // schema here would double what every model turn reads.
+        json!({"name":"computer_batch","description":"Up to 50 computer actions in order, each an object of the computer tool's arguments, stopping at the first failure; screenshot steps and the last step return a frame unless no_screenshot says otherwise","inputSchema":{"type":"object","properties":{"actions":{"type":"array","items":{"type":"object"},"minItems":1,"maxItems":MAX_BATCH}},"required":["actions"],"additionalProperties":false},"annotations":effect}),
     ]
 }
 
