@@ -64,8 +64,6 @@ env:
     (package(fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
 
-  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
     runs-on: runner-quality
@@ -227,9 +225,6 @@ jobs:
           python3 -c 'import PIL'
           fc-match -f '%{family}' 'Noto Sans' | grep -Fq 'Noto Sans'
           test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name 'RPM-GPG-KEY-fedora-*-primary' -print -quit)"
-
-      - name: Use the compiler cache
-        uses: ./.forgejo/actions/compiler-cache
 
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh
