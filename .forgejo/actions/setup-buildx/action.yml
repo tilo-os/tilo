@@ -55,6 +55,10 @@ runs:
         # a build that outgrows it fails alone: at the slot limit the kernel
         # also kills the Docker daemon and with it the job.
         opts="$DRIVER_OPTS"
+        # The runner slots prewarm this BuildKit image (infra runner-config.yaml).
+        if ! grep -Eq '(^|[[:space:],])image=' <<< "$opts"; then
+          opts=$(printf '%s\nimage=docker.io/moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8' "$opts" | sed '/^$/d')
+        fi
         if ! grep -Eq '(^|[[:space:],])memory=' <<< "$opts"; then
           total=$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)
           if [[ $total =~ ^[0-9]+$ ]] && (( total > 8 * 1024 * 1024 * 1024 )); then
