@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # Install the repository-pinned static sccache client when the runner exposes
-# its optional S3 backend. A missing or unavailable cache must never affect
+# its optional backend (the job's Actions cache). A missing or unavailable cache must never affect
 # correctness; it only changes how much compiler work an iteration repeats.
 set -euo pipefail
 
 [[ $# == 1 ]] || { echo "usage: $0 amd64|arm64" >&2; exit 2; }
 arch=$1
 
-if [[ -z ${SCCACHE_BUCKET:-} ]]; then
+if [[ ${SCCACHE_GHA_ENABLED:-} != on || -z ${ACTIONS_CACHE_URL:-} ]]; then
     echo "remote compiler cache is not configured; compiling normally"
     exit 0
 fi
@@ -65,4 +65,4 @@ if ! installed_version=$(sccache --version); then
     exit 0
 fi
 printf 'remote compiler cache enabled: %s (%s)\n' "$installed_version" \
-    "${SCCACHE_S3_KEY_PREFIX:-default prefix}"
+    "${SCCACHE_GHA_VERSION:-default namespace}"

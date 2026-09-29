@@ -757,7 +757,7 @@ fn execute_owned(
                 }
                 if state.pending.is_some()
                     || doc.pending_ops() != 0
-                    || root.needs_commit()
+                    || crate::undo::needs_commit(root)
                     || !history.matches_recorded_frontier(doc)
                 {
                     return Err(refused(
@@ -860,7 +860,7 @@ fn execute_owned(
                     doc,
                     envelope.base_change_hashes(),
                     None,
-                    root.get_state(),
+                    crate::undo::get_state(root),
                     Some(services.author.clone()),
                 );
                 if changed {

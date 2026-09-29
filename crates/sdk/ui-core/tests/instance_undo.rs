@@ -220,12 +220,12 @@ fn typing_bursts_finalize_at_the_right_record_boundary() {
         let mut outer = AutoCommit::new();
         let outer_before = outer.get_heads();
         a.invoke(&mut outer, |widget, doc, _| {
-            widget.set_state("A metadata");
+            tilo_ui::undo::set_state(widget, "A metadata");
             doc.put(ROOT, "a", "first").unwrap();
         })
         .unwrap();
         b.invoke(&mut outer, |widget, _, _| {
-            widget.set_state("B metadata");
+            tilo_ui::undo::set_state(widget, "B metadata");
             request_probe_commit();
         })
         .unwrap();

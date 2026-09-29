@@ -135,14 +135,6 @@ macro_rules! retained_parts {
                 child.mark_drawn();
             }
         }
-        fn needs_commit(&self) -> bool {
-            self.parts.children.iter().any(|child| child.needs_commit())
-        }
-        fn on_commit(&mut self) {
-            for child in &mut self.parts.children {
-                child.on_commit();
-            }
-        }
         fn take_structure_dirty(&mut self) -> bool {
             let mut dirty = false;
             for child in &mut self.parts.children {

@@ -650,7 +650,7 @@ mod tests {
             let mut label = EditableLabel::new("Draft title");
             label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
             label.begin_edit();
-            let before = label.input.get_state();
+            let before = crate::undo::get_state(&label.input);
             let mut renderer = crate::TextRenderer::new();
             let mut draw = |label: &mut EditableLabel| {
                 let mut scene = Scene::new();
@@ -667,7 +667,7 @@ mod tests {
             label.suppress_caret_paint(true);
             assert_eq!(draw(&mut label).saturating_add(1), visible);
             assert!(label.is_editing());
-            assert_eq!(label.input.get_state(), before);
+            assert_eq!(crate::undo::get_state(&label.input), before);
             assert_eq!(label.current_text(), "Draft title");
             label.suppress_caret_paint(false);
             assert_eq!(draw(&mut label), visible);

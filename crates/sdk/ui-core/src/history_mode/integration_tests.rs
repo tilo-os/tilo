@@ -2086,7 +2086,8 @@ impl Widget for RetainedLifecycleProbe {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
         dyn crate::resources::PublishesResources,
-        dyn crate::record::capability::RecordScoped
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::undo::UndoPoints
     );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
@@ -2220,6 +2221,9 @@ impl Widget for RetainedLifecycleProbe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::undo::UndoPoints for RetainedLifecycleProbe {
     fn needs_commit(&self) -> bool {
         self.dirty
     }
@@ -2303,7 +2307,10 @@ crate::testing::test_app_widget!(
 );
 
 impl Widget for ReleasableLifecycleProbe {
-    crate::provides!(dyn crate::record::capability::RecordScoped);
+    crate::provides!(
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::undo::UndoPoints
+    );
 
     crate::testing::delegate_widget_methods!(text: apply_layout, draw, get_rect);
     fn name(&self) -> &'static str {
@@ -2392,6 +2399,9 @@ impl Widget for ReleasableLifecycleProbe {
             output: tilo_actions::ActionOutput::default(),
         })
     }
+}
+
+impl crate::undo::UndoPoints for ReleasableLifecycleProbe {
     fn needs_commit(&self) -> bool {
         self.dirty
     }

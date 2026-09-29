@@ -418,7 +418,8 @@ impl App {
             if let Some(&id) = self.focusable_order.get(idx) {
                 self.set_focused_node(Some(id));
                 if let Some(metadata) = entry.widget_metadata {
-                    let _ = self.mutate_node(id, |widget| widget.set_state(&metadata));
+                    let _ =
+                        self.mutate_node(id, |widget| crate::undo::set_state(widget, &metadata));
                     self.focus_history.stable_metadata = Some(metadata);
                 }
                 self.focus_history.stable_focus_idx = Some(idx);
@@ -584,7 +585,7 @@ impl App {
         // Called after every handled event, many of which (e.g. a
         // selection-drag `CursorMoved`) mutate only ephemeral widget state,
         // not the CRDT — `changed` lets those skip persisting/syncing.
-        let context = self.root_widget.take_commit_context();
+        let context = crate::undo::take_commit_context(self.root_widget.as_mut());
         let changed = self.state.commit_action_authored_with_context(
             self.focus_history.stable_focus_idx,
             self.focus_history.stable_metadata.clone(),
@@ -595,7 +596,7 @@ impl App {
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         self.focus_history.stable_metadata = self.focused_node.and_then(|id| {
-            self.inspect_node(id, |widget| widget.get_state())
+            self.inspect_node(id, |widget| crate::undo::get_state(widget))
                 .ok()
                 .flatten()
         });

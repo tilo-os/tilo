@@ -872,11 +872,14 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(e.blocks()[0].line.cursor_pos(), 6);
         assert_eq!(e.document_selection(), None);
         assert!(
-            Widget::needs_commit(&e),
+            crate::undo::needs_commit(&e),
             "replacement arms one undo boundary"
         );
-        Widget::on_commit(&mut e);
-        assert!(!Widget::needs_commit(&e), "the boundary is rising-edge");
+        crate::undo::on_commit(&mut e);
+        assert!(
+            !crate::undo::needs_commit(&e),
+            "the boundary is rising-edge"
+        );
     }
 
     fn multiline_paste_replaces_range_and_uses_enter_continuation_kinds() {
@@ -975,7 +978,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
-        assert!(Widget::needs_commit(&editor));
+        assert!(crate::undo::needs_commit(&editor));
     }
 
     fn cross_block_replacement_syncs_as_one_coherent_document_state() {
@@ -1343,7 +1346,7 @@ fn code_fences_copy_highlight_and_render_formulas() {
         editor.commit_visual_formula_edit(0, 0, crate::math::FormulaSyntax::Typst);
         assert!(editor.blocks[0].text().starts_with("vec("));
         assert!(editor.blocks[0].text().ends_with('+'));
-        assert!(Widget::needs_commit(&editor));
+        assert!(crate::undo::needs_commit(&editor));
     }
 
     code_copy_targets_are_bounded_and_copy_complete_runs();
@@ -2143,7 +2146,7 @@ fn find_matches_unicode_safely_and_navigates_without_editing() {
         editor.step_find(true);
         assert_eq!(editor.focused_index(), Some(1));
         assert_eq!(editor.to_markdown(), before);
-        assert!(!editor.needs_commit());
+        assert!(!crate::undo::needs_commit(&editor));
     }
 
     find_ranges_are_case_insensitive_and_unicode_byte_safe();

@@ -2794,13 +2794,13 @@ impl CallbackBinding {
         doc: &mut AutoCommit,
     ) -> Result<bool, BoundDispatchError> {
         let bracket = crate::undo::take_committed_action(widget);
-        let commit = widget.needs_commit();
+        let commit = crate::undo::needs_commit(widget);
         if bracket.is_none() && !commit {
             return Ok(false);
         }
         let keep_open = crate::undo::keeps_undo_step_open(widget);
-        let context = widget.take_commit_context();
-        let metadata = widget.get_state();
+        let context = crate::undo::take_commit_context(widget);
+        let metadata = crate::undo::get_state(widget);
         let handle = ACTIVE
             .with_borrow(|active| active.as_ref().and_then(|entry| entry.3.clone()))
             .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
@@ -2811,7 +2811,7 @@ impl CallbackBinding {
                 .ok_or(BoundDispatchError::Record(RecordOpenError::Busy))?;
             if !frame.operations.is_empty() {
                 drop(owned);
-                widget.on_commit();
+                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             frame.settle_segment(doc);
@@ -2825,7 +2825,7 @@ impl CallbackBinding {
                 // acknowledgement must not consume the pending owner's burst
                 // or replace the saved metadata/context.
                 drop(owned);
-                widget.on_commit();
+                crate::undo::on_commit(widget);
                 return Ok(true);
             }
             if let Some(before) = bracket {
@@ -2855,7 +2855,7 @@ impl CallbackBinding {
             self.finish_action_boundary(doc)?;
         }
         // Arbitrary widget delivery happens after releasing the frame borrow.
-        widget.on_commit();
+        crate::undo::on_commit(widget);
         Ok(true)
     }
 
@@ -3699,14 +3699,14 @@ pub(crate) unsafe fn invoke_bound_semantic_node<R>(
                 && history.commit_action_authored_with_message(
                     doc,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
                 );
             if changed {
                 state.generation = Some(next);
                 state.statuses.clear();
-                widget.on_commit();
+                crate::undo::on_commit(widget);
             }
             Ok((result, changed))
         })
@@ -3828,7 +3828,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 .ok_or("document generation exhausted")?;
             let widget = unsafe { &mut *pointer };
             let bracket = crate::undo::take_committed_action(widget);
-            let requested = widget.needs_commit();
+            let requested = crate::undo::needs_commit(widget);
             if bracket.is_none() && !requested {
                 return Ok(false);
             }
@@ -3838,7 +3838,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
             if bracket.is_some() && doc.pending_ops() == 0 && history.matches_recorded_frontier(doc)
             {
                 if requested {
-                    widget.on_commit();
+                    crate::undo::on_commit(widget);
                 }
                 return Ok(false);
             }
@@ -3847,11 +3847,11 @@ pub(crate) unsafe fn drain_legacy_node_action(
                     doc,
                     before,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                 )
             } else {
-                let context = widget.take_commit_context().unwrap_or_else(|| {
+                let context = crate::undo::take_commit_context(widget).unwrap_or_else(|| {
                     tilo_actions::ActionContext::for_resource(
                         "Edit",
                         checkout.id.as_str(),
@@ -3863,7 +3863,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 history.commit_action_authored_with_message(
                     doc,
                     None,
-                    widget.get_state(),
+                    crate::undo::get_state(widget),
                     Some(author.clone()),
                     context.change_message(),
                 )
@@ -3873,7 +3873,7 @@ pub(crate) unsafe fn drain_legacy_node_action(
                 state.statuses.clear();
             }
             if requested {
-                widget.on_commit();
+                crate::undo::on_commit(widget);
             }
             Ok(changed)
         })

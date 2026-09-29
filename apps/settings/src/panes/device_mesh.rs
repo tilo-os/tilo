@@ -1802,6 +1802,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DeviceMeshPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     #[allow(
         clippy::too_many_lines,
         reason = "one synchronization pass consumes the pane's related role, replication, pairing, device-revocation, and server-management controls atomically"
@@ -2004,20 +2006,6 @@ impl Widget for DeviceMeshPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "devices-sync",
-            "Devices & Sync",
-            "Change device mesh settings",
-        )
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own || self
@@ -2043,6 +2031,22 @@ impl Widget for DeviceMeshPane {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for DeviceMeshPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "devices-sync",
+            "Devices & Sync",
+            "Change device mesh settings",
+        )
     }
 }
 

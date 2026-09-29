@@ -214,6 +214,8 @@ impl DerefMut for QueryEditorChild {
 }
 
 impl Widget for QueryEditorChild {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -317,28 +319,27 @@ impl Widget for QueryEditorChild {
         self.editor.ime_purpose()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.editor.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.editor.on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.editor.get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.editor.set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.editor.text_review()
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.editor.layout_needs_measure()
+    }
+}
+
+impl ui::undo::UndoPoints for QueryEditorChild {
+    fn needs_commit(&self) -> bool {
+        self.editor.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.editor.on_commit();
+    }
+    fn get_state(&self) -> Option<String> {
+        self.editor.get_state()
+    }
+    fn set_state(&mut self, state: &str) {
+        self.editor.set_state(state);
     }
 }
 
@@ -1960,7 +1961,8 @@ impl Widget for DbClientApp {
     ui::provides!(
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2699,28 +2701,27 @@ impl Widget for DbClientApp {
                 && self.editor.wants_pointer_capture())
     }
 
+    fn text_review(&self) -> Option<(usize, String)> {
+        (self.session.tab == MainTab::Query)
+            .then(|| self.editor.text_review())
+            .flatten()
+    }
+}
+
+impl ui::undo::UndoPoints for DbClientApp {
     fn needs_commit(&self) -> bool {
         self.editor.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.editor.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         (self.session.tab == MainTab::Query)
             .then(|| self.editor.get_state())
             .flatten()
     }
-
     fn set_state(&mut self, state: &str) {
         self.editor.set_state(state);
-    }
-
-    fn text_review(&self) -> Option<(usize, String)> {
-        (self.session.tab == MainTab::Query)
-            .then(|| self.editor.text_review())
-            .flatten()
     }
 }
 
