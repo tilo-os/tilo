@@ -29,6 +29,9 @@ mod schema_rows {
 struct StubHost {
     invoked: Arc<StdMutex<Vec<InvokeRequest>>>,
     confirmation: tilo_actions::ConfirmationPolicy,
+    /// Observations a started invocation stays accepted for before it
+    /// succeeds.
+    running_for: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl StubHost {
@@ -106,9 +109,29 @@ impl ActionHost for StubHost {
         _caller: &Caller,
         id: &tilo_actions::InvocationId,
     ) -> Option<InvocationState> {
+        use std::sync::atomic::Ordering;
+        let started = self
+            .invoked
+            .lock()
+            .unwrap()
+            .iter()
+            .any(|request| request.invocation == *id);
+        let running = self
+            .running_for
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |left| {
+                left.checked_sub(1)
+            })
+            .is_ok();
         Some(InvocationState::new(
             *id,
-            InvocationUpdate::Accepted { invocation: *id },
+            if started && !running {
+                InvocationUpdate::Succeeded {
+                    invocation: *id,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            } else {
+                InvocationUpdate::Accepted { invocation: *id }
+            },
         ))
     }
 
@@ -650,4 +673,225 @@ fn viewer_invitations_need_a_configured_viewer_and_the_bearer_token() {
         br#"{"mode":"watch"}"#,
     ));
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+async fn tool(server: &mut crate::mcp::McpServer<StubHost>, name: &str, arguments: Value) -> Value {
+    let reply = server
+        .handle(json!({"jsonrpc":"2.0","id":9,"method":"tools/call","params":{"name":name,"arguments":arguments}}))
+        .await
+        .unwrap();
+    reply["result"].clone()
+}
+
+#[test]
+fn an_invocation_answers_with_its_result_once_it_finishes() {
+    let host = StubHost::default();
+    let running_for = Arc::clone(&host.running_for);
+    let invoked = Arc::clone(&host.invoked);
+    let mut server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        let target = json!({"peer_id":71,"revision":"1","resource":"test.note:1","action":tilo_resource::APPLY});
+        running_for.store(3, std::sync::atomic::Ordering::SeqCst);
+        let done = tool(&mut server, "tilo_invoke", target.clone()).await;
+        assert_eq!(
+            done["structuredContent"]["update"]["state"], "succeeded",
+            "{done}"
+        );
+
+        running_for.store(usize::MAX, std::sync::atomic::Ordering::SeqCst);
+        let mut at_once = target.clone();
+        at_once["wait_ms"] = json!(0);
+        let reply = tool(&mut server, "tilo_invoke", at_once).await;
+        assert_eq!(
+            reply["structuredContent"]["update"]["state"], "accepted",
+            "{reply}"
+        );
+        let mut briefly = target;
+        briefly["wait_ms"] = json!(60);
+        let started = std::time::Instant::now();
+        let reply = tool(&mut server, "tilo_invoke", briefly).await;
+        assert_eq!(reply["structuredContent"]["update"]["state"], "accepted");
+        assert!(started.elapsed() >= std::time::Duration::from_millis(60));
+    });
+    assert_eq!(invoked.lock().unwrap().len(), 3);
+}
+
+#[test]
+fn an_omitted_revision_acts_on_the_current_directory_but_an_empty_one_is_refused() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    let mut server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        let current = json!({"peer_id":71,"resource":"test.note:1","action":tilo_resource::APPLY});
+        let reply = tool(&mut server, "tilo_invoke", current.clone()).await;
+        assert_eq!(reply["isError"], false, "{reply}");
+        let resolved = tool(&mut server, "tilo_resolve", current.clone()).await;
+        assert_eq!(
+            resolved["structuredContent"]["row"]["resource"], "test.note:1",
+            "{resolved}"
+        );
+        let mut empty = current;
+        empty["revision"] = json!("");
+        assert_eq!(
+            tool(&mut server, "tilo_invoke", empty.clone()).await["isError"],
+            true
+        );
+        assert_eq!(
+            tool(&mut server, "tilo_resolve", empty).await["isError"],
+            true
+        );
+    });
+    let invoked = invoked.lock().unwrap().clone();
+    assert_eq!(invoked.len(), 1);
+    assert_eq!(
+        invoked[0].revision.as_deref(),
+        Some("1"),
+        "the directory's current revision"
+    );
+}
+
+#[test]
+fn a_query_answers_compact_by_default_and_matches_every_word_of_a_needle() {
+    let mut server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    run(async {
+        let compact = tool(&mut server, "tilo_query", json!({"peer_id":71})).await;
+        let page = &compact["structuredContent"];
+        assert_eq!(page["resources"][0]["resource"], "test.note:1", "{page}");
+        assert!(
+            page["resources"][0]["actions"][tilo_resource::APPLY].is_string(),
+            "{page}"
+        );
+        assert!(page.get("rows").is_none());
+        let full = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"detail":"full"}),
+        )
+        .await;
+        assert!(full["structuredContent"]["rows"][0]["descriptor"]["params"].is_array());
+
+        let found = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"needle":"note test"}),
+        )
+        .await;
+        assert_eq!(
+            found["structuredContent"]["resources"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1,
+            "{found}"
+        );
+        let missed = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"needle":"note zebra"}),
+        )
+        .await;
+        assert_eq!(
+            missed["structuredContent"]["resources"],
+            json!([]),
+            "{missed}"
+        );
+    });
+}
+
+#[test]
+fn an_app_id_addresses_its_newest_running_instance() {
+    let host = StubHost::default();
+    let invoked = Arc::clone(&host.invoked);
+    let mut server = crate::mcp::McpServer::new(host, "room".into(), "owner".into());
+    run(async {
+        let page = tool(
+            &mut server,
+            "tilo_query",
+            json!({"app_id":"so.tilo.test","needle":"note"}),
+        )
+        .await;
+        assert_eq!(page["isError"], false, "{page}");
+        let target =
+            json!({"app_id":"so.tilo.test","resource":"test.note:1","action":tilo_resource::APPLY});
+        assert_eq!(
+            tool(&mut server, "tilo_invoke", target).await["isError"],
+            false
+        );
+        let missing = tool(
+            &mut server,
+            "tilo_query",
+            json!({"app_id":"so.tilo.absent"}),
+        )
+        .await;
+        assert_eq!(missing["isError"], true, "{missing}");
+        let both = tool(
+            &mut server,
+            "tilo_query",
+            json!({"app_id":"so.tilo.test","peer_id":71}),
+        )
+        .await;
+        assert_eq!(both["isError"], true, "{both}");
+    });
+    assert_eq!(invoked.lock().unwrap()[0].target.provider, "71");
+}
+
+#[test]
+fn a_session_can_pin_the_full_rows_it_parses() {
+    let mut server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    run(async {
+        let init = |capabilities: Value| json!({"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":capabilities}});
+        let reply = server.handle(init(json!({}))).await.unwrap();
+        assert_eq!(
+            reply["result"]["capabilities"]["experimental"]["so.tilo.mcp"]["version"],
+            2
+        );
+        let reply = server
+            .handle(init(
+                json!({"experimental":{"so.tilo.mcp":{"detail":"sideways"}}}),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(reply["error"]["code"], -32602, "{reply}");
+        server
+            .handle(init(
+                json!({"experimental":{"so.tilo.mcp":{"detail":"full"}}}),
+            ))
+            .await
+            .unwrap();
+        let page = tool(&mut server, "tilo_query", json!({"peer_id":71})).await;
+        assert!(
+            page["structuredContent"]["rows"][0]["descriptor"].is_object(),
+            "{page}"
+        );
+        let compact = tool(
+            &mut server,
+            "tilo_query",
+            json!({"peer_id":71,"detail":"compact"}),
+        )
+        .await;
+        assert!(
+            compact["structuredContent"]["resources"].is_array(),
+            "{compact}"
+        );
+    });
+}
+
+#[test]
+fn opening_a_host_application_answers_without_waiting_for_a_peer() {
+    let mut server = crate::mcp::McpServer::new(StubHost::default(), "room".into(), "owner".into());
+    run(async {
+        let started = std::time::Instant::now();
+        let reply = tool(
+            &mut server,
+            "tilo_invoke",
+            json!({"workspace":true,"resource":"app.host:org.mozilla.firefox","action":"open"}),
+        )
+        .await;
+        assert_eq!(reply["isError"], false, "{reply}");
+        assert!(
+            reply["structuredContent"].get("peer_id").is_none(),
+            "{reply}"
+        );
+        assert!(started.elapsed() < std::time::Duration::from_secs(2));
+    });
 }
