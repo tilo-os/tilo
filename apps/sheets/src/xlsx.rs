@@ -18,7 +18,7 @@ use std::path::Path;
 
 use tilo_doc::sheet::a1::{make_ref, parse_ref};
 use tilo_doc::{CellInput, CellType, CellView, SheetView, WorkbookSnapshot};
-use tilo_doc_codecs::xlsx::{date_style_refs, number_format_styles};
+use tilo_doc_codecs::xlsx::{CellStyle, cell_styles, date_style_refs};
 use tilo_doc_codecs::{ParsedSheet, XlsxCodec};
 
 use crate::model::{CellFormat, CellValue, DateStyle, format_number_general, format_value};
@@ -42,6 +42,8 @@ pub struct ImportedCell {
     /// plain value. Written into / read back from the OOXML `<f>` element and
     /// the ODF `table:formula` attribute.
     pub formula: Option<String>,
+    /// Bold text. Export writes it to `.xlsx`; imports leave it off.
+    pub bold: bool,
 }
 
 impl ImportedCell {
@@ -51,6 +53,7 @@ impl ImportedCell {
             raw,
             format,
             formula: None,
+            bold: false,
         }
     }
 }
@@ -74,6 +77,7 @@ impl SheetTable {
         raw: &std::collections::HashMap<crate::model::Addr, String>,
         fmt: &std::collections::HashMap<crate::model::Addr, CellFormat>,
         values: &std::collections::HashMap<crate::model::Addr, CellValue>,
+        bold: &std::collections::HashSet<crate::model::Addr>,
     ) -> Self {
         let max_c = raw.keys().map(|a| a.0).max().unwrap_or(0);
         let max_r = raw.keys().map(|a| a.1).max().unwrap_or(0);
@@ -99,6 +103,7 @@ impl SheetTable {
                         raw: stored_raw,
                         format: f,
                         formula: is_formula.then(|| raw_s.clone()),
+                        bold: bold.contains(&addr),
                     }
                 });
                 row.push(cell);
@@ -233,6 +238,7 @@ fn imported_cell(input: CellInput, date_styles: &BTreeSet<String>) -> Option<Imp
             raw: String::new(),
             format: CellFormat::General,
             formula: Some(formula),
+            bold: false,
         }),
         (value, None) => value,
     }
@@ -313,7 +319,8 @@ fn finite_number(raw: &str) -> Option<f64> {
 /// How an exported cell is written, shared by both package formats: the
 /// formula (in the target's own syntax, via `formula`), a number carrying
 /// `number_style` for its format, a boolean, or text. Formulas and numbers
-/// take the style; a `Text`-formatted number stays text.
+/// take the style, and so does a bold cell of any kind; a `Text`-formatted
+/// number stays text.
 pub(crate) fn export_cell(
     cell: &ImportedCell,
     col: u32,
@@ -334,9 +341,19 @@ pub(crate) fn export_cell(
         } else {
             "false"
         };
-        (value.to_string(), CellType::Bool, None, None)
+        (
+            value.to_string(),
+            CellType::Bool,
+            number_style.filter(|_| cell.bold),
+            None,
+        )
     } else {
-        (cell.raw.clone(), CellType::Text, None, None)
+        (
+            cell.raw.clone(),
+            CellType::Text,
+            number_style.filter(|_| cell.bold),
+            None,
+        )
     };
     CellView {
         reference: make_ref(col, row),
@@ -353,7 +370,7 @@ pub(crate) fn export_cell(
 /// [`export_cell`] with the style `style_for` picks for its format.
 pub(crate) fn snapshot_of(
     tables: &[SheetTable],
-    mut style_for: impl FnMut(CellFormat) -> Option<String>,
+    mut style_for: impl FnMut(&ImportedCell) -> Option<String>,
     formula: impl Fn(&str) -> String,
 ) -> WorkbookSnapshot {
     let sheets = tables
@@ -364,7 +381,7 @@ pub(crate) fn snapshot_of(
             for (r, row) in (1u32..).zip(&table.rows) {
                 for (c, cell) in (1u32..).zip(row) {
                     if let Some(cell) = cell {
-                        cells.push(export_cell(cell, c, r, style_for(cell.format), &formula));
+                        cells.push(export_cell(cell, c, r, style_for(cell), &formula));
                     }
                 }
             }
@@ -394,23 +411,29 @@ pub(crate) fn snapshot_of(
 /// Returns an error if the package can't be assembled or `path` can't be
 /// written.
 pub fn write_xlsx(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
-    let mut codes: Vec<&'static str> = Vec::new();
+    let mut styles: Vec<CellStyle<'static>> = Vec::new();
     let snap = snapshot_of(
         tables,
-        |format| {
-            let code = excel_number_format(format)?;
-            let index = codes.iter().position(|c| *c == code).unwrap_or_else(|| {
-                codes.push(code);
-                codes.len() - 1
+        |cell| {
+            let style = CellStyle {
+                number_format: excel_number_format(cell.format),
+                bold: cell.bold,
+            };
+            if style.number_format.is_none() && !style.bold {
+                return None;
+            }
+            let index = styles.iter().position(|s| *s == style).unwrap_or_else(|| {
+                styles.push(style);
+                styles.len() - 1
             });
-            // Style 0 is the default; style `i + 1` applies `codes[i]`.
+            // Style 0 is the default; style `i + 1` applies `styles[i]`.
             Some((index + 1).to_string())
         },
         |formula| formula.strip_prefix('=').unwrap_or(formula).to_string(),
     );
     let mut preserved = BTreeMap::new();
-    if !codes.is_empty() {
-        preserved.insert("xl/styles.xml".to_string(), number_format_styles(&codes));
+    if !styles.is_empty() {
+        preserved.insert("xl/styles.xml".to_string(), cell_styles(&styles));
     }
     std::fs::write(path, XlsxCodec::export_snapshot(&snap, &preserved)?)?;
     Ok(())
@@ -547,7 +570,13 @@ mod tests {
             // Sanity: the source really computed.
             assert_eq!(values.get(&(0, 3)), Some(&CellValue::Number(60.0)));
 
-            let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
+            let table = SheetTable::from_cells(
+                "Calc",
+                &raw,
+                &fmt,
+                &values,
+                &std::collections::HashSet::new(),
+            );
             let path = std::env::temp_dir().join("sheets-xlsx-formula-rt.xlsx");
             write_xlsx(&path, std::slice::from_ref(&table)).unwrap();
             let back = read_xlsx(&path).unwrap();

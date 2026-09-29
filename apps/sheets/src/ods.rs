@@ -45,8 +45,8 @@ pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
 
 /// The named cell style (declared in [`NUMBER_STYLES`]) for a numeric cell's
 /// format, if it has one.
-fn cell_style(format: CellFormat) -> Option<String> {
-    let name = match format {
+fn cell_style(cell: &crate::xlsx::ImportedCell) -> Option<String> {
+    let name = match cell.format {
         CellFormat::Currency(currency) => currency_cell_style(currency),
         CellFormat::Percent => "coPct",
         CellFormat::Date(_) => "coDate",
@@ -127,6 +127,7 @@ mod tests {
             raw: raw.into(),
             format,
             formula: None,
+            bold: false,
         }
     }
 
@@ -238,7 +239,13 @@ mod tests {
             raw.insert((0, 3), "=A3*2".into()); // 24
             let fmt: HashMap<Addr, CellFormat> = HashMap::new();
             let values = crate::formula::recalculate(&raw);
-            let table = SheetTable::from_cells("Calc", &raw, &fmt, &values);
+            let table = SheetTable::from_cells(
+                "Calc",
+                &raw,
+                &fmt,
+                &values,
+                &std::collections::HashSet::new(),
+            );
 
             let path = std::env::temp_dir().join("sheets-ods-formula-rt.ods");
             write_ods(&path, std::slice::from_ref(&table)).unwrap();
@@ -289,6 +296,7 @@ mod tests {
                 raw: "12".into(),
                 format: CellFormat::General,
                 formula: Some("=SUM(A1:A2)".into()),
+                bold: false,
             })]);
             let xml = written_part(std::slice::from_ref(&table), "content.xml");
             assert!(xml.contains("office:spreadsheet"));

@@ -57,6 +57,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod cell_actions;
 pub mod csv;
 pub mod doc;
 pub mod fill;
