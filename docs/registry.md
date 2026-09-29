@@ -502,6 +502,11 @@ tilo-registry-server sign-delegated-snapshot \
   --valid-for-seconds 86400
 ```
 
+The collector reads a version from its own content-addressed store when it
+already holds the bytes the publisher signed, and fetches only new versions.
+A submission it cannot collect completely stays pending and out of the staged
+batch; the others are staged, and the collector exits non-zero listing it.
+
 Both seed files are exactly 32 secret bytes encoded as 64 hex characters. The
 root seed exists only in the bootstrap/manual authorization environment. The
 serving process receives neither private key. The collector cannot forge a
