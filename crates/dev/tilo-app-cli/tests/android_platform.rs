@@ -354,6 +354,24 @@ fn an_android_package_is_release_signed_bundled_and_packed_for_the_registry() {
         ["bin/notes.apk"]
     );
 
+    // An existing package is refused before anything is compiled.
+    let builds = fixture.log("cargo-args");
+    let kept = fixture.tilo_app(
+        &fixture.app,
+        &["package", "--platform", "android", "--arch", "aarch64"],
+    );
+    assert!(!kept.status.success());
+    assert!(
+        stderr(&kept).contains("already exists; pass --force to replace it"),
+        "{}",
+        stderr(&kept)
+    );
+    assert_eq!(
+        fixture.log("cargo-args"),
+        builds,
+        "no build before the refusal"
+    );
+
     // The same key signs the next release.
     let again = fixture.tilo_app(
         &fixture.app,
