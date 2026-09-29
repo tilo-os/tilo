@@ -10178,7 +10178,8 @@ impl Widget for WordProcessorWidget {
         dyn ui::resources::PublishesResources,
         dyn ui::presence::capability::PublishesPresence,
         dyn ui::record::capability::RecordScoped,
-        dyn ui::component_lifecycle::ComponentLifecycle
+        dyn ui::component_lifecycle::ComponentLifecycle,
+        dyn ui::undo::UndoPoints
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
@@ -11209,6 +11210,24 @@ impl Widget for WordProcessorWidget {
             Some(winit::window::ImePurpose::Normal)
         }
     }
+    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
+        self.action_palette_request.take()
+    }
+    fn needs_redraw(&self) -> bool {
+        self.lifecycle.dirty
+    }
+    fn mark_drawn(&mut self) {
+        self.lifecycle.dirty = false;
+    }
+    /// One self-drawn taffy leaf filling its tile: its size follows the
+    /// parent alone, so only the first layout is a size change. Pages,
+    /// toolbars and panels are positioned inside `self.rect` by hand.
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::undo::UndoPoints for WordProcessorWidget {
     fn needs_commit(&self) -> bool {
         // Hosted, edits are actions the framework bounds into undo steps
         // itself (a commit request would close a word mid-typing); only a
@@ -11243,21 +11262,6 @@ impl Widget for WordProcessorWidget {
         self.direct_writes = 0;
         self.lifecycle.needs_commit = false;
         self.save_status = DocumentSaveStatus::Modified;
-    }
-    fn take_action_palette_request(&mut self) -> Option<tilo_actions::ActionAddress> {
-        self.action_palette_request.take()
-    }
-    fn needs_redraw(&self) -> bool {
-        self.lifecycle.dirty
-    }
-    fn mark_drawn(&mut self) {
-        self.lifecycle.dirty = false;
-    }
-    /// One self-drawn taffy leaf filling its tile: its size follows the
-    /// parent alone, so only the first layout is a size change. Pages,
-    /// toolbars and panels are positioned inside `self.rect` by hand.
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 

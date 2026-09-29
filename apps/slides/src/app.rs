@@ -5589,7 +5589,8 @@ impl Widget for SlidesApp {
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -6278,16 +6279,17 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
     }
+}
 
+impl ui::undo::UndoPoints for SlidesApp {
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }

@@ -712,6 +712,8 @@ impl Card {
 }
 
 impl Widget for Card {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -881,22 +883,25 @@ impl Widget for Card {
         dirty
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children.iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            child.on_commit();
-        }
-    }
-
     fn name(&self) -> &'static str {
         "InstallerCard"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for Card {
+    fn needs_commit(&self) -> bool {
+        self.children
+            .iter()
+            .any(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            ui::undo::on_commit(child.as_mut());
+        }
     }
 }
 
@@ -922,6 +927,8 @@ impl ViewportStage {
 }
 
 impl Widget for ViewportStage {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1061,22 +1068,25 @@ impl Widget for ViewportStage {
         dirty
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children.iter().any(|child| child.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            child.on_commit();
-        }
-    }
-
     fn name(&self) -> &'static str {
         "InstallerViewportStage"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for ViewportStage {
+    fn needs_commit(&self) -> bool {
+        self.children
+            .iter()
+            .any(|child| ui::undo::needs_commit(child.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            ui::undo::on_commit(child.as_mut());
+        }
     }
 }
 
@@ -3946,7 +3956,10 @@ fn args_none() -> serde_json::Map<String, serde_json::Value> {
 }
 
 impl Widget for InstallerApp {
-    ui::provides!(dyn ui::resources::PublishesResources);
+    ui::provides!(
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -4189,16 +4202,6 @@ impl Widget for InstallerApp {
         mine || child
     }
 
-    fn needs_commit(&self) -> bool {
-        self.composed.as_ref().is_some_and(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            c.on_commit();
-        }
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.composed
             .as_ref()
@@ -4211,6 +4214,19 @@ impl Widget for InstallerApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for InstallerApp {
+    fn needs_commit(&self) -> bool {
+        self.composed
+            .as_ref()
+            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        if let Some(c) = &mut self.composed {
+            ui::undo::on_commit(c.as_mut());
+        }
     }
 }
 

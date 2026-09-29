@@ -3889,7 +3889,8 @@ impl Drop for TextInput {
 impl Widget for TextInput {
     crate::provides!(
         dyn crate::widget::controls::ActionControls,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
     );
 
     fn set_interaction_environment(
@@ -4495,51 +4496,6 @@ impl Widget for TextInput {
             .filter(|deadline| *deadline > crate::time::now())
     }
 
-    fn needs_commit(&self) -> bool {
-        if let Some(t) = self.last_edit_time {
-            t.elapsed() >= Duration::from_secs(1)
-        } else {
-            false
-        }
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    fn get_state(&self) -> Option<String> {
-        if let Some(anchor) = self.selection_anchor {
-            let affinity = if self.caret_affinity == TextAffinity::After {
-                "a"
-            } else {
-                "b"
-            };
-            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
-        }
-        Some(match self.caret_affinity {
-            // Keep the historical state shape for the overwhelmingly common
-            // unambiguous/default caret.
-            TextAffinity::Before => self.cursor_pos.to_string(),
-            TextAffinity::After => format!("{}:a", self.cursor_pos),
-        })
-    }
-
-    fn set_state(&mut self, state: &str) {
-        let mut parts = state.split(':');
-        let byte = parts.next().unwrap_or_default();
-        let affinity = parts.next().unwrap_or("b");
-        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
-        if let Ok(pos) = byte.parse::<usize>() {
-            self.cursor_pos = pos;
-            self.selection_anchor = anchor;
-            self.caret_affinity = if affinity == "a" {
-                TextAffinity::After
-            } else {
-                TextAffinity::Before
-            };
-        }
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         // A secret field never surfaces its contents.
         if !self.is_focused || self.secret {
@@ -4645,6 +4601,50 @@ impl Widget for TextInput {
                 theme,
                 presence,
             );
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for TextInput {
+    fn needs_commit(&self) -> bool {
+        if let Some(t) = self.last_edit_time {
+            t.elapsed() >= Duration::from_secs(1)
+        } else {
+            false
+        }
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+    fn get_state(&self) -> Option<String> {
+        if let Some(anchor) = self.selection_anchor {
+            let affinity = if self.caret_affinity == TextAffinity::After {
+                "a"
+            } else {
+                "b"
+            };
+            return Some(format!("{}:{affinity}:{anchor}", self.cursor_pos));
+        }
+        Some(match self.caret_affinity {
+            // Keep the historical state shape for the overwhelmingly common
+            // unambiguous/default caret.
+            TextAffinity::Before => self.cursor_pos.to_string(),
+            TextAffinity::After => format!("{}:a", self.cursor_pos),
+        })
+    }
+    fn set_state(&mut self, state: &str) {
+        let mut parts = state.split(':');
+        let byte = parts.next().unwrap_or_default();
+        let affinity = parts.next().unwrap_or("b");
+        let anchor = parts.next().and_then(|anchor| anchor.parse::<usize>().ok());
+        if let Ok(pos) = byte.parse::<usize>() {
+            self.cursor_pos = pos;
+            self.selection_anchor = anchor;
+            self.caret_affinity = if affinity == "a" {
+                TextAffinity::After
+            } else {
+                TextAffinity::Before
+            };
         }
     }
 }

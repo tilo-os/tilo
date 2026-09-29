@@ -197,7 +197,7 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for ShortcutPane {
-    ui::provides!(dyn ui::undo::CommittedActions);
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -363,24 +363,27 @@ impl Widget for ShortcutPane {
             .into_iter()
             .collect()
     }
+    fn name(&self) -> &'static str {
+        "ShortcutPane"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for ShortcutPane {
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
                 .as_ref()
-                .is_some_and(|content| content.needs_commit());
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
         crate::panes::preference_commit_context(
             pending,
             "keyboard-shortcuts",
             "Keyboard shortcuts",
             "Change keyboard shortcuts",
         )
-    }
-    fn name(&self) -> &'static str {
-        "ShortcutPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

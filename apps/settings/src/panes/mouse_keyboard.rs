@@ -1816,6 +1816,8 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.poll_devices();
@@ -1908,22 +1910,6 @@ impl Widget for MouseKeyboardPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        // The add/reorder/remove source edge keys are transient internally,
-        // but they exist only to apply a durable keyboard-source preference.
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "input",
-            "Mouse & keyboard",
-            "Change input preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "MouseKeyboardPane"
     }
@@ -1939,6 +1925,24 @@ impl Widget for MouseKeyboardPane {
             .as_mut()
             .is_some_and(|composed| composed.take_structure_dirty());
         own || child
+    }
+}
+
+impl ui::undo::UndoPoints for MouseKeyboardPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        // The add/reorder/remove source edge keys are transient internally,
+        // but they exist only to apply a durable keyboard-source preference.
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "input",
+            "Mouse & keyboard",
+            "Change input preferences",
+        )
     }
 }
 

@@ -4895,7 +4895,8 @@ impl Widget for PdfApp {
         dyn ui::undo::CommittedActions,
         dyn ui::resources::PublishesResources,
         dyn ui::search::capability::SearchSource,
-        dyn ui::record::capability::RecordScoped
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -5808,14 +5809,6 @@ impl Widget for PdfApp {
             .flatten()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-    }
-
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-    }
-
     fn has_pending_visual_work(&self) -> bool {
         self.pending_open.is_some()
             || self.awaiting_markup_record
@@ -5883,6 +5876,15 @@ impl Widget for PdfApp {
         }
         // Root fills the whole window — never cull.
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::undo::UndoPoints for PdfApp {
+    fn needs_commit(&self) -> bool {
+        self.commit_pending
+    }
+    fn on_commit(&mut self) {
+        self.commit_pending = false;
     }
 }
 
