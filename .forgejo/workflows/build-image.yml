@@ -418,13 +418,17 @@ jobs:
       - name: Default to the apps of this commit
         run: echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
 
-      # A Build / OS dev image carries the apps of its own commit, compiled in
-      # the image build through the warm compiler cache: a VM moved onto the
-      # image of commit X runs X's apps. Releases and dispatches take the
-      # pinned, independently published collection.
+      # A Build / OS dev image carries the apps of its own commit: a VM moved
+      # onto the image of commit X runs X's apps. It takes the published
+      # collection only when that collection was built from a commit whose
+      # app inputs are this commit's; otherwise the image build compiles the
+      # apps through the warm compiler cache. Releases and dispatches always
+      # take the pinned, independently published collection.
       - name: Materialize the pinned app collection
-        if: github.event_name != 'workflow_call'
         env:
+          DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
+          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
@@ -437,6 +441,24 @@ jobs:
           COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.TILO_APP_COLLECTION_PUBLISHER }}
         run: |
           set -euo pipefail
+          if [[ $DEV_BUILD == true ]]; then
+            [[ $COLLECTION_SOURCE =~ ^[0-9a-f]{40}$ ]] || { echo '::notice::no collection source recorded; compiling the apps'; exit 0; }
+            if [[ $COLLECTION_SOURCE != "$GITHUB_SHA" ]]; then
+              git fetch --quiet --no-tags --depth=1 origin "$COLLECTION_SOURCE" \
+                || { echo "::notice::collection source $COLLECTION_SOURCE is not fetchable; compiling the apps"; exit 0; }
+              # The inputs Release / apps publishes a new collection for.
+              mapfile -t inputs < <(awk '
+                /^    paths:$/ { on = 1; next }
+                on && /^      - / { gsub(/^      - "|"$/, ""); print ":(glob)" $0; next }
+                on { exit }' .forgejo/workflows/release-apps.yml)
+              (( ${#inputs[@]} > 10 ))
+              if ! git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"; then
+                echo "::notice::app inputs changed since the published collection ($COLLECTION_SOURCE); compiling the apps"
+                exit 0
+              fi
+            fi
+            echo "::notice::the published collection of $COLLECTION_SOURCE has this commit's app inputs; taking it"
+          fi
           # The Authorized Integration grants only short-lived package read to
           # this workflow. Pull requests therefore test the exact immutable
           # app/OS boundary without receiving a reusable registry credential.
@@ -517,6 +539,13 @@ jobs:
             fi
           done < <(tar -tzf "$work/apps.tar.gz")
           [[ $found == 1 ]]
+          if [[ $DEV_BUILD == true ]]; then
+            source="$(tar -xzOf "$work/apps.tar.gz" index.json | jq -r '.source // empty')"
+            [[ $source == "$COLLECTION_SOURCE" ]] || {
+              echo "::notice::the collection records source '$source', not $COLLECTION_SOURCE; compiling the apps"
+              exit 0
+            }
+          fi
           tar --extract --gzip --file "$work/apps.tar.gz" --directory "$work" \
             --no-same-owner --no-same-permissions
           if find "$work/tapp" "$work/runtime" -type l -o \( ! -type f ! -type d \) | grep -q .; then
