@@ -41,8 +41,12 @@
 //! delete an element, move a slide — take their targets and values as typed
 //! arguments, so an agent or a script can make any layout or styling edit a
 //! person makes on the canvas, by stable id, through the same permission,
-//! history and undo path. `apply` (any [`SlidesAction`] as JSON) and `group`
-//! (several operations as one undo step) are published beside them.
+//! history and undo path. Bound document ops — add a slide (rank from the
+//! live deck) and set the accent theme — ride
+//! [`Resource::bound_actions`](ui::tilo_resource::Resource::bound_actions) so
+//! `tilo_resource::publish` includes them without a post-publish bolt-on.
+//! `apply` (any [`SlidesAction`] as JSON) and `group` (several operations as
+//! one undo step) are published beside them.
 //!
 //! ## Determinism contract
 //!
@@ -1533,13 +1537,12 @@ impl SlidesResourceCtx {
 // ===========================================================================
 
 /// The deck as a [`ui::tilo_resource::Resource`]: [`SlidesAction`] is its
-/// replayable vocabulary, and its declarations are the typed operations an
-/// agent, a script or the palette calls by name with arguments — add,
-/// move/resize, restyle and delete an element, and move a slide. Publishing
-/// it ([`provide_resources`]) also offers the generic
-/// [`APPLY`](ui::tilo_resource::APPLY) (any [`SlidesAction`] as JSON) and
-/// [`GROUP`](ui::tilo_resource::GROUP) (several declared operations as one
-/// undo step) every resource has.
+/// replayable vocabulary. Declarations are the typed element/slide ops an
+/// agent, a script or the palette calls by name; bound actions are add-slide
+/// and theme-* (payload from the live deck). Publishing it
+/// ([`provide_resources`] / [`ui::tilo_resource::publish`]) also offers the
+/// generic [`APPLY`](ui::tilo_resource::APPLY) and
+/// [`GROUP`](ui::tilo_resource::GROUP) every resource has.
 pub struct SlidesDeck;
 
 /// Declared operation ids, as published on the `slides.deck` resource.
@@ -1548,6 +1551,8 @@ pub const MOVE_ELEMENT: &str = "move-element";
 pub const RESTYLE_ELEMENT: &str = "restyle-element";
 pub const DELETE_ELEMENT: &str = "delete-element";
 pub const MOVE_SLIDE: &str = "move-slide";
+/// Bound document op: append a slide (rank from the live deck at publish).
+pub const ADD_SLIDE: &str = "add-slide";
 
 impl ui::tilo_resource::Resource for SlidesDeck {
     const KIND: &'static str = "slides.deck";
@@ -1572,6 +1577,10 @@ impl ui::tilo_resource::Resource for SlidesDeck {
 
     fn local_operations() -> Vec<ActionSpec> {
         deck_local_operations()
+    }
+
+    fn bound_actions(state: &SlidesResourceCtx) -> Vec<ActionSpec> {
+        deck_bound_document_actions(state)
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
@@ -1964,20 +1973,18 @@ fn deck_local_operations() -> Vec<ActionSpec> {
     specs
 }
 
-fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
-    let title = ctx.deck_title.trim();
-    let deck_label = if title.is_empty() { "Deck" } else { title };
-    // Declared ops, apply, group, View/Effect local_operations, and slides beneath.
-    let mut deck = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx);
-
+/// Document ops whose payload needs the live deck: append a slide (rank after
+/// the last slide) and set the accent theme. Published through
+/// [`SlidesDeck::bound_actions`] so `tilo_resource::publish` owns them.
+fn deck_bound_document_actions(ctx: &SlidesResourceCtx) -> Vec<ActionSpec> {
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
     let rank = resource_rank_for_slot(ctx, ctx.slides.len());
-    deck = deck.with_action(
+    let mut specs = vec![
         ActionSpec::typed(
-            "add-slide",
+            ADD_SLIDE,
             "Add slide",
             "optional title and body",
             ExecutionLocus::ClientLocal,
@@ -1999,18 +2006,26 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
             },
         )
         .reversible(),
-    );
+    ];
 
-    // Deck-level: set the accent theme, one row per palette.
+    // Deck-level: set the accent theme, one row per palette. Collaborative
+    // document state (not a per-peer View) — same CRDT path as the inspector.
     for kind in PaletteKind::ALL {
-        deck = deck.with_action(immediate_spec(
+        specs.push(immediate_spec(
             &format!("theme-{}", kind.as_str()),
             &format!("Theme: {}", kind.label()),
             &set_deck_palette_action(kind),
         ));
     }
+    specs
+}
 
-    deck
+fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
+    let title = ctx.deck_title.trim();
+    let deck_label = if title.is_empty() { "Deck" } else { title };
+    // Declared ops, bound add-slide/theme, apply, group, View/Effect
+    // local_operations, and slides beneath — all from publish, no bolt-on.
+    ui::tilo_resource::publish::<SlidesDeck>("slides.deck", deck_label, ctx)
 }
 
 fn slide_resource(sr: &SlideResource, eager_children: bool, ctx: &SlidesResourceCtx) -> Resource {

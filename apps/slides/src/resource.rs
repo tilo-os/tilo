@@ -46,11 +46,31 @@ impl ResourceSurface<SlidesDeck> for SlidesApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::actions::{ADD_ELEMENT, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT};
-    use crate::model::{Deck, Slide, seed_deck};
+    use crate::actions::{
+        ADD_ELEMENT, ADD_SLIDE, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT,
+    };
+    use crate::model::{Deck, PaletteKind, Slide, seed_deck};
     use ui::framework::ResourceSurface;
     use ui::resources::PublishesResources;
     use ui::widget::Widget;
+
+    #[test]
+    fn the_deck_publish_includes_add_slide_and_theme_ops() {
+        let ctx = SlidesResourceCtx::from_deck(&seed_deck());
+        let published = ui::tilo_resource::publish::<SlidesDeck>("slides.deck", "Deck", &ctx);
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        assert!(
+            ids.contains(&ADD_SLIDE),
+            "add-slide must ride bound_actions through publish, not a bolt-on: {ids:?}"
+        );
+        for kind in PaletteKind::ALL {
+            let theme = format!("theme-{}", kind.as_str());
+            assert!(
+                ids.contains(&theme.as_str()),
+                "theme `{theme}` must ride bound_actions through publish: {ids:?}"
+            );
+        }
+    }
 
     #[test]
     fn hosted_resources_keep_selection_extras_without_deck_root() {
@@ -64,6 +84,8 @@ mod tests {
             RESTYLE_ELEMENT,
             DELETE_ELEMENT,
             MOVE_SLIDE,
+            ADD_SLIDE,
+            "theme-emerald",
             ui::tilo_resource::APPLY,
             ui::tilo_resource::GROUP,
             "present",

@@ -12,7 +12,8 @@ use serde_json::{Value, json};
 use tilo_actions::{ActionAddress, ActionRegistry, DoorError, LocalTransport, Resource};
 
 use crate::actions::{
-    self, ADD_ELEMENT, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT, SlidesResourceCtx,
+    self, ADD_ELEMENT, ADD_SLIDE, DELETE_ELEMENT, MOVE_ELEMENT, MOVE_SLIDE, RESTYLE_ELEMENT,
+    SlidesResourceCtx,
 };
 use crate::doc::SlidesDoc;
 use crate::model::{Deck, ElementKind, TextAlign, seed_deck};
@@ -103,8 +104,8 @@ fn the_deck_publishes_its_typed_operations_eagerly_and_by_id() {
             MOVE_SLIDE,
             ui::tilo_resource::APPLY,
             ui::tilo_resource::GROUP,
-            // The existing tree is still there beside them.
-            "add-slide",
+            // Bound document ops ride publish via bound_actions.
+            ADD_SLIDE,
             "theme-emerald",
             "present",
         ] {
