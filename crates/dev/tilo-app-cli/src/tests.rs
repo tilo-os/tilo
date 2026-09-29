@@ -4781,6 +4781,22 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(doctor_app(&app).unwrap().is_ready());
     }
 
+    // Phase: `--ui-path` may name the checkout itself, not only one of its SDK crates.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let mut req = request(app.clone());
+        req.ui_path = Some(checkout.clone());
+        create_app_from(temp.path(), req).unwrap();
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let ui_path = manifest["dependencies"]["ui"]["path"].as_str().unwrap();
+        assert_eq!(
+            app.join(ui_path).canonicalize().unwrap(),
+            checkout.join("crates/sdk/tilo-app"),
+            "{ui_path}"
+        );
+    }
+
     // Phase: without a checkout the SDK and every fork come from one pinned git commit.
     {
         let temp = tempfile::tempdir().unwrap();
