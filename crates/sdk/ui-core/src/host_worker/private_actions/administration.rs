@@ -6,16 +6,16 @@ use super::{
     SenderStorageCode as Code, codec,
 };
 use crate::host_worker::managed_sender::{NativeSenderOutboxV1, OutboxFailure};
+use std::{
+    ffi::OsStr,
+    fs::File,
+    io::{self, Read, Seek, SeekFrom},
+};
 use tilo_files::native::atomic::{
     ExistingCommitError, FileIdentity, PublicationError, PublicationState, PublishMode,
     StorageDirectory,
     bounded::FreshChildError,
     lease::{AcquireError, FileLease, LeaseMode},
-};
-use std::{
-    ffi::OsStr,
-    fs::File,
-    io::{self, Read, Seek, SeekFrom},
 };
 
 /// Inert expected disk state; not evidence of a signed owner selection.

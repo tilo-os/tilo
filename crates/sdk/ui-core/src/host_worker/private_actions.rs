@@ -90,14 +90,16 @@ impl SenderScope {
 
 use crate::portable_storage::PortableStorage;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
+use std::ffi::OsStr;
+use std::io::{self, Read};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use tilo_files::native::atomic::bounded::{
     AdmissionError, BoundedOwnerDirectory as OwnerDirectory, ChildOpenError,
 };
 use tilo_files::native::atomic::lease::FileLease;
-use tilo_files::native::atomic::{ExistingCommitError, PublicationError, PublicationState, StorageDirectory};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
-use std::ffi::OsStr;
-use std::io::{self, Read};
+use tilo_files::native::atomic::{
+    ExistingCommitError, PublicationError, PublicationState, StorageDirectory,
+};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 type OwnerDirectory = StorageDirectory;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -325,7 +327,9 @@ impl PrivateActionsFile {
                 ) {
                     Ok(lease) => held.lease.insert(lease),
                     Err(tilo_files::native::atomic::lease::AcquireError::Busy) => return Ok(None),
-                    Err(tilo_files::native::atomic::lease::AcquireError::Io(e)) => return Err(OpenError::Io(e)),
+                    Err(tilo_files::native::atomic::lease::AcquireError::Io(e)) => {
+                        return Err(OpenError::Io(e));
+                    }
                 };
                 let child = root
                     .open_directory_child(OsStr::new(CHILD_NAME))
