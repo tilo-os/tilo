@@ -48,9 +48,16 @@ starting point, so they are examples now; naming one tells you which.
 
 `tilo-app examples` prints this list (`--json` for scripts, with each
 example's path and whether it is web-capable). The three native-only examples
-load data or compute on a `std::thread`; the portability lint does not flag
-threads, so the column states what the example does rather than what a gate
-proved.
+load data or compute on a `std::thread`.
+
+The column is what the portability lint finds, not a promise: the lint records
+the standard-library APIs the web target cannot run (threads, the file system,
+processes, sockets, `Instant` and `SystemTime`) apart from its findings, and
+`every_example_is_indexed_and_portable` fails when an example's Web flag
+disagrees with it. `tilo-app build --platform web` refuses an app that uses
+one. CI builds every web-capable example for the web when one of them, or the
+web build itself, changes: `tools/ci/build-web-examples.sh` builds the web core
+once with those examples in its collection, then each example's app module.
 
 ## Where they live and how they stay correct
 

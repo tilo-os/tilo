@@ -6027,11 +6027,17 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
     let manifest = source
         .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let targets = manifest
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(toml::Table::values);
     let Some(path) = manifest
         .get("dependencies")
-        .and_then(|dependencies| dependencies.get(dependency_name))
-        .and_then(|dependency| dependency.get("path"))
-        .and_then(toml::Value::as_str)
+        .into_iter()
+        .chain(targets.filter_map(|target| target.get("dependencies")))
+        .filter_map(|dependencies| dependencies.get(dependency_name))
+        .find_map(|dependency| dependency.get("path").and_then(toml::Value::as_str))
     else {
         return Ok(None);
     };
@@ -8984,12 +8990,21 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
                 || PathBuf::from("../../crates/runtime/runtime-dylib"),
                 |crates| crates.join("runtime/runtime-dylib"),
             );
-            // CI rejects a workspace member that cargo-hakari has not been told about.
+            // CI rejects a workspace member that cargo-hakari has not been
+            // told about. The hack's feature set is native, so it and the
+            // full SDK stay off the web build (`build --platform web`), which
+            // links the app against the portable toolkit.
+            let sdk = sdk_path.to_string_lossy();
             let _ = write!(
                 manifest,
-                "ui = {{ package = \"tilo-app\", path = {:?} }}\nruntime-dylib = {{ path = {:?}, optional = true }}\nworkspace-hack = {{ version = \"0.1\" }}\n\n[lints]\nworkspace = true\n",
-                sdk_path.to_string_lossy(),
-                runtime_path.to_string_lossy(),
+                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\n\
+                 [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\n\
+                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\
+                 workspace-hack = {{ version = \"0.1\" }}\n\n\
+                 [target.'cfg(target_arch = \"wasm32\")'.dependencies]\n\
+                 ui = {{ package = \"tilo-app\", path = {sdk:?}, default-features = false }}\n\n\
+                 [lints]\nworkspace = true\n",
+                runtime = runtime_path.to_string_lossy(),
             );
         }
         AppSdk::Standalone(standalone) => {
