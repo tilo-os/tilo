@@ -60,6 +60,15 @@ has "$image_script" 'WPE_BUILD_JOBS=${TILO_WPE_BUILD_JOBS:-8}' \
   'image builds forward the explicit browser job budget'
 has "$wpe_recipe" 'TILO_WPE_SOURCE_DIR=/tilo-assets TILO_WPE_OFFLINE=1' \
   'production WPE compilation uses only the verified external cache'
+for archive in libwpe-1.16.3.tar.xz wpebackend-fdo-1.16.1.tar.xz wpewebkit-2.52.6.tar.xz; do
+  has "$wpe_recipe" "COPY --from=github-assets /$archive /" \
+    "$archive is the only kind of asset copied into the WPE stage"
+done
+if grep -Fq 'COPY --from=github-assets / /' "$wpe_recipe"; then
+  bad 'unrelated external assets invalidate the WPE compile cache'
+else
+  ok 'unrelated external assets stay out of the WPE compile cache key'
+fi
 has "$container" 'os/Containerfile.wpe' \
   'OS recipe points at the isolated WPE compile recipe'
 if ! grep -Fq 'bash /build-wpe.sh build' "$container"; then ok 'OS Containerfile does not compile WPE'; else bad 'OS Containerfile still compiles WPE'; fi
