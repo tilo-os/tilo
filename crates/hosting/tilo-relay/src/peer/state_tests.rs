@@ -1211,6 +1211,63 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
 }
 
 #[tokio::test]
+async fn a_commit_is_acknowledged_only_once_it_is_retained() {
+    let mut fixture = Fixture::new();
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "state-persist");
+    let session = SessionCtx {
+        workspaces: &fixture.registry,
+        autobind: None,
+        outbound: &fixture.source.tx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &fixture.source.own_user,
+        own_device_cert: &fixture.source.peer.cert,
+        own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        app_serving: None,
+        metrics: &fixture.metrics,
+        trust_policy: &fixture.source.policy,
+        disconnect: &fixture.source.disconnect,
+        v2: true,
+        agent_reads_v1: false,
+        private_tx: &fixture.private,
+        revocations: &fixture.source.revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+    };
+    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
+        unreachable!()
+    };
+    let commit = Envelope::Commit {
+        workspace_id: 7,
+        op: [5; 16],
+        author_device_public_key: fixture.source.peer.device_public_key,
+        authored_at_ns: 1,
+        delta,
+    };
+    let reply = handle_commit(&fixture.source.peer, &session, &[7], commit)
+        .await
+        .unwrap();
+    assert!(reply.is_none(), "a commit was acknowledged when admitted");
+    reached.await.unwrap();
+    assert!(fixture.store.load_retained().unwrap().is_empty());
+    assert!(
+        fixture.receivers[0].try_recv().is_err(),
+        "a commit was acknowledged before it was retained"
+    );
+    drop(release);
+    let acknowledged = tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        fixture.receivers[0].recv(),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(matches!(acknowledged, Envelope::Committed { op, .. } if op == [5; 16]));
+    assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn state_owner_preserves_checkpoint_then_tail_and_durability_under_cancellation() {
     let mut fixture = Fixture::new();
     let (release, reached) =
