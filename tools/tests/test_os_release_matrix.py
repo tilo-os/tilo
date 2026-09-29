@@ -252,6 +252,15 @@ class OsDevLaneTests(unittest.TestCase):
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
 
+    def test_dev_builds_keep_a_cacheable_epoch(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        # image.created keeps the commit time either way.
+        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
+
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()
         block = workflow.split("      - name: Select build, validation, or publication mode\n", 1)[1]
