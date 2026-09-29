@@ -21,6 +21,7 @@
 #[cfg(target_os = "macos")]
 pub mod macos;
 pub mod release;
+pub mod requirement;
 pub mod swap;
 
 pub use release::{Error, Release};

@@ -83,10 +83,7 @@ impl Bundle {
         let output = run(Command::new("/usr/bin/codesign")
             .args(["--display", "--requirements", "-"])
             .arg(&self.path))?;
-        String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .find_map(|line| line.strip_prefix("designated => "))
-            .map(str::to_owned)
+        crate::requirement::designated(&String::from_utf8_lossy(&output.stdout))
             .ok_or_else(|| invalid("the installed bundle has no designated requirement"))
     }
 }
@@ -166,6 +163,7 @@ fn restart_agent() -> io::Result<()> {
     let uid = unsafe { libc::getuid() };
     let status = Command::new("/bin/launchctl")
         .args(["kickstart", "-k", &format!("gui/{uid}/{RUNTIME_AGENT}")])
+        .stderr(std::process::Stdio::null())
         .status()?;
     if !status.success() {
         eprintln!(
