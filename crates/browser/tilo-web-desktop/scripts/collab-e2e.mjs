@@ -352,6 +352,7 @@ async function closePage(page) {
   try { writeFileSync(join(page.dir, `${page.name}-final.png`), await page.tab.screenshot()); } catch {}
   try { writeFileSync(join(page.dir, `${page.name}-console.log`), [...page.tab.log, ...await page.tab.evaluate('globalThis.__console ?? []')].join('\n')); } catch {}
   try { writeFileSync(join(page.dir, `${page.name}-snapshot.json`), JSON.stringify(await page.tab.evaluate('globalThis.peer?.getSnapshot() ?? null'), null, 1)); } catch {}
+  try { writeFileSync(join(page.dir, `${page.name}-channels.txt`), await page.tab.evaluate('globalThis.peer?.channelDiagnostics?.() ?? ""')); } catch {}
   await page.browser.close().catch(() => {});
 }
 
@@ -473,6 +474,7 @@ async function runApp(name) {
     check('same record on every side', seenA && seenB && recordsA.some(r => recordsB.includes(r)),
       `A ${recordsA.join(',')} B ${recordsB.join(',')}; native content shows in both`);
     writeFileSync(join(dir, 'A-1-joined.png'), await a.tab.screenshot());
+    writeFileSync(join(dir, 'A-1-channels.txt'), await a.tab.evaluate('globalThis.peer?.channelDiagnostics?.() ?? ""'));
 
     // Each phase records its own failure and the next one still runs.
     const phase = async (id, body) => {

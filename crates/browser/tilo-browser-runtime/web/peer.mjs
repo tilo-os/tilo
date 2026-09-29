@@ -542,6 +542,8 @@ export async function connectPeer({
   const certifiedPeer = {
     get host() { return host; },
     getSnapshot: () => snapshot,
+    /** Diagnostic text of the page's channel membership (not a contract). */
+    channelDiagnostics: () => peer?.channelDiagnostics?.() ?? '',
     subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
     /** The live layer of the joined room, or `undefined` without a room. */
     get live() { return live; },

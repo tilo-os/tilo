@@ -197,6 +197,9 @@ pub struct PeerStatus {
     pub device: [u8; 32],
     /// Bumped on every change.
     pub generation: u64,
+    /// This page's channel state, one line per room, certificate and
+    /// route, for diagnostics.
+    pub channels: String,
 }
 
 /// Something the session produced for its consumers.
@@ -376,6 +379,7 @@ impl PeerHandle {
                 outgoing_pending: 0,
                 device: config.cert.device_public_key,
                 generation: 0,
+                channels: String::new(),
             },
             queues: Vec::new(),
             wakes: Vec::new(),
@@ -1446,6 +1450,10 @@ impl Task {
             if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
             {
                 self.persist_channels(false);
+                let channels = self.channels.describe();
+                if lock(&self.shared).status.channels != channels {
+                    self.update(|status| status.channels = channels);
+                }
                 return delivered;
             }
             let held_before = self.held_outbound.len();
@@ -1736,6 +1744,7 @@ mod tests {
             outgoing_pending: 0,
             device: [0; 32],
             generation: 0,
+            channels: String::new(),
         }
     }
 

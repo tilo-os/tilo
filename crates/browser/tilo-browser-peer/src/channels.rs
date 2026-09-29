@@ -467,6 +467,53 @@ impl Channels {
                 .is_some_and(|route| route.member.is_some())
     }
 
+    /// One line per room, certificate and route for diagnostics: whom a
+    /// room follows, which senders may govern, and where each route's
+    /// membership stands.
+    pub(crate) fn describe(&self) -> String {
+        let short = |key: &[u8]| hex::encode(key.get(..4).unwrap_or_default());
+        let mut lines = Vec::new();
+        for room in self.rooms.keys() {
+            let governance = match self.governance(room) {
+                Governance::Governed(device) => format!("governed by {}", short(device.as_bytes())),
+                Governance::Unknown => "unknown".to_owned(),
+                Governance::Ungoverned => "ungoverned".to_owned(),
+            };
+            lines.push(format!("room {room}: {governance}"));
+        }
+        for (device, cert) in &self.certs {
+            lines.push(format!(
+                "cert {}: may govern {}",
+                short(device),
+                self.may_govern(&cert.device_public_key)
+            ));
+        }
+        for (room, sender, _) in &self.candidates {
+            lines.push(format!("candidate genesis {room} from {}", short(sender)));
+        }
+        for (channel, route) in &self.routes {
+            let access =
+                route
+                    .member
+                    .as_ref()
+                    .map_or("no member".to_owned(), |member| match member.access() {
+                        Access::Ready { .. } => "ready".to_owned(),
+                        other => format!("{other:?}"),
+                    });
+            lines.push(format!(
+                "route {}/{} ({channel:?}): {access}; request {}; early {}",
+                route.document.app_id,
+                route.document.record,
+                route.request.is_some(),
+                route.early.len()
+            ));
+        }
+        for (channel, frames) in &self.unopened {
+            lines.push(format!("unopened {channel:?}: {} frames", frames.len()));
+        }
+        lines.join("\n")
+    }
+
     /// Re-ask stewards whose answer is overdue.
     pub(crate) fn tick(&mut self, now_ms: u64) -> Changes {
         let mut changes = Changes::default();
