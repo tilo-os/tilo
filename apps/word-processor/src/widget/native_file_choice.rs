@@ -96,6 +96,11 @@ impl WordProcessorWidget {
         &self,
         path: &std::path::Path,
     ) -> Result<Option<ui::record::InitialFileHistory>, String> {
+        // Hosted, the framework's record is the document and a file is only
+        // imported into it; there is no file record with a history of its own.
+        if self.hosted() {
+            return Ok(None);
+        }
         let want = ui::RecordCheckout::new(
             ui::RecordId::for_file(path),
             ui::RecordKind::new("document"),

@@ -27,8 +27,9 @@ use std::time::{Duration, Instant, UNIX_EPOCH};
 use thumbnail::{ThumbKey, ThumbnailService};
 use ui::paint::PaintCtx;
 use ui::tilo_actions::{
-    ActionContract, ActionSpec, Availability, ConfirmationPolicy, EncodedAction, ExecutionMode,
-    OperationKind, PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
+    ActionArgs, ActionContract, ActionParam, ActionSpec, Availability, ConfirmationPolicy,
+    EncodedAction, ExecutionMode, OperationKind, ParamType, PermissionRequirement, Resource,
+    ResultSpec, RetryPolicy, RiskLevel,
 };
 use ui::widget::context_menu::{ContextMenu, MenuItem};
 use ui::widget::{AppModel, ModelPath};
@@ -6593,10 +6594,92 @@ impl FileExplorerWidget {
     fn action_directory_folder_root(&self) -> Resource {
         let mut folder = self.folder_resource_base();
         Self::append_navigation_actions(&mut folder);
+        folder.actions.push(Self::go_to_action());
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
         self.append_nearby_receiver_resources(&mut folder);
         folder
+    }
+
+    /// The folder as a caller browsing into it resolves it: the root plus
+    /// its first entries, each with its complete actions.
+    fn folder_with_entries(&self) -> Resource {
+        let mut folder = self.action_directory_folder_root();
+        folder.children.extend(
+            self.entries
+                .iter()
+                .take(MAX_EAGER_ENTRY_RESOURCES)
+                .map(|entry| self.entry_resource(entry)),
+        );
+        folder
+    }
+
+    #[allow(
+        clippy::expect_used,
+        reason = "a path string payload is always serializable"
+    )]
+    fn go_to_action() -> ActionSpec {
+        ActionSpec::typed_operation(
+            "go-to",
+            "Go to folder…",
+            "absolute folder path, e.g. /data/in",
+            OperationKind::View,
+            "files.go-to",
+            vec![ActionParam::required(
+                "path",
+                ParamType::Text,
+                "Absolute path of the folder to show",
+            )],
+            |args: &ActionArgs| {
+                EncodedAction::encode_operation("files.go-to", &args.text("path").unwrap_or(""))
+                    .expect("folder path is serializable")
+            },
+        )
+    }
+
+    /// `move-to` and `copy-to` for one entry: put it into another folder,
+    /// keeping its name.
+    #[allow(
+        clippy::expect_used,
+        reason = "the verb, resource id and folder path payload is serializable"
+    )]
+    fn transfer_actions(resource_id: &str) -> [ActionSpec; 2] {
+        ["move-to", "copy-to"].map(|verb| {
+            let resource_id = resource_id.to_owned();
+            ActionSpec::typed_operation(
+                verb,
+                if verb == "move-to" {
+                    "Move to folder…"
+                } else {
+                    "Copy to folder…"
+                },
+                "absolute folder path, e.g. /data/out",
+                OperationKind::Effect,
+                "files.transfer",
+                vec![ActionParam::required(
+                    "folder",
+                    ParamType::Text,
+                    "Absolute path of an existing folder; the name is kept",
+                )],
+                move |args: &ActionArgs| {
+                    EncodedAction::encode_operation(
+                        "files.transfer",
+                        &[
+                            verb,
+                            resource_id.as_str(),
+                            args.text("folder").unwrap_or(""),
+                        ],
+                    )
+                    .expect("transfer payload is serializable")
+                },
+            )
+            .with_contract(ActionContract {
+                permission: PermissionRequirement::Write,
+                retry: RetryPolicy::AtMostOnce,
+                reversible: false,
+                ..ActionContract::default()
+            })
+        })
     }
 
     fn append_nearby_receiver_resources(&self, folder: &mut Resource) {
@@ -7064,6 +7147,9 @@ impl FileExplorerWidget {
                     ..ActionContract::default()
                 }),
             );
+            resource
+                .actions
+                .extend(Self::transfer_actions(&resource_id));
             resource.actions.push(
                 ActionSpec::operation(
                     "send-nearby",
@@ -7416,6 +7502,8 @@ impl Widget for FileExplorerWidget {
             "files.refresh",
             "files.new-folder",
             "files.paste",
+            "files.go-to",
+            "files.transfer",
             "files.new-from-template",
             "files.open",
             "files.open-with",
@@ -8368,6 +8456,9 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
                         ..ActionContract::default()
                     }),
                 );
+                resource
+                    .actions
+                    .extend(Self::transfer_actions(&resource_id));
             }
             let mut entry_commands: Vec<(&str, String, &str, bool)> = if self.is_trash_view() {
                 vec![
@@ -8549,7 +8640,7 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
     /// remote accounts, and late collaborative records.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
         (id == crate::search_provider::folder_resource_id(&self.current_path))
-            .then(|| self.action_directory_folder_root())
+            .then(|| self.folder_with_entries())
             .or_else(|| {
                 self.entries
                     .iter()
@@ -8665,6 +8756,37 @@ impl FileExplorerWidget {
                 if !failures.is_empty() {
                     return Err(format!("paste failed: {}", failures.join("; ")));
                 }
+            }
+            (OperationKind::View, "files.go-to") => {
+                let path: String = serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let path = PathBuf::from(path);
+                if !path.is_absolute() {
+                    return Err(format!("{} is not an absolute path", path.display()));
+                }
+                if !path.is_dir() {
+                    return Err(format!("{} is not a folder Files can open", path.display()));
+                }
+                self.navigate(path);
+            }
+            (OperationKind::Effect, "files.transfer") => {
+                let [verb, resource_id, folder]: [String; 3] =
+                    serde_json::from_slice(payload).map_err(|e| e.to_string())?;
+                let source = self
+                    .visible_entry_path(&resource_id)
+                    .ok_or_else(|| "file entry is no longer visible".to_string())?;
+                let folder = PathBuf::from(folder);
+                if !folder.is_absolute() || !folder.is_dir() {
+                    return Err(format!(
+                        "{} is not an existing folder; create it with new-folder first",
+                        folder.display()
+                    ));
+                }
+                match verb.as_str() {
+                    "move-to" => fileops::move_into(&source, &folder)?,
+                    "copy-to" => fileops::copy_into(&source, &folder)?,
+                    _ => return Ok(false),
+                };
+                self.refresh();
             }
             (OperationKind::View, "files.open") => {
                 let resource_id: String =
