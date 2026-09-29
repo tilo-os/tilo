@@ -1386,6 +1386,10 @@ jobs:
           file: os/Containerfile
           target: rootfs-base
           push: false
+          # Main's dev builds also publish it, so large runner slots can hold
+          # it already unpacked: BuildKit reuses a layer it has by digest, and
+          # these are the cached layers themselves, not a recompression.
+          outputs: ${{ github.event_name == 'workflow_call' && github.ref == 'refs/heads/main' && needs.plan.outputs.hardware-profile == 'generic' && format('type=image,name=registry.tilo.so/tilo/os-rootfs-base:main-{0},push=true', matrix.arch) || 'type=cacheonly' }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
             BASE_REF=${{ env.BASE_REF }}
@@ -1429,10 +1433,12 @@ jobs:
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
           cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
 
-      # Build the multi-stage bootc image. Publishing deliberately happens only
-      # after the sealed image has been installed and booted below. On a release
-      # run buildx writes an OCI archive for that gate; pull requests exercise
-      # the complete build and registry cache without retaining output.
+      - name: Report the published rootfs
+        if: steps.rootfs-stage.outputs.digest != ''
+        env:
+          DIGEST: ${{ steps.rootfs-stage.outputs.digest }}
+        run: echo "::notice::rootfs registry.tilo.so/tilo/os-rootfs-base:main-${{ matrix.arch }}@$DIGEST"
+
       - name: Build and cache the image tool stages
         id: tool-stages
         if: steps.rootfs-stage.outcome == 'success'
@@ -1488,6 +1494,10 @@ jobs:
           # reuses.
           cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-tools-${{ matrix.arch }},mode=max,ignore-error=true
 
+      # Build the multi-stage bootc image. Publishing deliberately happens only
+      # after the sealed image has been installed and booted below. On a release
+      # run buildx writes an OCI archive for that gate; pull requests exercise
+      # the complete build and registry cache without retaining output.
       - name: Build the Tilo image
         id: build
         if: steps.rootfs-stage.outcome == 'success'
