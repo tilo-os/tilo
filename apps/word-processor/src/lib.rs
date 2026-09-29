@@ -1398,7 +1398,7 @@ pub use component::definition;
 /// The kind of a Writer document record: the rich-text resource the native
 /// app, the workspace host and the browser all open. Records stamped with the
 /// former `document` read as this kind (see [`ui::RecordKind::new`]).
-pub const RECORD_KIND: &str = <qdoc_rich_text::RichText as tilo_resource::Resource>::KIND;
+pub const RECORD_KIND: &str = <tilo_document::RichText as tilo_resource::Resource>::KIND;
 
 /// Initialize a checked New record as an empty Writer document.
 ///
