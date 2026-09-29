@@ -650,7 +650,11 @@ impl ThemesApp {
     }
 
     /// Show the catalog and active theme the framework resource already holds.
+    /// An empty projection does not wipe a catalog that has not been published yet.
     pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::ThemesState) {
+        if state.catalog.is_empty() && !self.catalog.is_empty() {
+            return;
+        }
         self.catalog.clone_from(&state.catalog);
         if self.selected.is_empty()
             && let Some(active) = &state.active
@@ -665,6 +669,32 @@ impl ThemesApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Themes>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// In-flight apply job label for hosted live extras.
+    pub(crate) fn live_apply_job_label(&self) -> Option<String> {
+        self.pending_apply
+            .as_ref()
+            .map(|(id, _)| format!("Applying theme {id}"))
+    }
+
+    /// Last export JSON preview when one is live (not document state).
+    pub(crate) fn live_export_preview_resource(&self) -> Option<tilo_actions::Resource> {
+        self.last_export.as_ref()?;
+        Some(tilo_actions::Resource::new(
+            "themes.export-preview",
+            "themes.export-preview",
+            "Last export",
+        ))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// Steps 3-5 of [`Widget::sync`]: load the persisted catalog, resolve the
@@ -1930,12 +1960,23 @@ impl Widget for ThemesApp {
 }
 
 impl ui::resources::PublishesResources for ThemesApp {
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the library door — keep only live apply jobs and export previews.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        self.publish_resource(doc, id)
     }
 }
 
