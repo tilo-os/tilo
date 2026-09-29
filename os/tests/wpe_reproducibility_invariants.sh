@@ -111,7 +111,7 @@ has "$snapshot_workflow" 'else "runner" end' 'WPE snapshot builds on the native 
 has "$snapshot_workflow" '"runner-large-arm64"' 'the WPE engine stage compiles on the large native ARM64 runner'
 has "$snapshot_workflow" 'target: wpe-stage' 'the WPE engine stage is published from os/Containerfile.wpe'
 has "$repo/.forgejo/workflows/build-image.yml" "format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF)" 'OS builds take a pinned WPE engine stage'
-has "$repo/.forgejo/workflows/build-image.yml" 'label="$(skopeo inspect "docker://$stage" | jq -r' 'OS builds take the pinned engine only when its inputs match
+has "$repo/.forgejo/workflows/build-image.yml" 'if [[ $label == "$key" ]]; then' 'OS builds take the pinned engine only when its inputs match'
 has "$snapshot_workflow" './os/dev/assert-native-arch.sh "${{ matrix.arch }}"' \
   'WPE snapshot fails early when a native runner label points at the wrong architecture'
 has "$snapshot_workflow" "if: github.ref == 'refs/heads/main'" \
