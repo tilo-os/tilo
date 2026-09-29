@@ -504,6 +504,7 @@ package = "tilo-app-cli"
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
+  "examples/apps/", "examples/README.md", "docs/examples.md",
   # The portability lint compiles in the policy gate's rules table, and the
   # capability check the table of what each capability's code uses.
   "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",

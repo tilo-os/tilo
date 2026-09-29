@@ -31,6 +31,7 @@ run 'Path-filtered package dependency triggers' \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml \
   --check tilo-app-cli .forgejo/workflows/app-sdk.yml
+run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh

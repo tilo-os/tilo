@@ -2886,7 +2886,13 @@ impl SheetsApp {
         };
         let (tx, rx): (SyncSender<InterchangeResult>, Receiver<InterchangeResult>) =
             mpsc::sync_channel(1);
+        self.interchange_wake = ui::wake::WakeHandle::new();
+        let reply = InterchangeReply {
+            tx: Some(tx),
+            wake: self.interchange_wake.clone(),
+        };
         ui::rt::spawn_thread("sheets-interchange", move || {
+            let reply = reply;
             let result = match operation {
                 PendingIo::Import(format) => InterchangeResult::Import {
                     generation,
@@ -2903,7 +2909,7 @@ impl SheetsApp {
                     ),
                 },
             };
-            let _ = tx.send(result);
+            reply.send(result);
         })
         .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
         self.interchange_rx = Some(rx);

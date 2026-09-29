@@ -283,10 +283,8 @@ test('a demand is never queued behind idle pre-warm work',async()=>{
   const cjk=loader.request('cjk.ttf');await new Promise(resolve=>setTimeout(resolve,0));
   assert.deepEqual(f.requested.map(([name])=>name),['emoji','cjk'],'the demand starts beside the pre-warm fetch');
   f.gates.get('cjk')();await cjk;
-  f.gates.get('emoji')();
-  // Verifying emoji's digest runs off the event loop; wait until pre-warm moves on.
-  while(!f.requested.some(([name])=>name==='arabic'))await new Promise(resolve=>setTimeout(resolve,1));
-  // arabic is now queued as idle work; a demand for it is promoted and shares the fetch.
+  // Once emoji is verified, arabic's pre-warm fetch starts; a demand for it shares that fetch.
+  f.gates.get('emoji')();await f.fetched('arabic');
   const arabic=loader.request('arabic.ttf');await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(f.requested.filter(([name])=>name==='arabic').length,1);
   f.gates.get('arabic')();
