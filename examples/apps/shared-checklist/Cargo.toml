@@ -17,9 +17,14 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 runtime-dylib = { path = "../../../crates/runtime/runtime-dylib", optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app" }
 workspace-hack = { version = "0.1" }
+
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+ui = { package = "tilo-app", path = "../../../crates/sdk/tilo-app", default-features = false }
 
 [lints]
 workspace = true
