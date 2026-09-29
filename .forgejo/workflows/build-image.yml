@@ -415,10 +415,17 @@ jobs:
       - name: Workspace membership guard
         run: ./scripts/check-workspace-complete.sh
 
+      - name: Default to the apps of this commit
+        run: echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
+
+      # A Build / OS dev image carries the apps of its own commit, compiled in
+      # the image build through the warm compiler cache: a VM moved onto the
+      # image of commit X runs X's apps. Releases and dispatches take the
+      # pinned, independently published collection.
       - name: Materialize the pinned app collection
+        if: github.event_name != 'workflow_call'
         env:
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
-          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
           COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
@@ -430,7 +437,6 @@ jobs:
           COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.TILO_APP_COLLECTION_PUBLISHER }}
         run: |
           set -euo pipefail
-          echo 'TILO_PREBUILT_APPS=0' >> "$GITHUB_ENV"
           # The Authorized Integration grants only short-lived package read to
           # this workflow. Pull requests therefore test the exact immutable
           # app/OS boundary without receiving a reusable registry credential.
