@@ -4,7 +4,9 @@
 //! item whose barrier fails is absent from durable replay until the author's
 //! retry commits the same digest (the receivers' correction signal).
 use super::{
-    data_tests::{Harness, committed, drive, frame, native_edit, page, poll_target},
+    data_tests::{
+        Deferral, Harness, committed, drive, frame, native_edit, page, poll_target, sign_proof,
+    },
     *,
 };
 use crate::live_service::{PACKAGE_PRIMARY_RECORD, signed_change};
@@ -474,7 +476,7 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
             )
             .unwrap();
             let body = frame(MessageType::StateItemChunk, &chunk.encode().unwrap());
-            let proof = h.proof("POST", "/peer/v3/state", &body);
+            let (session, key) = (h.session, h.f.owner.identity.native.clone());
             let client = || super::tests::Client {
                 address,
                 tls: tls.clone(),
@@ -490,9 +492,16 @@ async fn chat_changes_reach_live_subscribers_ahead_of_durable_replay() {
             let upload = tokio::spawn(async move {
                 tokio::time::sleep(Duration::from_millis(20)).await;
                 let started = Instant::now();
-                let reply = uploader
-                    .request_method("POST", "/peer/v3/state", body, Some(proof))
-                    .await;
+                let send = || {
+                    let proof = sign_proof(session, &key, "POST", "/peer/v3/state", &body);
+                    uploader.request_method("POST", "/peer/v3/state", body.clone(), Some(proof))
+                };
+                let mut deferral = Deferral::new();
+                let mut reply = send().await;
+                while let Some(pause) = deferral.pause(reply.0, &reply.1) {
+                    tokio::time::sleep(pause).await;
+                    reply = send().await;
+                }
                 (started, reply, Instant::now())
             });
             let receiver = &mut received;
