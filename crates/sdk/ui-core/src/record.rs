@@ -2098,6 +2098,12 @@ impl RecordSet {
 #[derive(Clone)]
 pub struct RecordStore(std::rc::Rc<std::cell::RefCell<RecordSet>>);
 
+impl RecordStore {
+    pub(crate) fn from_owner(owner: std::rc::Rc<std::cell::RefCell<RecordSet>>) -> Self {
+        Self(owner)
+    }
+}
+
 /// Explicit profile-scoped owner registry. Weak entries never keep a closed writer alive.
 pub struct RecordOwners {
     store: Rc<dyn DurableStore>,
@@ -2613,6 +2619,12 @@ impl RecordStore {
     /// Whether the store can be read now: no caller holds it mutably.
     pub(crate) fn readable(&self) -> bool {
         self.0.try_borrow().is_ok()
+    }
+    /// The package and home workspace (room) this store's records belong
+    /// to, which name their replication route.
+    pub fn package_and_home(&self) -> (String, String) {
+        let set = self.0.borrow();
+        (set.package_id.clone(), set.home.clone())
     }
     /// Explicit immutable identity only: the store namespace, package and
     /// workspace. Legacy and memory sets have no canonical namespace.
@@ -3257,6 +3269,54 @@ impl RecordStore {
     ) -> Result<bool, String> {
         self.merge_remote_document(checkout, collab_types::DocumentMutation::Snapshot(document))
             .map(|(changed, _)| changed)
+    }
+
+    /// Changes to the open record `id` that `frontier` has not covered, for a
+    /// host replicating open records itself (a browser page over the relay).
+    /// The pending action is committed first, as for a save. Advance the
+    /// frontier with the returned heads only once the delta was accepted.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn replication_delta(
+        &self,
+        id: &RecordId,
+        frontier: &mut crate::state::DocumentFrontier,
+    ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            frontier.pending_delta(doc)
+        })
+    }
+
+    /// The open record `id` as a whole-document snapshot with its heads, for
+    /// a replica's first publication.
+    ///
+    /// # Errors
+    /// The record is not open here or its owner is busy.
+    pub fn replication_snapshot(
+        &self,
+        id: &RecordId,
+    ) -> Result<(Vec<u8>, Vec<automerge::ChangeHash>), RecordOpenError> {
+        self.with_action_state(id, |doc, _, actions| {
+            actions.commit_for_save(doc);
+            (doc.save(), doc.get_heads())
+        })
+    }
+
+    /// Merge a replica's mutation into the open record, validating the
+    /// record's identity on a private copy first; local undo stays local.
+    /// Returns whether the document changed and the change hashes the
+    /// mutation carried, for the replicating frontier's `observe`.
+    ///
+    /// # Errors
+    /// The bytes are not a valid mutation of this record, or it is not open.
+    pub fn merge_replica(
+        &self,
+        checkout: &RecordCheckout,
+        mutation: collab_types::DocumentMutation,
+    ) -> Result<(bool, Vec<automerge::ChangeHash>), String> {
+        self.merge_remote_document(checkout, mutation)
     }
 
     /// Do something with a record's document. `None` if the record is not open here.
