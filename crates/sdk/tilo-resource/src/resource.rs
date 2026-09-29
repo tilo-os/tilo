@@ -493,9 +493,8 @@ pub fn publish<R: Resource>(id: &str, label: &str, state: &R::State) -> tilo_act
         });
     }
     for spec in R::bound_actions(state) {
-        if spec.kind != OperationKind::Document {
-            continue;
-        }
+        // Document actions and state-dependent views or effects. Static views
+        // and effects stay on `local_operations`.
         resource = resource.with_action(spec);
     }
     for view in R::views(state) {
