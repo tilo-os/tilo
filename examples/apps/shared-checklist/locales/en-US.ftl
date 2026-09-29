@@ -1,0 +1,11 @@
+checklist-untitled = Untitled checklist
+checklist-name-label = Checklist
+checklist-name-placeholder = Name this checklist
+checklist-draft-label = New item
+checklist-draft-placeholder = What needs doing?
+checklist-add = Add
+checklist-empty = Nothing on the list yet. Add the first item above.
+checklist-progress = { $done } of { $total } done
+checklist-done-label = Done
+checklist-title-placeholder = Untitled
+checklist-clear-done = Remove checked items

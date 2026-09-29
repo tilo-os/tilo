@@ -10117,7 +10117,7 @@ mod tests {
         let cluster = Uuid::new_v4();
         let want = crate::record::RecordCheckout::new(
             crate::record::RecordId::minted(),
-            crate::record::RecordKind::new("document"),
+            crate::record::RecordKind::new("report"),
         );
         let mut source = crate::record::RecordSet::in_memory().with_home(cluster.to_string());
         let mut original = crate::state::State::new();
@@ -10169,7 +10169,7 @@ mod tests {
         );
         assert_eq!(
             captures.lock().unwrap().joined_record_kinds,
-            ["", "document"],
+            ["", "report"],
             "the record route names its resource kind for the owner; the launch route none"
         );
         assert!(

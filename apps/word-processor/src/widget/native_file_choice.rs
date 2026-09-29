@@ -103,7 +103,7 @@ impl WordProcessorWidget {
         }
         let want = ui::RecordCheckout::new(
             ui::RecordId::for_file(path),
-            ui::RecordKind::new("document"),
+            ui::RecordKind::new(crate::RECORD_KIND),
         );
         if let Some(reader) = &self.file_history {
             return reader.read(&want);

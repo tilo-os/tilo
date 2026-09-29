@@ -300,7 +300,7 @@ pub fn open_document_with_records(
     let reader = records.file_history_reader().map_err(invalid_data)?;
     let want = ui::RecordCheckout::new(
         ui::RecordId::for_file(path),
-        ui::RecordKind::new("document"),
+        ui::RecordKind::new(RECORD_KIND),
     );
     let history = reader.read(&want).map_err(invalid_data)?;
     let bytes = std::fs::read(path)?;
@@ -1395,6 +1395,11 @@ mod tests {
 
 pub mod component;
 pub use component::definition;
+/// The kind of a Writer document record: the rich-text resource the native
+/// app, the workspace host and the browser all open. Records stamped with the
+/// former `document` read as this kind (see [`ui::RecordKind::new`]).
+pub const RECORD_KIND: &str = <qdoc_rich_text::RichText as tilo_resource::Resource>::KIND;
+
 /// Initialize a checked New record as an empty Writer document.
 ///
 /// # Errors

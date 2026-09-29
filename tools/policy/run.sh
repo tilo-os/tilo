@@ -6,10 +6,14 @@ repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd "$repo"
 
 run() {
-  local label=$1
+  local label=$1 status=0
   shift
   printf '\n==> %s\n' "$label"
-  "$@"
+  "$@" || status=$?
+  if (( status != 0 )); then
+    printf '::error::repository policy check failed: %s (exit %s)\n' "$label" "$status"
+    exit "$status"
+  fi
 }
 
 run 'Workspace membership' ./scripts/check-workspace-complete.sh
@@ -26,6 +30,7 @@ run 'Path-filtered package dependency triggers' \
   --check fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
   --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml
+run 'Developer docs pages and links' python3 tools/docs/developer_docs.py check
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh

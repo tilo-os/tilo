@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# The web build of one app outside the Tilo tree (`tilo-app build --platform
-# web`): the web core, the app as a side module of it, and a page that mounts
-# the app, in one directory a static server can serve. See WEB_RUNTIME.md.
+# The web build of one app (`tilo-app build --platform web`): the web core,
+# the app as a side module of it, and a page that mounts the app, in one
+# directory a static server can serve. See WEB_RUNTIME.md.
 #
 #   build-web-standalone.sh OUTPUT WORK APP_DIR [--app-only]
 #
-# WORK holds the mirrored workspace (external-workspace.mjs), its target dir
-# and the core's build products; OUTPUT only what the page loads. --app-only
-# relinks the app against the core already in WORK (the development loop).
+# For an app outside the Tilo tree, WORK holds the mirrored workspace
+# (external-workspace.mjs), its target dir and the core's build products. An
+# app inside the tree is a workspace member and builds there, against one core
+# for every such app in target/web-build (WORK is not used), so building
+# several with the same TILO_WEB_COLLECTION links the core once. OUTPUT holds
+# only what the page loads. --app-only relinks the app against the core
+# already built (the development loop).
 set -euo pipefail
 scripts=$(cd "$(dirname "$0")" && pwd)
 usage='usage: build-web-standalone.sh OUTPUT WORK APP_DIR [--app-only]'
@@ -17,13 +21,22 @@ app_dir=${3:?$usage}
 app_only=${4:-}
 [[ -z "$app_only" || "$app_only" == --app-only ]] || { echo "$usage" >&2; exit 2; }
 tilo_root=$(cd "$scripts/../../../.." && pwd)
+app_dir=$(cd "$app_dir" && pwd -P)
+if [[ "$app_dir/" == "$(cd "$tilo_root" && pwd -P)/"* ]]; then
+  work="$tilo_root/target/web-build"
+  package=$(cargo metadata --no-deps --offline --format-version 1 --manifest-path "$app_dir/Cargo.toml" |
+    node -e 'const m=JSON.parse(require("fs").readFileSync(0,"utf8"));const p=m.packages.find(p=>p.manifest_path===process.argv[1]);if(!p)process.exit(1);console.log(p.name)' "$app_dir/Cargo.toml") ||
+    { echo "$app_dir is inside the Tilo tree but no workspace member; add it to the root Cargo.toml" >&2; exit 2; }
+fi
 mkdir -p "$out" "$work"
 out=$(cd "$out" && pwd)
 work=$(cd "$work" && pwd)
 
-info=$(node "$scripts/web-runtime/external-workspace.mjs" "$tilo_root" "$app_dir" "$work/workspace")
-package=$(node -e 'console.log(JSON.parse(process.argv[1]).package)' "$info")
-export TILO_WEB_WORKSPACE="$work/workspace"
+if [[ -z "${package:-}" ]]; then
+  info=$(node "$scripts/web-runtime/external-workspace.mjs" "$tilo_root" "$app_dir" "$work/workspace")
+  package=$(node -e 'console.log(JSON.parse(process.argv[1]).package)' "$info")
+  export TILO_WEB_WORKSPACE="$work/workspace"
+fi
 # The app joins the web collection: what it instantiates of the toolkit's
 # generics reaches into the core's crates (automerge's AutoCommit::load, say),
 # and the core exports exactly what the collection imports. An app needing no
@@ -32,7 +45,9 @@ read -r -a collection <<<"${TILO_WEB_COLLECTION:-ebook word-processor}"
 [[ " ${collection[*]} " == *" $package "* ]] || collection+=("$package")
 export TILO_WEB_COLLECTION="${collection[*]}"
 # Records the app's own packages in the mirrored lock; the builds are --locked.
-(cd "$TILO_WEB_WORKSPACE" && cargo metadata --format-version 1 >/dev/null)
+if [[ -n "${TILO_WEB_WORKSPACE:-}" ]]; then
+  (cd "$TILO_WEB_WORKSPACE" && cargo metadata --format-version 1 >/dev/null)
+fi
 
 core_out="$work/web"
 if [[ -z "$app_only" || ! -f "$core_out/runtime.json" ]]; then
