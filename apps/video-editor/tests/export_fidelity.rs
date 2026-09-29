@@ -1044,7 +1044,7 @@ fn decode_audio_full(path: &std::path::Path) -> DecodedAudio {
     let bus = pipeline.bus();
     let deadline = tilo_test_env::hang_deadline();
     loop {
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             panic!("decoding audio from {} timed out", path.display());
         }
         // A pipeline that has failed will never produce a sample, so stop

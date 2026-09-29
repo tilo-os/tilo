@@ -19,7 +19,7 @@
 //! worker, and drive the shell.
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -812,7 +812,7 @@ impl Core {
         } else {
             self.search_results.clear();
         }
-        self.pending_query_at = Some(Instant::now());
+        self.pending_query_at = Some(ui::time::now());
         self.sync_search_view();
     }
 
@@ -906,9 +906,9 @@ impl Core {
         // panicking.
         if !self.search_query.trim().is_empty() {
             self.pending_query_at = Some(
-                Instant::now()
+                ui::time::now()
                     .checked_sub(GEOCODE_DEBOUNCE)
-                    .unwrap_or_else(Instant::now),
+                    .unwrap_or_else(ui::time::now),
             );
         }
         false
@@ -1385,9 +1385,9 @@ impl Core {
         }
         scene.pop_layer();
 
-        if self.over_max_scroll > 1.0 {
+        if self.over_max_scroll > 1.0 && view_h >= 20.0 {
             let track_x = rect.x1 - 4.0;
-            let track_h = list_bottom - list_top;
+            let track_h = view_h;
             let thumb_h = (track_h * (view_h / content_h)).clamp(20.0, track_h);
             let thumb_y =
                 list_top + (self.over_scroll / self.over_max_scroll) * (track_h - thumb_h);

@@ -157,8 +157,9 @@ pub fn data_home() -> PathBuf {
         return home.join(".local/share");
     }
     // Temporary storage is not persistent and is used when the platform's
-    // home/data environment is unavailable.
-    std::env::temp_dir()
+    // home/data environment is unavailable. The page has neither: a bare
+    // relative path fails every file operation there instead of panicking.
+    xdg_paths::temp_dir().unwrap_or_default()
 }
 
 /// The XDG data dir fallback for state outside Tilo; public so an app can

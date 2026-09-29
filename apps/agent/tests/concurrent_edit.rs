@@ -24,8 +24,8 @@
               counter bounded by a short-lived test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
 use tilo_actions::ActionAddress;
@@ -177,7 +177,7 @@ fn drive_peer_and_type(
     let mut typed = 0usize;
     let mut table_done = false;
     let mut invocation_actor = None;
-    while Instant::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
+    while ui::time::now() < deadline && !(table_done && typed == TYPED.chars().count()) {
         let Some(event) = peer.recv().unwrap() else {
             continue;
         };

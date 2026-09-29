@@ -89,6 +89,8 @@ pub(crate) struct BudgetTracker {
     log: bool,
     /// Hold the policy budget at upstream's constants.
     pinned: bool,
+    /// An overflow that growth could not answer has been reported.
+    limit_reported: bool,
     /// Tiles in the viewport last rendered, for the log only.
     n_tiles: u32,
     /// Frames seen, for the log only.
@@ -139,9 +141,17 @@ impl BudgetTracker {
             error: None,
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
+            limit_reported: false,
             n_tiles: 0,
             frame: 0,
         }
+    }
+
+    /// Limit every reservation to what `limits` lets one binding hold.
+    pub(crate) fn set_device_limits(&mut self, limits: &wgpu::Limits) {
+        self.budget = self
+            .budget
+            .with_max_binding_bytes(max_binding_bytes(limits));
     }
 
     /// The reservation to render the next frame with.
@@ -170,7 +180,9 @@ impl BudgetTracker {
             segments: self.budget.segments.max(floor.segments),
             blend_spill: self.budget.blend_spill.max(floor.blend_spill),
             ptcl: self.budget.ptcl.max(floor.ptcl),
+            max_binding_bytes: u32::MAX,
         }
+        .with_max_binding_bytes(self.budget.max_binding_bytes)
     }
 
     /// Whether this frame should download the bump counters.
@@ -271,6 +283,17 @@ impl BudgetTracker {
         let changed = before != self.effective();
         if self.log {
             self.report(&used, &in_effect, budget_changed);
+        } else if used.failed != 0 && !budget_changed {
+            if !self.limit_reported {
+                self.limit_reported = true;
+                eprintln!(
+                    "vello: a frame overflowed its bump buffers (failed={:#x}) and the \
+                     reservation cannot grow (ceiling or device limit of {} bytes per \
+                     buffer); geometry past it is dropped. Reported once. \
+                     Set {LOG_ENV}=1 for detail.",
+                    used.failed, self.budget.max_binding_bytes,
+                );
+            }
         } else if used.failed != 0 {
             // `eprintln!`, matching `report` below, and deliberately
             // not `log::warn!`: nothing in this workspace installs a
@@ -355,10 +378,68 @@ impl BudgetTracker {
     }
 }
 
+/// The largest buffer one storage binding may hold on a device with `limits`,
+/// rounded down to a size the engine's pool allocates exactly. The pool
+/// quantizes requests up to `2^k` or `3 * 2^(k-1)` bytes and binds the whole
+/// buffer, so a request at an unrounded limit would allocate past it.
+pub(crate) fn max_binding_bytes(limits: &wgpu::Limits) -> u32 {
+    let limit = limits
+        .max_storage_buffer_binding_size
+        .min(limits.max_buffer_size)
+        .min(u64::from(u32::MAX));
+    if limit < 4 {
+        return 4;
+    }
+    let power = 1_u64 << (63 - limit.leading_zeros());
+    let class = if power + power / 2 <= limit {
+        power + power / 2
+    } else {
+        power
+    };
+    u32::try_from(class).unwrap_or(u32::MAX)
+}
+
 fn map_read(buf: &Buffer, f: impl FnOnce(bool) + Send + 'static) {
     buf.slice(..).map_async(wgpu::MapMode::Read, move |res| {
         f(res.is_ok());
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::max_binding_bytes;
+
+    fn size_class(bytes: u64) -> u64 {
+        let power = bytes.next_power_of_two();
+        if power / 4 * 3 >= bytes {
+            power / 4 * 3
+        } else {
+            power
+        }
+    }
+
+    #[test]
+    fn binding_limit_is_a_pool_size_class_within_the_device_limits() {
+        let webgpu = wgpu::Limits::default();
+        assert_eq!(max_binding_bytes(&webgpu), 128 << 20);
+        for (binding, buffer) in [
+            (128 << 20, 256 << 20),
+            (200_000_000, 256 << 20),
+            (1 << 30, 256 << 20),
+            (u64::MAX, u64::MAX),
+        ] {
+            let limits = wgpu::Limits {
+                max_storage_buffer_binding_size: binding,
+                max_buffer_size: buffer,
+                ..wgpu::Limits::default()
+            };
+            let bytes = u64::from(max_binding_bytes(&limits));
+            assert!(bytes <= binding.min(buffer));
+            assert_eq!(size_class(bytes), bytes);
+            // A clamped 24-byte-element buffer stays within it after pooling.
+            assert!(size_class(bytes / 24 * 24) <= bytes);
+        }
+    }
 }
 
 #[cfg(test)]

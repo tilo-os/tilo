@@ -689,8 +689,8 @@ pub fn weekday_from_serial(serial: f64) -> u32 {
 /// Uses the system clock in UTC — there is no timezone database in this
 /// environment, so `TODAY()`/`NOW()` read as UTC dates.
 pub fn now_serial() -> f64 {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let secs = SystemTime::now()
+    use ui::time::UNIX_EPOCH;
+    let secs = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64());
     secs / 86400.0 + 25569.0

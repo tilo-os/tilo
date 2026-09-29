@@ -35,6 +35,10 @@ notify = { workspace = true, optional = true }
 # `flock(2)`, `FD_CLOEXEC` and `renameat2`/`renameatx_np` without hand-written FFI.
 rustix = { workspace = true, features = ["fs", "std"] }
 
+[target.'cfg(windows)'.dependencies]
+# `path_identity`'s file URLs.
+url.workspace = true
+
 # The browser's origin-private file system and Web Locks, pinned to the
 # versions the browser runtime links so a page carries one copy.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]

@@ -28,6 +28,7 @@ pub mod proxy;
 
 /// Signed media URLs are accepted only from `YouTube`'s HTTPS media origin.
 /// A substring check would also accept `googlevideo.com.attacker.invalid`.
+#[cfg(any(feature = "live", test))]
 pub(crate) fn trusted_googlevideo_url(raw: &str) -> bool {
     if raw.len() > 16 * 1024 {
         return false;

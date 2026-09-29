@@ -1606,7 +1606,7 @@ mod tests {
             let view_center = clip.center();
 
             let mut scene = Scene::new();
-            let t0 = std::time::Instant::now();
+            let t0 = ui::time::now();
             let painted_exact = draw_tiles(
                 &mut scene,
                 Affine::IDENTITY,

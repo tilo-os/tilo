@@ -1,7 +1,7 @@
 //! Canonical package-primary Chat orchestration. Work is a threaded Chat
 //! record; it is never a shell `TaskRun` or a grant of authority.
 use std::collections::BTreeMap;
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use anyhow::Result;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation, PresencePayload, RouteSpec};
@@ -29,8 +29,8 @@ pub(super) struct ChatRun {
 }
 
 fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |elapsed| elapsed.as_secs().min(i64::MAX as u64) as i64)
 }
 
@@ -328,17 +328,17 @@ impl Session {
     /// A terminal receipt may arrive first even when the owner sent its change
     /// before completing. Observe the real signed frame for a bounded interval.
     fn await_chat_mutation(&mut self) -> Result<()> {
-        let deadline = Instant::now() + Duration::from_millis(500);
+        let deadline = ui::time::now() + Duration::from_millis(500);
         let mut deferred = Vec::new();
         while self
             .chat_run
             .as_ref()
             .is_some_and(|run| !run.observed_mutation)
-            && Instant::now() < deadline
+            && ui::time::now() < deadline
         {
             match self
                 .link
-                .recv(deadline.saturating_duration_since(Instant::now()))?
+                .recv(deadline.saturating_duration_since(ui::time::now()))?
             {
                 Some(event @ CollabEvent::Document { .. }) => {
                     let _ = self.absorb_document_event(&event)?;

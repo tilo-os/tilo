@@ -43,6 +43,11 @@ rustflags = [
     "--remap-path-prefix=/build=.",
 ]
 
+# macOS test binaries run in the same environment as on Linux; there it also
+# keeps them away from the login Keychain.
+[target.'cfg(target_os = "macos")']
+runner = "tools/cargo-runner.sh"
+
 [target.'cfg(all(target_arch = "aarch64", not(target_os = "linux")))']
 # Preserve each platform's ABI CPU baseline (Apple ARM requires AES/SHA2).
 rustflags = [

@@ -292,7 +292,7 @@ mod system {
     /// Where the Tilo image mounts the workspace when the launcher names one
     /// by id only.
     const DEFAULT_WORKSPACE_ROOT: Option<&str> = if cfg!(target_os = "linux") {
-        Some("/var/workspace")
+        Some(crate::WORKSPACE_MOUNT)
     } else {
         None
     };

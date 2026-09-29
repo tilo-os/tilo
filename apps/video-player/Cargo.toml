@@ -24,10 +24,12 @@ decode = ["media/decode"]
 [dependencies]
 fnv.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+# Videos opened by contents in a page, kept in the cache location for Recent.
+tilo-files = { path = "../../crates/platform/tilo-files" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
-settings-store = { path = "../../crates/system/settings-store" }
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
@@ -38,7 +40,6 @@ tracing.workspace = true
 vello.workspace = true
 winit.workspace = true
 taffy.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tilo-test-env = { path = "../../crates/dev/test-env" }
@@ -48,3 +49,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
