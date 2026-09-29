@@ -26,7 +26,7 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["local-daemons", "tilo-host/native", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
+native = ["local-daemons", "tilo-host/native", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:windows", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions", "tokio/full"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -285,6 +285,17 @@ tilo-content = { version = "0.1.0", path = "../../system/content", optional = tr
 zbus = { workspace = true, optional = true, features = ["p2p", "tokio"] }
 
 [target.'cfg(windows)'.dependencies]
+# The menu bar and Jump List History and Search live in (`host_chrome/windows.rs`).
+windows = { version = "0.62.2", optional = true, features = [
+    "Win32_Foundation",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_Shell_PropertiesSystem",
+    "Win32_UI_WindowsAndMessaging",
+] }
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_Security_Authorization", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Threading"] }
 
 [build-dependencies]
