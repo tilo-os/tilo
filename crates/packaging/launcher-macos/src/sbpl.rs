@@ -29,7 +29,7 @@ pub const PAYLOAD_PARAM: &str = "PAYLOAD_DIR";
 pub const RUNTIME_PARAM: &str = "RUNTIME_DIR";
 pub const CONTAINER_PARAM: &str = "CONTAINER_DIR";
 pub const DARWIN_CACHE_PARAM: &str = "DARWIN_CACHE_DIR";
-pub const GATE_PARAM: &str = "NET_GATE";
+pub const GATE_PORT_PARAM: &str = "NET_GATE_PORT";
 pub const READ_PARAM_PREFIX: &str = "READ_";
 pub const WRITE_PARAM_PREFIX: &str = "WRITE_";
 
@@ -217,10 +217,13 @@ impl Builder {
     fn network(&mut self, network: &SeatbeltNetwork) {
         match network {
             SeatbeltNetwork::Denied => {}
-            SeatbeltNetwork::Gate(socket) => {
-                let name = self.param(GATE_PARAM.to_string(), socket);
+            SeatbeltNetwork::Gate(port) => {
+                self.params
+                    .push((GATE_PORT_PARAM.to_string(), port.to_string()));
+                self.text
+                    .push_str("(allow system-socket (socket-domain AF_INET AF_INET6))\n");
                 self.rule(&format!(
-                    "(allow network-outbound (literal (param \"{name}\")))"
+                    "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"{GATE_PORT_PARAM}\"))))"
                 ));
             }
             SeatbeltNetwork::Unrestricted => {
@@ -303,7 +306,7 @@ mod tests {
     fn it_denies_by_default_and_carries_paths_only_as_parameters() {
         for network in [
             SeatbeltNetwork::Denied,
-            SeatbeltNetwork::Gate(PathBuf::from("/run/gate.sock")),
+            SeatbeltNetwork::Gate(9050),
             SeatbeltNetwork::Unrestricted,
         ] {
             let p = policy(network);
@@ -375,20 +378,22 @@ mod tests {
         assert!(!offline.text.contains("AF_INET"));
         assert!(!offline.text.contains("(system-network)"));
 
-        let gated = render(&policy(SeatbeltNetwork::Gate(PathBuf::from(
-            "/run/gate.sock",
-        ))));
+        let gated = render(&policy(SeatbeltNetwork::Gate(9050)));
         let outbound: Vec<&str> = gated
             .text
             .lines()
             .filter(|l| l.contains("network"))
             .collect();
+        // One loopback port, no filesystem socket, no other address.
         assert_eq!(
             outbound,
-            ["(allow network-outbound (literal (param \"NET_GATE\")))"]
+            [
+                "(allow network-outbound (remote ip (string-append \"localhost:\" (param \"NET_GATE_PORT\"))))"
+            ]
         );
-        assert_eq!(param(&gated, GATE_PARAM), "/run/gate.sock");
-        assert!(!gated.text.contains("AF_INET"));
+        assert_eq!(param(&gated, GATE_PORT_PARAM), "9050");
+        assert!(!gated.text.contains("(system-network)"));
+        assert!(!gated.text.contains("network-bind"));
 
         let open = render(&policy(SeatbeltNetwork::Unrestricted));
         assert!(open.text.contains("(system-network)"));

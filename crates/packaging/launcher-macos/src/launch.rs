@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 
 use launcher::capabilities::CapabilityPlan;
-use launcher::netgate::EgressDecision;
+use launcher::netgate::{EgressDecision, GateError, LoopbackGate, proxy_env};
 
 use crate::classify::{CodeSignature, MacLaunchMode, TrustRequirement, decide};
 use crate::codesign::{adhoc_sign, inspect, verify_process};
@@ -73,8 +73,9 @@ pub struct LaunchRequest {
     /// The app's container, from [`crate::policy::prepare_container`].
     pub container_dir: PathBuf,
     pub capabilities: CapabilityPlan,
+    /// A [`EgressDecision::Filtered`] launch is served by a
+    /// [`LoopbackGate`] the launched app holds.
     pub egress: EgressDecision,
-    pub gate_socket: Option<PathBuf>,
     /// Pre-connected service descriptors, inherited at the same numbers.
     pub inherit_fds: Vec<RawFd>,
     /// Extra environment. Under Seatbelt the container variables
@@ -110,6 +111,12 @@ pub enum LaunchError {
          Tilo never runs an app unsandboxed."
     )]
     SeatbeltUnavailable { package: String, detail: String },
+    #[error("refusing to launch {package}: its egress gate could not start: {source}")]
+    EgressGate {
+        package: String,
+        #[source]
+        source: GateError,
+    },
     #[error("refusing to launch {package}: App Sandbox could not be verified ({detail})")]
     AppSandboxUnverified { package: String, detail: String },
     #[error("could not start {program}: {source}")]
@@ -120,12 +127,13 @@ pub enum LaunchError {
     },
 }
 
-/// A launched app. Dropping it leaves the app running; call
-/// [`LaunchedApp::wait`] to reap it.
+/// A launched app. Dropping it leaves the app running, but stops its egress
+/// gate; call [`LaunchedApp::wait`] to reap it.
 #[derive(Debug)]
 pub struct LaunchedApp {
     pid: libc::pid_t,
     mode: MacLaunchMode,
+    _gate: Option<LoopbackGate>,
 }
 
 impl LaunchedApp {
@@ -190,7 +198,7 @@ pub fn launch(request: &LaunchRequest) -> Result<LaunchedApp, LaunchError> {
         "launching"
     );
 
-    let pid = match mode {
+    let (pid, gate) = match mode {
         MacLaunchMode::AppSandbox => {
             let pid = start_app_sandboxed(request, &executable)?;
             if let Err(e) = signal(pid, libc::SIGCONT) {
@@ -200,7 +208,7 @@ pub fn launch(request: &LaunchRequest) -> Result<LaunchedApp, LaunchError> {
                     source: e,
                 });
             }
-            pid
+            (pid, None)
         }
         MacLaunchMode::Seatbelt(reason) => {
             tracing::info!(
@@ -212,7 +220,11 @@ pub fn launch(request: &LaunchRequest) -> Result<LaunchedApp, LaunchError> {
             start_seatbelted(request, &executable)?
         }
     };
-    Ok(LaunchedApp { pid, mode })
+    Ok(LaunchedApp {
+        pid,
+        mode,
+        _gate: gate,
+    })
 }
 
 /// Spawn suspended and verify the running image; the returned process is
@@ -242,7 +254,16 @@ fn start_app_sandboxed(
 fn start_seatbelted(
     request: &LaunchRequest,
     executable: &Path,
-) -> Result<libc::pid_t, LaunchError> {
+) -> Result<(libc::pid_t, Option<LoopbackGate>), LaunchError> {
+    let gate = request
+        .egress
+        .policy()
+        .map(|policy| LoopbackGate::start(policy.clone()))
+        .transpose()
+        .map_err(|source| LaunchError::EgressGate {
+            package: request.package_id.clone(),
+            source,
+        })?;
     let darwin_cache = darwin_cache(request);
     let policy = SeatbeltPolicy::resolve(&PolicyInputs {
         payload_dir: &request.payload_dir,
@@ -250,7 +271,7 @@ fn start_seatbelted(
         container_dir: &request.container_dir,
         capabilities: &request.capabilities,
         egress: &request.egress,
-        gate_socket: request.gate_socket.as_deref(),
+        gate_port: gate.as_ref().map(|gate| gate.local_addr().port()),
         darwin_cache: darwin_cache.as_ref().map(|cache| cache.dir.as_path()),
     })?;
     for gap in &policy.not_enforced {
@@ -272,14 +293,18 @@ fn start_seatbelted(
     argv.extend(app_argv(executable, &request.args));
 
     let mut fixed: Vec<(String, String)> = app_environment(&policy.container);
-    if let SeatbeltNetwork::Gate(socket) = &policy.network {
-        fixed.push(("TILO_NET_GATE".to_string(), socket.display().to_string()));
+    if let SeatbeltNetwork::Gate(port) = policy.network {
+        fixed.extend(
+            proxy_env(port)
+                .into_iter()
+                .map(|(key, value)| (key.to_string(), value)),
+        );
     }
     if let Some(cache) = darwin_cache {
         fixed.push((DARWIN_DIR_SUFFIX_ENV.to_string(), cache.suffix));
     }
     let env = environment(&request.env, &fixed);
-    spawn(
+    let pid = spawn(
         Path::new(SANDBOX_EXEC),
         &argv,
         &env,
@@ -289,7 +314,8 @@ fn start_seatbelted(
     .map_err(|source| LaunchError::Spawn {
         program: PathBuf::from(SANDBOX_EXEC),
         source,
-    })
+    })?;
+    Ok((pid, gate))
 }
 
 /// The app's own per-user cache directory, so Metal keeps its compiled
@@ -558,7 +584,6 @@ mod tests {
             container_dir: PathBuf::from("/nonexistent"),
             capabilities: CapabilityPlan::empty(),
             egress: EgressDecision::Blocked,
-            gate_socket: None,
             inherit_fds: Vec::new(),
             env: Vec::new(),
             trust,
@@ -598,7 +623,7 @@ mod tests {
         };
         for network in [
             SeatbeltNetwork::Denied,
-            SeatbeltNetwork::Gate(dir("gate").join("gate.sock")),
+            SeatbeltNetwork::Gate(9050),
             SeatbeltNetwork::Unrestricted,
         ] {
             let policy = SeatbeltPolicy {
