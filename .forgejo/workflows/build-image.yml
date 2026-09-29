@@ -1034,9 +1034,10 @@ jobs:
             echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
           fi
           # Every core compiles, bounded only by memory. The builder gets the
-          # slot's memory less 4 GiB; a thin-LTO link of one of the large
-          # binaries peaks near 6 GiB (11 jobs at 3 GiB each were OOM-killed
-          # linking file-explorer in run 48204).
+          # slot's memory less 4 GiB; thin-LTO links of the large binaries
+          # overlap at the end of the release pass (11 jobs at 3 GiB each were
+          # OOM-killed linking file-explorer in run 48204, 5 at 6 GiB linking
+          # shell on aarch64 in run 48581).
           # The job count never reaches the image, so the two lanes of a
           # release may differ.
           # Without LTO a rustc or mold link still peaks near 2.5 GiB; at one
@@ -1048,7 +1049,7 @@ jobs:
           [[ $limit == max ]] || (( limit / 1048576 >= memory_mib )) || memory_mib=$(( limit / 1048576 ))
           memory_mib=$(( memory_mib - 4096 ))
           per_job_mib=2560
-          [[ $publish != true ]] || per_job_mib=6144
+          [[ $publish != true ]] || per_job_mib=8192
           jobs=$(( memory_mib / per_job_mib ))
           memory_gib=$(( memory_mib / 1024 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
