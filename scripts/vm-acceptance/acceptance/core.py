@@ -241,6 +241,36 @@ def frame_stats(rows: list[dict]) -> dict:
     }
 
 
+def burst_stats(rows: list[dict], window_ms: float, idle_ms: float = 250.0) -> dict:
+    """Pacing inside animations: a burst starts at the first painted frame after at least
+    `idle_ms` without one and spans `window_ms` (the animation's length). Intervals are
+    painted-to-painted, so the idle park before a burst never counts as a stall."""
+    painted = [r["start_us"] for r in rows if r.get("painted") == 1]
+    late = [r["deadline_late_us"] for r in rows
+            if r.get("painted") == 1 and isinstance(r.get("deadline_late_us"), int)]
+    bursts, cur, start, prev = [], [], None, None
+    for t in painted:
+        if prev is None or t - prev > idle_ms * 1000:
+            if cur:
+                bursts.append(cur)
+            cur, start = [t], t
+        elif t - start <= window_ms * 1000:
+            cur.append(t)
+        prev = t
+    if cur:
+        bursts.append(cur)
+    gaps = [b - a for burst in bursts for a, b in zip(burst, burst[1:])]
+    ms = lambda v: None if v is None else round(v / 1000, 2)  # noqa: E731
+    return {
+        "bursts": len(bursts),
+        "frames_per_burst": [len(b) for b in bursts],
+        "interval_ms_p50": ms(percentile(gaps, 50)),
+        "interval_ms_p95": ms(percentile(gaps, 95)),
+        "interval_ms_max": ms(max(gaps) if gaps else None),
+        "deadline_late_ms_p95": ms(percentile(late, 95)),
+    }
+
+
 # -- pixels (Pillow is optional on the host; without it pixel checks fail) -----
 
 

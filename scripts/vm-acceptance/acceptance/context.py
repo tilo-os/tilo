@@ -111,8 +111,11 @@ class Context:
                 self.vm.invoke(provider, app_id)
                 break
             except VmError as exc:
-                if "unknown_action" not in str(exc) or time.monotonic() - started > 30:
+                if "unknown_action" not in str(exc):
                     raise
+                if time.monotonic() - started > 45:
+                    raise core.CheckFailed(f"{app_id} is not in the {provider} catalogue "
+                                           "45 s after asking for it") from exc
                 time.sleep(2)
         st = self.wait_state(
             lambda s: [g for g in core.all_groups(s) if g["id"] not in before],
