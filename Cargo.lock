@@ -14903,9 +14903,11 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "tempfile",
+ "test-http",
  "thiserror 2.0.18",
  "tilo-clock",
  "tilo-moq",
+ "tilo-net",
  "tilo-relay",
  "tilo-relay-client",
  "tilo-relay-protocol",
@@ -14915,6 +14917,7 @@ dependencies = [
  "tokio",
  "tokio-rustls",
  "url",
+ "uuid",
  "web-time",
  "workspace-hack",
 ]
@@ -14923,48 +14926,35 @@ dependencies = [
 name = "tilo-browser-runtime"
 version = "0.1.0"
 dependencies = [
- "automerge",
- "calculator",
- "chat",
  "collab-types",
- "ebook",
+ "durable-store",
  "ed25519-dalek 3.0.0",
- "futures",
  "hex",
  "js-sys",
- "notes",
  "postcard",
- "qdoc",
  "serde",
  "serde_json",
- "taffy",
- "tempfile",
+ "settings-store",
  "tilo-actions",
- "tilo-agent-control-protocol",
- "tilo-app",
  "tilo-automerge",
- "tilo-automerge-isolate",
  "tilo-browser-peer",
- "tilo-clock",
- "tilo-cloud-enrollment",
- "tilo-content",
- "tilo-delivery-protocol",
- "tilo-desktop",
  "tilo-desktop-model",
- "tilo-peer-state",
+ "tilo-desktop-search",
+ "tilo-desktop-surface",
+ "tilo-files",
+ "tilo-paths",
  "tilo-relay-protocol",
+ "tilo-secrets",
  "tilo-ui",
  "tilo-user-identity",
  "tilo-vello",
  "tilo-winit",
  "tokio",
- "uuid",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
  "wgpu",
- "word-processor",
  "workspace-hack",
 ]
 
@@ -15306,6 +15296,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-desktop-search"
+version = "0.1.0"
+dependencies = [
+ "tilo-actions",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-desktop-surface"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-desktop-model",
+ "tilo-desktop-search",
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-device-host"
 version = "0.1.0"
 dependencies = [
@@ -15330,7 +15341,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-moq",
@@ -15983,7 +15993,6 @@ dependencies = [
  "tilo-app-package",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-moq",
@@ -16595,6 +16604,48 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-web-desktop"
+version = "0.1.0"
+dependencies = [
+ "api-tester",
+ "calculator",
+ "calendar",
+ "camera",
+ "chat",
+ "clocks",
+ "contacts",
+ "diffmerge",
+ "ebook",
+ "feeds",
+ "hex-editor",
+ "image-editor",
+ "maps",
+ "music",
+ "notes",
+ "passwords",
+ "pdf-viewer",
+ "photos",
+ "scratchpad",
+ "sheets",
+ "shortcuts",
+ "slides",
+ "snippets",
+ "speed-test",
+ "themes",
+ "tilo-app",
+ "tilo-browser-runtime",
+ "totp",
+ "tube",
+ "typst-editor",
+ "video-editor",
+ "video-player",
+ "wasm-bindgen",
+ "weather",
+ "word-processor",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-winit"
 version = "0.30.13"
 dependencies = [
@@ -16682,7 +16733,6 @@ dependencies = [
  "tilo-actions",
  "tilo-automerge",
  "tilo-automerge-isolate",
- "tilo-browser-runtime",
  "tilo-clock",
  "tilo-delivery-protocol",
  "tilo-desktop-model",
