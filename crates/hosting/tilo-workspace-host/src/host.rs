@@ -1550,6 +1550,8 @@ struct ActionRuntime {
     actions: Option<crate::action_host::ActionHost>,
     policy_time: Option<tilo_action_broker::peer_actions::PolicyTime>,
     retired: bool,
+    /// A stalled runtime whose custody did not settle stays failed.
+    stall_unsettled: bool,
 }
 impl ActionRuntime {
     fn new(committed: crate::committed_authority::CommittedAuthority) -> Self {
@@ -1568,7 +1570,41 @@ impl ActionRuntime {
             actions: None,
             policy_time: None,
             retired: false,
+            stall_unsettled: false,
         }
+    }
+
+    /// Replace a runtime whose signing failed only because a started owner
+    /// turn stalled. This serialized owner is running again, so that turn has
+    /// since finished with a definite result: closing the workers settles
+    /// their pending writes against it. Custody that does not settle, and any
+    /// other failure, stays terminal.
+    fn recover_after_stall(&mut self, owner: &SessionOwner) -> Result<bool, String> {
+        use tilo_peer_state::owner_commit::OwnerCommitService;
+        if self.stall_unsettled || !self.signing.failed_only_by_stalls()? {
+            return Ok(false);
+        }
+        self.stall_unsettled = true;
+        self.authority.set_ready(false);
+        self.signing.close_admission()?;
+        self.commits.close_admission()?;
+        // Never-started requests are refused with the latched stall.
+        let reason = "action runtime restarting after a stalled owner turn";
+        while let Ok(pending) = self.signatures.try_recv() {
+            let _ = pending.reject_unstarted(reason.into());
+        }
+        while let Ok(pending) = self.commits.try_recv() {
+            let _ = pending.reject_unstarted(reason.into());
+        }
+        while self.network.try_recv().is_ok() {}
+        if let Some(runtime) = self.actions.as_mut() {
+            runtime.close(owner)?;
+        }
+        debug_assert!(self.signing.health().is_err());
+        let committed = self.committed.clone();
+        // Drop joins the old broker before a replacement reopens its journal.
+        drop(std::mem::replace(self, Self::new(committed)));
+        Ok(true)
     }
 
     fn needs_retirement(&self) -> bool {
@@ -1693,6 +1729,24 @@ async fn refresh_actions(
     pool: Option<&crate::host_bytes::HostBytes>,
     cadence: &mut CheckpointCadence,
 ) {
+    if action_error.is_some() {
+        match runtime.recover_after_stall(owner) {
+            Ok(true) => {
+                tracing::warn!(
+                    problem = action_error.as_deref().unwrap_or_default(),
+                    "action runtime restarted after a stalled owner turn"
+                );
+                *action_error = None;
+                if let Some(session) = session.as_mut() {
+                    session.detach_actions().await;
+                }
+            }
+            Ok(false) => {}
+            Err(problem) => {
+                tracing::error!(%problem, "stalled action runtime did not settle; it stays failed");
+            }
+        }
+    }
     if runtime.needs_retirement() {
         runtime.authority.set_ready(false);
         if let Some(session) = session.as_mut() {
