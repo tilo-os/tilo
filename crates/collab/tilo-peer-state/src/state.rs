@@ -648,6 +648,46 @@ impl StatePeer {
         Ok(changed && before_role != Some(after_role))
     }
 
+    /// Remove workspace capabilities the governance writer decided to take
+    /// back, by id. Memberships are removed through member governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, an id names a
+    /// membership, or governance cannot be updated.
+    pub fn remove_governed_capabilities(
+        &mut self,
+        ids: &[String],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        let caps = doc
+            .get(ROOT, "capabilities")
+            .map_err(err)?
+            .ok_or("governed capabilities missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for id in ids {
+            if id.starts_with("room-member-v1:") {
+                return Err(format!("capability {id:?} is a membership"));
+            }
+            if doc.get(&caps, id.as_str()).map_err(err)?.is_some() {
+                doc.delete(&caps, id.as_str()).map_err(err)?;
+            }
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+
     /// Write workspace capabilities the governance writer decided, such as
     /// those an assigned permission profile expands to, keyed by their ids.
     ///
