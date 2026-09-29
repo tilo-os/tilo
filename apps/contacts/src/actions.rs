@@ -265,7 +265,16 @@ fn export_flow_contract() -> ActionContract {
     }
 }
 
-fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
+/// Book-level import / export Effects (no document delta). Published via
+/// [`crate::resource::Contacts::local_operations`].
+pub(crate) fn book_effect_specs() -> Vec<ActionSpec> {
+    vec![
+        file_operation("import-vcard", "Import vCard", false),
+        file_operation("export-all-vcard", "Export all contacts", true),
+    ]
+}
+
+pub(crate) fn file_operation(id: &str, label: &str, export: bool) -> ActionSpec {
     ActionSpec::typed_operation(
         id,
         label,
@@ -1425,7 +1434,7 @@ pub fn ordered_groups(contacts: &[Contact]) -> Vec<String> {
 /// Split a typed full name into first / rest-as-last, so a palette "New
 /// contact" / "Rename" that collects a single name string lands the same way
 /// the form's two fields would.
-fn split_name(name: &str) -> (String, String) {
+pub(crate) fn split_name(name: &str) -> (String, String) {
     let name = name.trim();
     match name.split_once(char::is_whitespace) {
         Some((first, rest)) => (first.trim().to_string(), rest.trim().to_string()),
@@ -1776,6 +1785,63 @@ pub fn provide_resources(ctx: &ContactsResourceCtx, _doc: &AutoCommit) -> Vec<Re
     }
 
     vec![root]
+}
+
+/// Document-derived children for [`tilo_resource::publish`]: favorites, groups,
+/// and contacts. Import conflicts and duplicate reviews stay live extras —
+/// they are not shared CRDT rows.
+pub(crate) fn publish_children(contacts: &[Contact]) -> Vec<Resource> {
+    let mut children = vec![favorites_resource()];
+    for group in ordered_groups(contacts)
+        .into_iter()
+        .take(MAX_CONTEXT_GROUP_RESOURCES)
+    {
+        children.push(group_resource(&group));
+    }
+    for contact in contacts.iter().take(MAX_CONTEXT_CONTACT_RESOURCES) {
+        children.push(contact_resource(contact, false));
+    }
+    children
+}
+
+/// Hosted-only extras that are not document state: in-flight import conflicts
+/// and pending duplicate-merge reviews.
+pub(crate) fn live_presentation_extras(ctx: &ContactsResourceCtx) -> Vec<Resource> {
+    let mut extras = Vec::new();
+    for conflict in &ctx.import_conflicts {
+        let mut child = Resource::new(
+            format!("contacts.import-conflict:{}", conflict.token),
+            "contacts.import-conflict",
+            format!("Import review: {}", conflict.incoming_name),
+        );
+        let keep = ContactsOperation::KeepImportConflict {
+            token: conflict.token.clone(),
+        };
+        let import_as_new = ContactsOperation::ImportConflictAsNew {
+            token: conflict.token.clone(),
+        };
+        if let Some(spec) = contact_operation(
+            "keep-existing",
+            "Keep existing contact",
+            OperationKind::Effect,
+            &keep,
+        ) {
+            child = child.with_action(spec);
+        }
+        if let Some(spec) = contact_operation(
+            "import-as-new",
+            "Import as new contact",
+            OperationKind::Effect,
+            &import_as_new,
+        ) {
+            child = child.with_action(spec);
+        }
+        extras.push(child);
+    }
+    for duplicate in ctx.duplicates.iter().take(MAX_CONTEXT_DUPLICATE_RESOURCES) {
+        extras.push(duplicate_resource(duplicate));
+    }
+    extras
 }
 
 /// Resolve one resource from the complete current book without materialising
