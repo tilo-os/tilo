@@ -36,6 +36,10 @@ use crate::document::{
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Keep-alive interval on an idle session.
 const PING_INTERVAL: Duration = Duration::from_secs(15);
+/// How often overdue channel access requests are sent again.
+const CHANNEL_TICK: Duration = Duration::from_secs(1);
+/// Sealed documents held per route while this device waits for its keys.
+const MAX_HELD_DOCUMENTS: usize = 4096;
 /// Consecutive refused handshakes after which the host is taken to have
 /// rejected this device (revoked or unknown) rather than to be unreachable.
 const REFUSALS_BEFORE_FAILING: u32 = 3;
@@ -259,6 +263,7 @@ enum Command {
     Join(u64),
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
+    OpenRoute(DocumentRoute),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
     RemoteAction(u64, [u8; 32], Vec<u8>),
@@ -377,6 +382,7 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
+        let channels = crate::channels::Channels::new(config.cert.device_public_key);
         let task = Task {
             config,
             signer,
@@ -387,6 +393,10 @@ impl PeerHandle {
             outbox: record.outbox.iter().cloned().collect(),
             record,
             ciphers: Ciphers::new(),
+            channels,
+            channel_changes: crate::channels::Changes::default(),
+            held_inbound: BTreeMap::new(),
+            held_outbound: BTreeMap::new(),
             doc_seq: 0,
             barriers: Vec::new(),
             admission_since: None,
@@ -450,6 +460,17 @@ impl PeerHandle {
         cipher: Box<dyn ContentCipher>,
     ) -> Result<(), String> {
         self.send(Command::InstallCipher(route, cipher))
+    }
+
+    /// Take part in `route`'s encrypted channel: when a steward governs it,
+    /// ask for access so documents on it can be opened and sealed. Routes
+    /// are also opened by publishing on them or receiving their documents.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
+        self.send(Command::OpenRoute(route))
     }
 
     /// Join a room's live plane (after [`Self::join`]).
@@ -720,6 +741,16 @@ struct Task {
     outbox: VecDeque<OutboxEntry>,
     record: PeerRecord,
     ciphers: Ciphers,
+    /// This device's membership of the rooms' encrypted channels.
+    channels: crate::channels::Channels,
+    /// What channel state changed since the session last acted on it.
+    channel_changes: crate::channels::Changes,
+    /// Sealed documents that arrived before this device held their keys,
+    /// with their authenticated authors.
+    held_inbound: BTreeMap<DocumentRoute, VecDeque<(Vec<u8>, [u8; 32])>>,
+    /// Frames published on an encrypted route before this device held its
+    /// keys; they are sealed and committed once the keys arrive.
+    held_outbound: BTreeMap<DocumentRoute, Vec<Vec<u8>>>,
     doc_seq: u64,
     barriers: Vec<([u8; 16], Completion)>,
     /// When the rooms not yet admitted were subscribed (ms since the epoch).
@@ -993,7 +1024,11 @@ impl Task {
         });
         self.admission_since = Some(crate::clock::now_ms());
         let mut ping = n0_future::time::interval(PING_INTERVAL);
+        let mut channel_tick = n0_future::time::interval(CHANNEL_TICK);
         loop {
+            if !self.settle_channels(Some(&client)).await {
+                return Exit::Lost("host session saturated".into());
+            }
             tokio::select! {
                 biased;
                 command = commands.recv() => match command {
@@ -1039,6 +1074,10 @@ impl Task {
                         return Exit::Lost("host session saturated".into());
                     }
                     self.check_admission();
+                }
+                _ = channel_tick.tick() => {
+                    let changes = self.channels.tick(crate::clock::now_ms());
+                    self.absorb(changes);
                 }
             }
         }
@@ -1095,6 +1134,11 @@ impl Task {
             }
             Command::InstallCipher(route, cipher) => {
                 self.ciphers.insert(route, cipher);
+                true
+            }
+            Command::OpenRoute(route) => {
+                let changes = self.channels.open(&route, crate::clock::now_ms());
+                self.absorb(changes);
                 true
             }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
@@ -1154,6 +1198,14 @@ impl Task {
             self.fail("protocol-rejected", "A document names an invalid room.");
             return true;
         };
+        let changes = self.channels.open(&route, crate::clock::now_ms());
+        self.absorb(changes);
+        if !self.ciphers.contains_key(&route) && self.channels.gated(&route) {
+            // Never in the clear on an encrypted channel: the frames wait
+            // for this device's keys.
+            self.held_outbound.entry(route).or_default().extend(frames);
+            return true;
+        }
         let mut delivered = true;
         for frame in frames {
             let now = crate::clock::now_ns();
@@ -1225,11 +1277,7 @@ impl Task {
                 else {
                     return;
                 };
-                match open_frame(&body, author_device_public_key, &mut self.ciphers) {
-                    Ok(Some(document)) => self.emit(&PeerEvent::Document(Box::new(document))),
-                    Ok(None) => {}
-                    Err(error) => self.emit(&PeerEvent::DocumentRejected(error.to_string())),
-                }
+                self.inbound_body(body, author_device_public_key);
             }
             Envelope::Committed { op, seq, .. } => self.acknowledge(op, Some(seq)),
             Envelope::CommitRefused { op, reason, .. } => {
@@ -1277,6 +1325,155 @@ impl Task {
         }
     }
 
+    /// One retained message from the host: channel governance, a member's
+    /// certificate, or a document.
+    fn inbound_body(&mut self, body: Vec<u8>, author: [u8; 32]) {
+        let now = crate::clock::now_ms();
+        match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
+            Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => {
+                let changes = self.channels.note_cert(author, *cert, now);
+                self.absorb(changes);
+            }
+            Ok(neighbour_wire::NeighbourMsg::MlsGovernance { frame, .. }) => {
+                let changes = self.channels.receive_frame(author, *frame, now);
+                self.absorb(changes);
+            }
+            Ok(neighbour_wire::NeighbourMsg::AppDocument {
+                app_id,
+                cluster_id,
+                record_id,
+                envelope,
+                ..
+            }) => {
+                let route = DocumentRoute {
+                    app_id,
+                    cluster_id,
+                    record: record_id,
+                };
+                let changes = self.channels.open(&route, now);
+                self.absorb(changes);
+                if envelope.encryption.is_some() && !self.ciphers.contains_key(&route) {
+                    let held = self.held_inbound.entry(route).or_default();
+                    if held.len() >= MAX_HELD_DOCUMENTS {
+                        held.pop_front();
+                    }
+                    held.push_back((body, author));
+                    return;
+                }
+                self.open_document(&body, author);
+            }
+            _ => {}
+        }
+    }
+
+    fn open_document(&mut self, body: &[u8], author: [u8; 32]) {
+        match open_frame(body, author, &mut self.ciphers) {
+            Ok(Some(document)) => self.emit(&PeerEvent::Document(Box::new(document))),
+            Ok(None) => {}
+            Err(error) => self.emit(&PeerEvent::DocumentRejected(error.to_string())),
+        }
+    }
+
+    fn absorb(&mut self, changes: crate::channels::Changes) {
+        self.channel_changes.keys.extend(changes.keys);
+        self.channel_changes.outgoing.extend(changes.outgoing);
+    }
+
+    /// Act on channel changes: install new keys, open what waited for them,
+    /// seal and commit what was held, and sign and send governance. Returns
+    /// `false` when the session could not take an envelope.
+    async fn settle_channels(&mut self, client: Option<&Link>) -> bool {
+        let mut delivered = true;
+        loop {
+            let changes = std::mem::take(&mut self.channel_changes);
+            if changes.keys.is_empty() && changes.outgoing.is_empty() {
+                return delivered;
+            }
+            for (route, keys) in changes.keys {
+                self.ciphers
+                    .insert(route.clone(), Box::new(crate::channels::KeysCipher(keys)));
+                for (body, author) in self.held_inbound.remove(&route).unwrap_or_default() {
+                    self.open_document(&body, author);
+                }
+                if let Some(frames) = self.held_outbound.remove(&route) {
+                    delivered &= self.publish(route, frames, client).await;
+                }
+            }
+            for outgoing in changes.outgoing {
+                let Some(client) = client else {
+                    // Offline: overdue requests are sent again after the
+                    // reconnect; acknowledgements go with the next frame.
+                    continue;
+                };
+                let signer = Arc::clone(&self.signer);
+                let device = self.config.cert.device_public_key;
+                if let Some(envelope) = sign_governance(signer.as_ref(), device, outgoing).await {
+                    delivered &= client.send(envelope).is_ok();
+                }
+            }
+        }
+    }
+}
+
+/// Sign a governance message with the device key and wrap it for the host,
+/// which retains it for the steward.
+async fn sign_governance(
+    signer: &dyn DeviceSigner,
+    device: [u8; 32],
+    outgoing: crate::channels::Outgoing,
+) -> Option<Envelope> {
+    {
+        let (workspace_id, message) = match outgoing {
+            crate::channels::Outgoing::Request {
+                workspace_id,
+                room,
+                mut request,
+            } => {
+                let signature = signer.sign(request.signing_bytes().ok()?).await.ok()?;
+                request.signature = collab_types::Signature::from_bytes(signature);
+                (
+                    workspace_id,
+                    neighbour_wire::NeighbourMsg::MlsAccessRequest {
+                        room,
+                        request: Box::new(request),
+                        delivery: rand::random(),
+                    },
+                )
+            }
+            crate::channels::Outgoing::Ack {
+                workspace_id,
+                room,
+                mut ack,
+            } => {
+                let signature = signer.sign(ack.signing_bytes().ok()?).await.ok()?;
+                ack.signature = collab_types::Signature::from_bytes(signature);
+                (
+                    workspace_id,
+                    neighbour_wire::NeighbourMsg::MlsGovernanceAck {
+                        room,
+                        ack: Box::new(ack),
+                        delivery: rand::random(),
+                    },
+                )
+            }
+        };
+        let (channel, _) = neighbour_wire::retention(&message, false)?;
+        Some(Envelope::Delta {
+            workspace_id,
+            author_device_public_key: device,
+            authored_at_ns: crate::clock::now_ns(),
+            delta: CoeditPayload::Checkpoint {
+                channel,
+                body: postcard::to_allocvec(&message).ok()?,
+            }
+            .encode()
+            .ok()?,
+            signature: [0; 64],
+        })
+    }
+}
+
+impl Task {
     /// Retire outbox entry `op`: acknowledged at host order `seq`, or refused
     /// (`None`, it can never become durable).
     fn acknowledge(&mut self, op: [u8; 16], seq: Option<u64>) {

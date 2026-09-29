@@ -84,7 +84,8 @@ struct JournalState {
 /// durably replaces one file containing the frame, every target, ack state,
 /// and the irreversible plaintext gate.
 pub struct GovernanceJournal {
-    path: PathBuf,
+    /// `None` for a journal kept only in memory.
+    path: Option<PathBuf>,
     state: JournalState,
 }
 
@@ -100,13 +101,8 @@ impl GovernanceJournal {
         let path = path.into();
         if !path.exists() {
             return Ok(Self {
-                path,
-                state: JournalState {
-                    version: JOURNAL_VERSION,
-                    frames: Vec::new(),
-                    deliveries: Vec::new(),
-                    encryption_required: false,
-                },
+                path: Some(path),
+                ..Self::in_memory()
             });
         }
         if fs::metadata(&path)?.len() > MAX_JOURNAL_BYTES {
@@ -144,7 +140,24 @@ impl GovernanceJournal {
                 ));
             }
         }
-        Ok(Self { path, state })
+        Ok(Self {
+            path: Some(path),
+            state,
+        })
+    }
+
+    /// An empty journal that is never written to disk, for a device with
+    /// no private filesystem (a browser page); it starts over each session.
+    pub fn in_memory() -> Self {
+        Self {
+            path: None,
+            state: JournalState {
+                version: JOURNAL_VERSION,
+                frames: Vec::new(),
+                deliveries: Vec::new(),
+                encryption_required: false,
+            },
+        }
     }
 
     pub fn head_digest(&self) -> [u8; 32] {
@@ -456,9 +469,12 @@ impl GovernanceJournal {
     }
 
     fn persist(&self, state: &JournalState) -> Result<()> {
+        let Some(path) = &self.path else {
+            return Ok(());
+        };
         let bytes = postcard::to_allocvec(state)
             .map_err(|error| Error::Serialization(error.to_string()))?;
-        atomic_file::write_creating_parent_with_mode(&self.path, &bytes, 0o600).map_err(Error::Io)
+        atomic_file::write_creating_parent_with_mode(path, &bytes, 0o600).map_err(Error::Io)
     }
 }
 
