@@ -21,10 +21,48 @@ use crate::error::CliError;
 use crate::hypervisor::{CommandLine, SshEndpoint};
 use crate::vmbuild::sh_quote;
 
+/// The tag of the locally built images: `TILO_LOCAL_TAG`, `latest` when unset,
+/// so builds from different checkouts on one host can keep their images apart.
+///
+/// # Errors
+/// A value that is not an image tag.
+pub fn local_tag() -> Result<String, CliError> {
+    parse_local_tag(std::env::var("TILO_LOCAL_TAG").ok().as_deref())
+}
+
+fn parse_local_tag(value: Option<&str>) -> Result<String, CliError> {
+    let tag = match value {
+        None | Some("") => return Ok("latest".to_owned()),
+        Some(tag) => tag,
+    };
+    let mut chars = tag.chars();
+    let first = chars
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric() || c == '_');
+    if first && tag.len() <= 128 && chars.all(|c| c.is_ascii_alphanumeric() || "_.-".contains(c)) {
+        Ok(tag.to_owned())
+    } else {
+        Err(CliError::InvalidInput(format!(
+            "TILO_LOCAL_TAG={tag} is not an image tag ([A-Za-z0-9_][A-Za-z0-9_.-]*, at most 128 characters)"
+        )))
+    }
+}
+
 /// What `--from local` builds and moves the VM onto.
-pub const LOCAL_DEV_IMAGE: &str = "localhost/tilo-vm:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_dev_image() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo-vm:{}", local_tag()?))
+}
+
 /// The production image the local dev image is built FROM.
-pub const LOCAL_BASE: &str = "localhost/tilo:latest";
+///
+/// # Errors
+/// An invalid `TILO_LOCAL_TAG`.
+pub fn local_base() -> Result<String, CliError> {
+    Ok(format!("localhost/tilo:{}", local_tag()?))
+}
 /// The script `--from local` runs (relative to the worktree).
 pub const BUILD_SCRIPT: &str = "os/dev/build-dev-image.sh";
 /// The OCI layout in the VM that bootc switches to; in /var, so it survives
@@ -65,7 +103,7 @@ pub fn parse_from(
     };
     match from.split_once(':') {
         None if from == "local" => Ok(UpgradeFrom::Local {
-            image: LOCAL_DEV_IMAGE.to_owned(),
+            image: local_dev_image()?,
             build: true,
         }),
         Some(("local", image)) if !image.is_empty() => Ok(UpgradeFrom::Local {
@@ -282,7 +320,7 @@ pub fn parse_layout_facts(text: &str) -> Result<(String, ImageFacts), String> {
                 .and_then(Value::as_str)
                 .map(str::to_owned)
         })
-        .unwrap_or_else(|| LOCAL_DEV_IMAGE.to_owned());
+        .map_or_else(|| local_dev_image().map_err(|e| e.to_string()), Ok)?;
     let mut facts = ImageFacts {
         id,
         flavour,
@@ -779,6 +817,21 @@ mod tests {
 
     use super::*;
 
+    /// `TILO_LOCAL_TAG` names the local images' tag, `latest` when unset; anything else is refused.
+    #[test]
+    fn local_tag_is_latest_unless_named() {
+        assert_eq!(parse_local_tag(None).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("")).unwrap(), "latest");
+        assert_eq!(parse_local_tag(Some("wt-2_a.b")).unwrap(), "wt-2_a.b");
+        assert_eq!(
+            parse_local_tag(Some(&"a".repeat(128))).unwrap(),
+            "a".repeat(128)
+        );
+        for bad in [".x", "-x", "a/b", "a:b", "a b", &"a".repeat(129)] {
+            assert!(parse_local_tag(Some(bad)).is_err(), "{bad}");
+        }
+    }
+
     /// from-local builds and from-local-image does not; only dev names pass; production-named, unlabelled
     /// and sealed images are refused with the fix; an older base is refused and an unknown age is a note.
     #[test]
@@ -788,7 +841,7 @@ mod tests {
             assert_eq!(
                 parse_from("local", None).unwrap(),
                 UpgradeFrom::Local {
-                    image: LOCAL_DEV_IMAGE.to_owned(),
+                    image: local_dev_image().unwrap(),
                     build: true
                 }
             );

@@ -436,6 +436,31 @@ fi
 # corrupt RPM database, which then surfaces as dnf insisting that packages the
 # base image plainly has are missing — TILO_BUILD_ARGS=--no-cache is the way out.
 read -r -a _tilo_build_args <<< "${TILO_BUILD_ARGS:-}"
+# The Rust compile's target cache (os/Containerfile TILO_BUILD_CACHE_KEY) is
+# named by what changes the artifacts cargo produces, so builds with different
+# settings sharing one podman store do not rebuild each other's target
+# directory. Build arguments in TILO_BUILD_ARGS override the resolved values.
+declare -A _tilo_cache_inputs=(
+  [arch]="$(uname -m)"
+  [TILO_RUST_LTO]="$TILO_RUST_LTO"
+  [TILO_RUST_DEBUGINFO]="${TILO_RUST_DEBUGINFO:-line-tables-only}"
+  [TILO_WITH_BROWSER]="$TILO_WITH_BROWSER"
+  [TILO_PREBUILT_APPS]=0
+  [TILO_PREBUILT_DESKTOP]=0
+  [TILO_CARGO_FRESHNESS]=clean
+  [TILO_COMPILER_CACHE]=shared
+)
+for ((_i = 0; _i < ${#_tilo_build_args[@]}; _i++)); do
+  case "${_tilo_build_args[_i]}" in
+    --build-arg) _kv="${_tilo_build_args[_i + 1]:-}"; _i=$((_i + 1)) ;;
+    --build-arg=*) _kv="${_tilo_build_args[_i]#--build-arg=}" ;;
+    *) continue ;;
+  esac
+  _k="${_kv%%=*}"
+  [ -z "$_k" ] || [ -z "${_tilo_cache_inputs[$_k]+set}" ] || _tilo_cache_inputs[$_k]="${_kv#*=}"
+done
+TILO_BUILD_CACHE_KEY="$(for _k in "${!_tilo_cache_inputs[@]}"; do printf '%s=%s\n' "$_k" "${_tilo_cache_inputs[$_k]}"; done \
+  | LC_ALL=C sort | sha256sum | cut -c1-12)"
 _tilo_wpe_args=()
 if [ -n "${TILO_WPE_STAGE_RECEIPT:-}" ]; then
   [ "${TILO_PUBLIC_TRUST_MODE:-production}" = development ] && [ "$TILO_WITH_BROWSER" = 1 ] \
@@ -483,6 +508,7 @@ build_image() {
   podman "${_tilo_podman_args[@]}" build "${TILO_PODMAN_BUILD_FLAGS[@]}" -f "$TILO_OS_DIR/Containerfile" "${tag_args[@]}" \
     --build-context "github-assets=$TILO_REPO/os/external-assets/cache" \
     --build-arg "TILO_RUST_LTO=$TILO_RUST_LTO" \
+    --build-arg "TILO_BUILD_CACHE_KEY=$TILO_BUILD_CACHE_KEY" \
     "${_tilo_jobs_args[@]}" \
     "${_tilo_build_args[@]}" \
     "${_tilo_wpe_args[@]}" \
@@ -532,7 +558,7 @@ if [ "$TILO_SKIP_BUILD" = "1" ]; then
     podman tag  registry.tilo.so/tilo/tilo:<tag> $TILO_IMAGE"
   msg "1/2 skipped (TILO_SKIP_BUILD=1): imaging the existing $TILO_IMAGE"
 else
-  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; generation=$TILO_GENERATION)"
+  msg "1/2 podman build $TILO_IMAGE (in-image compile; SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH; base=$BASE_REF; rpms=$RPMS_REF; wpe-buildroot=$WPE_BUILDROOT_REF; kernel=$KERNEL_RPMS_REF; browser=$TILO_WITH_BROWSER; windows=$TILO_WITH_WINDOWS; rust-lto=$TILO_RUST_LTO; cargo-target-cache=$TILO_BUILD_CACHE_KEY; generation=$TILO_GENERATION)"
   if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
     _tilo_wpe_id=$(python3 "$TILO_OS_DIR/dev/adopt-development-wpe.py" import-adopted \
       --receipt "$TILO_WPE_ADOPTION_RECEIPT" --receipt-sha256 "$TILO_WPE_ADOPTION_SHA256" \
