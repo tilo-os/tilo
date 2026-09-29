@@ -18,10 +18,10 @@ on:
         type: string
 
 concurrency:
-  # Keep every event and commit independent so required PR evidence cannot be
-  # replaced by a push or by a newer revision.
-  group: check-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run: the lander only
+  # reads the current head. Pushes keep one run per commit.
+  group: check-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   CARGO_HOME: /cargo-home

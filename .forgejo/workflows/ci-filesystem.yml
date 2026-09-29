@@ -168,7 +168,7 @@ on:
 concurrency:
   # Each broker runner has its own Kata guest kernel, DinD storage and FUSE
   # device. Replace superseded heavy PR runs, but keep manual and scheduled
-  # validation separate and uncancelled. Check/lint use their own commit groups.
+  # validation separate and uncancelled.
   group: fs-fuse-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 

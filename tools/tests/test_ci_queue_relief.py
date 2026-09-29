@@ -83,7 +83,7 @@ class QueueReliefTests(unittest.TestCase):
             self.assertIn("needs.signing-preflight.result == 'skipped'", build)
 
     def test_queue_relief_cancels_only_superseded_heavy_pr_runs(self):
-        with self.subTest(phase='fast checks never cancel another commit or event'):
+        with self.subTest(phase='fast checks replace only a superseded run of the same pull request'):
             for name in ("check", "lint"):
                 with self.subTest(workflow=name):
                     text = workflow(name)
@@ -91,9 +91,10 @@ class QueueReliefTests(unittest.TestCase):
                     self.assertRegex(events, r"(?m)^  push:")
                     self.assertRegex(events, r"(?m)^  pull_request:")
                     concurrency = section(text, "concurrency")
-                    self.assertIn("github.event_name", concurrency)
-                    self.assertIn("github.sha", concurrency)
-                    self.assertIn("cancel-in-progress: false", concurrency)
+                    self.assertIn(f"  group: {name}-${{{{ github.event_name }}}}-"
+                                  "${{ github.event.pull_request.number || github.sha }}", concurrency)
+                    self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+                                  concurrency)
                     self.assertNotRegex(section(text, "jobs"), r"(?m)^\s+concurrency:")
         with self.subTest(phase='component release tags and manual runs remain'):
             for name, tags in (("build-image", '["v*"]'),
