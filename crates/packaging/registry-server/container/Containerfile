@@ -20,6 +20,7 @@ RUN --mount=type=bind,from=github-assets,source=/,target=/tilo-assets,ro \
 
 ENV CARGO_INCREMENTAL=0 \
     SCCACHE_IGNORE_SERVER_IO_ERROR=0 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     RUSTC_WRAPPER=/usr/local/bin/sccache
 
 WORKDIR /workspace

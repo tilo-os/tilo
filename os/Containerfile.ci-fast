@@ -16,7 +16,7 @@ ARG CARGO_HAKARI_VERSION=0.9.39
 RUN --mount=type=secret,id=actions_cache_url \
     --mount=type=secret,id=actions_runtime_token \
     if [ -s /run/secrets/actions_cache_url ] && [ -s /run/secrets/actions_runtime_token ]; then \
-      export SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-ci-fast-v1 \
+      export SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-ci-fast-v1 SCCACHE_IDLE_TIMEOUT=0 \
         SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_DIRECT=false RUSTUP_AUTO_INSTALL=0 \
         RUSTC_WRAPPER=sccache CARGO_INCREMENTAL=0 \
         ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url)" \
