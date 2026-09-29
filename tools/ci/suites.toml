@@ -373,6 +373,7 @@ name = "browser-runtime-web"
 # app catalogue.
 inputs = ["crates/browser/tilo-browser-runtime/"]
 suites = [
+  "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
   "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
   "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",

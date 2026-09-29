@@ -267,6 +267,9 @@ impl Tiles {
 
 impl TileSource for Tiles {
     fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        if let Some(notice) = crate::crash::quarantined(tab.id, &tab.title) {
+            return TileHost::new(notice);
+        }
         match self.component(tab) {
             Ok(component) => {
                 self.shared.waiting.borrow_mut().remove(&tab.id);

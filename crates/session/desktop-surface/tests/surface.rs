@@ -1189,3 +1189,43 @@ fn search_lists_an_app_this_desktop_cannot_run_with_why_and_opens_nothing() {
         "nothing opened"
     );
 }
+
+/// Records the window a panic hook would name while each tab is built.
+struct Scoped(Rc<std::cell::RefCell<Vec<(u64, Option<u64>)>>>);
+
+impl TileSource for Scoped {
+    fn tile(&mut self, _: &Workspace, tab: &Tab) -> TileHost {
+        self.0
+            .borrow_mut()
+            .push((tab.id, ui::widget::panic_scope::current()));
+        TileHost::new(ui::widget::TileContent::Notice {
+            title: tab.title.clone(),
+            detail: String::new(),
+        })
+    }
+}
+
+#[test]
+fn a_window_is_built_under_its_tab_for_a_panic_hook() {
+    let mut minter = IdMinter::new(7);
+    let tabs = vec![tab(&mut minter, "Notes"), tab(&mut minter, "Maps")];
+    let tree = seed_tree(&mut minter, "Desk", tabs);
+    let built = Rc::new(std::cell::RefCell::new(Vec::new()));
+    let (surface, handle) = DesktopSurface::new(tree, 7, Box::new(Scoped(Rc::clone(&built))));
+    handle.set_viewport_width(1200.0);
+    let mut driver = ui::headless::Driver::new_with_controlled_inputs(
+        ui::state::State::new(),
+        Box::new(surface),
+        (1200, 800),
+        ui::Theme::dark(),
+        ui::TextRenderer::new(),
+        ui::permissions::UserId("tester".into()),
+    );
+    driver.relayout();
+    let built = built.borrow();
+    assert_eq!(built.len(), 2, "{built:?}");
+    for (tab, running) in built.iter() {
+        assert_eq!(*running, Some(*tab));
+    }
+    assert_eq!(ui::widget::panic_scope::current(), None);
+}
