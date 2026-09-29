@@ -49,6 +49,10 @@ host-menu-close = Close Window
 host-menu-minimize = Minimize
 host-menu-zoom = Zoom
 host-menu-front = Bring All to Front
+host-window-minimize = Minimize
+host-window-maximize = Maximize
+host-window-close = Close
+history-genesis = Created
 history-edited-field = { $more ->
     [0] Edited { $path }
    *[other] Edited { $path } and { $more } more

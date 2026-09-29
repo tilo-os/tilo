@@ -34,6 +34,18 @@ MCP client: closing one app or one MCP connection does not stop the daemon or
 the other apps. Only one daemon may own a profile, and private-directory and
 socket checks reject unsafe or competing owners.
 
+The standalone runtime keeps its workspace's files in the profile and shows
+them in `$HOME/Tilo/<workspace>` (`~/Tilo/Home` for a new profile), an ordinary
+folder any program can use. Changes cross both ways within about two seconds:
+a file saved in the folder becomes a version in the workspace's history, and a
+document in a legacy format (`.md`, `.docx`, `.odt`, …) is imported through its
+codec. A file changed on both sides keeps the folder's version; the
+workspace's version stays in its history. Symbolic links in the folder are not
+imported. On Linux, where `/dev/fuse` exists and `fusermount3` is on `PATH`,
+the workspace is mounted at that path instead (visible to this user only), and
+the folder takes over again whenever it cannot be. A profile the Tilo desktop
+serves has neither: the desktop projects its files itself.
+
 ## Assistant connection
 
 Automatic app joining does not install or silently configure an assistant.
@@ -166,27 +178,57 @@ then use a returned resource as `parent_resource` to discover its actions and
 children. Follow `next_cursor` with the same revision and query. `needle`
 finds actions and resources by name; several words must each begin a word of
 the row's names, and each of up to three resources a needle finds is listed
-with all its actions. `revision` is optional on `tilo_resolve` and
-`tilo_invoke`: omitted, the target resolves against the directory as it is
-now; named, a target that changed since is refused. `tilo_invoke` waits up to
-`wait_ms` (default 5 s) for the terminal update and answers with it; an
-invocation still running then is followed with `tilo_status`. Opening an app
-through the workspace also answers with the new instance's `peer_id`, once it
-has published its directory. Pass
-content resource references returned by one successful action as typed
-arguments to a freshly discovered action in another app. The runtime contains
-no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
-replays a mutation automatically.
+with all its actions. When no row has every word, a compact page answers with
+the rows that have the most of them and says `"partial_match": true`, so a
+needle naming several actions ("open paragraph style heading") still finds
+`set-paragraph-style`; version 1 rows keep the every-word match. `revision` is
+optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
+against the directory as it is now; named, a target that changed since is
+refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
+update and answers with it; an invocation still running then is followed with
+`tilo_status`. Pass content resource references returned by one successful
+action as typed arguments to a freshly discovered action in another app. The
+runtime contains no Photos/Writer workflow branch and never treats `Accepted`
+as `Succeeded` or replays a mutation automatically.
 
-`tilo_query` pages are compact (surface version 2, reported at `initialize`
+### Opening an app
+
+`tilo_invoke {workspace: true, resource: "app.<app_id>", action: "open"}`
+launches an installed app and answers, once the new instance has published its
+directory, with its `peer_id` and its `directory`: the compact page of its
+top-level resources with all their actions, and the resources beneath them
+while the page stays within 12 KiB (`"truncated": true` when something was left
+for `tilo_query`). An agent acts on the reply without browsing first.
+
+`arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
+launch opens content only by hash, read through an authenticated app's scope,
+and a launch argument would bypass the instance's typed surface, so the bridge
+launches the app empty and then invokes the instance's own `open` action taking
+a `path` (or, for an app with none, `import-<extension>`, as Sheets offers for
+CSV). The app reads the file inside its sandbox, so only files the workspace
+granted it open; nothing is granted on the way. The reply's `opened` carries
+that invocation's update and the resource and action it used, or an `error`
+naming why the file is not open (the app started empty either way). Workspace
+pages list `path?` on each application's `open`. Host applications
+(`app.host:…`) open without a path.
+
+### Page format
+
+`tilo_query` pages are compact (surface version 3, reported at `initialize`
 as `capabilities.experimental["so.tilo.mcp"].version`): each resource once,
 its actions as one-line signatures such as `"save-as": "Save document as
-(path?)"`, and string cursors. A model reads every page again on each later
-turn, and version 1's rows repeated each resource id three times and each
-contract twice. `detail: "full"` returns version 1 rows for one call; a client
-that parses them sends `{"so.tilo.mcp": {"detail": "full"}}` in
-`capabilities.experimental` at `initialize` to keep them for its session.
-`resources/read` always returns full rows.
+(path?)"` (`p?` optional, `p:type` a non-text type, `a|b` the accepted values,
+`1..64` a numeric range), and string cursors. A resource id longer than 24
+characters is shown as a session handle such as `r3`; `tilo_query`'s
+`parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
+they take a resource, and full ids keep working. A bound UI resource's id is
+about 130 characters, repeated in every call. A model reads every page again
+on each later turn, and version 1's rows repeated each resource id three times
+and each contract twice. `detail: "full"` returns version 1 rows, with full
+ids, for one call; a client that parses them sends `{"so.tilo.mcp": {"detail":
+"full"}}` in `capabilities.experimental` at `initialize` to keep them for its
+session, and its `open` replies carry no directory. `resources/read` always
+returns full rows.
 
 A normal `ui::App` automatically obtains collaboration and identity
 connections from the shared runtime and publishes its current lazy directory.

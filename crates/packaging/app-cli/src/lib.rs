@@ -558,6 +558,35 @@ mod tests {
     }
 
     #[test]
+    fn tilo_os_never_offers_an_android_build() {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[9u8; 32]);
+        let mut e = entry("so.tilo.editor", "Editor", vec![]);
+        let mut android = e.versions[0].clone();
+        android.version = "9.0.0".into();
+        android.tapp_url = "https://apps.tilo.so/artifacts/editor-android.tapp".into();
+        android.target = registry_types::RegistryTarget {
+            platform: registry_types::ANDROID_PLATFORM.into(),
+            architecture: std::env::consts::ARCH.into(),
+            isa: std::env::consts::ARCH.into(),
+            runtime: Some("tilo-runtime/2026.07".into()),
+        };
+        assert!(!target_supported(&android));
+        e.versions.push(android.clone());
+        sign_entry(&mut e, &key);
+        let app = entry_to_app(&verified(e), "main").expect("the tilo-os build is offered");
+        assert_eq!(app.version, "2.0.0");
+        assert_eq!(
+            app.download_url,
+            "https://apps.tilo.so/artifacts/so.tilo.editor.tapp"
+        );
+
+        let mut android_only = entry("so.tilo.editor", "Editor", vec![]);
+        android_only.versions = vec![android];
+        sign_entry(&mut android_only, &key);
+        assert!(entry_to_app(&verified(android_only), "main").is_none());
+    }
+
+    #[test]
     fn the_catalogue_selects_per_channel_first_registry_and_uninstalled_offers() {
         // Phase `catalogue_selects_latest_release_independent_of_registry_array_order`.
         {

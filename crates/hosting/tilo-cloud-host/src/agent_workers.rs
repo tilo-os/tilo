@@ -100,6 +100,23 @@ struct Worker {
     #[cfg(test)]
     authorizer: ui::host_worker::PublishedInvocationAuthorizer,
 }
+/// A worker whose broker join runs off the owner loop. The join waits for
+/// the broker's primary-route answer, which can take seconds on a loaded
+/// host; the mount completes on a later pump once it has answered.
+struct Joining {
+    mount: MountInputs,
+    join: std::thread::JoinHandle<Result<CollaborationManager, String>>,
+}
+/// What a worker mount needs besides its joined connection.
+struct MountInputs {
+    app: String,
+    record: String,
+    definition: &'static ui::application::ApplicationDefinition,
+    checkout: RecordCheckout,
+    bytes: Vec<u8>,
+    heads: Vec<ui::automerge::ChangeHash>,
+    authorizer: ui::host_worker::PublishedInvocationAuthorizer,
+}
 struct Snapshot {
     generation: u64,
     peer: Rc<StatePeer>,
@@ -183,6 +200,9 @@ type TestMount = (
 std::thread_local! {
     pub(crate) static TEST_MOUNT: RefCell<TestMount> =
         RefCell::new((std::time::Duration::MAX, Default::default(), UNMOUNT_GRACE));
+    /// Test only: the next worker join waits for this gate before joining.
+    pub(crate) static TEST_JOIN_GATE: RefCell<Option<std::sync::mpsc::Receiver<()>>> =
+        const { RefCell::new(None) };
 }
 fn mount_retry_delay(attempt: u32) -> std::time::Duration {
     MOUNT_RETRY_MIN
@@ -245,6 +265,8 @@ pub(crate) struct AgentWorkers {
     /// worker. Mounting is bounded per call ([`MOUNT_BUDGET`]) so a large
     /// workspace never holds the owner thread for seconds.
     pending: std::collections::VecDeque<(String, String)>,
+    /// Workers whose broker join is still running off the owner loop.
+    joining: Vec<Joining>,
     /// Records whose worker connection was refused or failed before mount
     /// (for example the broker's host-worker capacity): skipped, not fatal,
     /// and retried after `(attempt, due)` with back-off.
@@ -402,6 +424,7 @@ impl AgentWorkers {
             participants: Default::default(),
             task_agents: Default::default(),
             pending: Default::default(),
+            joining: Vec::new(),
             skipped: Default::default(),
             // Existing tests observe a fully mounted start; the bound and
             // refusals are exercised explicitly by their own tests.
@@ -424,7 +447,12 @@ impl AgentWorkers {
             step_service,
             _socket: socket,
         };
-        if let Err(error) = this.reconcile(&snapshot) {
+        // Start-up, before the owner loop runs anything else, completes the
+        // first bounded batch; later pumps never wait for a join.
+        if let Err(error) = this
+            .reconcile(&snapshot)
+            .and_then(|()| this.finish_joins(&snapshot, true))
+        {
             return Err(match this.close() {
                 Ok(()) => error,
                 Err(recovery) => format!("{error}; {recovery}"),
@@ -737,9 +765,10 @@ impl AgentWorkers {
         }
         Ok(())
     }
-    /// Whether validated records still wait for their first mount attempt.
+    /// Whether validated records still wait for their first mount attempt,
+    /// or for a join already under way.
     pub(crate) fn mounting(&self) -> bool {
-        !self.pending.is_empty()
+        !self.pending.is_empty() || !self.joining.is_empty()
     }
     fn refresh(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         // Only records that have or need a worker are validated and merged:
@@ -852,12 +881,12 @@ impl AgentWorkers {
     fn mount_pending(&mut self, snapshot: &Snapshot) -> Result<(), String> {
         let began = std::time::Instant::now();
         let now = began;
+        let mut mounted = self.finish_joins(snapshot, false)?;
         for (key, (_, due)) in &self.skipped {
             if *due <= now && !self.pending.contains(key) {
                 self.pending.push_back(key.clone());
             }
         }
-        let mut mounted = false;
         while let Some((app, record)) = self.pending.front().cloned() {
             if mounted && began.elapsed() >= self.mount_budget {
                 break;
@@ -878,6 +907,13 @@ impl AgentWorkers {
                 self.skipped.remove(&(app, record));
                 continue;
             }
+            if self
+                .joining
+                .iter()
+                .any(|j| j.mount.app == app && j.mount.record == record)
+            {
+                continue;
+            }
             let Some(definition) = tilo_workspace_host::canonical_records::resolve(&app)
                 .map(|entry| entry.definition())
             else {
@@ -891,8 +927,7 @@ impl AgentWorkers {
             };
             let checkout = checkout(definition, &record)?;
             mounted = true;
-            match self.mount(
-                snapshot,
+            match self.start_join(
                 app.clone(),
                 record.clone(),
                 definition,
@@ -900,34 +935,76 @@ impl AgentWorkers {
                 bytes,
                 heads,
             ) {
+                Ok(()) => {}
+                Err(MountError::Fatal(error)) => return Err(error),
+                Err(MountError::Record(error)) => self.skip(app, record, &error),
+            }
+        }
+        Ok(())
+    }
+    /// Retry `record` later, with back-off: its worker was refused or failed
+    /// before any component existed.
+    fn skip(&mut self, app: String, record: String, error: &str) {
+        let now = std::time::Instant::now();
+        let entry = self
+            .skipped
+            .entry((app.clone(), record))
+            .or_insert((0, now));
+        entry.0 = entry.0.saturating_add(1);
+        let delay = mount_retry_delay(entry.0 - 1);
+        entry.1 = std::time::Instant::now() + delay;
+        tracing::warn!(
+            %app,
+            attempt = entry.0,
+            retry_in_ms = delay.as_millis() as u64,
+            %error,
+            "host worker unavailable; its record is skipped and retried"
+        );
+    }
+    /// Complete the mounts whose join has answered (every one when `wait`).
+    /// Returns whether any mount work was done.
+    fn finish_joins(&mut self, snapshot: &Snapshot, wait: bool) -> Result<bool, String> {
+        let mut finished = false;
+        let mut index = 0;
+        while index < self.joining.len() {
+            if !wait && !self.joining[index].join.is_finished() {
+                index += 1;
+                continue;
+            }
+            let joining = self.joining.swap_remove(index);
+            finished = true;
+            let joined = joining
+                .join
+                .join()
+                .unwrap_or_else(|_| Err("worker join thread panicked".into()));
+            let inputs = joining.mount;
+            let (app, record) = (inputs.app.clone(), inputs.record.clone());
+            // A record that closed while joining is not mounted; dropping
+            // the manager closes its connection.
+            if !self
+                .wanted
+                .as_ref()
+                .is_some_and(|w| w.records.contains(&(app.clone(), record.clone())))
+            {
+                continue;
+            }
+            let result = joined
+                .map_err(MountError::Record)
+                .and_then(|manager| self.mount(snapshot, inputs, manager));
+            match result {
                 Ok(()) => {
                     self.skipped.remove(&(app.clone(), record));
                     tracing::info!(%app, workers = self.workers.len(), "host worker mounted");
                 }
                 Err(MountError::Fatal(error)) => return Err(error),
-                Err(MountError::Record(error)) => {
-                    let entry = self
-                        .skipped
-                        .entry((app.clone(), record))
-                        .or_insert((0, now));
-                    entry.0 = entry.0.saturating_add(1);
-                    let delay = mount_retry_delay(entry.0 - 1);
-                    entry.1 = std::time::Instant::now() + delay;
-                    tracing::warn!(
-                        %app,
-                        attempt = entry.0,
-                        retry_in_ms = delay.as_millis() as u64,
-                        %error,
-                        "host worker unavailable; its record is skipped and retried"
-                    );
-                }
+                Err(MountError::Record(error)) => self.skip(app, record, &error),
             }
         }
-        Ok(())
+        Ok(finished)
     }
-    fn mount(
+    /// Connect to the broker and start the worker's join off the owner loop.
+    fn start_join(
         &mut self,
-        snapshot: &Snapshot,
         app: String,
         record: String,
         definition: &'static ui::application::ApplicationDefinition,
@@ -959,18 +1036,60 @@ impl AgentWorkers {
                 &self.certificate,
             )
             .map_err(MountError::Record)?;
-        let manager = CollaborationManager::for_route_fd_with_identity(
-            stream.into_raw_fd(),
-            &app,
-            room,
-            (!record.is_empty()).then_some(record.clone()),
-            None,
-            CertifiedEndpointIdentity::with_host_documents(
-                self.presentation.clone(),
-                self.documents.bind(route, self.certificate.clone()),
-            ),
-        )
-        .map_err(|e| MountError::Record(format!("worker join: {e:?}")))?;
+        let identity = CertifiedEndpointIdentity::with_host_documents(
+            self.presentation.clone(),
+            self.documents.bind(route, self.certificate.clone()),
+        );
+        let (join_app, join_record) = (app.clone(), record.clone());
+        #[cfg(test)]
+        let gate = TEST_JOIN_GATE.with(|gate| gate.borrow_mut().take());
+        let join = std::thread::Builder::new()
+            .name("cloud-worker-join".into())
+            .spawn(move || {
+                #[cfg(test)]
+                if let Some(gate) = gate {
+                    let _ = gate.recv();
+                }
+                CollaborationManager::for_route_fd_with_identity(
+                    stream.into_raw_fd(),
+                    &join_app,
+                    room,
+                    (!join_record.is_empty()).then_some(join_record),
+                    None,
+                    identity,
+                )
+                .map_err(|e| format!("worker join: {e:?}"))
+            })
+            .map_err(|e| MountError::Record(format!("worker join thread: {e}")))?;
+        self.joining.push(Joining {
+            mount: MountInputs {
+                app,
+                record,
+                definition,
+                checkout,
+                bytes,
+                heads,
+                authorizer,
+            },
+            join,
+        });
+        Ok(())
+    }
+    fn mount(
+        &mut self,
+        snapshot: &Snapshot,
+        inputs: MountInputs,
+        manager: CollaborationManager,
+    ) -> Result<(), MountError> {
+        let MountInputs {
+            app,
+            record,
+            definition,
+            checkout,
+            bytes,
+            heads,
+            authorizer,
+        } = inputs;
         // A remount (the record was unmounted after its window closed)
         // finds its bytes already in this cache; the committed bytes are
         // merged into the mounted worker below instead.
@@ -1491,6 +1610,11 @@ impl AgentWorkers {
     pub(crate) fn close(&mut self) -> Result<(), String> {
         // Retained children stay durable in the sender file and task ledger.
         self.steps = None;
+        // A join still under way ends with its connection closed, never a
+        // worker mounted after close.
+        for joining in self.joining.drain(..) {
+            drop(joining.join.join());
+        }
         self.set_transport_ready(false);
         self.documents
             .fail("workers closing; prior outcome must be reconciled");

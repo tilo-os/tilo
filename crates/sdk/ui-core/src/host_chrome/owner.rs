@@ -7,7 +7,9 @@ use crate::platform::{Platform, PlatformConventions};
 pub(crate) enum HostChrome {
     /// The Tilo shell owns History (Super+H) and Search; the app shows none.
     TiloShell,
-    /// The host's menu bar and title-bar toolbar (macOS).
+    /// The host's own chrome: the macOS menu bar and title bar, the Windows
+    /// menu bar and Jump List, or the header bar a Linux app draws where the
+    /// desktop leaves decorations to it.
     Native,
     /// No native backend yet: buttons inside the window.
     InWindow,
@@ -25,6 +27,7 @@ impl HostChrome {
         }
         match conventions.platform() {
             Platform::MacOs if cfg!(all(target_os = "macos", feature = "native")) => Self::Native,
+            Platform::Windows if cfg!(all(windows, feature = "native")) => Self::Native,
             _ => Self::InWindow,
         }
     }
@@ -58,7 +61,10 @@ mod tests {
             HostChrome::detect(linux, Some("GNOME")),
             HostChrome::InWindow
         );
-        assert_eq!(HostChrome::detect(windows, None), HostChrome::InWindow);
+        assert_eq!(
+            HostChrome::detect(windows, None) == HostChrome::Native,
+            cfg!(all(windows, feature = "native"))
+        );
         assert!(!HostChrome::detect(linux, Some("tilo")).draws_in_window());
         let mac = HostChrome::detect(PlatformConventions::new(Platform::MacOs), None);
         assert_eq!(

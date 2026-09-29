@@ -28,6 +28,9 @@ pub enum Platform {
     Windows,
     /// Self-contained macOS executable (`x86_64` or `aarch64`).
     Macos,
+    /// Android package, an APK or AAB (`aarch64` or `x86_64`). Tilo OS never
+    /// installs it.
+    Android,
 }
 
 impl Platform {
@@ -40,6 +43,7 @@ impl Platform {
             Self::Linux => registry_types::LINUX_PLATFORM,
             Self::Windows => registry_types::WINDOWS_PLATFORM,
             Self::Macos => registry_types::MACOS_PLATFORM,
+            Self::Android => registry_types::ANDROID_PLATFORM,
         }
     }
 
@@ -50,9 +54,15 @@ impl Platform {
         let Some(target) = &manifest.target else {
             return Some(Self::TiloOs);
         };
-        [Self::Web, Self::Linux, Self::Windows, Self::Macos]
-            .into_iter()
-            .find(|platform| platform.wire() == target.platform)
+        [
+            Self::Web,
+            Self::Linux,
+            Self::Windows,
+            Self::Macos,
+            Self::Android,
+        ]
+        .into_iter()
+        .find(|platform| platform.wire() == target.platform)
     }
 }
 
@@ -156,9 +166,11 @@ pub fn build_entry(
     let checked = check_package(tapp_bytes, signer.verifying_key().to_bytes())?;
     let binding = match platform {
         Platform::TiloOs => native_binding(tapp_bytes, &checked, arch)?,
-        Platform::Web | Platform::Linux | Platform::Windows | Platform::Macos => {
-            signed_target_binding(tapp_bytes, &checked, platform, arch)?
-        }
+        Platform::Web
+        | Platform::Linux
+        | Platform::Windows
+        | Platform::Macos
+        | Platform::Android => signed_target_binding(tapp_bytes, &checked, platform, arch)?,
     };
     let package = &checked.manifest.package;
     let now = std::env::var("SOURCE_DATE_EPOCH")
@@ -223,9 +235,11 @@ pub fn build_entry(
                 Platform::TiloOs => {
                     format!("{display_name} is a native Tilo OS application.").into()
                 }
-                Platform::Web | Platform::Linux | Platform::Windows | Platform::Macos => {
-                    format!("{display_name} is a Tilo application.").into()
-                }
+                Platform::Web
+                | Platform::Linux
+                | Platform::Windows
+                | Platform::Macos
+                | Platform::Android => format!("{display_name} is a Tilo application.").into(),
             },
             |entry| entry.description.clone(),
         ),
@@ -236,6 +250,7 @@ pub fn build_entry(
                 Platform::Linux => format!("{display_name} for Linux").into(),
                 Platform::Windows => format!("{display_name} for Windows").into(),
                 Platform::Macos => format!("{display_name} for macOS").into(),
+                Platform::Android => format!("{display_name} for Android").into(),
             },
             |entry| entry.tagline.clone(),
         ),
@@ -325,7 +340,7 @@ fn arch_wire(arch: Arch) -> &'static str {
     }
 }
 
-/// A web, Linux, Windows or macOS build binds the `[target]` its signed manifest
+/// A web, Linux, Windows, macOS or Android build binds the `[target]` its signed manifest
 /// records; the tapp passes the same verification a native one does before
 /// anything is signed.
 fn signed_target_binding(
@@ -481,5 +496,106 @@ mod tests {
             arm.target.isa = "aarch64-v8.2".into();
             assert!(!candidate_is_older_than_published(&entry, &arm));
         }
+    }
+
+    fn android_tapp(signer: &SigningKey, module: &str) -> (Vec<u8>, Manifest) {
+        let publisher = hex::encode(signer.verifying_key().to_bytes());
+        let manifest = Manifest::from_toml_str(&format!(
+            r#"
+[package]
+id = "so.tilo.editor"
+version = "1.0.0"
+kind = "app"
+runtime = "tilo-runtime/2026.07"
+
+[publisher]
+identity = "ed25519:{publisher}"
+signature = ""
+
+[sandbox]
+namespaces = ["user"]
+seccomp = "tilo-default"
+landlock = "strict"
+
+[sandbox.net]
+mode = "off"
+
+[entrypoint]
+bin = "{module}"
+type = "gui"
+
+[target]
+platform = "android"
+architecture = "aarch64"
+isa = "aarch64"
+runtime = "tilo-runtime/2026.07"
+module = "{module}"
+"#
+        ))
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join(module), b"PK\x03\x04").unwrap();
+        let identity = tilo_app_package::pack::SigningIdentity::from_signing_key(signer.clone());
+        let packed = tilo_app_package::pack::pack(dir.path(), &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+        (bytes, manifest)
+    }
+
+    #[test]
+    fn an_android_build_binds_only_as_android_never_as_tilo_os() {
+        let signer = SigningKey::from_bytes(&[7; 32]);
+        let (bytes, manifest) = android_tapp(&signer, "editor.apk");
+        assert_eq!(Platform::of(&manifest), Some(Platform::Android));
+        assert_eq!(Platform::Android.wire(), registry_types::ANDROID_PLATFORM);
+
+        let url = "https://apps.tilo.so/artifacts/editor-android.tapp";
+        let entry = build_entry(
+            &bytes,
+            url,
+            &signer,
+            Platform::Android,
+            Some("aarch64"),
+            None,
+            None,
+        )
+        .unwrap();
+        let [version] = entry.versions.as_slice() else {
+            panic!("one version: {:?}", entry.versions);
+        };
+        assert_eq!(
+            version.target,
+            registry_types::RegistryTarget {
+                platform: registry_types::ANDROID_PLATFORM.into(),
+                architecture: "aarch64".into(),
+                isa: "aarch64".into(),
+                runtime: Some("tilo-runtime/2026.07".into()),
+            }
+        );
+        assert!(registry_types::verify_entry_signature(&entry));
+
+        for platform in [
+            Platform::TiloOs,
+            Platform::Linux,
+            Platform::Web,
+            Platform::Macos,
+        ] {
+            assert!(
+                build_entry(&bytes, url, &signer, platform, None, None, None).is_err(),
+                "an android tapp must not bind as {}",
+                platform.wire()
+            );
+        }
+        assert!(
+            build_entry(
+                &bytes,
+                url,
+                &signer,
+                Platform::Android,
+                Some("x86_64"),
+                None,
+                None
+            )
+            .is_err()
+        );
     }
 }

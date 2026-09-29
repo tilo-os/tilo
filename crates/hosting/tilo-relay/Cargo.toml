@@ -62,7 +62,7 @@ path = "src/home_peer_control.rs"
 #   peers without any external service.
 [dependencies]
 xdg-paths = { path = "../../system/xdg-paths" }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 web-time = { version = "1", features = ["serde"] }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }

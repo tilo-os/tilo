@@ -394,9 +394,24 @@ fn fnv1a64(bytes: &[u8]) -> u64 {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct RecordKind(String);
 
+/// Kinds records were once stamped with, as the kind they are now. Writer's
+/// documents were `document` until its native app and its hosted and browser
+/// renderers settled on the rich-text resource kind they share.
+const FORMER_KINDS: [(&str, &str); 1] = [("document", "qdoc.rich-text")];
+
 impl RecordKind {
+    /// A kind by name; a former name is the kind it became.
     pub fn new(kind: impl Into<String>) -> Self {
-        Self(kind.into())
+        let kind = kind.into();
+        match FORMER_KINDS.iter().find(|(former, _)| *former == kind) {
+            Some((_, current)) => Self((*current).to_owned()),
+            None => Self(kind),
+        }
+    }
+
+    /// Whether a stored kind name, current or former, names this kind.
+    pub fn names(&self, stored: &str) -> bool {
+        Self::new(stored) == *self
     }
     pub fn as_str(&self) -> &str {
         &self.0
@@ -641,7 +656,7 @@ pub fn init_scoped(
     let existing_refs = object_at(doc, &m, "refs", ObjType::List);
     if matches!(&existing_id, StringAt::String(existing) if existing != id.as_str())
         || matches!(&existing_id, StringAt::Invalid)
-        || matches!(&existing_kind, StringAt::String(existing) if existing != kind.as_str())
+        || matches!(&existing_kind, StringAt::String(existing) if !kind.names(existing))
         || matches!(&existing_kind, StringAt::Invalid)
         || matches!(&existing_home, StringAt::String(existing) if existing.is_empty())
         || matches!(&existing_home, StringAt::Invalid)
@@ -1014,6 +1029,7 @@ pub mod room {
                 // re-opening a record is not itself an edit.
                 match string_at(doc, &object, "kind") {
                     StringAt::String(existing) if existing == kind.as_str() => {}
+                    // Renamed: the index follows the kind's current name.
                     StringAt::String(_) => {
                         let _ = doc.put(&object, "kind", kind.as_str());
                     }
@@ -3544,6 +3560,29 @@ mod identity_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A Writer record stamped `document` before the kind was renamed opens
+    /// as the rich-text kind, and opening it rewrites nothing.
+    #[test]
+    fn a_record_stamped_with_a_former_kind_opens_as_the_current_one() {
+        let current = RecordKind::new("qdoc.rich-text");
+        assert_eq!(RecordKind::new("document"), current);
+        assert!(current.names("document") && current.names("qdoc.rich-text"));
+        let id = RecordId::for_tab(7);
+        let mut doc = AutoCommit::new();
+        init(&mut doc, &id, &current, "room");
+        let meta = meta_obj(&mut doc).unwrap();
+        doc.put(&meta, "kind", "document").unwrap();
+        doc.commit();
+        let heads = doc.get_heads();
+        assert_eq!(
+            identity(&doc),
+            Some(RecordCheckout::new(id.clone(), current.clone()))
+        );
+        assert!(init_scoped(&mut doc, &id, &current, "room", None));
+        doc.commit();
+        assert_eq!(doc.get_heads(), heads);
+    }
 
     /// Two members of a room each create the record the room derives for
     /// them, before either has heard of the other's: the same record, from
