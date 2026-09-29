@@ -97,6 +97,7 @@ async fn start(root: &SigningKey, host: &Device, state: &Path) -> Hosted {
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: Vec::new(),
+            plain_listen: None,
         })
         .await
         .unwrap();

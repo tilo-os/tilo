@@ -116,6 +116,7 @@ async fn start_host(
                 store: Some(state.join("web-dev-identity")),
             },
             allowed_origins: Vec::new(),
+            plain_listen: None,
         })
         .await
         .unwrap();

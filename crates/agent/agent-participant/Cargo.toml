@@ -92,8 +92,20 @@ tilo-relay-client = { path = "../../hosting/tilo-relay-client" }
 tilo-moq = { path = "../../hosting/tilo-moq", features = ["relay"] }
 iroh.workspace = true
 url.workspace = true
+# tilo-browser-peer's test support (its HTTPS client), included by path.
+hyper = { version = "1", features = ["client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio"] }
+http-body-util = "0.1"
+tokio-rustls.workspace = true
+rustls.workspace = true
+sha2.workspace = true
+bytes.workspace = true
 tokio = { workspace = true, features = ["full"] }
 tilo-clock = { path = "../../platform/tilo-clock" }
+
+[package.metadata.cargo-machete]
+# Used by tilo-browser-peer's test support, which the tests include by path.
+ignored = ["bytes", "http-body-util", "hyper", "hyper-util", "rustls", "sha2", "tokio-rustls"]
 
 [lints]
 workspace = true
