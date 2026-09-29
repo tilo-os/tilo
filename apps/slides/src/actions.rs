@@ -1416,6 +1416,30 @@ pub fn new_slide_template() -> Slide {
     s
 }
 
+/// A new slide with its words already in place: the starter's cover for
+/// `layout: title`, else [`new_slide_template`]. Omitted text keeps the
+/// template's placeholder.
+pub fn authored_slide(title: Option<&str>, body: Option<&str>, layout: Option<&str>) -> Slide {
+    let cover = (layout == Some("title"))
+        .then(|| crate::model::starter_deck().slides.into_iter().next())
+        .flatten();
+    let mut slide = cover.unwrap_or_else(new_slide_template);
+    let texts = slide
+        .elements
+        .iter_mut()
+        .filter(|element| element.kind == ElementKind::Text);
+    for (index, (element, text)) in texts.zip([title, body]).enumerate() {
+        let Some(text) = text else { continue };
+        element.text = text.to_owned();
+        element.blocks.clear();
+        if index == 1 && layout != Some("title") {
+            // The template's body is a dimmed placeholder; real content is not.
+            element.fill = "text".into();
+        }
+    }
+    slide
+}
+
 /// The element the toolbar's insert tools add, before the user moves or
 /// styles it.
 pub fn inserted_element_template(kind: ElementKind) -> Element {
@@ -1935,12 +1959,32 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
-    let at = ctx.slides.len();
-    deck = deck.with_action(immediate_spec(
-        "add-slide",
-        "Add slide",
-        &insert_slide_with_order_action(&new_slide_template(), resource_rank_for_slot(ctx, at)),
-    ));
+    let rank = resource_rank_for_slot(ctx, ctx.slides.len());
+    deck = deck.with_action(
+        ActionSpec::typed(
+            "add-slide",
+            "Add slide",
+            "optional title and body",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::optional("title", ParamType::Text, "The slide's title"),
+                ActionParam::optional(
+                    "body",
+                    ParamType::Text,
+                    "Text below the title, a line per paragraph (a subtitle on a title slide)",
+                ),
+                ActionParam::optional("layout", ParamType::Text, "title: a cover slide")
+                    .with_choices(["title", "title-content"]),
+            ],
+            move |args| {
+                encode(&insert_slide_with_order_action(
+                    &authored_slide(args.text("title"), args.text("body"), args.text("layout")),
+                    rank,
+                ))
+            },
+        )
+        .reversible(),
+    );
 
     // Deck-level: set the accent theme, one row per palette.
     for kind in PaletteKind::ALL {
