@@ -777,6 +777,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
+         CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
            /build/os/scripts/build-thin-apps.sh \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
