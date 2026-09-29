@@ -42,8 +42,8 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use tilo_actions::{
-    Action, ActionAddress, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction,
-    ExecutionLocus, ExecutionMode, OperationKind, Resource, ResultSpec,
+    Action, ActionAddress, ActionArgs, ActionError, ActionParam, ActionRegistry, ActionSpec, Doc,
+    EncodedAction, ExecutionLocus, ExecutionMode, OperationKind, ParamType, Resource, ResultSpec,
 };
 
 use crate::doc::SheetsDoc;
@@ -2050,6 +2050,77 @@ pub fn workbook_root(ctx: &SheetsResourceCtx) -> Resource {
         "Workbook",
         &state,
     );
+    for (id, label, kind, variant) in [
+        ("import-csv", "Import CSV", OperationKind::Effect, 0_u8),
+        (
+            "import-xlsx",
+            "Import Excel workbook",
+            OperationKind::Effect,
+            1,
+        ),
+        (
+            "import-ods",
+            "Import OpenDocument spreadsheet",
+            OperationKind::Effect,
+            2,
+        ),
+        ("export-csv", "Export CSV", OperationKind::Effect, 3),
+        (
+            "export-xlsx",
+            "Export Excel workbook",
+            OperationKind::Effect,
+            4,
+        ),
+        (
+            "export-ods",
+            "Export OpenDocument spreadsheet",
+            OperationKind::Effect,
+            5,
+        ),
+        ("commands", "Open command palette", OperationKind::View, 6),
+    ] {
+        if variant == 6 {
+            root = root.with_action(operation(
+                id,
+                label,
+                kind,
+                SheetsOperation::OpenCommandPalette,
+            ));
+            continue;
+        }
+        root = root.with_action(
+            ActionSpec::typed_operation(
+                id,
+                label,
+                "path (omit to use the system file picker)",
+                kind,
+                SHEETS_OPERATION_TYPE,
+                vec![ActionParam::optional_owned(
+                    "path",
+                    ParamType::Text,
+                    "Direct spreadsheet path",
+                )],
+                move |args: &ActionArgs| {
+                    let path = args
+                        .text("path")
+                        .filter(|p| !p.trim().is_empty())
+                        .map(str::to_string);
+                    let value = match variant {
+                        0 => SheetsOperation::ImportCsv { path },
+                        1 => SheetsOperation::ImportXlsx { path },
+                        2 => SheetsOperation::ImportOds { path },
+                        3 => SheetsOperation::ExportCsv { path },
+                        4 => SheetsOperation::ExportXlsx { path },
+                        _ => SheetsOperation::ExportOds { path },
+                    };
+                    EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
+                        .expect("sheet operation serializes")
+                },
+            )
+            .execution(ExecutionMode::Background { cancellable: true })
+            .returns(ResultSpec::Job),
+        );
+    }
     root.children.clear();
     root
 }
@@ -3073,10 +3144,11 @@ mod tests {
                     .find(|action| action.id == id)
                     .unwrap();
                 assert_eq!(action.params()[0].name.as_ref(), "path");
-                assert!(matches!(
+                assert_eq!(
                     action.contract.execution,
-                    ExecutionMode::Background { .. }
-                ));
+                    ExecutionMode::Background { cancellable: true },
+                    "{id} must stay cancellable so a stuck job cannot hold the one interchange slot"
+                );
                 assert_eq!(action.contract.result, ResultSpec::Job);
                 assert!(action.contract.validate_declaration().is_empty());
             }

@@ -214,24 +214,44 @@ enum InterchangeResult {
 /// export never reaches the selected destination.
 enum PreparedResourceIo {
     Import {
-        generation: u64,
         format: Interchange,
         path: PathBuf,
         tables: Vec<crate::xlsx::SheetTable>,
     },
     Export {
-        generation: u64,
         format: Interchange,
         destination: PathBuf,
         temporary: PathBuf,
     },
 }
 
-impl PreparedResourceIo {
-    fn generation(&self) -> u64 {
-        match self {
-            Self::Import { generation, .. } | Self::Export { generation, .. } => *generation,
+/// The interchange worker's one reply. Sending, returning early or panicking
+/// all wake the owning host after the channel settles: the worker is the only
+/// source of progress for an accepted job, and an idle host has no frame that
+/// would otherwise notice its result. A reply nobody can receive any more
+/// (Sheets closed) removes its prepared export instead of leaking it.
+struct InterchangeReply {
+    tx: Option<SyncSender<InterchangeResult>>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl InterchangeReply {
+    fn send(mut self, result: InterchangeResult) {
+        let Some(tx) = self.tx.take() else { return };
+        if let Err(mpsc::SendError(InterchangeResult::Export {
+            result: Ok(temporary),
+            ..
+        })) = tx.send(result)
+        {
+            SheetsApp::discard_export_temp(&temporary);
         }
+    }
+}
+
+impl Drop for InterchangeReply {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        self.wake.wake();
     }
 }
 
@@ -931,6 +951,9 @@ pub struct SheetsApp {
     /// One bounded file worker result slot.  A fresh channel is made only
     /// after the previous job settles, so accepted jobs cannot be displaced.
     interchange_rx: Option<Receiver<InterchangeResult>>,
+    /// Result channels of cancelled jobs whose workers may still be running.
+    /// They no longer hold the slot; each is reaped once its worker replies.
+    orphaned_interchange: Vec<Receiver<InterchangeResult>>,
     interchange_generation: u64,
     active_interchange_generation: Option<u64>,
     resource_invocation: Option<tilo_actions::InvocationId>,
@@ -940,9 +963,9 @@ pub struct SheetsApp {
     /// Set by a non-cancelled lifecycle poll; the following mutable `sync`
     /// receipt may then publish/import the prepared result.
     resource_confirmation: Option<tilo_actions::InvocationId>,
-    /// A cancellation can arrive while the bounded worker is still parsing or
-    /// encoding. Its eventual result is discarded by this exact generation.
-    cancelled_interchange_generation: Option<u64>,
+    /// The host that accepted the current job; woken whenever that job can
+    /// advance only through another `sync`.
+    interchange_wake: ui::wake::WakeHandle,
     pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
@@ -1061,6 +1084,7 @@ impl SheetsApp {
             cache: None,
             io: None,
             interchange_rx: None,
+            orphaned_interchange: Vec::new(),
             interchange_generation: 0,
             active_interchange_generation: None,
             resource_invocation: None,
@@ -1068,7 +1092,7 @@ impl SheetsApp {
             pending_resource_io: None,
             prepared_resource_io: None,
             resource_confirmation: None,
-            cancelled_interchange_generation: None,
+            interchange_wake: ui::wake::WakeHandle::detached(),
             pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
@@ -2874,9 +2898,15 @@ impl SheetsApp {
         };
         let (tx, rx): (SyncSender<InterchangeResult>, Receiver<InterchangeResult>) =
             mpsc::sync_channel(1);
+        self.interchange_wake = ui::wake::WakeHandle::new();
+        let reply = InterchangeReply {
+            tx: Some(tx),
+            wake: self.interchange_wake.clone(),
+        };
         std::thread::Builder::new()
             .name("sheets-interchange".into())
             .spawn(move || {
+                let reply = reply;
                 let result = match operation {
                     PendingIo::Import(format) => InterchangeResult::Import {
                         generation,
@@ -2893,7 +2923,7 @@ impl SheetsApp {
                         ),
                     },
                 };
-                let _ = tx.send(result);
+                reply.send(result);
             })
             .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
         self.interchange_rx = Some(rx);
@@ -3170,13 +3200,6 @@ impl SheetsApp {
         let Some(prepared) = self.prepared_resource_io.take() else {
             return;
         };
-        if self.cancelled_interchange_generation == Some(prepared.generation()) {
-            self.cancelled_interchange_generation = None;
-            if let PreparedResourceIo::Export { temporary, .. } = prepared {
-                Self::discard_export_temp(&temporary);
-            }
-            return;
-        }
         let result = match prepared {
             PreparedResourceIo::Import {
                 format,
@@ -3203,6 +3226,21 @@ impl SheetsApp {
             self.status = format!("Spreadsheet operation failed: {error}");
         }
         self.finish_resource_io(result);
+    }
+
+    /// Reap replies of cancelled jobs; their prepared exports never publish.
+    fn drain_orphaned_interchange(&mut self) {
+        self.orphaned_interchange.retain(|rx| match rx.try_recv() {
+            Ok(InterchangeResult::Export {
+                result: Ok(temporary),
+                ..
+            }) => {
+                Self::discard_export_temp(&temporary);
+                false
+            }
+            Ok(_) | Err(TryRecvError::Disconnected) => false,
+            Err(TryRecvError::Empty) => true,
+        });
     }
 
     fn discard_prepared_resource_io(&mut self) {
@@ -3252,27 +3290,15 @@ impl SheetsApp {
             return;
         }
         self.active_interchange_generation = None;
-        if self.cancelled_interchange_generation == Some(generation) {
-            self.cancelled_interchange_generation = None;
-            if let InterchangeResult::Export {
-                result: Ok(temporary),
-                ..
-            } = result
-            {
-                Self::discard_export_temp(&temporary);
-            }
-            return;
-        }
         if self.resource_invocation.is_some() {
             match result {
                 InterchangeResult::Import {
-                    generation,
                     format,
                     path,
                     result: Ok(tables),
+                    ..
                 } => {
                     self.prepared_resource_io = Some(PreparedResourceIo::Import {
-                        generation,
                         format,
                         path,
                         tables,
@@ -3280,13 +3306,12 @@ impl SheetsApp {
                     self.status = "Spreadsheet import is ready to apply".into();
                 }
                 InterchangeResult::Export {
-                    generation,
                     format,
                     destination,
                     result: Ok(temporary),
+                    ..
                 } => {
                     self.prepared_resource_io = Some(PreparedResourceIo::Export {
-                        generation,
                         format,
                         destination,
                         temporary,
@@ -3368,8 +3393,10 @@ impl SheetsApp {
 
     /// Cancel the one accepted resource I/O operation. Workers are not
     /// forcibly killed (that is neither portable nor safe around codecs), but
-    /// their exact generation becomes inert and any prepared export is removed
-    /// before it can publish.
+    /// they release the in-progress slot at once, so a worker stuck on a slow
+    /// mount cannot refuse every retry; its eventual reply is reaped without
+    /// being applied, and any export already prepared is removed before it can
+    /// publish.
     fn cancel_resource_io(&mut self, invocation: tilo_actions::InvocationId) -> bool {
         let pending_matches = self
             .pending_resource_io
@@ -3384,9 +3411,10 @@ impl SheetsApp {
         self.io = None;
         self.resource_confirmation = None;
         self.discard_prepared_resource_io();
-        if let Some(generation) = self.active_interchange_generation {
-            self.cancelled_interchange_generation = Some(generation);
+        if let Some(rx) = self.interchange_rx.take() {
+            self.orphaned_interchange.push(rx);
         }
+        self.active_interchange_generation = None;
         self.resource_invocation = None;
         self.status = "Spreadsheet operation cancelled".into();
         self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
@@ -5730,6 +5758,11 @@ impl Widget for SheetsApp {
         } else {
             if self.resource_invocation == Some(invocation) {
                 self.resource_confirmation = Some(invocation);
+                // Settling needs a mutable `sync`, which an idle host runs
+                // only when woken; polling alone schedules no frame.
+                if self.prepared_resource_io.is_some() {
+                    self.interchange_wake.wake();
+                }
             }
             None
         }
@@ -5806,6 +5839,7 @@ impl Widget for SheetsApp {
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.
         self.drain_io(state);
+        self.drain_orphaned_interchange();
         self.drain_interchange_worker(state);
         self.settle_prepared_resource_io(state);
         self.drain_persistence_worker(state);
@@ -8542,7 +8576,6 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_invocation = Some(invocation);
             app.prepared_resource_io = Some(PreparedResourceIo::Export {
-                generation: 42,
                 format: Interchange::Csv,
                 destination: destination.clone(),
                 temporary: temporary.clone(),
@@ -8617,7 +8650,6 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_invocation = Some(invocation);
             app.prepared_resource_io = Some(PreparedResourceIo::Import {
-                generation: 46,
                 format: Interchange::Csv,
                 path: PathBuf::from("prepared.csv"),
                 tables: vec![crate::xlsx::SheetTable {
@@ -8652,6 +8684,145 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Succeeded { .. })
             ));
         }
+    }
+
+    /// Admit an agent's direct-path `.xlsx` export and run the one model pass
+    /// admission schedules.
+    fn admit_direct_export(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        destination: &std::path::Path,
+    ) -> tilo_actions::InvocationId {
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&actions::SheetsOperation::ExportXlsx {
+            path: Some(destination.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &payload,
+            ),
+            doc,
+            &automerge::ROOT,
+        );
+        assert!(
+            matches!(
+                started,
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            ),
+            "{started:?}"
+        );
+        app.sync(doc, &automerge::ROOT);
+        invocation
+    }
+
+    /// Drive `invocation` the way an idle native or hosted runner does: poll
+    /// on every pass, but `sync` only when a wake arrives. Nothing else makes
+    /// frames, so a job whose progress wakes nobody stays Accepted forever.
+    fn settle_on_idle_host(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        wakes: &Receiver<ui::wake::WakeEvent>,
+        invocation: tilo_actions::InvocationId,
+    ) -> tilo_actions::InvocationUpdate {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Some(update) =
+                Widget::poll_resource_operation(app, invocation, false, doc, &automerge::ROOT)
+            {
+                return update;
+            }
+            let within = deadline.saturating_duration_since(Instant::now());
+            wakes.recv_timeout(within).unwrap_or_else(|_| {
+                panic!(
+                    "the job never woke its idle host (status: {}); an agent would see it Accepted forever",
+                    app.status
+                )
+            });
+            app.sync(doc, &automerge::ROOT);
+        }
+    }
+
+    /// An agent's direct-path export on an idle host reaches a terminal state
+    /// through the app's own wakes, and cancelling one releases the single
+    /// interchange slot immediately instead of refusing every retry.
+    #[test]
+    fn direct_path_export_settles_and_cancels_on_an_idle_host() {
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, wakes) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("tilo-sheets-idle-export-{}", Uuid::new_v4()));
+        let destination = directory.join("out").join("in-stock.xlsx");
+        let (mut app, mut doc) = seeded_app();
+
+        // Case `export_reaches_a_terminal_state_without_foreign_frames`.
+        {
+            let invocation = admit_direct_export(&mut app, &mut doc, &destination);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(!crate::xlsx::read_xlsx(&destination).unwrap().is_empty());
+        }
+
+        // Case `cancelling_an_in_flight_export_releases_the_slot`.
+        {
+            std::fs::remove_file(&destination).unwrap();
+            let cancelled_job = admit_direct_export(&mut app, &mut doc, &destination);
+            assert!(app.interchange_rx.is_some(), "the export worker is running");
+            let cancelled = Widget::poll_resource_operation(
+                &mut app,
+                cancelled_job,
+                true,
+                &doc,
+                &automerge::ROOT,
+            );
+            assert!(
+                matches!(
+                    cancelled,
+                    Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+                ),
+                "{cancelled:?}"
+            );
+            assert!(app.interchange_rx.is_none());
+            assert!(app.active_interchange_generation.is_none());
+
+            let retry = admit_direct_export(&mut app, &mut doc, &destination);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, retry);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(destination.exists());
+
+            // The cancelled worker's prepared file is reaped, never published.
+            let deadline = tilo_test_env::hang_deadline();
+            while !app.orphaned_interchange.is_empty() {
+                let within = deadline.saturating_duration_since(Instant::now());
+                wakes
+                    .recv_timeout(within)
+                    .expect("the cancelled worker wakes its host when it exits");
+                app.sync(&mut doc, &automerge::ROOT);
+            }
+            let leftovers: Vec<_> = std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name != "in-stock.xlsx")
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+        let _ = std::fs::remove_dir_all(&directory);
     }
 
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
