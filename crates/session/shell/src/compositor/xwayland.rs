@@ -417,10 +417,10 @@ impl WorkspaceDisplay {
             {
                 match publish.worker.join() {
                     Ok(Ok(dpi)) => {
-                        tracing::info!(display = self.number, dpi, "Xwayland: published Xft.dpi")
+                        tracing::info!(display = self.number, dpi, "Xwayland: published Xft.dpi");
                     }
                     Ok(Err(error)) => {
-                        tracing::warn!(%error, display = self.number, "Xwayland: could not publish Xft.dpi")
+                        tracing::warn!(%error, display = self.number, "Xwayland: could not publish Xft.dpi");
                     }
                     Err(_) => tracing::warn!(
                         display = self.number,
