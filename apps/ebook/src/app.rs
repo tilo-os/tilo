@@ -5880,7 +5880,18 @@ impl ui::resources::PublishesResources for BooksApp {
                 .map(|ctx| crate::actions::live_reading_resources(&ctx))
                 .unwrap_or_default();
         }
-        self.publish_resources(doc)
+        let state =
+            <crate::resource::Ebook as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Ebook>(
+            crate::resource::LIBRARY_RESOURCE_ID,
+            "Books library",
+            &state,
+        );
+        if let Some(ctx) = self.current_book_resource_context() {
+            root.children
+                .extend(crate::actions::live_reading_resources(&ctx));
+        }
+        vec![root]
     }
     fn action_directory_resource_page(
         &self,
