@@ -3238,8 +3238,16 @@ impl ContainersApp {
     pub(crate) fn apply_hit(&mut self, doc: &mut AutoCommit, hit: Hit) {
         match hit {
             Hit::Section(s) => {
-                ViewDoc::set_section(doc, s);
-                ViewDoc::set_selected(doc, None);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSection {
+                        section: s.as_str().to_owned(),
+                    },
+                );
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
                 self.list_scroll = 0.0;
             }
             Hit::ToggleSidebar => {
@@ -3252,7 +3260,12 @@ impl ContainersApp {
             }
             Hit::SelectContainer(id) => {
                 let already = ViewDoc::selected(doc).as_deref() == Some(id.as_str());
-                ViewDoc::set_selected(doc, if already { None } else { Some(&id) });
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected {
+                        id: if already { None } else { Some(id) },
+                    },
+                );
                 self.detail_scroll = 0.0;
             }
             Hit::SelectImage(idx) => self.apply_hit_select_image(idx),
@@ -3289,11 +3302,19 @@ impl ContainersApp {
                 self.focus_create_field(CreateField::Name);
             }
             Hit::DetailTab(tab) => {
-                ViewDoc::set_tab(doc, tab);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetTab {
+                        tab: tab.as_str().to_owned(),
+                    },
+                );
                 self.detail_scroll = 0.0;
             }
             Hit::CloseDetail => {
-                ViewDoc::set_selected(doc, None);
+                self.commit_view(
+                    doc,
+                    &crate::resource::ContainersAction::SetSelected { id: None },
+                );
             }
             Hit::CreateField(field) => self.apply_hit_create_field(field),
             Hit::ComboToggle => {
