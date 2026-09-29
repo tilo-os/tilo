@@ -22,7 +22,7 @@ default = ["native", "broker-transport"]
 # warmup, and the `ui::native` backends. Without it the crate is the portable
 # toolkit — widgets, state, layout, rendering and the headless host — and a
 # host supplies its own `ui::host::HostServices`.
-native = ["tilo-host/native", "dep:accesskit_winit", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions"]
+native = ["tilo-host/native", "dep:accesskit_winit", "dep:objc2", "dep:objc2-foundation", "dep:objc2-app-kit", "dep:accesskit_android", "dep:tilo-content", "dep:jni", "dep:ndk-context", "syntax-definitions"]
 # two-face's grammars for the code editor's highlighting (about 0.9 MB of
 # data). Without it every language highlights as plain text; the browser
 # toolkit core leaves it out.
@@ -342,6 +342,27 @@ accesskit_android = { version = "0.8.0", optional = true, features = ["embedded-
 
 [target.'cfg(target_os = "macos")'.dependencies]
 wgpu-hal = { version = "29", default-features = false, features = ["metal", "tilo-presentation-feedback"], optional = true }
+# The menu bar and title-bar search field History and Search live in
+# (`host_chrome/macos.rs`). The generation arboard already brings in.
+objc2 = { version = "0.6", optional = true }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSObject", "NSProcessInfo", "NSString"], optional = true }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std",
+    "NSApplication",
+    "NSControl",
+    "NSEvent",
+    "NSMenu",
+    "NSMenuItem",
+    "NSResponder",
+    "NSSearchField",
+    "NSSearchToolbarItem",
+    "NSText",
+    "NSTextField",
+    "NSToolbar",
+    "NSToolbarItem",
+    "NSView",
+    "NSWindow",
+], optional = true }
 
 # Host services that need an OS: private files, TLS and the full tokio
 # runtime. The browser (wasm32) build supplies these through its host instead.
