@@ -2534,13 +2534,27 @@ thread_local! {
 }
 /// LIVE_V1: the local presence snapshot the overlay publishes and maps
 /// remote pointers with (focus record, window rectangles, editor anchors,
-/// window drag). `null` for a single-record mount.
+/// window drag). With the relay peer, a single-record mount reports its
+/// record and editor anchors only; otherwise it is `null`.
 #[wasm_bindgen]
 pub fn live_view_snapshot(id: u64) -> Result<String, JsValue> {
     MOUNTS.with_borrow(|mounts| {
         let m = mounts.get(&id).ok_or_else(|| error("unknown mount"))?;
         let Some(desktop) = &m.desktop else {
+            #[cfg(not(feature = "relay"))]
             return Ok("null".into());
+            #[cfg(feature = "relay")]
+            return Ok(m.record.as_ref().map_or_else(
+                || "null".into(),
+                |record| {
+                    crate::live_view::record_snapshot_json(
+                        &record.app,
+                        record.checkout.id.as_str(),
+                        m.frame.focus_presence_payload(),
+                    )
+                    .to_string()
+                },
+            ));
         };
         let selection = m.frame.focus_presence_payload();
         let layout = desktop.live.borrow();

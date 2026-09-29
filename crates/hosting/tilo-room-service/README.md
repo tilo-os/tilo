@@ -33,7 +33,11 @@ which the join page opens full screen. The fragment never reaches a server.
 `useRegistry()` (the relay core and the apps from `registry.json`'s signed
 registry), `createRoom`, `joinRoom`, `recordOf`, `createInvitation`,
 `watchMembers`. `web/page.html` does with a room what the site's page does
-(for review); `web/join.html` is the phone's page.
+(for review); `web/join.html` is the phone's page. The peer `joinRoom`
+returns joins the room's live plane too: its mounts publish this device's
+caret, selection and pointer and draw the other members' with their labels,
+and `peer.live` (`state`, `memberCount`, `remoteState()`, `onMember`, …)
+exposes it to the page.
 
 ## Configuration (environment)
 
@@ -54,8 +58,9 @@ registry), `createRoom`, `joinRoom`, `recordOf`, `createInvitation`,
 | `TILO_ROOMS_MAX_GUESTS` | `4` | guest tickets per room besides the page's |
 | `TILO_ROOMS_PORT_BASE` | `9700` | ports of room relays (up to 64 from here) |
 | `TILO_ROOMS_DIRECT_PORTS` | `0` | `1`: each room serves browsers on its own TCP and UDP port |
+| `TILO_ROOMS_LOCAL` | `0` | `1`: local review in a plain browser (see below) |
 
-Two ways to reach a room:
+Three ways to reach a room:
 
 - **Direct ports** (`TILO_ROOMS_DIRECT_PORTS=1`): room `<id>` is
   `https://<id>.<domain>:<port>`, served by its relay on `0.0.0.0:<port>`
@@ -67,6 +72,19 @@ Two ways to reach a room:
   and relays the bytes over a second TLS connection to the room's relay,
   which presents a certificate the service generated at start and pins. The
   ingress must pass `*.<domain>` through by SNI. It carries TCP only.
+- **Local** (`TILO_ROOMS_LOCAL=1`, development only): room `<id>` is
+  `http://localhost:<port + 64>`, served by its relay's plain listener on
+  `127.0.0.1` (`tilo-relay room --web-plain`). A page on
+  `http://localhost:4321` needs no certificate exception, host mapping or
+  browser flag. The relay's TLS listener stays on `127.0.0.1:<port>` with
+  its development certificate: pages try WebTransport there (pinned by
+  hash) and otherwise carry the live plane over the HTTPS stream fallback on
+  the plain origin, so cursors and carets still arrive, a little later.
+
+In every mode the live plane (pointers, carets, selections, typing
+previews) prefers WebTransport and falls back to the HTTPS stream routes
+when UDP or WebTransport is unavailable; documents sync over HTTPS either
+way.
 
 ## Build and run
 
@@ -78,5 +96,7 @@ Locally, with a registry that publishes the relay core
 (`tools/web/local-registry.sh --relay-core DIR BUILD_DIR`), serve the page
 modules of `build-web-dev.sh`'s output plus `web/*` and the registry's
 `registry.json` as `TILO_ROOMS_ASSETS`, and run `target/release/tilo-room-service`
-with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay`. `…/app/page.html`
-then creates a room; its phone link opens `join.html`.
+with `TILO_ROOMS_RELAY_BIN=target/release/tilo-relay` and
+`TILO_ROOMS_LOCAL=1`. `http://localhost:8790/app/page.html` then creates a
+room in any browser; its phone link opens `join.html`. The site's dev server
+uses it with `PUBLIC_TILO_ROOMS_URL=http://localhost:8790`.
