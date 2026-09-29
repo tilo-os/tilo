@@ -42,7 +42,6 @@ thiserror.workspace = true
 tar.workspace = true
 toml.workspace = true
 walkdir.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 tempfile.workspace = true
@@ -53,3 +52,7 @@ path = "tests/it.rs"
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

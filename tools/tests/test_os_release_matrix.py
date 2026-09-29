@@ -228,7 +228,7 @@ class OsDevLaneTests(unittest.TestCase):
             step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
             self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
             self.assertIn("-f os/Containerfile.dev", step)
-            self.assertIn("type=gha,scope=tilo-vm-dev-$ARCH", step)
+            self.assertNotIn("--cache-to", step)
             self.assertIn("--secret id=actions_cache_url,env=ACTIONS_CACHE_URL", step)
             self.assertIn("push=true", step)
             self.assertIn("PUSHED_DIGEST=", step)
@@ -240,9 +240,26 @@ class OsDevLaneTests(unittest.TestCase):
     def test_dev_images_carry_the_apps_of_their_commit(self):
         workflow = WORKFLOW.read_text()
         step = workflow.split("      - name: Materialize the pinned app collection\n", 1)[1]
-        self.assertTrue(step.startswith("        if: github.event_name != 'workflow_call'\n"))
+        step = step.split("\n      - name:", 1)[0]
+        self.assertNotIn("        if:", step)
+        # A dev build takes the published collection only when its source has
+        # this commit's app inputs, as Release / apps defines them.
+        self.assertIn('git diff --quiet "$COLLECTION_SOURCE" "$GITHUB_SHA" -- "${inputs[@]}"', step)
+        self.assertIn(".forgejo/workflows/release-apps.yml", step)
+        self.assertIn("index.json | jq -r '.source // empty'", step)
+        self.assertLess(step.index("[[ $source == \"$COLLECTION_SOURCE\" ]]"),
+                        step.index("echo 'TILO_PREBUILT_APPS=1'"))
         self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
                         workflow.index("      - name: Materialize the pinned app collection\n"))
+
+    def test_dev_builds_keep_a_cacheable_epoch(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Compute SOURCE_DATE_EPOCH (HEAD commit time)\n", 1)[1]
+        step = step.split("\n      - name:", 1)[0]
+        self.assertIn("DEV_BUILD: ${{ github.event_name == 'workflow_call' }}", step)
+        self.assertIn('for ref in "$BASE_REF" "$RPMS_REF" "$KERNEL_RPMS_REF"; do', step)
+        # image.created keeps the commit time either way.
+        self.assertLess(step.index("SOURCE_DATE_ISO="), step.index("if [[ $DEV_BUILD == true ]]"))
 
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()

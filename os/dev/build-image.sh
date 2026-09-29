@@ -209,12 +209,18 @@ fi
 _tilo_rpms_ref_override="${RPMS_REF:-}"
 if [ -n "$_tilo_rpms_ref_override" ]; then
   RPMS_REF="$_tilo_rpms_ref_override"
+elif [ "${TILO_SKIP_BUILD:-0}" = 1 ]; then
+  # Imaging an image that already exists installs nothing from a snapshot, and
+  # the one it was built from (possibly local to another machine) need not
+  # resolve here.
+  RPMS_REF=""
 elif RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"; then
   :
 else
   die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 fi
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+[ -n "${RPMS_REF:-}" ] || [ "${TILO_SKIP_BUILD:-0}" = 1 ] \
+  || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
@@ -388,6 +394,18 @@ _tilo_jobs_args=()
 [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
 # The release profile's debug info (os/Containerfile TILO_RUST_DEBUGINFO) when set.
 [ -z "${TILO_RUST_DEBUGINFO:-}" ] || _tilo_jobs_args+=(--build-arg "TILO_RUST_DEBUGINFO=$TILO_RUST_DEBUGINFO")
+# CI's compiler cache, read-only: TILO_IMAGE_SCCACHE_URL is its Actions cache
+# endpoint (for tilo/tilo: https://code.tilo.so/ci-cache/r/tilo/tilo/) and
+# TILO_IMAGE_SCCACHE_TOKEN_FILE a file holding a Forgejo token that can read the
+# repository. Both reach the Rust compile as build secrets, never as layers.
+if [ -n "${TILO_IMAGE_SCCACHE_URL:-}" ]; then
+  [ -r "${TILO_IMAGE_SCCACHE_TOKEN_FILE:-}" ] \
+    || die "TILO_IMAGE_SCCACHE_URL needs TILO_IMAGE_SCCACHE_TOKEN_FILE, a readable file with a Forgejo token"
+  export TILO_IMAGE_SCCACHE_URL
+  _tilo_jobs_args+=(--secret "id=actions_cache_url,env=TILO_IMAGE_SCCACHE_URL"
+    --secret "id=actions_runtime_token,src=$TILO_IMAGE_SCCACHE_TOKEN_FILE")
+  msg "compiler cache: $TILO_IMAGE_SCCACHE_URL"
+fi
 # Retained development payloads have their own provenance, including an unknown
 # original compilation epoch. Never present them as a current producer build.
 if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
@@ -492,7 +510,20 @@ build_image() {
   [ -z "$image_tag" ] || tag_args=(-t "$image_tag")
   [ "$#" -eq 0 ] || shift
   [ "$#" -eq 0 ] || shift
-  local layer_epoch="$SOURCE_DATE_EPOCH"
+  local layer_epoch="$SOURCE_DATE_EPOCH" build_epoch="$SOURCE_DATE_EPOCH"
+  # TILO_LAYER_EPOCH=base (local builds, os/dev/local-inputs.sh): layers and the
+  # build's SOURCE_DATE_EPOCH take the base image's creation time instead of the
+  # commit's. podman keys every cached layer on its epoch, so the commit time
+  # rebuilt the whole image after every commit; the base's time changes only
+  # with the base. The commit time stays in the org.tilo.source-date-epoch label.
+  case "${TILO_LAYER_EPOCH:-commit}" in
+    commit) ;;
+    base)
+      [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] || die "a publication dates its layers by its commit (TILO_LAYER_EPOCH=commit)"
+      layer_epoch="$(tilo_image_epoch "$BASE_REF")" || die "could not read the creation time of $BASE_REF"
+      build_epoch="$layer_epoch" ;;
+    *) die "TILO_LAYER_EPOCH must be commit or base, not '${TILO_LAYER_EPOCH}'" ;;
+  esac
   if [ -n "${TILO_RAW_LAYER_EPOCH:-}" ]; then
     # Normalize only raw assembly layers; source inputs and signing keep their epoch.
     [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ] &&
@@ -516,7 +547,9 @@ build_image() {
     "${_tilo_trust_args[@]}" \
     --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
     --label "org.tilo.rpms.trust=$TILO_RPMS_TRUST" \
-    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    --label "org.tilo.rpms.ref=$RPMS_REF" \
+    --label "org.tilo.source-date-epoch=$SOURCE_DATE_EPOCH" \
+    --build-arg "SOURCE_DATE_EPOCH=$build_epoch" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \

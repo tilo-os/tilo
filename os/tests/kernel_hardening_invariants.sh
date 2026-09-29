@@ -267,6 +267,10 @@ for required in \
     || bad "required kernel setting missing: $required"
 done
 
+# Without kernel NFS the base image's NFS userspace can only fail at boot.
+grep -Fq 'RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils' "$image_recipe" \
+  && grep -Fq '        nfs-common-utils rpcbind \' "$image_recipe" \
+  || bad 'the image keeps NFS userspace the kernel cannot serve (rpc_pipefs fails at boot)'
 grep -Fq '"preempt=full"' "$repo/os/usr/lib/bootc/kargs.d/03-boot.toml" \
   || bad 'signed UKI command line does not pin full dynamic preemption'
 [ "$fail" -ne 0 ] || ok 'required kernel self-protection options are pinned'
@@ -630,7 +634,7 @@ grep -Fq 'exit 1' "$audit" \
 for required in \
   "CONFIG_BPF_LSM=y" \
   "CONFIG_DEBUG_INFO_BTF=y" \
-  "*:bpf:*)"; do
+  "*,bpf,*)"; do
   grep -Fq "$required" "$audit" \
     || bad "runtime audit does not verify the systemd BPF-LSM prerequisite: $required"
 done
@@ -665,7 +669,7 @@ for required in \
   'NoNewPrivileges=yes' \
   'ProtectSystem=strict' \
   'ProtectHome=yes' \
-  'PrivateNetwork=yes' \
+  'RestrictAddressFamilies=AF_UNIX' \
   'PrivateTmp=yes' \
   'TimeoutStartSec=2min' \
   'DevicePolicy=closed' \
@@ -678,6 +682,11 @@ for required in \
   grep -Fqx "$required" "$audit_unit" \
     || bad "security audit sandbox is missing: $required"
 done
+# The audit inspects the host: a private network namespace has its own sysctl
+# defaults, and ProtectKernelModules= hides the running kernel's config.
+if grep -Eqx 'PrivateNetwork=yes|ProtectKernelModules=yes' "$audit_unit"; then
+  bad 'security audit sandbox hides the host state it verifies'
+fi
 if grep -Eq 'CAP_SYS_PTRACE|CAP_SYSLOG|/proc/\$fspid/maps' "$audit_unit" "$audit"; then
   bad 'read-only security audit retains process-inspection or kernel-log capabilities'
 fi

@@ -828,14 +828,14 @@ fn open_session_services(
             }
         }
         Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
+            tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
         }
     }
     (mls_authority, channel_encryption)
 }
 
 /// Start this device's channel encryption service over the session's
-/// Secret Service vault and certified device key. Without either, channels
+/// secret-store vault and certified device key. Without either, channels
 /// stay closed to this device rather than falling back to plaintext.
 #[cfg(not(test))]
 fn open_channel_encryption(

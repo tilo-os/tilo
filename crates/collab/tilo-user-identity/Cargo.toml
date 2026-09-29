@@ -2,8 +2,11 @@
 name = "tilo-user-identity"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The human-facing identity layer for Tilo."
 
 [package.metadata.cargo-machete]
 # This feature-only edge selects JS entropy for transitive WASM cryptography.
@@ -42,7 +45,7 @@ path = "src/bin/tilo-device-key-init.rs"
 # may change without a version bump.
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
+advisory-lock = { version = "0.1.0", path = "../../system/advisory-lock" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 
 # Ed25519 signing/verification. Same version + features used across
@@ -95,10 +98,10 @@ data-encoding.workspace = true
 data-encoding-macro.workspace = true
 
 [target.'cfg(windows)'.dependencies]
-private-fs = { path = "../../system/private-fs" }
+private-fs = { version = "0.1.0", path = "../../system/private-fs" }
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-atomic-file = { path = "../../system/atomic-file" }
+atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
 

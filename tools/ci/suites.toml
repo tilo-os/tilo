@@ -60,6 +60,9 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
+  "os/tests/test_local_image_epoch.py",
+  "os/tests/security_audit_kconfig.sh",
+  "os/tests/boot_chain_source.sh",
   "os/tests/installer_target_artifacts.py",
   "os/tests/installer_target_modes.py",
   "os/tests/internal_bundle_test.py",
@@ -169,7 +172,7 @@ name = "pipewire-echo-cancel"
 # name the session uses for it, and the image COPY that installs it.
 inputs = [
   "os/usr/share/pipewire/", "os/Containerfile",
-  "crates/media/core/src/audio.rs", "crates/media/core/src/audio_runtime.rs",
+  "crates/platform/tilo-media/src/audio.rs", "crates/platform/tilo-media/src/audio_runtime.rs",
 ]
 suites = ["os/tests/test_pipewire_echo_cancel.py"]
 
@@ -341,6 +344,24 @@ inputs = ["scripts/ux-bench/"]
 suites = [
   "scripts/ux-bench/test_suite.py",
   "scripts/ux-bench/usability_test.py",
+]
+
+[[group]]
+name = "platform-web"
+# The portal crates' browser modules behind their wasm32 backends.
+inputs = [
+  "crates/platform/tilo-clipboard/web/",
+  "crates/platform/tilo-dialogs/web/",
+  "crates/platform/tilo-location/web/",
+  "crates/platform/tilo-notify/web/",
+  "crates/platform/tilo-secrets/web/",
+]
+suites = [
+  "crates/platform/tilo-clipboard/web/clipboard.test.mjs",
+  "crates/platform/tilo-dialogs/web/dialogs.test.mjs",
+  "crates/platform/tilo-location/web/location.test.mjs",
+  "crates/platform/tilo-notify/web/notify.test.mjs",
+  "crates/platform/tilo-secrets/web/secrets.test.mjs",
 ]
 
 [[group]]
@@ -561,7 +582,7 @@ readers = ["crates/sdk/font-catalog/src/lib.rs"]
 [[cargo]]
 package = "pdf-viewer"
 # The reader's tests open the engine's typeset fixtures.
-inputs = ["crates/doc/pdf/tests/fixtures/"]
+inputs = ["crates/platform/tilo-pdf/tests/fixtures/"]
 readers = [
   "apps/pdf-viewer/src/app.rs", "apps/pdf-viewer/src/app/adopt_tests.rs",
   "apps/pdf-viewer/src/app/links_tests.rs", "apps/pdf-viewer/src/app/records_tests.rs",

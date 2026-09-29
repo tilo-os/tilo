@@ -57,7 +57,7 @@ pub use task::{
     WorkspaceEffectReceipt, WorkspaceTask, WorkspaceTaskAuditEvent, WorkspaceTaskResource,
     WorkspaceTaskRoute, WorkspaceTaskStatus,
 };
-pub use topology::{DropTarget, TabMove};
+pub use topology::{DropTarget, GroupShape, RemovedTab, TabMove};
 pub use tree::{DesktopTree, STATE_SCHEMA_VERSION};
 pub use width::WindowWidth;
 pub use workspace::{

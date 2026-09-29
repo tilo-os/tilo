@@ -10,7 +10,7 @@ description = "iCloud Drive as a best-effort cloud-source provider over Apple's 
 mime_guess.workspace = true
 chrono = { workspace = true, features = ["std"] }
 cloud-source = { path = "../cloud-source" }
-tilo-net = { path = "../tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 reqwest = { workspace = true, features = ["blocking"] }
 url = { workspace = true, features = ["serde"] }
 serde.workspace = true
@@ -27,7 +27,6 @@ uuid.workspace = true
 unicode-normalization = "0.1.25"
 # The in-memory iCloud endpoints behind `fake-server`.
 test-http = { path = "../../dev/test-http", optional = true }
-workspace-hack = { version = "0.1" }
 
 [features]
 # `cloud_source_icloud::fake::FakeICloud`: Apple's sign-in, setup, drivews,
@@ -43,3 +42,7 @@ cloud-source-icloud = { path = ".", features = ["fake-server"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
