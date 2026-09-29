@@ -52,8 +52,20 @@ POLICY = {
         "install": [r"EFI/Linux/tilo-repair\.efi", r"EFI/tilo/repair\.source"],
         "remove": [r"EFI/Linux/tilo-repair\.efi", r"loader/entries/tilo-repair\.conf",
                    r"EFI/tilo/repair\.efi"],
+    },    # Signing replaces the managed boot artefacts with signed copies, and
+    # installs nothing else (tilo-secureboot's artefacts()).
+    "secureboot-sign": {
+        "install": [r"EFI/systemd/systemd-boot(x64|aa64|ia32)\.efi",
+                    r"EFI/BOOT/BOOT(X64|AA64)\.EFI",
+                    r"EFI/Linux/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi",
+                    r"EFI/Linux/bootc/[A-Za-z0-9][A-Za-z0-9._+-]*\.efi"],
     },
 }
+
+
+# Callers whose installs may only replace a file that is already there: a
+# signer re-signs artefacts and must never add a boot menu entry.
+REPLACE_ONLY = {"secureboot-sign"}
 
 
 class Refused(Exception):
@@ -64,14 +76,20 @@ def log(msg):
     print(f"tilo-esp-write: {msg}", flush=True)
 
 
-def esp_root():
+def esp_root(caller):
+    """The directory the caller's paths are relative to, found as the caller
+    finds it (tilo-deployment's and tilo-secureboot's esp_path)."""
     forced = os.environ.get("TILO_ESP")
     if forced:
         return forced
-    for candidate in ("/boot", "/boot/efi"):
-        if os.path.isdir(os.path.join(candidate, "loader/entries")):
-            return candidate
-    raise Refused("no systemd-boot ESP at /boot or /boot/efi")
+    if caller == "boot-entries":
+        candidates = [("/boot", "loader/entries"), ("/boot/efi", "loader/entries")]
+    else:
+        candidates = [("/boot/efi", "EFI"), ("/boot", "EFI")]
+    for root, marker in candidates:
+        if os.path.isdir(os.path.join(root, marker)):
+            return root
+    raise Refused("no ESP at /boot or /boot/efi")
 
 
 def allowed(caller, op, *paths):
@@ -174,7 +192,8 @@ def apply(caller, op, root_fd, plan_dir_fd):
             for name in os.listdir(dfd):
                 if name.startswith(TMP_PREFIX) and refuse_symlink(dfd, name):
                     os.unlink(name, dir_fd=dfd)
-            refuse_symlink(dfd, dst[-1])
+            if not refuse_symlink(dfd, dst[-1]) and caller in REPLACE_ONLY:
+                raise Refused(f"{caller} may only replace {op['dst']}, which does not exist")
             out = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644, dir_fd=dfd)
             try:
                 while chunk := os.read(sfd, 1 << 20):
@@ -238,7 +257,7 @@ def main(argv):
             ops = json.load(f).get("ops")
         if not isinstance(ops, list):
             raise Refused("plan.json has no operation list")
-        root = esp_root()
+        root = esp_root(caller)
         writable(root)
         root_fd = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
