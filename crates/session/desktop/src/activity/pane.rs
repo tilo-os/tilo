@@ -287,6 +287,16 @@ fn author_is_local(author: &ui::widget::history::HistoryAuthor, local: &str) -> 
         || author.identity_short == ui::history_source::short_id(local)
 }
 
+/// The unread rows someone else wrote. Catch up answers "what did others
+/// do while I was away"; replaying the reader's own writes, including the
+/// desktop's first setup, answers nothing.
+fn others_work(rows: Vec<&WorkspaceHistoryEntry>, local: &str) -> Vec<HistoryEntry> {
+    rows.into_iter()
+        .map(WorkspaceHistoryEntry::timeline_entry)
+        .filter(|entry| !author_is_local(&entry.author, local))
+        .collect()
+}
+
 fn local_resume_snapshot(entries: &[HistoryEntry], local: &str) -> Option<ResumeSnapshot> {
     entries
         .iter()
@@ -2172,21 +2182,23 @@ impl RoomActivityPane {
             .get(&tree.active.raw())
             .cloned()
             .unwrap_or_default();
-        let rows = self
-            .history_index
-            .unseen_detached(&passive, tree, &self.detached_records)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect::<Vec<_>>();
+        let local = self.local_user();
+        let rows = others_work(
+            self.history_index
+                .unseen_detached(&passive, tree, &self.detached_records),
+            &local,
+        );
         self.passive_unread = rows.len();
         self.passive_digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
-        let rows = self
-            .history_index
-            .unseen_detached(&self.catchup_frontier, tree, &self.detached_records)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect::<Vec<_>>();
+        let rows = others_work(
+            self.history_index.unseen_detached(
+                &self.catchup_frontier,
+                tree,
+                &self.detached_records,
+            ),
+            &local,
+        );
         self.digest =
             ActivityDigest::from_entries_with_ranges(&rows, SystemTime::UNIX_EPOCH, 5, &self.named);
         if changed {
@@ -2303,10 +2315,8 @@ impl RoomActivityPane {
                 self.history_index.unseen(frontier, tree, records)
             }
         };
-        let passive_rows: Vec<HistoryEntry> = unseen(&passive_frontier, tree)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect();
+        let local_user = self.local_user();
+        let passive_rows = others_work(unseen(&passive_frontier, tree), &local_user);
         self.passive_unread = passive_rows.len();
         self.passive_digest = ActivityDigest::from_entries_with_ranges(
             &passive_rows,
@@ -2320,10 +2330,7 @@ impl RoomActivityPane {
             .cloned()
             .filter(|departure| away_recap_is_due(departure.departed_at_secs, self.now()))
             .map_or_else(ActivityDigest::default, |departure| {
-                let rows = unseen(&departure.frontier, tree)
-                    .into_iter()
-                    .map(WorkspaceHistoryEntry::timeline_entry)
-                    .collect::<Vec<_>>();
+                let rows = others_work(unseen(&departure.frontier, tree), &local_user);
                 ActivityDigest::from_entries_with_ranges(
                     &rows,
                     SystemTime::UNIX_EPOCH,
@@ -2331,10 +2338,7 @@ impl RoomActivityPane {
                     &self.named,
                 )
             });
-        let catchup_rows: Vec<HistoryEntry> = unseen(&self.catchup_frontier, tree)
-            .into_iter()
-            .map(WorkspaceHistoryEntry::timeline_entry)
-            .collect();
+        let catchup_rows = others_work(unseen(&self.catchup_frontier, tree), &local_user);
         self.digest = ActivityDigest::from_entries_with_ranges(
             &catchup_rows,
             SystemTime::UNIX_EPOCH,
@@ -2412,7 +2416,12 @@ impl RoomActivityPane {
 
     fn install_rows(&mut self, mut rows: Vec<HistoryEntry>) {
         let prior_selection = self.selected_ids();
-        let digest_rows = rows.clone();
+        let local = self.local_user();
+        let digest_rows: Vec<HistoryEntry> = rows
+            .iter()
+            .filter(|entry| !author_is_local(&entry.author, &local))
+            .cloned()
+            .collect();
         if let Some(entry) = self.external_entry.clone()
             && !rows.iter().any(|candidate| candidate.id == entry.id)
         {

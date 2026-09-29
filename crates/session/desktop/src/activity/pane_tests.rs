@@ -66,7 +66,21 @@ mod tests {
     /// A plausible half-hour: owner, one grant, one revoke, one rename,
     /// one window opened.
     fn busy_room() -> (WorkspaceTree, WorkspaceId, String) {
+        busy_room_written_by(None)
+    }
+
+    /// [`busy_room`], but the half-hour is a collaborator's: what Catch up
+    /// exists to show.
+    fn peers_busy_room() -> (WorkspaceTree, WorkspaceId, String) {
+        busy_room_written_by(Some(ActorId::from(b"ada-device".as_slice())))
+    }
+
+    fn busy_room_written_by(peer: Option<ActorId>) -> (WorkspaceTree, WorkspaceId, String) {
         let mut tree = WorkspaceTree::bootstrap_demo();
+        let reader = tree.doc.get_actor().clone();
+        if let Some(peer) = peer {
+            tree.doc.set_actor(peer);
+        }
         let user: String = "test-owner".to_string();
         tree.adopt_ownerless_workspaces(&user);
         let ws_id = tree.desktop.active;
@@ -98,6 +112,7 @@ mod tests {
             ws.name = "Design review".to_string();
         }
         tree.seed_doc_from_cache();
+        tree.doc.set_actor(reader);
         (tree, ws_id, user)
     }
 
@@ -348,7 +363,7 @@ mod tests {
 
     #[test]
     fn catch_up_is_default_and_closing_advances_only_private_frontier() {
-        let (mut tree, workspace, _) = busy_room();
+        let (mut tree, workspace, _) = peers_busy_room();
         let before = tree.doc.get_heads();
         let mut pane = native_pane();
         pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
@@ -412,6 +427,8 @@ mod tests {
         pane.refresh(&mut tree);
         pane.refresh_records(&mut tree, &records);
         if changed {
+            let reader = tree.doc.get_actor().clone();
+            tree.doc.set_actor(ActorId::from(b"ada-device".as_slice()));
             tree.desktop
                 .workspaces
                 .iter_mut()
@@ -419,6 +436,7 @@ mod tests {
                 .expect("home workspace")
                 .name = "Board review".to_string();
             tree.seed_doc_from_cache();
+            tree.doc.set_actor(reader);
         }
 
         tree.desktop.active = home;
@@ -1346,11 +1364,35 @@ mod tests {
 
     #[test]
     fn activity_header_digest_reduces_the_same_scoped_rows() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = peers_busy_room();
         let pane = pane_over(&mut tree);
-        assert_eq!(pane.digest().total_changes, pane.entries().len());
+        let others = pane
+            .entries()
+            .iter()
+            .filter(|entry| !author_is_local(&entry.author, &pane.local_user()))
+            .count();
+        assert!(others > 0, "the fixture is a collaborator's work");
+        assert_eq!(pane.digest().total_changes, others);
         assert!(!pane.digest().briefs.is_empty());
         assert!(pane.digest().headline().is_some());
+    }
+
+    #[test]
+    fn catch_up_leaves_out_the_readers_own_work() {
+        let (mut tree, workspace, _) = busy_room();
+        let mut pane = native_pane();
+        pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
+        pane.refresh(&mut tree);
+        assert_eq!(pane.view(), ActivityView::CatchUp);
+        assert!(
+            !pane.entries().is_empty(),
+            "the reader's own work stays in the timeline"
+        );
+        let (_, unread, _) = pane.glance_signal(workspace.raw());
+        assert_eq!(unread, 0, "your own setup and edits are not news");
+        pane.begin_view(workspace.raw());
+        assert_eq!(pane.digest().total_changes, 0);
+        assert!(pane.digest().briefs.is_empty());
     }
 
     #[test]
@@ -2057,7 +2099,7 @@ mod tests {
 
     #[test]
     fn catch_up_outcomes_expand_from_the_keyboard() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = peers_busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::CatchUp);
         pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
@@ -2142,7 +2184,7 @@ mod tests {
 
     #[test]
     fn accessibility_snapshot_matches_visible_focus_selection_and_disclosure() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = peers_busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::CatchUp);
         pane.layout(Rect::new(0.0, 0.0, 1600.0, 900.0));
@@ -2480,7 +2522,7 @@ mod tests {
 
     #[test]
     fn short_catch_up_has_a_more_outcomes_affordance() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = peers_busy_room();
         let mut pane = pane_over(&mut tree);
         pane.set_view(ActivityView::CatchUp);
         let first = pane
@@ -2544,11 +2586,21 @@ mod tests {
         reason = "an end-to-end test scenario that reads top to bottom"
     )]
     fn catch_up_redraws_work_session_boundaries_without_rewriting_history() {
-        let (mut tree, _, _) = busy_room();
+        let (mut tree, _, _) = peers_busy_room();
         let mut pane = pane_over(&mut tree);
-        let entries = pane.entries().to_vec();
+        let original_ids = pane
+            .entries()
+            .iter()
+            .map(|entry| entry.id)
+            .collect::<Vec<_>>();
+        let local = pane.local_user();
+        let entries = pane
+            .entries()
+            .iter()
+            .filter(|entry| !author_is_local(&entry.author, &local))
+            .cloned()
+            .collect::<Vec<_>>();
         assert!(entries.len() >= 4);
-        let original_ids = entries.iter().map(|entry| entry.id).collect::<Vec<_>>();
         assert!(pane.apply_name(
             &mut tree,
             &GroupNameRequest {
