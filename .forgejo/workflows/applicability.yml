@@ -16,6 +16,13 @@ on:
         description: The calling workflow's github.event_name
         required: true
         type: string
+      cargo-package:
+        description: >-
+          Workspace package the workflow builds; root Cargo.lock/Cargo.toml
+          changes count only when they change what it builds with
+        required: false
+        type: string
+        default: ""
     outputs:
       applicable:
         value: ${{ jobs.compare.outputs.applicable }}
@@ -48,4 +55,8 @@ jobs:
         run: python3 -I tools/ci/prepare_pr_history.py
       - name: Require an exact relevant PR diff
         id: compare
-        run: python3 -I tools/ci/workflow_applicability.py --workflow "${{ inputs.workflow }}" --event "${{ inputs.event }}"
+        env:
+          CARGO_PACKAGE: ${{ inputs.cargo-package }}
+        run: >-
+          python3 -I tools/ci/workflow_applicability.py --workflow "${{ inputs.workflow }}"
+          --event "${{ inputs.event }}" ${CARGO_PACKAGE:+--cargo-package "$CARGO_PACKAGE"}
