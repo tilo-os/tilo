@@ -3005,6 +3005,10 @@ jobs:
               '. + [{architecture:$arch,digest:$digest}]' <<< "$children")"
           done
           manifest="tilo-integration-index-$GITHUB_RUN_ID"
+          # The job container's own storage is on overlayfs, which Podman's
+          # overlay driver refuses; a manifest list needs no layers anyway.
+          store="$(mktemp -d /var/tmp/tilo-index-store.XXXXXX)"
+          podman() { command podman --storage-driver vfs --root "$store/root" --runroot "$store/run" "$@"; }
           podman manifest create "$manifest"
           for digest in $(jq -r '.[].digest' <<< "$children"); do
             podman manifest add "$manifest" "docker://$repository@$digest"
@@ -3038,7 +3042,8 @@ jobs:
             exit 1
           }
           if [[ -z "$existing" ]]; then
-            skopeo copy --all "docker://$image" "docker://$durable"
+            # Only the index: its children are already in the repository.
+            skopeo copy --multi-arch index-only --preserve-digests "docker://$image" "docker://$durable"
           fi
           [[ "$(skopeo inspect --raw "docker://$durable" | sha256sum | awk '{print "sha256:" $1}')" == "$index_digest" ]] || {
             echo "::error::registry did not persist $durable as $index_digest"
