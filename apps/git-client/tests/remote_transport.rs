@@ -49,6 +49,8 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
     command
         .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/support/http_remote.py"))
         .arg(root)
+        .arg("--hang-bound")
+        .arg(tilo_test_env::hang_bound().as_secs().to_string())
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::from(
