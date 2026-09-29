@@ -1642,6 +1642,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+# The fedora-bootc base ships the NFS client and server stack. The Tilo kernel
+# has no NFS or rpc_pipefs (os/kernel/config-fragments/tilo.config: remote
+# storage is the userspace QuickFS protocol), so its units could only fail at
+# every boot (var-lib-nfs-rpc_pipefs.mount: "unknown filesystem type
+# 'rpc_pipefs'"). Remove the packages rather than their units; rpm -e without
+# --nodeps fails the build if anything else comes to need them.
+RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils \
+        nfs-common-utils rpcbind \
+    && ${FINALIZE_RPMDB}
+
 # Keep encrypted-root unlock in the same visual path as the UKI splash.
 # Assets are generated at build time so the source remains reviewable and the
 # initramfs does not depend on a desktop image stack. Copied here, beside their
@@ -2049,6 +2059,8 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
+# The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
+COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
