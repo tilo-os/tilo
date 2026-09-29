@@ -25,8 +25,8 @@ impl SurfaceCaps {
     /// WebKit's GPU process holds every surface and binding of a frame
     /// resident on top of a large fixed cost, under Safari's 600 MB limit.
     pub const CONSERVATIVE: Self = Self {
-        max_side: 2560,
-        max_pixels: 2560 * 1600,
+        max_side: 1920,
+        max_pixels: 1920 * 1200,
         max_dpr: MAX_DPR,
     };
 }
@@ -236,8 +236,8 @@ mod tests {
         assert_eq!(INITIAL.bounded(), INITIAL);
 
         let conservative = retina_6k.bounded_by(SurfaceCaps::CONSERVATIVE);
-        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 2560 * 1600);
-        assert!(conservative.width <= 2560);
+        assert!(u64::from(conservative.width) * u64::from(conservative.height) <= 1920 * 1200);
+        assert!(conservative.width <= 1920);
         let (lw, _) = conservative.logical_size();
         assert!(lw.abs_diff(3008) <= 2, "{lw}");
     }
