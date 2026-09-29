@@ -45,7 +45,6 @@ jobs:
             os/Containerfile.ci-fast
             os/Containerfile.ci-control
             os/dev/assert-native-arch.sh
-            tools/ci/compiler_cache_env.sh
             .forgejo/actions/setup-buildx
           sparse-checkout-cone-mode: false
 
@@ -63,12 +62,6 @@ jobs:
       - name: Set up buildx
         uses: ./.forgejo/actions/setup-buildx
 
-      - name: Select the compiler cache
-        env:
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-        run: bash tools/ci/compiler_cache_env.sh
-
       - name: Build and exercise both images
         run: |
           set -euo pipefail
@@ -84,12 +77,10 @@ jobs:
           context=$(mktemp -d)
           trap 'rm -rf -- "$context"' EXIT
           cache=()
-          if [[ -n ${SCCACHE_BUCKET:-} && -n ${AWS_ACCESS_KEY_ID:-} ]]; then
-            for name in SCCACHE_BUCKET SCCACHE_ENDPOINT SCCACHE_REGION SCCACHE_S3_USE_SSL SCCACHE_S3_KEY_PREFIX; do
-              cache+=(--build-arg "$name")
-            done
-            cache+=(--secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
-                    --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
+          # The runner's compiler cache (infra docs/ci-caching.md).
+          if [[ -n ${ACTIONS_CACHE_URL:-} && -n ${ACTIONS_RUNTIME_TOKEN:-} ]]; then
+            cache+=(--secret id=actions_cache_url,env=ACTIONS_CACHE_URL
+                    --secret id=actions_runtime_token,env=ACTIONS_RUNTIME_TOKEN)
           fi
           docker buildx build --pull --load --progress=plain --provenance=false \
             --platform linux/amd64 "${cache[@]}" \
