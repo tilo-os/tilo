@@ -22,7 +22,7 @@
 //! | Target | Choosers | Open a file / reveal | Open a URI |
 //! |---|---|---|---|
 //! | Linux | XDG Desktop Portal `FileChooser` | portal `OpenURI` (by descriptor) | portal `OpenURI`, else the desktop opener |
-//! | macOS | `NSOpenPanel` / `NSSavePanel` | `NSWorkspace` | `NSWorkspace` |
+//! | macOS | `NSOpenPanel` / `NSSavePanel`; under Seatbelt shown by the runtime ([`confined`]) | `NSWorkspace` | `NSWorkspace` |
 //! | Web | `<input type=file>` by contents; downloads | ⛔ | `window.open` for `http`, `https`, `mailto`, `tel` |
 //! | Unattended native ([`portal::SAVE_DIRECTORY_ENV`]) | Save answers in that directory; Open refused | the target's | the target's |
 //!
@@ -37,6 +37,8 @@ pub mod portal;
 mod unattended;
 pub mod web_policy;
 
+#[cfg(target_os = "macos")]
+pub mod confined;
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
@@ -133,7 +135,10 @@ pub fn system_picker() -> Arc<dyn FilePicker> {
     #[cfg(target_os = "linux")]
     return Arc::new(xdg::PortalFilePicker);
     #[cfg(target_os = "macos")]
-    return Arc::new(macos::PanelFilePicker);
+    return match confined::from_env() {
+        Some(confined) => confined as Arc<dyn FilePicker>,
+        None => Arc::new(macos::PanelFilePicker),
+    };
     #[cfg(windows)]
     return Arc::new(windows::WindowsFilePicker);
     #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]

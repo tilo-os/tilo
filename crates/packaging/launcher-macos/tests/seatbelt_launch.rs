@@ -351,6 +351,44 @@ fn each_app_keeps_its_own_shader_cache_and_no_other() {
 }
 
 #[test]
+fn a_path_picked_in_the_runtimes_chooser_opens_and_nothing_else_does() {
+    let f = fixture();
+    let picked = f.root.join("outside/picked.txt");
+    std::fs::write(&picked, b"picked").unwrap();
+    let with_token = |path: &Path, token: Option<String>| {
+        let mut req = request(&f, "picked", path);
+        req.env = token
+            .map(|token| (OsString::from("TILO_PROBE_TOKEN"), OsString::from(token)))
+            .into_iter()
+            .collect();
+        exit_code(&req)
+    };
+    assert_eq!(
+        with_token(&picked, None),
+        REFUSED,
+        "an unpicked path opened"
+    );
+    let token = tilo_dialogs::confined::issue_extension(&picked).unwrap();
+    assert_eq!(
+        with_token(&picked, Some(token.clone())),
+        OK,
+        "the picked path did not open"
+    );
+    assert_eq!(
+        with_token(&f.secret, Some(token)),
+        REFUSED,
+        "one path's grant opened another"
+    );
+    let into_payload =
+        tilo_dialogs::confined::issue_extension(&f.payload.join("data.txt")).unwrap();
+    assert_eq!(
+        with_token(&f.payload.join("data.txt"), Some(into_payload)),
+        REFUSED,
+        "a grant made the payload writable"
+    );
+}
+
+#[test]
 fn service_descriptors_are_inherited_and_nothing_else_is() {
     let f = fixture();
     let (mut reader, writer) = std::io::pipe().unwrap();
