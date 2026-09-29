@@ -114,13 +114,11 @@ async fn a_file_saved_in_the_folder_becomes_a_workspace_version() {
 async fn a_workspace_file_reaches_the_folder_whole() {
     let fx = Fixture::new().await;
     let mut folder = fx.folder();
-    fx.write_remote("reports/q3.bin", &[7; 70_000]);
+    let report = vec![7; 70_000];
+    fx.write_remote("reports/q3.bin", &report);
 
     assert_eq!(folder.reconcile().unwrap(), pass(0, 2, 0, 0));
-    assert_eq!(
-        std::fs::read(fx.local("reports/q3.bin")).unwrap(),
-        [7; 70_000]
-    );
+    assert_eq!(std::fs::read(fx.local("reports/q3.bin")).unwrap(), report);
     let names: Vec<_> = std::fs::read_dir(fx.local("reports"))
         .unwrap()
         .map(|entry| entry.unwrap().file_name().into_string().unwrap())
