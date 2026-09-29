@@ -758,6 +758,9 @@ struct ActorState {
     /// Channel governance this device published to each room, by retention
     /// channel (see [`remember_governance`]).
     governance: HashMap<WorkspaceId, GovernanceLog>,
+    /// Retained state published to a room while none of its hosts had a
+    /// session (see [`ActorState::hold_for_host`]).
+    host_backlog: HashMap<WorkspaceId, HostBacklog>,
     wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
@@ -1074,6 +1077,7 @@ impl ActorState {
                         .await;
                     }
                 } else {
+                    self.hold_for_host(ws, &msg, false);
                     publish(
                         &self.topics,
                         &self.host_sessions,
@@ -1111,6 +1115,7 @@ impl ActorState {
                 if self.native_routes.contains(ws) {
                     return true;
                 }
+                self.hold_for_host(ws, &msg, true);
                 publish(&self.topics, &self.host_sessions, ws, msg, true, true, true).await;
             }
             Some(NetCmd::PublishPersonalFabric {
@@ -2276,6 +2281,16 @@ impl ActorState {
                         tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
                     }
                 }
+                for (channel, retention, bytes) in self.host_backlog.remove(&ws).unwrap_or_default()
+                {
+                    let sent = match retention {
+                        Retention::Checkpoint => session.publish_checkpoint(channel, bytes),
+                        Retention::Delta => session.publish_retained_delta(channel, bytes),
+                    };
+                    if let Err(error) = sent {
+                        tracing::warn!(ws, %error, "could not send held collaboration state to the workspace host");
+                    }
+                }
                 if let Err(error) = session.live_join() {
                     tracing::warn!(ws, %error, "could not join the workspace host's live plane");
                 }
@@ -2568,6 +2583,41 @@ impl ActorState {
     /// network) bind it to the author the host authenticated, as gossip
     /// neighbours bind it to their direct connection; the host retains it for
     /// members that join later.
+    /// Keep `msg` for the room's host when the host should retain it but no
+    /// session to a configured host is up: a session is replaced (a pinned
+    /// home peer takes over an unpinned dial) or redialled, and what a device
+    /// writes meanwhile (a record it creates at launch, say) would otherwise
+    /// reach no host, and every later change of it would depend on changes
+    /// the host's other devices never get. The next session sends it first.
+    fn hold_for_host(&mut self, ws: WorkspaceId, msg: &NeighbourMsg, shell_checkpoint: bool) {
+        if self.hosts.is_empty()
+            || self
+                .host_sessions
+                .keys()
+                .any(|(session_ws, _)| *session_ws == ws)
+        {
+            return;
+        }
+        let (Some((channel, kind)), Ok(bytes)) =
+            (retention(msg, shell_checkpoint), postcard::to_allocvec(msg))
+        else {
+            return;
+        };
+        let backlog = self.host_backlog.entry(ws).or_default();
+        backlog.bytes = backlog.bytes.saturating_add(bytes.len());
+        backlog.entries.push_back((channel, kind, bytes));
+        while backlog.entries.len() > MAX_HOST_BACKLOG || backlog.bytes > MAX_HOST_BACKLOG_BYTES {
+            let Some((_, _, dropped)) = backlog.entries.pop_front() else {
+                break;
+            };
+            backlog.bytes = backlog.bytes.saturating_sub(dropped.len());
+            tracing::debug!(
+                ws,
+                "collaboration state held for the workspace host overflowed; the oldest is dropped"
+            );
+        }
+    }
+
     fn announce_identity_to_host(&self, ws: WorkspaceId, session: &RelayCoeditSession) {
         let Some(identity) = self.host_identity.as_ref() else {
             return;
@@ -3016,6 +3066,7 @@ async fn run(
         recent_order: VecDeque::new(),
         recent_input: HashMap::new(),
         governance: HashMap::new(),
+        host_backlog: HashMap::new(),
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
@@ -3141,6 +3192,24 @@ async fn publish(
 
 /// Channel governance kept per room for the host sessions that start later.
 const MAX_REMEMBERED_GOVERNANCE: usize = 512;
+
+/// Bounds of what one room holds for its host while no session is up.
+const MAX_HOST_BACKLOG: usize = 4096;
+const MAX_HOST_BACKLOG_BYTES: usize = 32 * 1024 * 1024;
+
+#[derive(Default)]
+struct HostBacklog {
+    entries: VecDeque<([u8; 32], Retention, Vec<u8>)>,
+    bytes: usize,
+}
+
+impl IntoIterator for HostBacklog {
+    type Item = ([u8; 32], Retention, Vec<u8>);
+    type IntoIter = std::collections::vec_deque::IntoIter<Self::Item>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.entries.into_iter()
+    }
+}
 
 /// Keep `msg` when it is channel governance, the latest copy per retention
 /// channel. A host session that was down when it was published (they
@@ -5362,6 +5431,120 @@ mod tests {
                     ..
                 }) = rx_b.recv().await
                     && *frame == genesis
+                {
+                    break;
+                }
+            }
+        })
+        .await;
+    }
+
+    /// A document written while the device's host session is down (a
+    /// record created at launch, during the first session's replacement)
+    /// reaches the host once a session starts: every later change of the
+    /// record depends on it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn a_document_published_before_a_host_session_reaches_the_host() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let a_device = a_key.verifying_key().to_bytes();
+        let artifact = collab_types::document_artifact_id("so.tilo.notes", "room", "record");
+        let mut op = collab_types::SignedOp::new_unsigned(
+            collab_types::DocumentMutation::Incremental(b"written at launch".to_vec())
+                .encode()
+                .unwrap(),
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes(a_device),
+            collab_types::AttestationId::default(),
+            collab_types::OpClass::Splice,
+            std::time::SystemTime::now(),
+            1,
+        );
+        collab_types::sign_op(&mut op, &a_key).unwrap();
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity(a_key, a_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        // The host is known but its session is not up yet.
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::AppDocument {
+                    peer: 7,
+                    app_id: "so.tilo.notes".into(),
+                    cluster_id: "room".into(),
+                    record_id: "record".into(),
+                    envelope: Box::new(op.clone()),
+                },
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("A's host session is ready", async {
+            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
+        })
+        .await;
+
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity(b_key, b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("B receives A's launch-time document from the host", async {
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::AppDocument { envelope, .. },
+                    ..
+                }) = rx_b.recv().await
+                    && *envelope == op
                 {
                     break;
                 }
