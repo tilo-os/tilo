@@ -655,4 +655,108 @@ mod tests {
             "a window whose state cannot travel is never asked to close"
         );
     }
+
+    /// Stands in for the machine's Linux apps: a long list the empty
+    /// palette must not open with.
+    struct LinuxApps;
+
+    impl crate::shell::search::SearchProvider for LinuxApps {
+        fn id(&self) -> &str {
+            "host-apps"
+        }
+        fn name(&self) -> &str {
+            "Linux apps"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::HostApplication]
+        }
+        fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+            (0..40)
+                .map(|i| {
+                    SearchResult::nullary(
+                        ResourceKind::HostApplication,
+                        "host-apps",
+                        format!("org.example.App{i}"),
+                        format!("App {i}"),
+                        None,
+                        10,
+                        |_, _, _| {},
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_empty_palette_offers_windows_to_go_back_to_not_an_inventory() {
+        let (chrome, doc) = fixture();
+        let mut registry = registry();
+        registry.register(Rc::new(
+            crate::shell::search::providers::ActionsProvider::new(),
+        ));
+        registry.register(Rc::new(LinuxApps));
+        let state = chrome.borrow();
+        let groups = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        let first = groups.first().expect("the empty palette has rows");
+        assert_eq!(first.kind, ResourceKind::Tab, "windows come first");
+        assert!(
+            first
+                .results
+                .iter()
+                .all(|row| row.id.starts_with("tab.focus:")),
+            "every window row goes to it: {:?}",
+            first.results.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        let rows: Vec<&SearchResult> = groups.iter().flat_map(|group| &group.results).collect();
+        assert!(
+            rows.iter().all(
+                |row| row.operation_kind == tilo_actions::OperationKind::View
+                    || row.kind == ResourceKind::Application
+            ),
+            "nothing on the empty palette changes anything: {:?}",
+            rows.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == ResourceKind::HostApplication),
+            "the Linux app list is a keystroke away, not the default"
+        );
+        assert!(rows.iter().any(|row| row.id == "room.activity.open"));
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.total == group.results.len())
+        );
+
+        let listing = registry.query_exhaustive(&crate::shell::search::QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &ROOT,
+        });
+        assert!(
+            listing.iter().any(|row| row.id == "tab.close:100:1")
+                && listing
+                    .iter()
+                    .filter(|row| row.kind == ResourceKind::HostApplication)
+                    .count()
+                    == 40,
+            "agents still enumerate every action and app"
+        );
+    }
 }
