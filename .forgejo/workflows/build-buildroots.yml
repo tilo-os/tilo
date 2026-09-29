@@ -100,7 +100,7 @@ jobs:
 
   build:
     needs: [plan, signing-preflight]
-    timeout-minutes: 600
+    timeout-minutes: 180
     enable-openid-connect: true
     strategy:
       fail-fast: false
