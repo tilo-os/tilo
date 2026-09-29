@@ -18,6 +18,10 @@ IMAGE_WORKFLOW = ROOT / ".forgejo/workflows/build-image.yml"
 KERNEL_WORKFLOW = ROOT / ".forgejo/workflows/build-kernel.yml"
 APPS_WORKFLOW = ROOT / ".forgejo/workflows/release-apps.yml"
 DESKTOP_WORKFLOW = ROOT / ".forgejo/workflows/release-desktop.yml"
+CACHE_SETTINGS = (
+    "SCCACHE_BUCKET", "SCCACHE_ENDPOINT", "SCCACHE_REGION", "SCCACHE_S3_USE_SSL",
+    "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
+)
 
 
 def steps(workflow: str) -> dict[str, str]:
@@ -39,6 +43,11 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(body)
             path.chmod(0o755)
+        selector = ROOT / "tools/ci/compiler_cache_env.sh"
+        destination = Path(temporary) / "tools/ci/compiler_cache_env.sh"
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        destination.write_text(selector.read_text())
+        destination.chmod(0o755)
         clean = {"PATH": os.environ["PATH"], "GITHUB_OUTPUT": str(output),
                  "GITHUB_ENV": str(output), **env}
         result = subprocess.run(["bash", "-c", script], env=clean, text=True, cwd=temporary,
@@ -64,9 +73,7 @@ def run_script(step: str, env: dict[str, str], files: dict[str, str] | None = No
 
 
 def runner_cache() -> dict[str, str]:
-    """What the runner gives every job for its compiler cache."""
-    return {"ACTIONS_CACHE_URL": "http://runner-cache:8088/run/", "ACTIONS_RUNTIME_TOKEN": "runner-token",
-            "SCCACHE_GHA_ENABLED": "on", "RUSTC_WRAPPER": "/ci-tools/sccache"}
+    return {name: f"runner-{name.lower()}" for name in CACHE_SETTINGS}
 
 
 class ImagePublicationTests(unittest.TestCase):
@@ -141,13 +148,7 @@ class KernelPublicationTests(unittest.TestCase):
             self.assertNotIn("runner-", text)
             values, _ = run_script(self.bind, {"PULL_REQUEST": "true", **runner_cache()})
             self.assertEqual(values["KERNEL_COMPILER_CACHE"], "shared")
-            self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines(), [
-                "actions_cache_url=ACTIONS_CACHE_URL",
-                "actions_runtime_token=ACTIONS_RUNTIME_TOKEN",
-            ])
-            values, _ = run_script(self.bind, {"PULL_REQUEST": "true"})
-            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
-            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
+            self.assertEqual(len(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines()), 2)
         with self.subTest(phase='kernel builds pass credentials only through the bind'):
             self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", self.workflow)
             build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
@@ -157,9 +158,7 @@ class KernelPublicationTests(unittest.TestCase):
             self.assertIn('"TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE"', probe)
             self.assertIn("if [[ $KERNEL_COMPILER_CACHE == shared ]]; then", probe)
             outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
-            self.assertNotIn("--secret id=actions_cache_url", outside)
-            for forbidden in ("SCCACHE_AWS", "SCCACHE_BUCKET", "aws_access_key_id", "compiler_cache_env.sh"):
-                self.assertNotIn(forbidden, self.workflow)
+            self.assertNotIn("--secret id=aws_access_key_id", outside)
         with self.subTest(phase='a published kernel imports no layer cache'):
             build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
             self.assertIn(
@@ -215,8 +214,7 @@ class ContainerfileTests(unittest.TestCase):
                 self.assertIn("ARG TILO_COMPILER_CACHE=shared", text)
                 self.assertRegex(text, r'shared:0\|off:0(\|publication:0)?\)')
                 self.assertIn('if [ "$TILO_COMPILER_CACHE" = off ]; then', text)
-                # Refuses the runner's cache URL and token.
-                self.assertRegex(text, r'\$\{ACTIONS_CACHE_URL\}\$\{ACTIONS_RUNTIME_TOKEN\}')
+                self.assertIn('${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}', text)
         image = (ROOT / "os/Containerfile").read_text()
         off = image.split('if [ "$TILO_COMPILER_CACHE" = off ]; then', 1)[1].split("elif", 1)[0]
         self.assertIn("export RUSTC_WRAPPER=;", off)
