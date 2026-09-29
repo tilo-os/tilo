@@ -9,9 +9,13 @@ use ui::framework::{ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{SHEETS_ACTION_TYPE, SHEETS_OPERATION_TYPE, SheetsAction, SheetsOperation};
+use crate::actions::{
+    SHEETS_ACTION_TYPE, SHEETS_OPERATION_TYPE, SearchableCell, SheetsAction, SheetsOperation,
+    SheetsResourceCtx, add_sheet_action, document_children, encode,
+};
 use crate::app::SheetsApp;
-use crate::doc::SheetsDoc;
+use crate::doc::{ChartSnapshot, CommentThread, SheetsDoc};
+use crate::model::{CellFormat, Currency, format_value};
 
 /// Lightweight workbook projection for search and the published tree.
 #[derive(Clone, Debug, Default)]
@@ -23,6 +27,47 @@ pub struct SheetsState {
 pub struct SheetInfo {
     pub id: String,
     pub name: String,
+    /// Populated cells used by sheet-level actions (sort) at publish time.
+    pub cells: Vec<SearchableCell>,
+    pub charts: Vec<ChartSnapshot>,
+    pub comments: Vec<CommentThread>,
+}
+
+impl SheetsState {
+    /// Build from the live app / test presentation context when the document
+    /// projection is empty (standalone fixtures that author sheets in `ctx`).
+    pub(crate) fn from_ctx(ctx: &SheetsResourceCtx) -> Self {
+        Self {
+            sheets: ctx
+                .searchable_sheets
+                .iter()
+                .map(|sheet| SheetInfo {
+                    id: sheet.id.clone(),
+                    name: sheet.name.clone(),
+                    cells: sheet.cells.clone(),
+                    charts: Vec::new(),
+                    comments: Vec::new(),
+                })
+                .collect(),
+        }
+    }
+
+    /// Prefer live searchable cells from `ctx` when the ids still match.
+    pub(crate) fn with_ctx_cells(mut self, ctx: &SheetsResourceCtx) -> Self {
+        for sheet in &mut self.sheets {
+            if let Some(live) = ctx
+                .searchable_sheets
+                .iter()
+                .find(|candidate| candidate.id == sheet.id)
+            {
+                sheet.cells = live.cells.clone();
+                if !live.name.is_empty() {
+                    sheet.name = live.name.clone();
+                }
+            }
+        }
+        self
+    }
 }
 
 /// The sheets workbook resource.
@@ -41,6 +86,7 @@ impl Resource for SheetsWorkbook {
     }
 
     fn read(doc: &Doc) -> Result<SheetsState, ModelError> {
+        let mut projection = doc.clone();
         let count = SheetsDoc::sheet_count_readonly(doc);
         let names = SheetsDoc::sheet_names_readonly(doc);
         let mut sheets = Vec::with_capacity(count);
@@ -52,7 +98,36 @@ impl Resource for SheetsWorkbook {
                 .cloned()
                 .filter(|name| !name.is_empty())
                 .unwrap_or_else(|| format!("Sheet{}", idx.saturating_add(1)));
-            sheets.push(SheetInfo { id, name });
+            let snap = SheetsDoc::snapshot_sheet(&mut projection, idx, Currency::USD);
+            let values = crate::formula::recalculate(&snap.raw);
+            let mut cells = snap
+                .raw
+                .iter()
+                .map(|(&(col, row), raw)| {
+                    let fmt = snap
+                        .fmt
+                        .get(&(col, row))
+                        .copied()
+                        .unwrap_or(CellFormat::General);
+                    let display = values
+                        .get(&(col, row))
+                        .map_or_else(String::new, |value| format_value(value, fmt));
+                    SearchableCell {
+                        col,
+                        row,
+                        raw: raw.clone(),
+                        display,
+                    }
+                })
+                .collect::<Vec<_>>();
+            cells.sort_by_key(|cell| (cell.row, cell.col));
+            sheets.push(SheetInfo {
+                id,
+                name,
+                cells,
+                charts: SheetsDoc::charts(&mut projection, idx),
+                comments: SheetsDoc::comments(&mut projection, idx),
+            });
         }
         Ok(SheetsState { sheets })
     }
@@ -70,10 +145,36 @@ impl Resource for SheetsWorkbook {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // `new-sheet` stays a prompted ActionSpec (param `value`, default
-        // name from the open sheet count). A stub declaration here would
-        // shadow that prompt.
+        // `new-sheet` needs the open sheet count for its default name — see
+        // [`bound_actions`].
         Vec::new()
+    }
+
+    fn bound_actions(state: &SheetsState) -> Vec<ActionSpec> {
+        let count = state.sheets.len();
+        vec![
+            ActionSpec::prompted(
+                "new-sheet",
+                "New sheet",
+                "Name",
+                "sheet name…",
+                tilo_actions::ExecutionLocus::ClientLocal,
+                move |name: &str| {
+                    let name = name.trim();
+                    let name = if name.is_empty() {
+                        format!("Sheet{}", count + 1)
+                    } else {
+                        name.to_string()
+                    };
+                    encode(&add_sheet_action(&name))
+                },
+            )
+            .reversible(),
+        ]
+    }
+
+    fn children(state: &SheetsState) -> Vec<tilo_actions::Resource> {
+        document_children(state)
     }
 
     fn local_operations() -> Vec<ActionSpec> {
@@ -93,7 +194,7 @@ impl Resource for SheetsWorkbook {
     }
 }
 
-/// Import/export Effects and the command-palette View — no document delta.
+/// Import/export Effects and workbook Views — no document delta.
 fn workbook_local_operations() -> Vec<ActionSpec> {
     use tilo_actions::{EncodedAction, ExecutionMode, ResultSpec};
 
@@ -126,9 +227,16 @@ fn workbook_local_operations() -> Vec<ActionSpec> {
             5,
         ),
         ("commands", "Open command palette", OperationKind::View, 6),
+        ("go-to-cell", "Go to cell…", OperationKind::View, 7),
+        (
+            "toggle-formula-view",
+            "Toggle formula view",
+            OperationKind::View,
+            8,
+        ),
     ] {
-        if variant == 6 {
-            specs.push(
+        match variant {
+            6 => specs.push(
                 ActionSpec::operation(
                     id,
                     label,
@@ -137,41 +245,67 @@ fn workbook_local_operations() -> Vec<ActionSpec> {
                     &SheetsOperation::OpenCommandPalette,
                 )
                 .expect("SheetsOperation serializes"),
-            );
-            continue;
-        }
-        specs.push(
-            ActionSpec::typed_operation(
+            ),
+            7 => specs.push(ActionSpec::prompted_operation(
                 id,
                 label,
-                "path (omit to use the system file picker)",
+                "Cell reference",
+                "e.g. B12",
                 kind,
                 SHEETS_OPERATION_TYPE,
-                vec![ActionParam::optional_owned(
-                    "path",
-                    ParamType::Text,
-                    "Direct spreadsheet path",
-                )],
-                move |args: &tilo_actions::ActionArgs| {
-                    let path = args
-                        .text("path")
-                        .filter(|p| !p.trim().is_empty())
-                        .map(str::to_string);
-                    let value = match variant {
-                        0 => SheetsOperation::ImportCsv { path },
-                        1 => SheetsOperation::ImportXlsx { path },
-                        2 => SheetsOperation::ImportOds { path },
-                        3 => SheetsOperation::ExportCsv { path },
-                        4 => SheetsOperation::ExportXlsx { path },
-                        _ => SheetsOperation::ExportOds { path },
-                    };
-                    EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
-                        .expect("sheet operation serializes")
+                |reference| {
+                    EncodedAction::encode_operation(
+                        SHEETS_OPERATION_TYPE,
+                        &SheetsOperation::GoToCell {
+                            reference: reference.to_string(),
+                        },
+                    )
+                    .expect("SheetsOperation serializes")
                 },
-            )
-            .execution(ExecutionMode::Background { cancellable: false })
-            .returns(ResultSpec::Job),
-        );
+            )),
+            8 => specs.push(
+                ActionSpec::operation(
+                    id,
+                    label,
+                    kind,
+                    SHEETS_OPERATION_TYPE,
+                    &SheetsOperation::ToggleFormulaView,
+                )
+                .expect("SheetsOperation serializes"),
+            ),
+            _ => specs.push(
+                ActionSpec::typed_operation(
+                    id,
+                    label,
+                    "path (omit to use the system file picker)",
+                    kind,
+                    SHEETS_OPERATION_TYPE,
+                    vec![ActionParam::optional_owned(
+                        "path",
+                        ParamType::Text,
+                        "Direct spreadsheet path",
+                    )],
+                    move |args: &tilo_actions::ActionArgs| {
+                        let path = args
+                            .text("path")
+                            .filter(|p| !p.trim().is_empty())
+                            .map(str::to_string);
+                        let value = match variant {
+                            0 => SheetsOperation::ImportCsv { path },
+                            1 => SheetsOperation::ImportXlsx { path },
+                            2 => SheetsOperation::ImportOds { path },
+                            3 => SheetsOperation::ExportCsv { path },
+                            4 => SheetsOperation::ExportXlsx { path },
+                            _ => SheetsOperation::ExportOds { path },
+                        };
+                        EncodedAction::encode_operation(SHEETS_OPERATION_TYPE, &value)
+                            .expect("sheet operation serializes")
+                    },
+                )
+                .execution(ExecutionMode::Background { cancellable: false })
+                .returns(ResultSpec::Job),
+            ),
+        }
     }
     specs
 }
@@ -198,5 +332,67 @@ impl ResourceSurface<SheetsWorkbook> for SheetsApp {
 
     fn attach(&mut self, cx: SurfaceCx<SheetsWorkbook>) {
         self.attach_framework(cx.dispatcher());
+    }
+}
+
+/// Framework dispatcher when hosted; the local action host for standalone
+/// tests and the screenshot launcher.
+pub(crate) struct ActionSink {
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<ui::framework::Dispatcher<SheetsWorkbook>>,
+    #[cfg(test)]
+    pub(crate) last: Option<tilo_actions::EncodedAction>,
+}
+
+impl Default for ActionSink {
+    fn default() -> Self {
+        Self {
+            local: ui::ActionHost::new(),
+            framework: None,
+            #[cfg(test)]
+            last: None,
+        }
+    }
+}
+
+impl ActionSink {
+    pub(crate) fn attach(&mut self, dispatcher: ui::framework::Dispatcher<SheetsWorkbook>) {
+        self.framework = Some(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.framework.is_some()
+    }
+
+    pub(crate) fn try_dispatch_with_context(
+        &mut self,
+        doc: &mut automerge::AutoCommit,
+        action: &SheetsAction,
+        context: tilo_actions::ActionContext,
+    ) -> Result<(), tilo_actions::ActionError> {
+        match &self.framework {
+            Some(dispatcher) => {
+                #[cfg(test)]
+                {
+                    self.last = Some(encode(action));
+                }
+                dispatcher.apply_now_with(doc, action, context)
+            }
+            None => self
+                .local
+                .try_dispatch_with_context(doc, SHEETS_ACTION_TYPE, action, context),
+        }
+    }
+
+    pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.local.take_committed()
+    }
+
+    pub(crate) fn last_dispatched(&self) -> Option<&tilo_actions::EncodedAction> {
+        #[cfg(test)]
+        if self.is_hosted() {
+            return self.last.as_ref();
+        }
+        self.local.last_dispatched()
     }
 }
