@@ -707,6 +707,10 @@ mod tests {
         outcome
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the relay serves the whole scenario and `shutdown` consumes it at the end"
+    )]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_lost_approver_connection_is_reopened_and_the_host_keeps_serving() {
         let tmp = tempfile::tempdir().unwrap();
