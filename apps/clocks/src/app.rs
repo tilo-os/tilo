@@ -1523,12 +1523,17 @@ impl ClocksApp {
 }
 
 impl ui::resources::PublishesResources for ClocksApp {
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let _ = doc;
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.hosted {
             return self.state.with(crate::actions::live_clock_extras);
         }
-        self.state.with(crate::actions::provide_resources)
+        self.state.with(|state| {
+            let mut root =
+                ui::tilo_resource::publish::<crate::resource::Clocks>("clocks", "Clocks", state);
+            root.children
+                .extend(crate::actions::live_clock_extras(state));
+            vec![root]
+        })
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         fn find(
