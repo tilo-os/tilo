@@ -6856,6 +6856,56 @@ impl FileExplorerWidget {
     /// folder may entail hundreds of thousands of entries, so entries,
     /// templates, places, and remote projections stay behind their retained
     /// search providers rather than being copied into this root page.
+    fn published_folder(&self, doc: &automerge::AutoCommit) -> Resource {
+        let live = self.action_directory_folder_root();
+        let mut folder = ui::tilo_resource::publish::<crate::resource::FileExplorer>(
+            &crate::search_provider::folder_resource_id(&self.current_path),
+            &self.current_path.display().to_string(),
+            &(),
+        );
+        for action in live.actions {
+            if let Some(existing) = folder
+                .actions
+                .iter_mut()
+                .find(|existing| existing.id == action.id)
+            {
+                *existing = action;
+            } else {
+                folder.actions.push(action);
+            }
+        }
+        folder.children = live.children;
+        if self.error.is_some() {
+            folder
+                .children
+                .extend(ui::resources::PublishesResources::resources(
+                    &self.state_retry,
+                    doc,
+                ));
+        }
+        if !self.is_trash_view() {
+            for mut template in published_template_resources() {
+                if let Some(action) = template.actions.first_mut() {
+                    action.contract.availability = if self.current_path.is_dir() {
+                        Availability::Available
+                    } else {
+                        Availability::Unavailable {
+                            code: "location_unavailable".into(),
+                            reason: "The current location cannot contain a new file".into(),
+                        }
+                    };
+                }
+                folder.children.push(template);
+            }
+        }
+        folder
+            .children
+            .extend(published_place_resources(&self.favs.borrow().favorites));
+        folder.children.extend(self.live_remote_account_resources());
+        folder.children.extend(self.live_entry_resources());
+        folder
+    }
+
     fn action_directory_folder_root(&self) -> Resource {
         let mut folder = self.folder_resource_base();
         Self::append_navigation_actions(&mut folder);
@@ -6863,19 +6913,6 @@ impl FileExplorerWidget {
         self.append_favorite_action(&mut folder);
         self.append_creation_actions(&mut folder);
         self.append_nearby_receiver_resources(&mut folder);
-        folder
-    }
-
-    /// The folder as a caller browsing into it resolves it: the root plus
-    /// its first entries, each with its complete actions.
-    fn folder_with_entries(&self) -> Resource {
-        let mut folder = self.action_directory_folder_root();
-        folder.children.extend(
-            self.entries
-                .iter()
-                .take(MAX_EAGER_ENTRY_RESOURCES)
-                .map(|entry| self.entry_resource(entry)),
-        );
         folder
     }
 
@@ -8533,45 +8570,11 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         if self.framework_hosted {
             return self.live_filesystem_extras(doc);
         }
-        let mut folder = self.action_directory_folder_root();
-        // The recovery affordance is a real action resource, not a painted
-        // click region. Publish it only while its error surface is visible,
-        // where its deterministic Refresh effect is meaningful.
-        if self.error.is_some() {
-            folder.children.extend(self.state_retry.resources(doc));
-        }
-        if !self.is_trash_view() {
-            // Standalone keeps live availability on each template create.
-            for mut template in published_template_resources() {
-                if let Some(action) = template.actions.first_mut() {
-                    action.contract.availability = if self.current_path.is_dir() {
-                        Availability::Available
-                    } else {
-                        Availability::Unavailable {
-                            code: "location_unavailable".into(),
-                            reason: "The current location cannot contain a new file".into(),
-                        }
-                    };
-                }
-                folder.children.push(template);
-            }
-        }
-        // Search, the sidebar, assistive technology and headless agents all
-        // address the same View operation for a place. These children are not
-        // limited to the currently visible directory.
-        folder
-            .children
-            .extend(published_place_resources(&self.favs.borrow().favorites));
-        folder.children.extend(self.live_remote_account_resources());
-        // Keep the context catalogue bounded. The visible directory can still
-        // paint every loaded row; only the cross-process resource projection is
-        // capped, and `resource(id)` below resolves any exact row lazily.
-        folder.children.extend(self.live_entry_resources());
-        vec![folder]
+        vec![self.published_folder(doc)]
     }
     fn action_directory_resource_page(
         &self,
-        _doc: &automerge::AutoCommit,
+        doc: &automerge::AutoCommit,
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
@@ -8585,7 +8588,7 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
         }
         Some(ui::widget::ActionDirectoryResourcePage {
             resources: (cursor.is_empty() && max_results > 0)
-                .then(|| self.action_directory_folder_root())
+                .then(|| self.published_folder(doc))
                 .into_iter()
                 .collect(),
             next_cursor: Vec::new(),
@@ -8598,7 +8601,7 @@ impl ui::resources::PublishesResources for FileExplorerWidget {
     /// remote accounts, and late collaborative records.
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<Resource> {
         (id == crate::search_provider::folder_resource_id(&self.current_path))
-            .then(|| self.folder_with_entries())
+            .then(|| self.published_folder(doc))
             .or_else(|| {
                 self.entries
                     .iter()
