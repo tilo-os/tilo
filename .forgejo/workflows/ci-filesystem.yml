@@ -79,7 +79,10 @@ on:
   #     - ".forgejo/workflows/build-image.yml"
   #     - ".forgejo/workflows/ci-filesystem.yml"
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
     paths:
       - ".cargo/**"
       - "crates/collab/**"
