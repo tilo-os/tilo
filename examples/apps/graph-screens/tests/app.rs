@@ -96,6 +96,45 @@ fn screens_mount_rust_components_and_all_build() {
     }
 }
 
+/// A navigation button in a serialized screen is a published action: a click
+/// and an agent's invocation both change the screen, and the native contract
+/// holds on every screen.
+#[test]
+fn the_about_link_navigates_through_a_published_action() {
+    let mut app = TestApp::<App>::new().expect("the app opens");
+    let about_title = SemanticExpectation::named("title")
+        .role(Role::Heading { level: 1 })
+        .name("About");
+    let harness = app.harness();
+    harness
+        .perform_named("open-about", &Action::Activate)
+        .expect("the About link is activatable");
+    harness
+        .expect(&about_title)
+        .expect("the About screen replaces the main one");
+    let audit = harness.native_app_audit();
+    assert!(audit.is_certified(), "{audit:#?}");
+
+    harness
+        .perform_named("back", &Action::Activate)
+        .expect("the About screen has a Back button");
+    harness
+        .expect(&SemanticExpectation::named("open-about"))
+        .expect("Back returns to the main screen");
+
+    harness
+        .invoke_action(
+            &ui::prelude::tilo_actions::ActionAddress::new("tilo.control:open-about", "invoke"),
+            &ui::serde_json::Map::new(),
+            false,
+            None,
+        )
+        .expect("the About link is published as an action");
+    harness
+        .expect(&about_title)
+        .expect("invoking the action navigates as a click does");
+}
+
 /// The app satisfies the Tilo-native contract: every control that can cause
 /// an effect is bound to a published action.
 #[test]
