@@ -135,7 +135,36 @@ impl ResourceApp for PrintCentreShell {
 }
 
 impl ResourceSurface<PrintCentreResource> for PrintCentre {
+    /// Queues and scanners are this machine's. An empty projection must not
+    /// clear a snapshot the surface already loaded.
     fn present(&mut self, _state: &std::rc::Rc<PrintCentreState>) {}
 
-    fn attach(&mut self, _cx: SurfaceCx<PrintCentreResource>) {}
+    fn attach(&mut self, _cx: SurfaceCx<PrintCentreResource>) {
+        self.mark_framework_hosted();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn publish_owns_dashboard_door() {
+        let published = ui::tilo_resource::publish::<PrintCentreResource>(
+            "print-centre",
+            "Print Centre",
+            &PrintCentreState,
+        );
+        let ids: Vec<&str> = published
+            .actions
+            .iter()
+            .map(|action| action.id.as_str())
+            .collect();
+        for expected in ["refresh", "open-queue", "find-printers", "print-document"] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride publish: {ids:?}"
+            );
+        }
+    }
 }
