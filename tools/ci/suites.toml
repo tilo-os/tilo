@@ -504,8 +504,9 @@ package = "tilo-app-cli"
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
   ".cargo/config.toml",
-  # The portability lint compiles in the policy gate's rules table.
-  "tools/policy/app_portability_rules.toml",
+  # The portability lint compiles in the policy gate's rules table, and the
+  # capability check the table of what each capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
   # Standalone apps take the SDK's toolchain and lock file.
   "rust-toolchain.toml", "Cargo.lock",
   # The outside-repository test builds a generated app against the checkout.
@@ -514,6 +515,7 @@ inputs = [
 readers = [
   "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
   "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
+  "crates/dev/tilo-app-cli/src/capability_usage.rs",
 ]
 
 [[cargo]]
