@@ -930,6 +930,8 @@ mod live_tests;
 #[cfg(test)]
 mod local_enrollment_tests;
 #[cfg(test)]
+mod staged_retry_tests;
+#[cfg(test)]
 mod tests;
 
 mod config;
