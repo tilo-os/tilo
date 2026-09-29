@@ -15,6 +15,7 @@ const DOC: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad
 const STYLE: &str = "tilo-ui-bound:v1:2a4120d7-2f63-4578-aed8-11cb91ed3628:c0fe4ad7-b7d0-46c3-ab7e-78d12d5d86f4:776f72642d70726f636573736f722e7374796c653a626f6479";
 const APP: &str = "so.tilo.word-processor";
 const WORKSPACE: &str = "workspace:room";
+const PERMISSIONS: &str = "workspace.permissions:90142c0f-1092-4d22-84a2-f9af0e57dab9";
 
 /// A workspace offering one app, which publishes its directory as soon as
 /// it is opened.
@@ -65,7 +66,15 @@ impl Writer {
                 Vec::new(),
             );
             open.app_id = "so.tilo.desktop".into();
-            return vec![open];
+            let mut assign = row(
+                "",
+                PERMISSIONS,
+                "workspace.permissions",
+                "profile.assign",
+                Vec::new(),
+            );
+            assign.app_id = "so.tilo.desktop".into();
+            return vec![open, assign];
         }
         let path = || ActionParam::optional("path", ParamType::Text, "Direct filesystem path");
         let mut rows =
@@ -454,6 +463,29 @@ fn the_workspace_page_offers_a_path_on_opening_an_app() {
         json!([]),
         "version 1 rows are as published"
     );
+}
+
+/// The reference partner proxy provisions file grants from a compact
+/// workspace page: the permission roles' resource, and each app named by the
+/// `app.` prefix of its resource. A handle there left every app ungranted.
+#[test]
+fn workspace_pages_name_their_resources_in_full() {
+    let mut server = McpServer::new(Writer::new(Some("open")), "room".into(), "owner".into());
+    let page = run(call(&mut server, "tilo_query", json!({"workspace": true}))).unwrap();
+    let names = page["resources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|resource| resource["resource"].as_str().unwrap())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["app.so.tilo.word-processor", PERMISSIONS], "{page}");
+    let found = run(call(
+        &mut server,
+        "tilo_query",
+        json!({"workspace": true, "needle": "permission assign"}),
+    ))
+    .unwrap();
+    assert_eq!(found["resources"][0]["resource"], PERMISSIONS, "{found}");
 }
 
 #[test]
