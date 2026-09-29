@@ -73,12 +73,16 @@ impl Deferral {
     /// The pause before re-issuing, or `None` when `status` and `body` are the
     /// final reply.
     pub(super) fn pause(&mut self, status: StatusCode, body: &[u8]) -> Option<Duration> {
-        let deferred = status == StatusCode::SERVICE_UNAVAILABLE
-            && body == b"temporarily-unavailable"
-            && std::time::Instant::now() < self.deadline;
+        let deferred =
+            status == StatusCode::SERVICE_UNAVAILABLE && body == b"temporarily-unavailable";
+        if deferred { self.next() } else { None }
+    }
+    /// The pause before re-issuing after a transient failure, or `None` at
+    /// the hang bound.
+    pub(super) fn next(&mut self) -> Option<Duration> {
         let pause = self.pause;
         self.pause = (pause * 2).min(Duration::from_secs(2));
-        deferred.then_some(pause)
+        (std::time::Instant::now() < self.deadline).then_some(pause)
     }
 }
 
@@ -1023,7 +1027,8 @@ impl Harness {
         let body = postcard::to_stdvec(&inner).unwrap();
         let certificate = postcard::to_stdvec(&joiner.certificate).unwrap();
         // A host still reconciling its relay-retained room state defers
-        // onboarding; the browser retries it as a new signed request.
+        // onboarding, and a busy one may reset the connection; the browser
+        // retries both as a new signed request.
         let mut deferral = Deferral::new();
         let mut attempt = 0u8;
         let (request, bytes) = loop {
@@ -1063,10 +1068,10 @@ impl Harness {
                     .to_bytes(),
             );
             let wire = request.encode().unwrap();
-            let (status, bytes) = {
+            let reply = {
                 let transport =
                     self.client
-                        .request_method("POST", request.operation.path(), wire, None);
+                        .try_request_method("POST", request.operation.path(), wire, None);
                 let ingress = &mut self.ingress;
                 let owner = &mut self.f.owner;
                 tokio::pin!(transport);
@@ -1081,7 +1086,11 @@ impl Harness {
                     }
                 }
             };
-            if let Some(pause) = deferral.pause(status, &bytes) {
+            let pause = match &reply {
+                Ok((status, bytes)) => deferral.pause(*status, bytes),
+                Err(_) => deferral.next(),
+            };
+            if let Some(pause) = pause {
                 attempt += 1;
                 drive(
                     &mut self.ingress,
@@ -1091,6 +1100,7 @@ impl Harness {
                 .await;
                 continue;
             }
+            let (status, bytes) = reply.expect("onboarding transport");
             assert_eq!(
                 status,
                 StatusCode::OK,

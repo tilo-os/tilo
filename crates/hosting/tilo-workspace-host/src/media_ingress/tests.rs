@@ -35,14 +35,25 @@ impl Client {
         body: Vec<u8>,
         proof: Option<Vec<u8>>,
     ) -> (StatusCode, Vec<u8>) {
-        let tcp = tokio::net::TcpStream::connect(self.address).await.unwrap();
+        self.try_request_method(method, path, body, proof)
+            .await
+            .unwrap()
+    }
+    /// [`Self::request_method`], returning a transport failure (a refused,
+    /// reset or dropped connection) instead of panicking on it.
+    pub(super) async fn try_request_method(
+        &self,
+        method: &str,
+        path: &str,
+        body: Vec<u8>,
+        proof: Option<Vec<u8>>,
+    ) -> anyhow::Result<(StatusCode, Vec<u8>)> {
+        let tcp = tokio::net::TcpStream::connect(self.address).await?;
         let tls = tokio_rustls::TlsConnector::from(self.tls.clone())
             .connect(ServerName::try_from("localhost").unwrap(), tcp)
-            .await
-            .unwrap();
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(tls))
-            .await
-            .unwrap();
+            .await?;
+        let (mut sender, connection) =
+            hyper::client::conn::http1::handshake(TokioIo::new(tls)).await?;
         let driving = tokio::spawn(connection);
         let mut builder = hyper::Request::builder()
             .method(method)
@@ -53,21 +64,14 @@ impl Client {
         }
         let response = sender
             .send_request(builder.body(Full::new(Bytes::from(body))).unwrap())
-            .await
-            .unwrap();
+            .await?;
         assert_eq!(response.headers()["cache-control"], "no-store");
         let status = response.status();
-        let bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes()
-            .to_vec();
+        let bytes = response.into_body().collect().await?.to_bytes().to_vec();
         drop(sender);
         driving.abort();
         let _ = driving.await;
-        (status, bytes)
+        Ok((status, bytes))
     }
 }
 async fn exchange(
