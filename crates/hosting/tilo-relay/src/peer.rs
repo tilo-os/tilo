@@ -8178,6 +8178,8 @@ mod private_transport_tests {
             metrics: Arc::new(crate::metrics::Metrics::default()),
             live_bridge: None,
             agents: crate::peer::AgentRegistry::default(),
+            positions: None,
+            compactor: None,
         };
         // Requests flow through a roomy pipe; replies through a small one, so
         // the relay's writer blocks until the client reads.
