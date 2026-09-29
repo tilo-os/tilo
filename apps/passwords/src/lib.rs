@@ -11,6 +11,7 @@ use std::collections::HashMap;
 use ui::widget::Widget;
 
 mod actions;
+mod doc;
 pub mod resource;
 mod showcase;
 mod transfer;
