@@ -33,10 +33,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
-use ui::tilo_actions::{
-    ActionContract, ActionSpec, Availability, ConfirmationPolicy, ExecutionMode, OperationKind,
-    PermissionRequirement, Resource, ResultSpec, RetryPolicy, RiskLevel,
-};
+use ui::tilo_actions::{ConfirmationPolicy, ExecutionMode, OperationKind, Resource, ResultSpec};
 use ui::widget::{
     Button, ButtonFace, FlapState, SegmentedFace, SplitLayout, TextInput, ToggleGroup, Widget,
 };
@@ -246,7 +243,7 @@ impl ActionKind {
             ActionKind::Eject,
         ]
     }
-    fn key(self) -> &'static str {
+    pub(crate) fn key(self) -> &'static str {
         match self {
             ActionKind::Mount => "mount",
             ActionKind::Unmount => "unmount",
@@ -255,7 +252,7 @@ impl ActionKind {
             ActionKind::Eject => "eject",
         }
     }
-    fn label(self) -> &'static str {
+    pub(crate) fn label(self) -> &'static str {
         match self {
             ActionKind::Mount => "Mount",
             ActionKind::Unmount => "Unmount",
@@ -275,7 +272,7 @@ impl ActionKind {
             ActionKind::Eject => "Power down and safely remove the whole device.",
         }
     }
-    fn from_key(k: &str) -> Option<ActionKind> {
+    pub(crate) fn from_key(k: &str) -> Option<ActionKind> {
         match k {
             "mount" => Some(ActionKind::Mount),
             "unmount" => Some(ActionKind::Unmount),
@@ -286,7 +283,7 @@ impl ActionKind {
         }
     }
     /// Destructive actions require an explicit confirm dialog.
-    fn destructive(self) -> bool {
+    pub(crate) fn destructive(self) -> bool {
         matches!(self, ActionKind::Format)
     }
     fn confirm_title(self, target: &str) -> String {
@@ -495,7 +492,43 @@ impl DisksApp {
         self.shared.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.shared.is_hosted()
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.shared.mark_hosted_for_test();
+    }
+
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`].
+    pub(crate) fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        use ui::tilo_resource::Resource as _;
+        let mut state = crate::resource::Disks::read(doc).unwrap_or_default();
+        // Prefer the widget's live topology when the document has not been
+        // seeded yet (first-frame tests before sync).
+        if state.topology.drives.is_empty() && !self.topo.drives.is_empty() {
+            state.topology = self.topo.clone();
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::Disks>(
+            "disks",
+            "Storage devices",
+            &state,
+        );
+        // Match this surface's live flag (same as the previous hand-built tree).
+        root.children = crate::resource::topology_children(&state, self.live);
+        vec![root]
+    }
+
     pub(crate) fn adopt_shared(&mut self, state: &crate::resource::DisksState) {
+        if let Ok(json) = serde_json::to_string(&state.topology)
+            && json != self.topo_json_cache
+        {
+            self.topo = state.topology.clone();
+            self.topo_json_cache = json;
+            self.dirty = true;
+        }
         if self.selected != state.selected {
             self.selected = state.selected;
             self.dirty = true;
@@ -3236,63 +3269,6 @@ impl DisksApp {
         self.dirty = true;
     }
 
-    /// Build the canonical resource-operation descriptor used by every disk
-    /// and partition. Keeping this in one place prevents search, agents and
-    /// the visible UI from disagreeing about risk, confirmation or retry
-    /// semantics.
-    fn operation_spec(
-        &self,
-        action: ActionKind,
-        leaf: &str,
-        fstype: Option<&str>,
-    ) -> Option<ActionSpec> {
-        let payload = vec![
-            action.key().to_string(),
-            leaf.to_string(),
-            fstype.unwrap_or_default().to_string(),
-        ];
-        let spec = ActionSpec::operation(
-            action.key(),
-            action.label().trim_end_matches('…'),
-            OperationKind::Effect,
-            "disks.operation",
-            &payload,
-        )
-        .ok()?;
-        let destructive = action.destructive();
-        Some(spec.with_contract(ActionContract {
-            availability: if self.live {
-                Availability::Available
-            } else {
-                Availability::Unavailable {
-                    code: "live_access_disabled".into(),
-                    reason: "Live disk access is disabled".into(),
-                }
-            },
-            permission: PermissionRequirement::Admin,
-            risk: if destructive {
-                RiskLevel::Destructive
-            } else {
-                RiskLevel::Privileged
-            },
-            confirmation: if destructive {
-                ConfirmationPolicy::Phrase {
-                    phrase: leaf.to_string(),
-                }
-            } else {
-                ConfirmationPolicy::Confirm
-            },
-            retry: if action == ActionKind::Benchmark {
-                RetryPolicy::Idempotent
-            } else {
-                RetryPolicy::AtMostOnce
-            },
-            execution: ExecutionMode::Background { cancellable: false },
-            result: ResultSpec::Job,
-            ..ActionContract::default()
-        }))
-    }
-
     /// Resolve an operation payload against the latest locally-probed
     /// topology. Resource invocations may arrive after a collaborator's
     /// document snapshot or a search result has gone stale, so a leaf name in
@@ -4228,56 +4204,14 @@ impl Widget for DisksApp {
 }
 
 impl ui::resources::PublishesResources for DisksApp {
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("disks", "disks.system", "Storage devices");
-        for drive in &self.topo.drives {
-            let mut disk = Resource::new(
-                format!("disk:{}", drive.name),
-                "disks.drive",
-                drive.model.clone(),
-            );
-            // Whole-drive operations are meaningful independently of any
-            // partition selection. Publishing them here (rather than only in
-            // the custom action bar) lets search, history, collaboration and
-            // agents address the same operation contract.
-            for action in [ActionKind::Format, ActionKind::Benchmark] {
-                if let Some(spec) = self.operation_spec(action, &drive.name, None) {
-                    disk.actions.push(spec);
-                }
-            }
-            if drive.removable
-                && let Some(spec) = self.operation_spec(ActionKind::Eject, &drive.name, None)
-            {
-                disk.actions.push(spec);
-            }
-            for part in &drive.partitions {
-                let mut partition = Resource::new(
-                    format!("partition:{}", part.name),
-                    "disks.partition",
-                    part.name.clone(),
-                );
-                let verb = if part.mountpoint.is_some() {
-                    "unmount"
-                } else {
-                    "mount"
-                };
-                let mount_action = if verb == "mount" {
-                    ActionKind::Mount
-                } else {
-                    ActionKind::Unmount
-                };
-                for action in [mount_action, ActionKind::Benchmark, ActionKind::Format] {
-                    if let Some(spec) =
-                        self.operation_spec(action, &part.name, part.fstype.as_deref())
-                    {
-                        partition.actions.push(spec);
-                    }
-                }
-                disk.children.push(partition);
-            }
-            root.children.push(disk);
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the topology door — keep only live extras (none today).
+    fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
-        vec![root]
+        self.publish_resources(doc)
     }
 }
 
@@ -4817,6 +4751,7 @@ mod tests {
                         .iter()
                         .chain(drive.children.iter().flat_map(|p| p.actions.iter()))
                 })
+                .filter(|action| action.kind == OperationKind::Effect)
             {
                 assert!(matches!(
                     action.contract.execution,
