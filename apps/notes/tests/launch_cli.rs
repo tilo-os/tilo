@@ -12,6 +12,17 @@ fn run_with(
     dump: &Path,
     env: &[(&str, &str)],
 ) -> serde_json::Value {
+    drive(root, host, target, dump, env, &serde_json::json!([]))
+}
+
+fn drive(
+    root: &Path,
+    host: &Path,
+    target: Option<&Path>,
+    dump: &Path,
+    env: &[(&str, &str)],
+    actions: &serde_json::Value,
+) -> serde_json::Value {
     std::fs::create_dir_all(host).unwrap();
     let mut command = Command::new(env!("CARGO_BIN_EXE_notes"));
     #[cfg(windows)]
@@ -47,7 +58,7 @@ fn run_with(
         .env("TILO_PACKAGE_ID", "so.tilo.notes")
         .envs(env.iter().copied())
         .arg("--headless-drive")
-        .arg(serde_json::json!({"actions": [], "dump": dump}).to_string());
+        .arg(serde_json::json!({"actions": actions, "dump": dump}).to_string());
     if let Some(target) = target {
         command.arg(target);
     }
@@ -191,4 +202,21 @@ fn a_room_launch_opens_the_rooms_default_record() {
     );
     let dirs = record_dirs(&personal_host);
     assert!(dirs.contains(&personal), "{dirs:?}");
+}
+
+/// The empty state's "New note" is found where it is drawn: its button
+/// names its own bounds, so a click at them (a screen reader's, a test
+/// driver's) creates the first note instead of landing on empty panel.
+#[test]
+fn clicking_new_note_where_its_button_says_it_is_creates_the_first_note() {
+    let temp = tempfile::tempdir().unwrap();
+    let dump = drive(
+        &temp.path().join("notebook"),
+        &temp.path().join("host"),
+        None,
+        &temp.path().join("dump.json"),
+        &[],
+        &serde_json::json!([{"click_named": "notes.first_note"}]),
+    );
+    assert_eq!(dump["pages"].as_object().unwrap().len(), 1, "{dump}");
 }
