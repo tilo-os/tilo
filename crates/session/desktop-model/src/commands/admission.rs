@@ -91,7 +91,12 @@ pub fn check_owned(command: &DesktopCommand, owned: impl Fn(u64) -> bool) -> Res
         | DesktopCommand::RenameWorkspace { .. }
         | DesktopCommand::SaveShortcut { .. }
         | DesktopCommand::DeleteShortcut { .. }
-        | DesktopCommand::ClaimNamespace { .. } => Ok(()),
+        | DesktopCommand::ClaimNamespace { .. }
+        | DesktopCommand::SavePermissionProfile { .. }
+        | DesktopCommand::AssignPermissionProfile { .. }
+        | DesktopCommand::RecordEffectReceipt { .. }
+        | DesktopCommand::GrantAppAction { .. }
+        | DesktopCommand::RevokeAppAction { .. } => Ok(()),
     }
 }
 

@@ -193,6 +193,13 @@ pub trait CollabTransport: Send {
         None
     }
 
+    /// Whether the remote end refused or failed an action-surface
+    /// publication since the last call. The owner then republishes its
+    /// current surface: a refused one must never count as published.
+    fn take_action_surface_failed(&mut self) -> bool {
+        false
+    }
+
     /// Whether committed-document custody allows publishing a document
     /// mutation on `channel` (the primary route when `None` is not yet
     /// acknowledged). Transports without committed reads always allow it.

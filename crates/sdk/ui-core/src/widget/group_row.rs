@@ -61,6 +61,11 @@ const TRAILING_REVEAL_FRAC: f64 = 0.20;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
+/// How far a group's shadow sprites paint past its rect: `bloom_pad`
+/// (120 px) in `TileHost::draw_steady_state`, with the clip's margin.
+/// Not a Theme spacing token: it must match the compositor shadow draw,
+/// not layout padding a theme can resize.
+const GROUP_SPRITE_REACH_PX: f64 = 160.0;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
@@ -276,6 +281,9 @@ pub struct GroupRow {
     /// Test-only clock override for [`Self::shift_anim_t`] (capture
     /// harness); always `None` in a running shell.
     shift_hold: Option<Duration>,
+    /// Groups the last draw skipped as outside the row. They keep their
+    /// dirty state, so cached scenes rebuild once they are painted again.
+    culled_groups: Vec<u64>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -808,7 +816,15 @@ impl GroupRow {
             shift_armed: false,
             shift_anim: None,
             shift_hold: None,
+            culled_groups: Vec::new(),
         }
+    }
+
+    /// Whether a group at `rect`, shifted by `dx`, paints anything inside
+    /// the row, including its shadow sprites.
+    fn paints_within_row(&self, rect: Rect, dx: f64) -> bool {
+        let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < self.rect.x1
     }
 
     /// Group to promote fullscreen, if `fullscreen_group` belongs to this
@@ -3183,8 +3199,25 @@ impl Widget for GroupRow {
         if self.scroll_dirty {
             return true;
         }
-        self.groups.iter().any(super::Widget::needs_redraw)
+        // A change inside an app past the row's edges shows nothing until
+        // the strip moves, and moving it redraws the row.
+        self.groups
+            .iter()
+            .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
+            .any(super::Widget::needs_redraw)
             || self.handles.iter().any(super::Widget::needs_redraw)
+    }
+
+    fn mark_drawn(&mut self) {
+        let culled = std::mem::take(&mut self.culled_groups);
+        for group in &mut self.groups {
+            if !culled.contains(&group.id) {
+                group.mark_drawn();
+            }
+        }
+        for handle in &mut self.handles {
+            handle.mark_drawn();
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3320,6 +3353,7 @@ impl GroupRow {
         maximized_idx: Option<usize>,
         in_run: &[bool],
     ) {
+        self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
@@ -3338,14 +3372,23 @@ impl GroupRow {
         } else {
             Vec::new()
         };
-        for (i, g) in self.groups.iter_mut().enumerate() {
+        for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
                 continue;
             }
+            let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
             let dx = offsets
                 .iter()
-                .find(|(id, _)| *id == g.id)
+                .find(|(offset_id, _)| *offset_id == id)
                 .map_or(0.0, |(_, from)| from * remaining);
+            // The row clip hides a group past its edges, but vello still
+            // flattens, bins and tiles everything encoded under the clip:
+            // a strip of dozens of apps would size the GPU's bump buffers
+            // for all of them.
+            if !self.paints_within_row(rect, dx) {
+                self.culled_groups.push(id);
+                continue;
+            }
             let t = if dx.abs() > f64::EPSILON {
                 shift_transform(transform, dx)
             } else {
@@ -3353,17 +3396,17 @@ impl GroupRow {
             };
             let source_is_lifted = self
                 .group_drag
-                .is_some_and(|drag| drag.moved && drag.group_id == g.id);
+                .is_some_and(|drag| drag.moved && drag.group_id == id);
             if source_is_lifted {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     0.18,
                     t,
-                    &g.get_rect().inflate(160.0, 160.0),
+                    &rect.inflate(160.0, 160.0),
                 );
             }
-            g.draw(scene, t, tr, theme, presence);
+            self.groups[i].draw(scene, t, tr, theme, presence);
             if source_is_lifted {
                 scene.pop_layer();
             }
@@ -4494,6 +4537,86 @@ mod tests {
 
     fn make_row_with_groups(tab_specs: &[&[u64]]) -> GroupRow {
         make_row_with_groups_with_taffy(tab_specs).0
+    }
+
+    fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
+        let specs: Vec<Vec<u64>> = (1..=windows).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);
+        let mut scene = Scene::new();
+        row.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        (row, scene)
+    }
+
+    /// A desktop that accumulated dozens of windows must encode only those
+    /// the row shows: vello sizes its GPU buffers from everything encoded,
+    /// clipped or not, and WebGPU's 128 MiB binding limit is finite.
+    #[test]
+    fn a_long_strip_encodes_only_the_groups_it_shows() {
+        let (few, few_scene) = drawn_strip(6);
+        let (many, many_scene) = drawn_strip(40);
+        let shown = many.onscreen_group_ids();
+        assert!(
+            !shown.is_empty() && shown.len() < 6,
+            "fixture shows {shown:?}"
+        );
+        assert_eq!(few.onscreen_group_ids(), shown);
+        assert!(many.culled_groups.len() >= 30, "{:?}", many.culled_groups);
+        assert!(
+            shown.iter().all(|id| !many.culled_groups.contains(id)),
+            "an on-screen group was culled"
+        );
+        let (few_paths, many_paths) = (few_scene.encoding().n_paths, many_scene.encoding().n_paths);
+        assert!(
+            many_paths < few_paths * 2,
+            "40 windows encoded {many_paths} paths against {few_paths} for 6"
+        );
+
+        // Redraw requests consult exactly the painted set, so a dirty app
+        // past the edge does not keep the desktop presenting frames.
+        let (consulted, skipped): (Vec<u64>, Vec<u64>) =
+            many.groups.iter().map(|g| g.id).partition(|id| {
+                let g = many.groups.iter().find(|g| g.id == *id).expect("group");
+                many.paints_within_row(g.get_rect(), 0.0)
+            });
+        assert_eq!(skipped, many.culled_groups);
+        assert!(consulted.len() >= shown.len());
+    }
+
+    #[test]
+    fn refused_cross_strip_move_restores_exact_group_and_tab_order() {
+        let mut row = make_row_with_groups(&[&[1, 2, 3], &[10]]);
+        let source_group_index = 0;
+        let source_group_id = row.groups[source_group_index].id;
+        let source_tab_index = 1;
+        let (desc, host) = row.groups[source_group_index]
+            .detach_tab(2)
+            .expect("fixture tab detaches");
+        row.restore_cross_strip_detach(CrossStripDetach {
+            tab_id: 2,
+            source_group_id,
+            source_group_index,
+            source_tab_index,
+            desc,
+            host,
+            release_point: Point::new(900.0, 900.0),
+        });
+
+        assert_eq!(row.group_ids(), vec![100, 200]);
+        assert_eq!(
+            row.groups[0]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+        );
     }
 
     /// A point in group `idx`'s tab-bar background — right of the last tab

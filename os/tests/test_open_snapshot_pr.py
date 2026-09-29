@@ -345,6 +345,9 @@ class WpeStageSnapshotPullRequestTests(unittest.TestCase):
             "--snapshot-digest", digest, "wpe-stage",
             "--x86-ref", self.x86_ref, "--arm-ref", self.arm_ref,
         ]
+        with self.subTest(phase="the_promotion_pushes_the_branch_it_names"):
+            script = (REPO / "os/dev/buildroot-snapshot.sh").read_text()
+            self.assertIn('branch="automation/wpe-stage-snapshot-${snapshot_digest:0:16}"', script)
         with self.subTest(phase="main_creates_digest_bound_pull"):
             result, request = run_main(argv)
             self.assertEqual(result, 0)

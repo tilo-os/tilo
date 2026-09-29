@@ -37,7 +37,7 @@ taffy.workspace = true
 # system OpenSSL build dep inside the distrobox.
 feed-rs = "2.4"
 reqwest = { workspace = true, features = ["gzip", "brotli"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["http"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
 tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", "macros"] }
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
 # file picker; OPML import goes through the host portal so the compositor's

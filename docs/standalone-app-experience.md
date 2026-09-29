@@ -73,6 +73,13 @@ launcher currently checks Linux process birth information under `/proc`; its
 non-Linux implementation returns no attestation. Both macOS and Windows need
 an authenticated launch adapter before they can reuse the broker safely.
 
+Identity secrets on macOS live in the login Keychain: the personal
+identity's private share, the device key and the runtime's channel-state key.
+None falls back to a file; a Keychain that refuses or fails stops the runtime
+from starting. A key file an earlier build wrote moves into the Keychain once,
+is read back, and only then removed. Tests keep them in files by setting
+`TILO_IDENTITY_FILE_SECRETS`, which a release build ignores.
+
 Confinement is settled separately. A macOS app launched by the per-user
 runtime runs under App Sandbox only if it is Developer ID-signed,
 notarized and App Sandbox-entitled. Every other app runs under a
@@ -81,9 +88,12 @@ generated Seatbelt profile, and none runs unsandboxed. See
 which includes the Seatbelt caveats (deprecated SPI; the GPU and IOKit
 surface).
 
-Windows already has a native Common Item Dialog adapter. The current macOS
-picker follows the Unix portal path; that gap should be fixed in the shared
-picker backend rather than copied into Windows.
+Both platforms use native choosers through the shared `tilo-dialogs`
+backend: the Common Item Dialog on Windows, `NSOpenPanel` and `NSSavePanel`
+on macOS. A Seatbelt-confined macOS app does not show the panel itself: the
+runtime shows it outside the sandbox and grants the app exactly the picked
+paths with sandbox extensions (see
+[the sandbox doc](app-model/sandbox.md#macos-app-sandbox-or-seatbelt)).
 
 ## Shared implementation boundaries
 

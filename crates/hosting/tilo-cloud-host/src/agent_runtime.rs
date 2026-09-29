@@ -422,15 +422,10 @@ const RUNTIME_TICK: Duration = Duration::from_millis(10);
 /// pumped every [`IDLE_WORKER_PUMP`] instead of every tick. Any command,
 /// step submission or child settlement makes the loop active again at once.
 const IDLE_AFTER: Duration = Duration::from_secs(2);
-/// Budget of one serialized worker-document owner turn; a turn over it
-/// retires the signer, fail-closed.
-#[cfg(not(test))]
-const WORKER_DOCUMENT_TURN: Duration = Duration::from_secs(5);
-/// Tests run many actual runtimes at once on a shared runner, where one full
-/// Store commit alone can exceed production's budget; they check behaviour,
-/// not latency (the retire-on-expiry path has its own tests).
-#[cfg(test)]
-const WORKER_DOCUMENT_TURN: Duration = Duration::from_secs(60);
+/// Stall budget of one serialized worker-document owner turn: the owner
+/// renews it at each completed step, and only a turn that stops progressing
+/// for a whole budget retires the signer, fail-closed.
+const WORKER_DOCUMENT_TURN: Duration = tilo_action_broker::owner_turn::STALL_BUDGET;
 const IDLE_WORKER_PUMP: Duration = Duration::from_millis(100);
 /// A tick that took at least this long yields to the executor afterwards.
 const HEAVY_TICK: Duration = Duration::from_millis(2);
@@ -652,7 +647,7 @@ async fn run(
                 // apply opens Store only in its callback; refresh and release the deferred signer
                 // after the exact committed bytes have entered the worker cache.
                 while let Some(pending)=documents.as_mut().and_then(|requests|requests.try_recv().ok()){
-                    let(complete,result)=crate::agent_documents::apply_worker_document(&owner,pending,Instant::now()+WORKER_DOCUMENT_TURN);
+                    let(complete,result)=crate::agent_documents::apply_worker_document(&owner,pending,WORKER_DOCUMENT_TURN);
                     documents_applied += 1;
                     publish_due = true;
                     match result {

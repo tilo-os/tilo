@@ -717,7 +717,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
                 }
                 *ctx.handled = true;
             }
-            WindowEvent::KeyboardInput { .. } => {
+            // Text arrives from an input method (and in a browser page only
+            // from one), not only as key presses.
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
                 self.forward_to_content(
                     event,
                     ctx.scale_factor,

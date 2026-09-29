@@ -557,7 +557,7 @@ pub struct App {
     pub appearance_reconcile: bool,
     /// Shared settings-file watcher for OS-wide theme changes made by Theme
     /// Studio. Throttled so the render loop does not stat the file per frame.
-    theme_store_stamp: Option<crate::time::SystemTime>,
+    theme_store_stamp: Option<settings_store::SettingsStamp>,
     last_theme_store_check: Instant,
     /// The schedule an "Automatic" theme follows and whether it was night
     /// when last applied: sunrise and sunset re-theme without a file change.
@@ -652,7 +652,7 @@ struct AppConstructionInputs {
     palette_source: PaletteSource,
     watch_system_settings: bool,
     debug_mode: fn() -> bool,
-    theme_store_stamp: fn() -> Option<crate::time::SystemTime>,
+    theme_store_stamp: fn() -> Option<settings_store::SettingsStamp>,
     local_author: ConstructionValue<crate::permissions::UserId>,
     presence_ctx: ConstructionValue<PresenceCtx>,
     screen_reader: fn() -> Option<crate::screen_reader::ScreenReader>,
@@ -750,10 +750,7 @@ impl AppConstructionInputs {
             debug_mode: || {
                 cfg!(debug_assertions) && crate::host::environment().diagnostics.debug_overlay
             },
-            theme_store_stamp: || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            theme_store_stamp: settings_store::stamp,
             local_author: ConstructionValue::Lazy(crate::collaboration::local_user_id),
             presence_ctx: ConstructionValue::Lazy(App::initial_presence_context),
             screen_reader: || {
@@ -1849,8 +1846,35 @@ impl App {
         let Some(intent) = find_appearance_intent(self.root_widget.as_ref()) else {
             return false;
         };
+        self.apply_appearance_intent(intent)
+    }
+
+    /// What a standalone app read from its host OS, through the same door as
+    /// a settings pane's intent. The caller applies each host change once, so
+    /// a contrast toggle made in the app holds until the host changes again.
+    #[cfg(feature = "native")]
+    pub(crate) fn apply_host_appearance(
+        &mut self,
+        host: crate::host_appearance::HostAppearance,
+    ) -> bool {
+        let _entry = self.enter_wake_scope();
+        let mut base_theme = crate::host_appearance::theme(host);
+        base_theme.caret_width = self.accessibility.base_theme.caret_width;
+        self.apply_appearance_intent(crate::theme::AppearanceIntent {
+            base_theme,
+            high_contrast: host.high_contrast,
+            reduce_motion: host.reduce_motion,
+            text_scale: self.accessibility.text_scale,
+            ui_scale: self.accessibility.ui_scale,
+        })
+    }
+
+    #[cfg(feature = "native")]
+    fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name {
+        if intent.base_theme.name != self.accessibility.base_theme.name
+            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
@@ -1897,10 +1921,7 @@ impl App {
         }
         self.reconcile_configured_theme_with(
             crate::time::now(),
-            || {
-                settings_store::settings_path()
-                    .and_then(|path| std::fs::metadata(path).ok()?.modified().ok())
-            },
+            settings_store::stamp,
             Self::apply_configured_theme,
         )
     }
@@ -1909,7 +1930,7 @@ impl App {
     fn reconcile_configured_theme_with(
         &mut self,
         now: Instant,
-        stamp: impl FnOnce() -> Option<crate::time::SystemTime>,
+        stamp: impl FnOnce() -> Option<settings_store::SettingsStamp>,
         apply: impl FnOnce(&mut Self),
     ) -> bool {
         // Only an explicitly native service host watches process settings.
@@ -2228,6 +2249,17 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// The root's structure flag, and framework History's: it is composed
+    /// as a separate root, so its replaced controls are not the app's.
+    pub(crate) fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root_widget.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
+    }
+
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
     /// focused widget's caret/selection only if focus lands back on the SAME
     /// focusable ordinal after rebuild (never onto a different field);
@@ -2238,8 +2270,7 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed =
-            self.layout.structure_dirty || self.root_widget.take_structure_dirty();
+        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {
@@ -2718,7 +2749,7 @@ mod number_input_layout_tests;
 
 #[cfg(test)]
 #[path = "app/history_tests.rs"]
-mod framework_history_tests;
+pub(crate) mod framework_history_tests;
 
 #[path = "app/history.rs"]
 mod framework_history;
@@ -2732,7 +2763,7 @@ mod document_routes;
 #[path = "app/focus_selection_tests.rs"]
 mod focus_selection_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "local-daemons"))]
 #[path = "app/local_privacy_tests.rs"]
 mod local_privacy_tests;
 

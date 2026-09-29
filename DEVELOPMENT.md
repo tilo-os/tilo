@@ -47,8 +47,12 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
-its own affected-package check and fast-quality lint result. A newer commit on the
-PR cancels the older revision's runs; every push to `main` keeps its own.
+its own affected-package check and fast-quality lint result. Both test the head
+merged onto the tip of its base branch (`main`, or the lower branch of a stack)
+at the time the run starts, and select affected packages against that tip, so a
+PR is checked as it would land. A PR that conflicts with
+`main` fails there; merge `main` into the branch. A newer commit on the PR
+cancels the older revision's runs; every push to `main` keeps its own.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -379,30 +383,20 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 
 ### Android app host
 
-[`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
-cross-compiled with Android NDK r29. The Fedora 44
-development image (`dist/dev/Containerfile.fedora44`) carry it, with the
-`CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
-that point Cargo at its clang. Elsewhere, install the same release and set
-those variables as the image does, plus:
+`tilo-app build --platform android` ([docs/android.md](docs/android.md)) needs
+the Android SDK (build-tools 36.1.0, platform android-36, platform-tools), NDK
+r29 with the two Android Rust targets, a JDK 17 or newer and `zip`/`unzip`.
+`tilo-app doctor --platform android` names each missing piece with its fix,
+and `tilo-app setup android` installs the SDK side into `$ANDROID_HOME`
+(default `~/Android/Sdk`) and adds the Rust targets.
 
-```bash
-rustup target add aarch64-linux-android x86_64-linux-android
-```
-
-`tools/ci/install-android-ndk.sh` does both in a CI or image build.
-
-The Java side and the packaging use the Android SDK at `$ANDROID_HOME`
-(default `~/Android/Sdk`), a JDK 17 or newer for `javac` and `keytool`, and
-`zip`:
-
-```bash
-sdkmanager 'build-tools;36.1.0' 'platforms;android-36'
-```
-
-An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
-`llvm-strip` that drops DWARF from the packaged library. Testing needs `adb`
-(`platform-tools`) and an `x86_64` emulator image or a device.
+The builder image and the Fedora 44 development image
+(`dist/dev/Containerfile.fedora44`) carry the NDK at `/opt/android-ndk`, with
+the `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*`
+variables that point Cargo at its clang; `tools/ci/install-android-ndk.sh`
+does the same in a CI or image build. Elsewhere the CLI finds an NDK under
+`$ANDROID_NDK_HOME` or the SDK's `ndk/` and sets those variables itself.
+Testing needs `adb` and an `x86_64` emulator image or a device.
 
 ### Native Windows development
 
@@ -419,20 +413,23 @@ application build command.
 From PowerShell at the workspace root:
 
 ```powershell
-cargo check --locked -p ui --tests --features portal
+capnp --version
+cargo check --locked -p ui --tests
 cargo run --locked -p calculator
 cargo run --locked -p notes
 ```
 
 Windows rendering defaults to Direct3D 12. `WGPU_BACKEND` remains an explicit
-developer override. Apps use the shared `portal` feature for native Open, Save,
-multiple-file and folder dialogs, with results delivered on the existing picker
-channel. To exercise the host picker without opening or modifying a document:
+developer override. `ui::portal` opens the native Open, Save, multiple-file and
+folder dialogs (`tilo-dialogs` selects the Common Item Dialogs on Windows, the
+panels on macOS and the XDG portal on Linux; apps enable no feature), with
+results delivered on the existing picker channel. To exercise the host picker
+without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
-# Also accepts: multiple, directory, save
-cargo test --locked -p ui --lib --features portal portal::
+cargo run --locked -p tilo-dialogs --example pick -- open
+# Also accepts: multiple, directory, save, uri URL
+cargo test --locked -p tilo-dialogs
 ```
 
 The example reports the selected path; even its Save mode does not write a file.

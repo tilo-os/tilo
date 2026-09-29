@@ -180,7 +180,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
    && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
-   && grep -Fq 'type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="registry.tilo.so/tilo/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then

@@ -85,6 +85,11 @@ impl Joined {
         Ok(joined)
     }
 
+    /// This device's endpoint, which the profile's other services share.
+    pub(super) fn endpoint(&self) -> iroh::Endpoint {
+        self.endpoint.clone()
+    }
+
     /// Redeem `invitation` with the host it names and start syncing the room.
     ///
     /// # Errors

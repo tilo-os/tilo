@@ -208,18 +208,16 @@ impl InstalledIngress {
         Ok(true)
     }
 
+    /// Serve on a pair from [`crate::https::bind_https_pair`].
     #[cfg(test)]
     pub(crate) async fn start(
         owner: &mut SessionOwner,
         current: CommittedAuthority,
-        listener: TcpListener,
+        (listener, udp): (TcpListener, std::net::UdpSocket),
         config: IngressConfig,
     ) -> Result<Self> {
-        let endpoint = endpoint(
-            listener.local_addr()?,
-            config.certificates.clone(),
-            config.key.clone_key(),
-        )?;
+        let endpoint =
+            endpoint_from_socket(udp, config.certificates.clone(), config.key.clone_key())?;
         let channels = https::try_ingress_channel()?;
         Self::start_bound(owner, current, listener, config, endpoint, channels).await
     }
@@ -410,7 +408,10 @@ impl InstalledIngress {
             {
                 (hyper::StatusCode::NOT_FOUND, b"unsupported".to_vec())
             }
-            Err(_) => (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec()),
+            Err(error) => {
+                tracing::warn!(route = ?request.route(), %error, "delivery request refused");
+                (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec())
+            }
         };
         let _ = request.respond(status, body);
         self.maintain(owner);
@@ -928,6 +929,8 @@ mod live_forward_tests;
 mod live_tests;
 #[cfg(test)]
 mod local_enrollment_tests;
+#[cfg(test)]
+mod staged_retry_tests;
 #[cfg(test)]
 mod tests;
 
