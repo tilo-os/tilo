@@ -458,6 +458,12 @@ pub struct ScenarioRunRequest {
 #[derive(Debug)]
 pub struct ScenarioSuitePlan {
     pub app_dir: PathBuf,
+    /// Builds the app once, in the caller's environment: a Cargo wrapper such
+    /// as a remote builder reads its own configuration from the XDG
+    /// directories each case replaces.
+    build: CargoPlan,
+    /// The binary `build` reports, else the only one it builds.
+    bin: Option<String>,
     cases: Vec<ScenarioCasePlan>,
     artifact_dir: Option<PathBuf>,
 }
@@ -466,7 +472,7 @@ pub struct ScenarioSuitePlan {
 struct ScenarioCasePlan {
     name: String,
     source: PathBuf,
-    cargo: CargoPlan,
+    args: Vec<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -4574,17 +4580,39 @@ pub fn plan_scenario_suite(request: &ScenarioRunRequest) -> Result<ScenarioSuite
                 );
             }
         }
-        let app_args = [
-            OsString::from("--headless-drive"),
-            OsString::from(serde_json::Value::Object(payload).to_string()),
-        ];
         cases.push(ScenarioCasePlan {
             name,
             source,
-            cargo: plan_app_task(&app_dir, AppTask::Run, &app_args)?,
+            args: vec![
+                OsString::from("--headless-drive"),
+                OsString::from(serde_json::Value::Object(payload).to_string()),
+            ],
         });
     }
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    let bin = load_app_package_spec(app_dir.clone())
+        .ok()
+        .and_then(|spec| spec.gui_bin);
+    let mut build_args = vec![
+        OsString::from("build"),
+        OsString::from("--manifest-path"),
+        app_dir.join("Cargo.toml").into_os_string(),
+        OsString::from("--message-format=json-render-diagnostics"),
+    ];
+    match &bin {
+        Some(bin) => build_args.extend([OsString::from("--bin"), OsString::from(bin)]),
+        None => build_args.push(OsString::from("--bins")),
+    }
     Ok(ScenarioSuitePlan {
+        build: CargoPlan {
+            app_dir: app_dir.clone(),
+            program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+            args: build_args,
+        },
+        bin,
         app_dir,
         cases,
         artifact_dir,
@@ -4651,15 +4679,61 @@ impl ScenarioSuitePlan {
         self.artifact_dir.as_deref()
     }
 
-    /// Run every prevalidated case in deterministic order. Each case receives
-    /// private XDG directories and cannot read or overwrite normal app state.
-    /// Failures are accumulated so one run reports the complete suite.
+    /// Build the app, then run every prevalidated case against the binary in
+    /// deterministic order. Each case receives private XDG directories and
+    /// cannot read or overwrite normal app state. Failures are accumulated so
+    /// one run reports the complete suite.
     ///
     /// # Errors
     ///
-    /// Returns an error only when an isolated state directory or child process
-    /// cannot be created. Non-zero scenario exits are returned in `failed`.
+    /// Returns an error when the build fails or reports no app binary, or an
+    /// isolated state directory or child process cannot be created. Non-zero
+    /// scenario exits are returned in `failed`.
     pub fn execute(&self) -> Result<ScenarioSuiteOutcome> {
+        let program = self.build_app()?;
+        self.run_cases(&program)
+    }
+
+    fn build_app(&self) -> Result<PathBuf> {
+        let mut child = ProcessCommand::new(&self.build.program)
+            .args(&self.build.args)
+            .current_dir(&self.build.app_dir)
+            .stdout(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("starting {} build", self.build.program.to_string_lossy()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+        let manifest = self.app_dir.join("Cargo.toml");
+        let manifest = manifest.canonicalize().unwrap_or(manifest);
+        let mut artifacts = HashMap::new();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.context("reading Cargo artifact stream")?;
+            collect_cargo_message(&line, &manifest, &mut artifacts);
+        }
+        let status = child.wait().context("waiting for Cargo build")?;
+        if !status.success() {
+            bail!("building the app for its scenarios failed with {status}");
+        }
+        if let Some(bin) = &self.bin {
+            return artifacts.remove(bin).ok_or_else(|| {
+                anyhow::anyhow!("Cargo build completed without reporting binary {bin}")
+            });
+        }
+        let mut executables = artifacts
+            .into_values()
+            .filter(|path| path.extension().is_none_or(|extension| extension != "so"));
+        match (executables.next(), executables.next()) {
+            (Some(executable), None) => Ok(executable),
+            (None, _) => bail!("Cargo build reported no app binary"),
+            (Some(_), Some(_)) => bail!(
+                "the app builds several binaries; name the GUI one in tilo-app.toml's entrypoint"
+            ),
+        }
+    }
+
+    fn run_cases(&self, program: &Path) -> Result<ScenarioSuiteOutcome> {
         if let Some(directory) = &self.artifact_dir {
             std::fs::create_dir_all(directory).with_context(|| {
                 format!(
@@ -4676,9 +4750,9 @@ impl ScenarioSuitePlan {
                 .prefix("tilo-scenario-")
                 .tempdir()
                 .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
-            let status = ProcessCommand::new(&case.cargo.program)
-                .args(&case.cargo.args)
-                .current_dir(&case.cargo.app_dir)
+            let status = ProcessCommand::new(program)
+                .args(&case.args)
+                .current_dir(&self.app_dir)
                 .env("XDG_DATA_HOME", state.path().join("data"))
                 .env("XDG_STATE_HOME", state.path().join("state"))
                 .env("XDG_CONFIG_HOME", state.path().join("config"))

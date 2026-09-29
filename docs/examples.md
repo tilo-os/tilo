@@ -71,7 +71,10 @@ starts a standalone app from each example and runs `tilo-app doctor` on it.
 Every example has tests (`tests/app.rs`, through `Replica` and `TestApp`), a
 native-contract certification test, and a saved headless scenario
 (`tests/headless-actions.json`) that `tilo-app check` runs with the
-accessibility audit.
+accessibility audit. CI runs those scenarios too, for every example its
+affected-package selection tests: `tools/ci/example-scenarios.sh` drives each
+example's own binary through `tilo-app scenario run --audit`, the same stage
+`tilo-app check` runs.
 
 Adding an example: create it with
 `tilo-app new example-NAME --id so.tilo.example.NAME --directory examples/apps/NAME`
