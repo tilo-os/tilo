@@ -153,6 +153,12 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           PULL_REQUEST_BASE: ${{ steps.merge.outputs.main }}
           PUSH_BEFORE: ${{ github.event.before }}
+          # A lander re-check of a green run after main moved narrows to what
+          # main changed since (tools/ci/recheck_base.py).
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEAD_SHA: ${{ github.sha }}
+          LANDER_LOGIN: qos-integrator
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -160,6 +166,11 @@ jobs:
           selection_args=()
           if [ "$EVENT_NAME" = pull_request ]; then
             selection_args+=(--allow-security-skip)
+            tested_base=$(python3 tools/ci/recheck_base.py)
+            if [ -n "$tested_base" ]; then
+              git fetch --no-tags --depth=256 origin "$tested_base" "$base"
+              selection_args+=(--recheck-from "$tested_base")
+            fi
           elif [ "$EVENT_NAME" = workflow_dispatch ]; then
             # Dispatch has no pull-request base or push-before SHA. Do not
             # silently reduce an acceptance run to the last commit's changes.

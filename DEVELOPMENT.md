@@ -91,7 +91,9 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. A PR that conflicts with
+PR is checked as it would land. When `main` moves after a PR's check went green,
+the lander reruns that check, which then only re-runs the packages and suites
+`main`'s new commits reach. A PR that conflicts with
 `main` fails there; merge `main` into the branch. A newer commit on the PR
 cancels the older revision's runs; every push to `main` keeps its own.
 
