@@ -884,6 +884,13 @@ impl WasmPeer {
         serde_json::to_string(&PeerSnapshot::from_status(&self.handle.status())).unwrap_or_default()
     }
 
+    /// This page's channel state as text: whom each room follows, which
+    /// senders may govern it, and each route's membership.
+    #[wasm_bindgen(js_name = channelDiagnostics)]
+    pub fn channel_diagnostics(&self) -> String {
+        self.handle.status().channels
+    }
+
     /// Call `listener()` whenever the snapshot may have changed.
     pub fn subscribe(&self, listener: Function) {
         self.listeners.borrow_mut().push(listener);
