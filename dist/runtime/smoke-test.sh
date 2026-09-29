@@ -22,6 +22,7 @@ test -x "$app"
 work=$(mktemp -d)
 profile=$work/home/.local/state/tilo/runtime
 smoke_user=tilort$$
+as_user=()
 daemon_pid=
 cleanup() {
     [[ -z $daemon_pid ]] || kill "$daemon_pid" 2>/dev/null || true
@@ -46,18 +47,21 @@ fail() {
     exit 1
 }
 # The daemon names no path with its errors; where strace is installed, a
-# failed start is rerun under it to show the refused calls.
+# failed start is rerun under it to show the refused calls. The tracer runs
+# outside the user switch: the daemon makes itself non-dumpable before it
+# loads key material, and only a privileged tracer can still read its paths.
 trace_daemon() {
     command -v strace >/dev/null || return 0
     rm -rf -- "$profile"
-    as_user strace -f -o "$work/runtime/daemon.strace" "$runtime" --daemon \
+    local trace=$work/daemon.strace
+    strace -f -y -s 256 -o "$trace" "${as_user[@]}" "$runtime" --daemon \
         >/dev/null 2>&1 &
     local traced=$!
     sleep 20
     kill "$traced" 2>/dev/null || true
     wait "$traced" 2>/dev/null || true
     echo "--- refused calls ---" >&2
-    grep -E 'E(ACCES|PERM)' "$work/runtime/daemon.strace" | tail -n 20 >&2 || true
+    grep -E 'E(ACCES|PERM)' "$trace" | tail -n 20 >&2 || true
 }
 
 case $mode in
@@ -66,20 +70,15 @@ throwaway)
     useradd --home-dir "$work/home" --create-home --shell /bin/bash "$smoke_user"
     chmod 0711 "$work"
     install -d -m 0700 -o "$smoke_user" -g "$(id -g "$smoke_user")" "$work/runtime"
-    as_user() {
-        runuser -u "$smoke_user" -- env -i \
-            HOME="$work/home" USER="$smoke_user" LOGNAME="$smoke_user" \
-            PATH=/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR="$work/runtime" \
-            WGPU_BACKEND=vulkan "$@"
-    }
+    as_user=(runuser -u "$smoke_user" -- env -i
+        HOME="$work/home" USER="$smoke_user" LOGNAME="$smoke_user"
+        PATH=/usr/local/bin:/usr/bin:/bin XDG_RUNTIME_DIR="$work/runtime"
+        WGPU_BACKEND=vulkan)
     ;;
 current)
     install -d -m 0700 "$work/home" "$work/runtime"
-    as_user() {
-        env -i HOME="$work/home" PATH="$PATH" XDG_RUNTIME_DIR="$work/runtime" \
-            ${VK_ICD_FILENAMES:+VK_ICD_FILENAMES="$VK_ICD_FILENAMES"} \
-            WGPU_BACKEND=vulkan "$@"
-    }
+    as_user=(env -i HOME="$work/home" PATH="$PATH" XDG_RUNTIME_DIR="$work/runtime"
+        ${VK_ICD_FILENAMES:+VK_ICD_FILENAMES="$VK_ICD_FILENAMES"} WGPU_BACKEND=vulkan)
     ;;
 *) echo "TILO_RUNTIME_SMOKE_USER must be throwaway or current" >&2; exit 2 ;;
 esac
@@ -87,7 +86,7 @@ esac
 cd "$work/home"
 
 # The daemon the systemd user unit starts, on the default profile.
-as_user "$runtime" --daemon >"$work/daemon.log" 2>&1 &
+"${as_user[@]}" "$runtime" --daemon >"$work/daemon.log" 2>&1 &
 daemon_pid=$!
 for _ in $(seq 120); do
     [[ -S $profile/native.sock ]] && break
@@ -99,7 +98,7 @@ done
 
 # An attached process receives the collaboration and identity connections.
 # shellcheck disable=SC2016 # expanded by the attached shell, not this one
-as_user "$runtime" --run-app so.tilo.smoke -- /bin/sh -c \
+"${as_user[@]}" "$runtime" --run-app so.tilo.smoke -- /bin/sh -c \
     'test -n "$TILO_SVC_COLLAB_FD" && test -n "$TILO_SVC_IDENTITY_FD" && echo "attached $TILO_PACKAGE_ID"' \
     >"$work/attach.log" 2>&1 || fail 'attaching a process failed'
 grep -Fxq 'attached so.tilo.smoke' "$work/attach.log" || fail 'the attached process got no service connections'
@@ -109,12 +108,12 @@ printf '%s\n' \
     '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"smoke","version":"1"}}}' \
     '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
     '{"jsonrpc":"2.0","id":2,"method":"tools/list"}' \
-    | as_user timeout 60 "$runtime" --connect >"$work/mcp.log" 2>&1 || true
+    | "${as_user[@]}" timeout 60 "$runtime" --connect >"$work/mcp.log" 2>&1 || true
 grep -q '"id":2' "$work/mcp.log" || fail 'MCP tools/list got no reply'
 grep -q '"tools"' "$work/mcp.log" || fail 'MCP tools/list listed no tools'
 
 # The packaged SDK app starts and renders without a display.
-as_user "$app" --shots "$work/runtime/store.png" >"$work/shots.log" 2>&1 \
+"${as_user[@]}" "$app" --shots "$work/runtime/store.png" >"$work/shots.log" 2>&1 \
     || fail 'the Tilo app could not render headless'
 [[ -s $work/runtime/store.png ]] || fail 'the Tilo app rendered no image'
 
