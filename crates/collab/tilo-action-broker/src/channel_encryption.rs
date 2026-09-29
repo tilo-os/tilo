@@ -495,13 +495,13 @@ impl ChannelEncryption {
         if !entry.announced
             && let Some(genesis) = entry.steward.journal().frames().first().cloned()
         {
-            entry.announced = true;
             self.delivery = self.delivery.wrapping_add(1);
-            let _ = transport.publish(NeighbourMsg::MlsGovernance {
+            entry.announced = transport.publish(NeighbourMsg::MlsGovernance {
                 room: entry.room.to_string(),
                 frame: Box::new(genesis),
                 delivery: self.delivery,
             });
+            tracing::debug!(room = %entry.room, ?channel, accepted = entry.announced, "channel genesis announced to the room");
         }
         let outbox = entry.steward.outbox();
         let owed: BTreeSet<Ed25519PublicKey> =

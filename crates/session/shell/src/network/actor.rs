@@ -751,6 +751,9 @@ struct ActorState {
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
     /// When each recent remote-input message arrived (see [`mark_new_input`]).
     recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    /// Channel governance this device published to each room, by retention
+    /// channel (see [`remember_governance`]).
+    governance: HashMap<WorkspaceId, VecDeque<([u8; 32], Vec<u8>)>>,
     wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
@@ -1025,6 +1028,7 @@ impl ActorState {
                 }
             }
             Some(NetCmd::Publish { ws, msg }) => {
+                remember_governance(&mut self.governance, ws, &msg);
                 if self.native_routes.contains(ws)
                     && matches!(
                         &msg,
@@ -2263,6 +2267,11 @@ impl ActorState {
                 tracing::info!(ws, host = %peer, "workspace host session started");
                 let session = Arc::new(session);
                 self.announce_identity_to_host(ws, &session);
+                for (channel, bytes) in self.governance.get(&ws).into_iter().flatten() {
+                    if let Err(error) = session.publish_checkpoint(*channel, bytes.clone()) {
+                        tracing::warn!(ws, %error, "could not send channel governance to the workspace host");
+                    }
+                }
                 if let Err(error) = session.live_join() {
                     tracing::warn!(ws, %error, "could not join the workspace host's live plane");
                 }
@@ -3002,6 +3011,7 @@ async fn run(
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
         recent_input: HashMap::new(),
+        governance: HashMap::new(),
         wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
@@ -3123,6 +3133,40 @@ async fn publish(
             );
         }
     }
+}
+
+/// Channel governance kept per room for the host sessions that start later.
+const MAX_REMEMBERED_GOVERNANCE: usize = 512;
+
+/// Keep `msg` when it is channel governance, the latest copy per retention
+/// channel. A host session that was down when it was published (they
+/// restart, and a pinned home peer replaces an unpinned dial) gets it when
+/// it starts: a channel's genesis is announced once, and a device that is
+/// not a member yet learns only from the host that the channel exists.
+fn remember_governance(
+    remembered: &mut HashMap<WorkspaceId, VecDeque<([u8; 32], Vec<u8>)>>,
+    ws: WorkspaceId,
+    msg: &NeighbourMsg,
+) {
+    if !matches!(
+        msg,
+        NeighbourMsg::MlsGovernance { .. }
+            | NeighbourMsg::MlsAccessRequest { .. }
+            | NeighbourMsg::MlsGovernanceAck { .. }
+    ) {
+        return;
+    }
+    let (Some((channel, Retention::Checkpoint)), Ok(bytes)) =
+        (retention(msg, false), postcard::to_allocvec(msg))
+    else {
+        return;
+    };
+    let room = remembered.entry(ws).or_default();
+    room.retain(|(kept, _)| *kept != channel);
+    if room.len() >= MAX_REMEMBERED_GOVERNANCE {
+        room.pop_front();
+    }
+    room.push_back((channel, bytes));
 }
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
@@ -5213,6 +5257,113 @@ mod tests {
         assert!(hellos.contains(&a_device), "A's certificate is replayed");
         assert!(!hellos.contains(&b_device), "B's own certificate is not");
         assert_eq!(own, [op], "B's own document comes back from the host");
+    }
+
+    /// Channel governance published while no host session is up (before the
+    /// first dial, or while a session is being replaced) reaches the host
+    /// once one starts: a steward announces a channel's genesis once, and a
+    /// browser learns only from the host that the channel exists.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn governance_published_before_a_host_session_reaches_the_host() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let genesis = collab_types::MlsGovernanceFrameV1::signed(
+            collab_types::ChannelId::new(),
+            [1; 32],
+            1,
+            [0; 32],
+            0,
+            collab_types::MlsGovernanceAction::Genesis,
+            &a_key,
+        )
+        .unwrap();
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (cmd_a, _task_a) = Actor::spawn_reporting_addrs(
+            a,
+            lookup_a,
+            Some(identity(a_key, a_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_a, mut rx_a) = mpsc::channel(16);
+        cmd_a
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_a,
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::MlsGovernance {
+                    room: "room".into(),
+                    frame: Box::new(genesis.clone()),
+                    delivery: 1,
+                },
+            })
+            .await
+            .unwrap();
+        cmd_a
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("A's host session is ready", async {
+            while !matches!(rx_a.recv().await, Some(NetEvent::HostReady { .. })) {}
+        })
+        .await;
+
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let (cmd_b, _task_b) = Actor::spawn_reporting_addrs(
+            b,
+            lookup_b,
+            Some(identity(b_key, b_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events_b, mut rx_b) = mpsc::channel(16);
+        cmd_b
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events_b,
+            })
+            .await
+            .unwrap();
+        cmd_b
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        tilo_test_env::within("B receives A's genesis from the host", async {
+            loop {
+                if let Some(NetEvent::Msg {
+                    msg: NeighbourMsg::MlsGovernance { frame, .. },
+                    ..
+                }) = rx_b.recv().await
+                    && *frame == genesis
+                {
+                    break;
+                }
+            }
+        })
+        .await;
     }
 
     /// Native shells are live members of their workspace host: a presence
