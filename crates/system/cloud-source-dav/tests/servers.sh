@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Real servers for the container layer of the cloud-source conformance suite:
-# Apache mod_dav (a plain WebDAV server) and the official Nextcloud image.
+# Apache mod_dav (a plain WebDAV server) and the official Nextcloud image on
+# PostgreSQL (on SQLite it answers 503 when parallel clients wait on its lock).
 #
 #   eval "$(crates/system/cloud-source-dav/tests/servers.sh start)"
 #   cargo test --locked -p cloud-source-dav --test conformance container_
@@ -17,6 +18,7 @@ user=ada
 password=conformance-password
 webdav_image=docker.io/bytemark/webdav:latest
 nextcloud_image=docker.io/library/nextcloud:31-apache
+postgres_image=docker.io/library/postgres:17-alpine
 
 port_of() {
   "$engine" port "$1" 80/tcp | head -n1 | sed 's/.*://'
@@ -26,14 +28,19 @@ start() {
   "$engine" run -d --rm --name "$prefix-webdav" -p 127.0.0.1::80 \
     -e AUTH_TYPE=Basic -e USERNAME="$user" -e PASSWORD="$password" \
     "$webdav_image" >/dev/null
-  "$engine" run -d --rm --name "$prefix-nextcloud" -p 127.0.0.1::80 \
-    -e SQLITE_DATABASE=nextcloud \
+  # Nextcloud joins the database's network namespace, which publishes its port.
+  "$engine" run -d --rm --name "$prefix-nextcloud-db" -p 127.0.0.1::80 \
+    -e POSTGRES_DB=nextcloud -e POSTGRES_USER=nextcloud -e POSTGRES_PASSWORD="$password" \
+    "$postgres_image" >/dev/null
+  "$engine" run -d --rm --name "$prefix-nextcloud" --network "container:$prefix-nextcloud-db" \
+    -e POSTGRES_HOST=127.0.0.1 -e POSTGRES_DB=nextcloud \
+    -e POSTGRES_USER=nextcloud -e POSTGRES_PASSWORD="$password" \
     -e NEXTCLOUD_ADMIN_USER="$user" -e NEXTCLOUD_ADMIN_PASSWORD="$password" \
     -e NEXTCLOUD_TRUSTED_DOMAINS="127.0.0.1 localhost" \
     "$nextcloud_image" >/dev/null
   local webdav nextcloud
   webdav=$(port_of "$prefix-webdav")
-  nextcloud=$(port_of "$prefix-nextcloud")
+  nextcloud=$(port_of "$prefix-nextcloud-db")
   # Both refuse connections until they serve; Nextcloud installs itself on
   # first start before Apache listens. curl's own retry bounds the wait.
   curl -sS -o /dev/null --retry 60 --retry-connrefused --retry-delay 1 \
@@ -51,7 +58,7 @@ EOF
 }
 
 stop() {
-  "$engine" rm -f "$prefix-webdav" "$prefix-nextcloud" >/dev/null 2>&1 || true
+  "$engine" rm -f "$prefix-webdav" "$prefix-nextcloud" "$prefix-nextcloud-db" >/dev/null 2>&1 || true
 }
 
 case "${1:-}" in
