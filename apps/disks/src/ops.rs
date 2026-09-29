@@ -30,7 +30,6 @@ use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::process::Command;
 use std::time::Duration;
-use std::time::Instant;
 
 /// The privileged operations the app can perform.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +212,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let mut f = File::open(&path).map_err(|e| format!("open {path}: {e}"))?;
 
     let mut buf = vec![0u8; BLOCK];
-    let start = Instant::now();
+    let start = ui::time::now();
     let mut total = 0usize;
     while total < TARGET {
         match f.read(&mut buf) {
@@ -229,7 +228,7 @@ pub fn benchmark(dev_leaf: &str) -> Result<String, String> {
     let size = f.seek(SeekFrom::End(0)).unwrap_or(0).max(BLOCK as u64);
     let mut small = vec![0u8; 4096];
     let mut rng: u64 = 0x9e37_79b9_7f4a_7c15;
-    let seek_start = Instant::now();
+    let seek_start = ui::time::now();
     for _ in 0..SEEKS {
         rng = rng
             .wrapping_mul(6_364_136_223_846_793_005)

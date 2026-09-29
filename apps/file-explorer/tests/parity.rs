@@ -310,7 +310,7 @@ fn footer_shows_item_count_and_formatted_path() {
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), xdg_paths::home().as_deref())
+        file_explorer::model::format_path(&w.current_path(), tilo_paths::home().as_deref())
     );
 }
 

@@ -32,7 +32,9 @@ use std::sync::Arc;
 #[cfg(feature = "decode")]
 use std::time::Duration;
 
-use thumbnail::{ThumbKey, ThumbSize, ThumbState, ThumbnailService};
+#[cfg(any(feature = "decode", test))]
+use thumbnail::ThumbSize;
+use thumbnail::{ThumbKey, ThumbState, ThumbnailService};
 use vello::peniko::{Blob, ImageAlphaType, ImageData, ImageFormat};
 
 use crate::media::MediaSource;
@@ -45,6 +47,7 @@ use crate::preview::palette_rgb;
 /// 480p one.
 pub const THUMB_W: u32 = 160;
 pub const THUMB_H: u32 = 90;
+#[cfg(any(feature = "decode", test))]
 const THUMB_SIZE: ThumbSize = ThumbSize::new(THUMB_W, THUMB_H);
 
 /// Filmstrip resolution in source time.
@@ -88,11 +91,13 @@ pub fn bucket_of(t: f64) -> u32 {
 
 /// The centre time (seconds) of `bucket` — the time a bucket's frame is
 /// decoded at, so every request for a bucket names one frame.
+#[cfg(any(feature = "decode", test))]
 fn bucket_time(bucket: u32) -> f64 {
     (f64::from(bucket) + 0.5) * STRIP_BUCKET_SECS
 }
 
 /// Milliseconds of source time, for the pipeline.
+#[cfg(feature = "decode")]
 fn millis(t: f64) -> u64 {
     (t.max(0.0) * 1000.0).round().min(u64::MAX as f64) as u64
 }
@@ -210,6 +215,10 @@ pub fn representative(palette: u8, w: u32, h: u32) -> Thumb {
 enum Slot {
     /// The pipeline has been asked for it (under this key) and has not
     /// answered yet.
+    #[cfg_attr(
+        not(feature = "decode"),
+        allow(dead_code, reason = "only the decoder path asks for frames")
+    )]
     Pending(ThumbKey),
     /// A real decoded frame.
     Ready(Arc<Thumb>),
@@ -463,13 +472,12 @@ impl ThumbnailCache {
         {
             return Some(*key);
         }
-        let meta = std::fs::metadata(&source.abs_path).ok()?;
+        let meta = crate::files::metadata(&source.abs_path).ok()?;
         let mtime_ms = meta
-            .modified()
-            .ok()
-            .and_then(|m| m.duration_since(std::time::UNIX_EPOCH).ok())
+            .modified
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_or(0, |d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX));
-        let key = ThumbKey::of_path_meta(&source.abs_path, mtime_ms, meta.len(), THUMB_SIZE);
+        let key = ThumbKey::of_path_meta(&source.abs_path, mtime_ms, meta.len, THUMB_SIZE);
         self.sources.insert(id, (source.abs_path.clone(), key));
         Some(key)
     }

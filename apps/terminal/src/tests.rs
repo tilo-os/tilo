@@ -825,8 +825,8 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let mut doc = AutoCommit::new();
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             widget.sync(&mut doc, &ROOT);
             if widget.is_disconnected() {
                 break;
@@ -2640,7 +2640,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // `feed` path must produce correct content and finish well under a bound the
     // quadratic path could never meet.
     {
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let mut doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
@@ -2657,7 +2657,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         );
         }
 
-        let start = Instant::now();
+        let start = ui::time::now();
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
         let elapsed = start.elapsed();
@@ -3690,8 +3690,8 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// replays bytes through vte into the CRDT grid) until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
-    let deadline = std::time::Instant::now() + HANG_BOUND;
-    while std::time::Instant::now() < deadline {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         w.sync(doc, &ROOT);
         if w.grid_text().contains(needle) {
             return true;
@@ -3771,8 +3771,8 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             fresh.sync(&mut doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
                 break;

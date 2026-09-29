@@ -1,7 +1,7 @@
 //! Open-Meteo request construction + response parsing.
 //!
 //! This module is **pure**: it builds URLs and turns JSON strings into
-//! model types. The actual HTTP (reqwest + tokio) lives in `net.rs` so
+//! model types. The actual HTTP (`tilo_net`) lives in `net.rs` so
 //! the parsing can be unit-tested without a network. The `--shots`
 //! offscreen path never calls into here at all — it renders bundled
 //! sample data (`sample.rs`).

@@ -4,7 +4,7 @@
 //! drawing, hit-testing, and tooltip dwell. Geographic effects remain in the
 //! app and are requested through [`MapControlAction`].
 
-use std::time::Instant;
+use ui::time::Instant;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -286,7 +286,7 @@ impl MapControls {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.tooltip.tick(Instant::now());
+        self.tooltip.tick(ui::time::now());
         if let Some((label, anchor)) = self.tooltip.visible() {
             ui::widget::tooltip::draw_hover_tooltip(
                 scene,
@@ -344,7 +344,7 @@ mod tests {
         {
             let mut controls = controls();
             let zoom = controls.rect(MapControlAction::ZoomIn);
-            let t0 = Instant::now();
+            let t0 = ui::time::now();
             assert!(controls.on_pointer(zoom.center(), false, [], t0));
             assert_eq!(controls.hovered, Some(MapControlAction::ZoomIn));
             assert!(controls.tooltip.visible().is_none());

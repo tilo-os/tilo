@@ -96,6 +96,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         })
     }
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let ui_set = |name: &str| crate::env::var_os(name).is_some_and(|value| !value.is_empty());
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX").and_then(|hex| {
         crate::host::environment::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
     });
@@ -131,10 +132,10 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         locale: crate::host::environment::locale_from_vars(|name| std::env::var(name).ok()),
         desktop: text("XDG_CURRENT_DESKTOP"),
         diagnostics: crate::host::RunnerDiagnostics {
-            debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
-            perf_log: set("QUICK_UI_PERF"),
-            disable_scroll_fast_path: set("QUICK_UI_NO_SCROLL_OPT"),
-            disable_split_cache: set("QUICK_UI_NO_SPLIT_CACHE"),
+            debug_overlay: crate::env::var_os("TILO_UI_DEBUG").is_some(),
+            perf_log: ui_set("TILO_UI_PERF"),
+            disable_scroll_fast_path: ui_set("TILO_UI_NO_SCROLL_OPT"),
+            disable_split_cache: ui_set("TILO_UI_NO_SPLIT_CACHE"),
             gpu_timestamps: std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|v| v == "1"),
             gpu_dispatch_timestamps: std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS")
                 .is_ok_and(|v| v == "1"),

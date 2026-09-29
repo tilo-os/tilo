@@ -263,7 +263,7 @@ impl DesktopBackdrop {
     }
 
     /// Re-encoding the gradient + ~80 grid strokes + noise every frame
-    /// dominated the at-rest `draw=` budget under `QUICK_UI_PERF=1`, so
+    /// dominated the at-rest `draw=` budget under `TILO_UI_PERF=1`, so
     /// this bakes once and replays via translate.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);

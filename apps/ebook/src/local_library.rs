@@ -27,7 +27,7 @@ pub(crate) struct LocalLibrary {
 
 impl LocalLibrary {
     pub(crate) fn load() -> Self {
-        Self::from_section(&settings_store::load_section(SECTION))
+        Self::from_section(&ui::storage::Settings::section(SECTION).load())
     }
 
     pub(crate) fn remember_book(&mut self, id: &str, path: &Path) {
@@ -80,7 +80,7 @@ impl LocalLibrary {
     }
 
     pub(crate) fn save(&self) {
-        if let Err(error) = settings_store::update_section(SECTION, self.section()) {
+        if let Err(error) = ui::storage::Settings::section(SECTION).update(self.section()) {
             tracing::warn!(%error, "ebook: couldn't persist local library capabilities");
         }
     }
@@ -163,18 +163,14 @@ impl LocalLibrary {
 
     #[cfg(test)]
     fn from_path(path: &Path) -> Self {
-        let document = settings_store::load_at(path);
-        let section = document
-            .get(SECTION)
-            .and_then(Value::as_object)
-            .cloned()
-            .unwrap_or_default();
-        Self::from_section(&section)
+        Self::from_section(&ui::storage::Settings::section(SECTION).in_file(path).load())
     }
 
     #[cfg(test)]
     fn save_at(&self, path: &Path) -> std::io::Result<()> {
-        settings_store::update_section_at(path, SECTION, self.section())
+        ui::storage::Settings::section(SECTION)
+            .in_file(path)
+            .update(self.section())
     }
 }
 
@@ -232,7 +228,7 @@ mod tests {
             assert_eq!(registry.books.len(), 1);
             registry.save_at(&path).unwrap();
 
-            assert!(settings_store::load_at(&path).contains_key(SECTION));
+            assert!(ui::storage::settings_at(&path).contains_key(SECTION));
 
             let restored = LocalLibrary::from_path(&path);
             assert_eq!(

@@ -130,13 +130,17 @@ impl ListModel for ActivityModel {
         // A newer request makes this completion stale, so a slow answer for a
         // window the user scrolled past never overwrites a newer one.
         let completion = self.request.begin();
-        std::thread::spawn(move || {
+        // A worker where the target has one; the page's executor otherwise.
+        let spawned = ui::background::Background::current().spawn("load-rows", move || {
             let rows = Ok(range
                 .filter_map(|index| u64::try_from(index).ok())
                 .map(|id| Activity { id })
                 .collect());
             let _ = completion.complete(rows);
         });
+        if spawned.is_err() {
+            self.error = Some("Background work is not available here.".into());
+        }
     }
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<Self::Key>> {
