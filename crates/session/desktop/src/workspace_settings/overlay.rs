@@ -1229,7 +1229,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            mark.inset(14.0),
+            mark.inset(-14.0),
             ui::icons::Icon::LayoutGrid,
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -1248,7 +1248,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            close.inset(8.0),
+            close.inset(-8.0),
             ui::icons::Icon::X,
             colors.text_dim,
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,
@@ -1942,7 +1942,7 @@ impl WorkspaceSettingsOverlay {
         ui::icons::draw_icon(
             scene,
             transform,
-            share_icon.inset(8.0),
+            share_icon.inset(-8.0),
             ui::icons::Icon::Copy,
             colors.accent[4],
             ui::icons::LUCIDE_DEFAULT_STROKE_PX,

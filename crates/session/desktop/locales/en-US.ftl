@@ -705,10 +705,7 @@ workspace-settings-who-agent = Who · AGENT (only this surface; no ambient works
 workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
 workspace-settings-what-it-allows = What it allows
 workspace-settings-grant-header = GRANT A PERMISSION
-workspace-settings-saved-roles = { $count ->
-    [one] 1 SAVED ROLE · MANAGE
-   *[other] { $count } SAVED ROLES · MANAGE
-}
+workspace-settings-saved-roles = Manage roles ({ $count })
 workspace-settings-expiry-caption = Until
 workspace-settings-grant = Grant
 workspace-settings-role-sheet-title = Choose workspace access
