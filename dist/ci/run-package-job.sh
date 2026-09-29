@@ -432,6 +432,9 @@ arch)
     stage=prepare-arch-builder
     useradd --create-home builder
     chown -R builder:builder /workspace
+    # makepkg runs as builder, whose rustup home does not have the pinned
+    # toolchain root's cargo probes installed.
+    su builder -c 'cd /workspace && rustup toolchain install'
     stage=build-arch
     su builder -c 'cd /workspace && CARGO_FEATURE_PURE="$TILO_BLAKE3_PURE" dist/arch/build-arch.sh'
     stage=inspect-arch
