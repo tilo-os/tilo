@@ -4880,7 +4880,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_in(&spec.app_dir)?;
+    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
     let manifest = signed_manifest(
         &spec,
         request,
@@ -6643,7 +6643,8 @@ fn provide_runtime_host(app_dir: &Path) {
     let _ = DEV_RUNTIME.set(runtime);
 }
 
-fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+/// `cargo metadata` for the app at `app_dir`, with its dependencies resolved.
+fn cargo_metadata(app_dir: &Path) -> Result<serde_json::Value> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = ProcessCommand::new(&cargo)
         .args(["metadata", "--format-version", "1", "--manifest-path"])
@@ -6655,8 +6656,12 @@ fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
     if !output.status.success() {
         bail!("cargo metadata failed with {}", output.status);
     }
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    serde_json::from_slice(&output.stdout).context("parsing cargo metadata")
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let metadata = cargo_metadata(app_dir)?;
     let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
         anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
     })?;
