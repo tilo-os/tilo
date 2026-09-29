@@ -17,6 +17,7 @@ if [ "$1" = metadata ]; then
   exit 0
 fi
 printf '%s\n' "$@" > "$FAKE_LOG/cargo-args"
+printf '%s\n' "$*" >> "$FAKE_LOG/cargo-builds"
 env | grep -E '^(CARGO_TARGET|CC|AR)_.*ANDROID' | sort > "$FAKE_LOG/cargo-env"
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -301,6 +302,87 @@ fn a_scaffolded_app_builds_a_debug_apk_from_its_library() {
         !fixture.log("tools").contains("jarsigner"),
         "a build makes no bundle"
     );
+}
+
+#[test]
+fn an_android_package_without_arch_is_one_package_per_architecture() {
+    let fixture = Fixture::new();
+
+    // One --output cannot name two packages, and nothing is built to learn it.
+    let named = fixture.tilo_app(
+        &fixture.app,
+        &[
+            "package",
+            "--platform",
+            "android",
+            "--output",
+            "dist/one.tapp",
+        ],
+    );
+    assert!(!named.status.success());
+    assert!(stderr(&named).contains("add --arch"), "{}", stderr(&named));
+    assert_eq!(fixture.log("cargo-builds"), "");
+
+    let output = fixture.tilo_app(
+        &fixture.app,
+        &["package", "--platform", "android", "--no-bundle", "--json"],
+    );
+    assert!(output.status.success(), "{}", stderr(&output));
+    let builds = fixture.log("cargo-builds");
+    assert_eq!(builds.lines().count(), 2, "{builds}");
+    assert!(
+        builds.contains("--target aarch64-linux-android"),
+        "{builds}"
+    );
+    assert!(builds.contains("--target x86_64-linux-android"), "{builds}");
+
+    let dist = fixture.app.join("dist");
+    for (arch, abi) in [("aarch64", "arm64-v8a"), ("x86_64", "x86_64")] {
+        let apk = std::fs::read_to_string(dist.join(format!("notes-android-{arch}.apk"))).unwrap();
+        assert!(
+            apk.contains(&format!("entry:lib/{abi}/libnotes.so")),
+            "{apk}"
+        );
+        let tapp = dist.join(format!("notes-android-{arch}.tapp"));
+        let reader = std::io::BufReader::new(std::fs::File::open(&tapp).unwrap());
+        let read =
+            tilo_app_package::tapp::read(reader, &mut tilo_app_package::DiscardBlobs).unwrap();
+        assert_eq!(
+            read.meta.manifest.target.as_ref().unwrap().architecture,
+            arch
+        );
+    }
+    let packages = json(&output)["result"]["packages"].clone();
+    let packages = packages.as_array().expect("one result per package");
+    assert_eq!(packages.len(), 2);
+
+    // Both builds are measured against the registry's Android limit.
+    let limit = tilo_app_package::platform_size_limit("android");
+    assert_eq!(limit, tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES);
+    for package in packages {
+        assert_eq!(package["size"]["limit_bytes"], limit, "{package}");
+    }
+    assert!(
+        stderr(&output).contains("of the 64.0 MiB limit"),
+        "{}",
+        stderr(&output)
+    );
+
+    // Every output is checked before either architecture is rebuilt.
+    for extension in ["tapp", "apk"] {
+        std::fs::remove_file(dist.join(format!("notes-android-aarch64.{extension}"))).unwrap();
+    }
+    let kept = fixture.tilo_app(
+        &fixture.app,
+        &["package", "--platform", "android", "--no-bundle"],
+    );
+    assert!(!kept.status.success());
+    assert!(
+        stderr(&kept).contains("notes-android-x86_64"),
+        "{}",
+        stderr(&kept)
+    );
+    assert_eq!(fixture.log("cargo-builds").lines().count(), 2);
 }
 
 #[test]

@@ -1476,19 +1476,26 @@ fn run_package(args: PackageArgs) -> Result<Value> {
         no_default_features: args.no_default_features,
         force: args.force,
     };
-    let outcome = if platform == tilo_app_cli::PackagePlatform::Android {
-        tilo_app_cli::android::package(
+    if platform == tilo_app_cli::PackagePlatform::Android {
+        let outcomes = tilo_app_cli::android::package(
             &path,
             &request,
             &tilo_app_cli::android::PackageOptions {
                 keystore: args.android.keystore,
                 bundle: args.android.no_bundle.then_some(false),
             },
-        )?
-    } else {
-        tilo_app_cli::package_app(&path, &request)?
-    };
-    Ok(outcome.to_json())
+        )?;
+        let mut packages: Vec<Value> = outcomes
+            .iter()
+            .map(tilo_app_cli::PackageOutcome::to_json)
+            .collect();
+        return Ok(if packages.len() == 1 {
+            packages.remove(0)
+        } else {
+            json!({ "packages": packages })
+        });
+    }
+    Ok(tilo_app_cli::package_app(&path, &request)?.to_json())
 }
 
 fn run_dev(args: DevArgs) -> Result<Value> {
