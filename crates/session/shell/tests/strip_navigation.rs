@@ -442,7 +442,9 @@ fn two_strip_harness() -> (Harness, StripId, StripId, GroupId, Vec<GroupId>) {
 }
 
 /// Each strip's groups, the focused strip and its focused group.
-fn plane(h: &Harness) -> (Vec<(StripId, Vec<GroupId>)>, StripId, Option<GroupId>) {
+type Plane = (Vec<(StripId, Vec<GroupId>)>, StripId, Option<GroupId>);
+
+fn plane(h: &Harness) -> Plane {
     let st = h.chrome.borrow();
     let tree = st.tree();
     let active_strip = tree.desktop.active_strip[&tree.desktop.active];
@@ -463,10 +465,11 @@ fn plane(h: &Harness) -> (Vec<(StripId, Vec<GroupId>)>, StripId, Option<GroupId>
 /// Invoke shell action `id` through the action door, as `tilo-control
 /// actions invoke` and the palette do.
 fn invoke(
-    h: &mut Harness,
+    h: &Harness,
     id: &str,
     args: &serde_json::Value,
 ) -> Result<(), shell::shell::search::action_api::ActionError> {
+    use shell::shell::search::action_api::ActionError;
     use shell::shell::search::action_api::{AllVisible, ResourceRef};
     let mut doc = automerge::AutoCommit::new();
     let root = automerge::ROOT;
@@ -477,7 +480,7 @@ fn invoke(
     };
     let selected = catalog
         .select(&ResourceRef::new("actions", id))
-        .unwrap_or_else(|| panic!("{id} is not on the action door"));
+        .ok_or_else(|| ActionError::Refused(format!("{id} is not on the action door")))?;
     let args = args.as_object().cloned().unwrap_or_default();
     selected
         .invoke_json(&mut doc, &root, &h.chrome, &args)
@@ -548,7 +551,7 @@ fn window_actions_run_the_operations_their_chords_run() {
     let (mut h, upper, lower, resident, groups) = two_strip_harness();
     let none = serde_json::json!({});
 
-    invoke(&mut h, "group.move-to-strip-next", &none).unwrap();
+    invoke(&h, "group.move-to-strip-next", &none).unwrap();
     assert_eq!(
         plane(&h).0[1],
         (lower, vec![resident]),
@@ -559,16 +562,11 @@ fn window_actions_run_the_operations_their_chords_run() {
     assert_eq!(strips[1], (lower, vec![resident, groups[0]]));
     assert_eq!((active, focused), (lower, Some(groups[0])));
 
-    invoke(&mut h, "strip.focus-previous", &none).unwrap();
+    invoke(&h, "strip.focus-previous", &none).unwrap();
     h.host.run_requested_shortcut_actions();
     assert_eq!(plane(&h).1, upper);
 
-    invoke(
-        &mut h,
-        "window.focus-nth",
-        &serde_json::json!({ "index": 3 }),
-    )
-    .unwrap();
+    invoke(&h, "window.focus-nth", &serde_json::json!({ "index": 3 })).unwrap();
     h.host.run_requested_shortcut_actions();
     assert_eq!(
         plane(&h).2,
@@ -578,7 +576,7 @@ fn window_actions_run_the_operations_their_chords_run() {
     for index in [0, 10] {
         assert!(
             invoke(
-                &mut h,
+                &h,
                 "window.focus-nth",
                 &serde_json::json!({ "index": index })
             )
@@ -587,7 +585,7 @@ fn window_actions_run_the_operations_their_chords_run() {
         );
     }
 
-    invoke(&mut h, "group.move-right", &none).unwrap();
+    invoke(&h, "group.move-right", &none).unwrap();
     h.host.run_requested_shortcut_actions();
     assert_eq!(
         plane(&h).0[0].1,
