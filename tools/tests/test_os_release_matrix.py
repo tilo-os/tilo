@@ -207,14 +207,14 @@ class OsDevLaneTests(unittest.TestCase):
                 concurrency_group("refs/pull/12/head", "workflow_call", ""),
                 "tilo-os-dev-refs/pull/12/head",
             )
-            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' }}", WORKFLOW.read_text())
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='main pushes and image pull requests call it'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
             self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
             self.assertIn("branches: [main]", caller)
             self.assertIn('- "os/**"', caller)
-            self.assertIn("cancel-in-progress: true", caller)
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", caller)
             self.assertIn("  workflow_call:", WORKFLOW.read_text())
         with self.subTest(phase='the dev build publishes images and skips the disk install'):
             workflow = WORKFLOW.read_text()

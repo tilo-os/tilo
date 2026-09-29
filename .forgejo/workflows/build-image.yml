@@ -92,8 +92,10 @@ concurrency:
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
   group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  # A dev build is superseded by the next commit of its ref.
-  cancel-in-progress: ${{ github.event_name == 'workflow_call' }}
+  # A pull request's dev build is superseded by its next commit. On main the
+  # running build finishes and only the newest waiting commit follows it, so a
+  # stream of merges cannot starve every build of completion.
+  cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
@@ -320,7 +322,8 @@ jobs:
       fail-fast: false
       matrix: ${{ fromJSON(needs.plan.outputs.build-matrix) }}
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 600
+    # No job may need more than three hours; a slower one is a bug to fix.
+    timeout-minutes: 180
     enable-openid-connect: true
     env:
       # Board images carry private firmware: they stay in the forge's private
@@ -969,10 +972,18 @@ jobs:
           else
             echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
             echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
-            # Without LTO nothing bounds link memory: every core compiles.
-            echo "TILO_DEV_CARGO_JOBS=$(nproc)" >> "$GITHUB_ENV"
           fi
-          echo "::notice::OS integration validation: $validate; publication: $publish"
+          # Every core compiles, bounded only by memory: a thin-LTO rustc
+          # peaks near 3 GiB, the rest far below it. The job count never
+          # reaches the image, so the two lanes of a release may differ.
+          memory_gib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1048576 ))
+          per_job=1
+          [[ $publish != true ]] || per_job=3
+          jobs=$(( memory_gib / per_job ))
+          (( jobs > $(nproc) )) && jobs=$(nproc)
+          (( jobs < 1 )) && jobs=1
+          echo "TILO_CARGO_JOBS=$jobs" >> "$GITHUB_ENV"
+          echo "::notice::OS integration validation: $validate; publication: $publish; cargo jobs: $jobs of $(nproc) CPUs, ${memory_gib} GiB"
 
       # The browser-only bundle and tapp are built in the OS image. Both
       # independently compiled publication lanes must sign their bytes with
@@ -1300,7 +1311,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1375,7 +1386,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1469,7 +1480,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
@@ -1579,7 +1590,7 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_CARGO_JOBS }}
             TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
