@@ -91,6 +91,11 @@ pub struct GovernedMember {
     pub display_name: Option<String>,
     pub active_device_keys: Vec<[u8; 32]>,
     pub removed: bool,
+    /// Made an administrator by the governance writer: `role` is then
+    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) with the
+    /// owner's authority over the workspace.
+    #[serde(default)]
+    pub administrator: bool,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(
@@ -573,6 +578,32 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.set_member_verb(user_public_key, member_verb(role), key, now)
+    }
+
+    /// Make a governed collaborator an administrator of the workspace, with
+    /// the owner's authority over it (never its governance key).
+    /// [`Self::set_member_role`] demotes them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_member_role`].
+    pub fn set_member_administrator(
+        &mut self,
+        user_public_key: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.set_member_verb(user_public_key, Verb::Admin, key, now)
+    }
+
+    fn set_member_verb(
+        &mut self,
+        user_public_key: [u8; 32],
+        verb: Verb,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         self.require_governance_writer(key, now)?;
         if user_public_key == self.core.authority.user_public_key {
             return Err("owner role cannot be changed through member governance".into());
@@ -605,10 +636,62 @@ impl StatePeer {
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        put_member_capability(&mut doc, &caps, user_public_key, role)?;
+        put_member_verb(&mut doc, &caps, user_public_key, verb)?;
         doc.commit();
         let changed = self.apply_governance_doc(doc, &before, key, now)?;
-        Ok(changed && before_role != Some(member_role(role)))
+        let after_role = match verb {
+            Verb::Admin => Role::Owner,
+            Verb::Write => Role::Editor,
+            Verb::Comment => Role::Commenter,
+            Verb::Read | Verb::Invite => Role::Viewer,
+        };
+        Ok(changed && before_role != Some(after_role))
+    }
+
+    /// Write workspace capabilities the governance writer decided, such as
+    /// those an assigned permission profile expands to, keyed by their ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, a capability
+    /// has no id or would replace a membership, or governance cannot be updated.
+    pub fn put_governed_capabilities(
+        &mut self,
+        capabilities: &[CapOverride],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        let caps = doc
+            .get(ROOT, "capabilities")
+            .map_err(err)?
+            .ok_or("governed capabilities missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for capability in capabilities {
+            if capability.id.trim().is_empty() || capability.id.starts_with("room-member-v1:") {
+                return Err(format!(
+                    "capability {:?} cannot be written as workspace policy",
+                    capability.id
+                ));
+            }
+            doc.put(
+                &caps,
+                capability.id.as_str(),
+                automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
+            )
+            .map_err(err)?;
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
     }
 
     /// Remove a governed collaborator and revoke their devices.
@@ -742,19 +825,25 @@ impl StatePeer {
             };
             let root = identity.device_cert.user_public_key;
             let person = hex::encode(root);
-            let active_role = room::role_of(
+            let role = room::role_of(
                 policy.owner.as_deref(),
                 &policy.caps,
                 &person,
                 now_secs(now),
-            )
-            .and_then(member_role_from_role);
+            );
+            let administrator = role == Some(Role::Owner);
+            let active_role = if administrator {
+                Some(crate::join::MemberRole::Editor)
+            } else {
+                role.and_then(member_role_from_role)
+            };
             let row = rows.entry(root).or_insert_with(|| GovernedMember {
                 user_public_key: root,
                 role: active_role.unwrap_or(receipt.role),
                 display_name: names.get(id).cloned(),
                 active_device_keys: Vec::new(),
                 removed: active_role.is_none(),
+                administrator,
             });
             if let Some(role) = active_role {
                 row.role = role;
@@ -3109,14 +3198,6 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) role: crate::join::MemberRole,
 }
 
-fn member_role(role: crate::join::MemberRole) -> Role {
-    match role {
-        crate::join::MemberRole::Viewer => Role::Viewer,
-        crate::join::MemberRole::Commenter => Role::Commenter,
-        crate::join::MemberRole::Editor => Role::Editor,
-    }
-}
-
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
@@ -3143,6 +3224,15 @@ pub(crate) fn put_member_capability(
     capabilities: &automerge::ObjId,
     user_public_key: [u8; 32],
     role: crate::join::MemberRole,
+) -> Result<(), String> {
+    put_member_verb(doc, capabilities, user_public_key, member_verb(role))
+}
+
+fn put_member_verb(
+    doc: &mut AutoCommit,
+    capabilities: &automerge::ObjId,
+    user_public_key: [u8; 32],
+    verb: Verb,
 ) -> Result<(), String> {
     let id = member_capability_id(user_public_key);
     let person = hex::encode(user_public_key);
@@ -3172,7 +3262,7 @@ pub(crate) fn put_member_capability(
     let cap = CapOverride::grant(
         Subject::User(Ed25519PublicKey::from_bytes(user_public_key)),
         Scope::Workspace,
-        member_verb(role),
+        verb,
     )
     .with_id(id.clone());
     doc.put(
