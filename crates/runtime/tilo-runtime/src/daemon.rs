@@ -718,19 +718,8 @@ pub fn serve<S: RuntimeServices>(profile: &Path, dev: bool) -> io::Result<()> {
         status,
         computer,
         joiner: session.joiner(),
+        search,
     };
-    #[cfg(target_os = "macos")]
-    if tilo_os_search::spotlight::bundled() {
-        // Spotlight hands a chosen result to the app on the main thread.
-        let accepting = std::thread::Builder::new()
-            .name("tilo-native-accept".into())
-            .spawn(move || endpoint.accept(&listener))?;
-        crate::os_search::serve_spotlight_continuations(search)?;
-        return accepting
-            .join()
-            .map_err(|_| io::Error::other("the native endpoint stopped"))?;
-    }
-    drop(search);
     endpoint.accept(&listener)
 }
 
@@ -742,6 +731,8 @@ struct Endpoint<H> {
     status: Status,
     computer: Option<Arc<crate::computer::Computer>>,
     joiner: Option<crate::Joiner>,
+    /// Opens the host search results another process was handed.
+    search: Arc<tilo_os_search::OsSearch>,
 }
 
 impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoint<H> {
@@ -760,6 +751,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
             let status = self.status.clone();
             let computer = self.computer.clone();
             let joiner = self.joiner.clone();
+            let search = Arc::clone(&self.search);
             let active = Arc::clone(&active);
             active.fetch_add(1, Ordering::Relaxed);
             let slot = ConnectionSlot(active);
@@ -772,6 +764,7 @@ impl<H: tilo_actions::remote::ActionHost + Clone + Send + Sync + 'static> Endpoi
                         McpServer::new(host, room, actor).with_computer(computer),
                         &status,
                         joiner.as_ref(),
+                        &search,
                     ) {
                         tracing::debug!(%error, "native runtime client disconnected");
                     }
@@ -792,6 +785,7 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
     mut server: McpServer<H>,
     status: &Status,
     joiner: Option<&crate::Joiner>,
+    search: &tilo_os_search::OsSearch,
 ) -> io::Result<()> {
     stream.set_nonblocking(false)?;
     stream.set_write_timeout(Some(Duration::from_secs(5)))?;
@@ -812,6 +806,13 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
                 Ok(value) if value.get("native") == Some(&json!("join")) => {
                     Some(answer_join(joiner, &value))
                 }
+                Ok(value) if value.get("native") == Some(&json!(tilo_os_search::native::OPEN)) => {
+                    Some(
+                        runtime
+                            .block_on(answer_open(search, &value))
+                            .map_err(io::Error::other)?,
+                    )
+                }
                 Ok(value) => runtime
                     .block_on(server.handle(value))
                     .map_err(io::Error::other)?,
@@ -823,6 +824,19 @@ fn serve_connection<H: tilo_actions::remote::ActionHost + Send + Sync>(
         if let Some(reply) = reply {
             write_reply(&mut stream, &reply)?;
         }
+    }
+}
+
+/// A native open request's answer: a host search result another process of
+/// this runtime was handed (a Spotlight click reaches the bundle's app),
+/// opened after the same re-check as any other.
+pub(crate) async fn answer_open(search: &tilo_os_search::OsSearch, request: &Value) -> Value {
+    let Some(entry) = request.get("entry").and_then(Value::as_str) else {
+        return json!({"error": "an open request needs an entry"});
+    };
+    match search.open(entry).await {
+        Ok(()) => json!({"opened": true}),
+        Err(error) => json!({"error": format!("{error:?}")}),
     }
 }
 

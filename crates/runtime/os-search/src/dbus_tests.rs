@@ -1,4 +1,4 @@
-//! Both providers over a real D-Bus connection pair, called exactly as GNOME
+//! Both providers on a private session bus, called by name exactly as GNOME
 //! Shell and `KRunner` call them.
 
 use std::collections::HashMap;
@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use zbus::zvariant::OwnedValue;
 
-use super::{GNOME_PATH, KRUNNER_PATH, serve};
+use super::{BUS_NAME, GNOME_PATH, KRUNNER_PATH, serve_on};
 use crate::tests::{Host, owner, row, search};
 
 const GNOME: &str = "org.gnome.Shell.SearchProvider2";
@@ -22,22 +22,63 @@ type Match = (
     HashMap<String, OwnedValue>,
 );
 
-/// A client connected to the providers, peer to peer, over a socket pair.
-async fn client(host: &Host) -> (zbus::Connection, zbus::Connection) {
+/// A session bus of its own, as `dbus-run-session` starts one, stopped on drop.
+struct SessionBus {
+    daemon: std::process::Child,
+    address: String,
+    _directory: tempfile::TempDir,
+}
+
+impl SessionBus {
+    fn start() -> Self {
+        use std::io::BufRead;
+        let directory = tempfile::tempdir().unwrap();
+        let mut daemon = std::process::Command::new("dbus-daemon")
+            .args(["--session", "--nofork", "--print-address=1"])
+            .arg(format!(
+                "--address=unix:path={}",
+                directory.path().join("bus").display()
+            ))
+            .stdout(std::process::Stdio::piped())
+            .spawn()
+            .expect("the session bus needs dbus-daemon, which the builder image installs");
+        let mut address = String::new();
+        std::io::BufReader::new(daemon.stdout.take().unwrap())
+            .read_line(&mut address)
+            .unwrap();
+        assert!(!address.trim().is_empty(), "dbus-daemon printed no address");
+        Self {
+            daemon,
+            address: address.trim().to_owned(),
+            _directory: directory,
+        }
+    }
+}
+
+impl Drop for SessionBus {
+    fn drop(&mut self) {
+        let _ = self.daemon.kill();
+        let _ = self.daemon.wait();
+    }
+}
+
+/// The providers serving on a fresh session bus, and a client on the same bus.
+async fn client(host: &Host) -> (SessionBus, zbus::Connection, zbus::Connection) {
     let search = Arc::new(search(host));
     search.refresh().await.unwrap();
-    let (server, client) = tokio::net::UnixStream::pair().unwrap();
-    let server = serve(
-        zbus::connection::Builder::unix_stream(server)
-            .server(zbus::Guid::generate())
-            .unwrap()
-            .p2p(),
+    let bus = SessionBus::start();
+    let server = serve_on(
+        zbus::connection::Builder::address(bus.address.as_str()).unwrap(),
         &search,
     )
-    .unwrap()
-    .build();
-    let client = zbus::connection::Builder::unix_stream(client).p2p().build();
-    tokio::try_join!(server, client).unwrap()
+    .await
+    .unwrap();
+    let client = zbus::connection::Builder::address(bus.address.as_str())
+        .unwrap()
+        .build()
+        .await
+        .unwrap();
+    (bus, server, client)
 }
 
 async fn call<B, R>(client: &zbus::Connection, path: &str, iface: &str, method: &str, body: &B) -> R
@@ -46,7 +87,7 @@ where
     R: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type,
 {
     client
-        .call_method(None::<&str>, path, Some(iface), method, body)
+        .call_method(Some(BUS_NAME), path, Some(iface), method, body)
         .await
         .unwrap()
         .body()
@@ -68,7 +109,7 @@ fn catalogue() -> Host {
 #[tokio::test]
 async fn gnome_shell_finds_describes_and_opens_through_the_action_host() {
     let host = catalogue();
-    let (_server, client) = client(&host).await;
+    let (_bus, _server, client) = client(&host).await;
     let ids: Vec<String> = call(
         &client,
         GNOME_PATH,
@@ -123,7 +164,7 @@ async fn gnome_shell_finds_describes_and_opens_through_the_action_host() {
 #[tokio::test]
 async fn gnome_shell_opens_nothing_the_owner_may_no_longer_open() {
     let host = catalogue();
-    let (_server, client) = client(&host).await;
+    let (_bus, _server, client) = client(&host).await;
     let ids: Vec<String> = call(
         &client,
         GNOME_PATH,
@@ -156,7 +197,7 @@ async fn gnome_shell_opens_nothing_the_owner_may_no_longer_open() {
 #[tokio::test]
 async fn krunner_matches_and_runs_through_the_action_host() {
     let host = catalogue();
-    let (_server, client) = client(&host).await;
+    let (_bus, _server, client) = client(&host).await;
     let actions: Vec<(String, String, String)> =
         call(&client, KRUNNER_PATH, KRUNNER, "Actions", &()).await;
     assert!(actions.is_empty());

@@ -299,3 +299,150 @@ fn dev_mode_is_an_explicit_daemon_flag() {
     assert!(args(&["--profile", "/tmp/profile", "--connect", "--dev"]).is_err());
     assert!(args(&["--profile", "/tmp/profile", "--daemon", "--dev", "--dev"]).is_err());
 }
+
+/// One page resource with an `open` view action, offered by publisher `7`,
+/// and every invocation the host was asked to run.
+#[derive(Clone, Default)]
+struct PageHost {
+    offered: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    invoked: std::sync::Arc<std::sync::Mutex<Vec<tilo_actions::remote::InvokeRequest>>>,
+}
+
+impl tilo_actions::remote::ActionHost for PageHost {
+    fn query(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        query: tilo_actions::remote::CatalogueQuery,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::CataloguePage, tilo_actions::remote::ActionHostError>,
+    > {
+        use tilo_actions::remote::{CatalogueProvider, CatalogueResource, CatalogueRow};
+        let rows: Vec<CatalogueRow> = if self.offered.load(std::sync::atomic::Ordering::SeqCst) {
+            vec![CatalogueRow {
+                provider: "7".into(),
+                app_id: "so.tilo.notes".into(),
+                parent_resource: String::new(),
+                resource: CatalogueResource {
+                    id: "page:1".into(),
+                    kind: "notes.page".into(),
+                    label: "Travel plans".into(),
+                    presentation: None,
+                },
+                action: Some(tilo_actions::ActionDescriptor {
+                    address: tilo_actions::ActionAddress::new("page:1", "open"),
+                    resource_kind: "notes.page".into(),
+                    resource_label: "Travel plans".into(),
+                    action_label: "Open note".into(),
+                    description: None,
+                    locus: tilo_actions::ExecutionLocus::ClientLocal,
+                    kind: tilo_actions::OperationKind::View,
+                    contract: tilo_actions::ActionContract::view(),
+                    input: tilo_actions::InputSpec::None,
+                    params: Vec::new(),
+                    view: None,
+                }),
+                has_children: false,
+                visibility: None,
+            }]
+        } else {
+            Vec::new()
+        };
+        let mut page = tilo_actions::remote::CataloguePage::from_rows("1".into(), rows, &query);
+        if query.provider.is_none() {
+            page.providers = vec![CatalogueProvider {
+                provider: "7".into(),
+                app_id: "so.tilo.notes".into(),
+                room: "room".into(),
+                record_id: String::new(),
+                browsable: true,
+            }];
+        }
+        tilo_actions::remote::Pending::ready(Ok(page))
+    }
+
+    fn invoke(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        request: tilo_actions::remote::InvokeRequest,
+    ) -> tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionHostError>,
+    > {
+        let invocation = request.invocation;
+        self.invoked.lock().unwrap().push(request);
+        tilo_actions::remote::Pending::ready(Ok(tilo_actions::remote::InvocationReceipt {
+            invocation,
+            status: tilo_actions::remote::ReceiptStatus::Accepted,
+        }))
+    }
+
+    fn observe(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::remote::InvocationState> {
+        None
+    }
+
+    fn cancel(
+        &self,
+        _caller: &tilo_actions::remote::Caller,
+        _id: &tilo_actions::InvocationId,
+    ) -> Result<(), tilo_actions::remote::ActionHostError> {
+        Err(tilo_actions::remote::ActionHostError::UnknownInvocation)
+    }
+}
+
+#[test]
+fn a_result_another_process_was_handed_opens_through_the_action_host() {
+    let host = PageHost::default();
+    host.offered
+        .store(true, std::sync::atomic::Ordering::SeqCst);
+    let search = std::sync::Arc::new(tilo_os_search::OsSearch::new(
+        std::sync::Arc::new(host.clone()),
+        tilo_actions::remote::Caller::local_person("owner").in_room("room"),
+    ));
+    let runtime = tilo_rt::try_app().unwrap();
+    runtime.handle().block_on(search.refresh()).unwrap();
+    let entry = search.search("travel", 1)[0].id;
+
+    let directory = tempfile::tempdir().unwrap();
+    let socket = directory.path().join("native.sock");
+    let listener = std::os::unix::net::UnixListener::bind(&socket).unwrap();
+    let serving = {
+        let (host, search) = (host.clone(), std::sync::Arc::clone(&search));
+        std::thread::spawn(move || {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().unwrap();
+                super::serve_connection(
+                    stream,
+                    crate::mcp::McpServer::new(host.clone(), "room".into(), "owner".into()),
+                    &super::Status {
+                        version: 1,
+                        pid: 1,
+                        room: "room".into(),
+                    },
+                    None,
+                    &search,
+                )
+                .unwrap();
+            }
+        })
+    };
+
+    // What the app a Spotlight click woke sends: the daemon opens it.
+    tilo_os_search::native::open(&socket, entry).unwrap();
+    let invoked = host.invoked.lock().unwrap().clone();
+    assert_eq!(invoked.len(), 1);
+    assert_eq!(
+        invoked[0].target.address,
+        tilo_actions::ActionAddress::new("page:1", "open")
+    );
+
+    // Access is revoked before the next walk: the daemon re-checks and refuses.
+    host.offered
+        .store(false, std::sync::atomic::Ordering::SeqCst);
+    let refused = tilo_os_search::native::open(&socket, entry).unwrap_err();
+    assert!(refused.to_string().contains("NotOffered"), "{refused}");
+    assert_eq!(host.invoked.lock().unwrap().len(), 1, "nothing more ran");
+    serving.join().unwrap();
+}

@@ -32,6 +32,8 @@ mod entry;
 mod index;
 #[cfg(all(unix, not(target_os = "macos")))]
 pub mod linux_files;
+#[cfg(unix)]
+pub mod native;
 mod search;
 #[cfg(target_os = "macos")]
 pub mod spotlight;
