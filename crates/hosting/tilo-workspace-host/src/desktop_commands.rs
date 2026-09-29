@@ -62,9 +62,9 @@ impl SessionOwner {
         let mut expected = command.source.heads.clone();
         current.sort_unstable();
         expected.sort_unstable();
-        // OpenApp is placement-independent: the owner places it against the
-        // current topology below, so an older source revision cannot misplace it.
-        let placement_independent = matches!(command.command, DesktopCommand::OpenApp { .. });
+        // An older source revision cannot misplace what the owner places
+        // against its current topology below.
+        let placement_independent = command.command.is_placement_independent();
         if current != expected
             && !placement_independent
             && !desktop_source_matches(&doc, &command.source.heads).map_err(rejected)?
@@ -127,35 +127,59 @@ impl SessionOwner {
         let mut creation = None;
         let mut documents = vec![];
         let mut routes = tilo_desktop_model::apps::record_routes(&doc);
-        tilo_desktop_model::commands::apply_command(
-            workspace,
-            &resolved,
-            &mut || ids.mint_in_namespace(),
-            &mut |app, id| {
-                let application = crate::canonical_records::resolve(app).ok_or_else(|| {
-                    "application has no installed checked record factory".to_owned()
-                })?;
-                let definition = application.definition();
-                let now = crate::owner::policy_fence::sample(time)?;
-                policy::current_caller(self, request, now)?;
-                policy::topology(self, caller, command, now)?;
-                creation = self.prepare_desktop_creation(request, app)?;
-                let prepared = application.prepare_for_tab(self.peer(), caller, id, now)?;
-                let record = prepared.record().to_owned();
-                if let Some(document) = prepared.into_new_document() {
-                    documents.push(document);
-                }
-                routes.insert(id, record);
-                Ok((
-                    definition.title.into(),
-                    TileContent::AppPlaceholder {
-                        kind: AppKind::Other(app.into()),
-                        label: definition.title.into(),
-                    },
-                ))
-            },
-        )
-        .map_err(rejected)?;
+        let opens_app = matches!(command.command, DesktopCommand::OpenApp { .. });
+        let mut governed = if matches!(resolved, DesktopCommand::RecordEffectReceipt { .. }) {
+            Some(Vec::new())
+        } else {
+            self.apply_permission_profile_command(workspace, caller, &resolved, now)
+                .map_err(rejected)?
+        };
+        if governed.is_none() {
+            tilo_desktop_model::commands::apply_command(
+                workspace,
+                &resolved,
+                &mut || ids.mint_in_namespace(),
+                &mut |app, id| {
+                    let application = crate::canonical_records::resolve(app).ok_or_else(|| {
+                        "application has no installed checked record factory".to_owned()
+                    })?;
+                    let definition = application.definition();
+                    let now = crate::owner::policy_fence::sample(time)?;
+                    policy::current_caller(self, request, now)?;
+                    policy::topology(self, caller, command, now)?;
+                    creation = self.prepare_desktop_creation(request, app)?;
+                    let prepared = application.prepare_for_tab(self.peer(), caller, id, now)?;
+                    let record = prepared.record().to_owned();
+                    // An agent's or member's open runs a native app process, which
+                    // opens its package primary before the window's record.
+                    if opens_app
+                        && !record.is_empty()
+                        && let Some(primary) = application
+                            .prepare_primary(self.peer(), caller, now)?
+                            .into_new_document()
+                    {
+                        documents.push(primary);
+                    }
+                    if let Some(document) = prepared.into_new_document() {
+                        documents.push(document);
+                    }
+                    routes.insert(id, record);
+                    Ok((
+                        definition.title.into(),
+                        TileContent::AppPlaceholder {
+                            kind: AppKind::Other(app.into()),
+                            label: definition.title.into(),
+                        },
+                    ))
+                },
+            )
+            .map_err(rejected)?;
+        }
+        if let DesktopCommand::OpenApp { app } = &command.command
+            && let Some(authorship) = self.app_authorship(caller, app, now).map_err(rejected)?
+        {
+            governed.get_or_insert_with(Vec::new).push(authorship);
+        }
         doc.set_actor(ui::automerge::ActorId::from(
             self.identity.native_cert.device_public_key.to_vec(),
         ));
@@ -206,6 +230,16 @@ impl SessionOwner {
             )
             .map_err(|e| rejected(e.to_string()))?;
         }
+        if let DesktopCommand::RecordEffectReceipt { receipt_json } = &resolved {
+            record_effect_receipt(&mut doc, receipt_json).map_err(rejected)?;
+        }
+        if matches!(resolved, DesktopCommand::SavePermissionProfile { .. }) {
+            tilo_desktop_model::projection::project_workspace_permission_profiles(
+                &mut doc,
+                &workspace.permission_profiles,
+            )
+            .map_err(|e| rejected(e.to_string()))?;
+        }
         doc.commit();
         let mut candidate = self.peer().clone();
         // Checked records enter the candidate before their topology is admitted.
@@ -238,6 +272,15 @@ impl SessionOwner {
                 crate::owner::policy_fence::sample(time).map_err(rejected)?,
             )
             .map_err(rejected)?;
+        if let Some(capabilities) = governed.filter(|capabilities| !capabilities.is_empty()) {
+            candidate
+                .put_governed_capabilities(
+                    &capabilities,
+                    &self.identity.native,
+                    crate::owner::policy_fence::sample(time).map_err(rejected)?,
+                )
+                .map_err(rejected)?;
+        }
         let committed = self
             .commit_desktop_creation_candidate(
                 candidate,
@@ -265,6 +308,140 @@ impl SessionOwner {
             .validate_for(request)
             .map_err(DesktopCommandError::Uncertain)?;
         Ok(receipt)
+    }
+}
+
+/// Record a member's effect receipt in the room document; a receipt already
+/// recorded for the invocation must be the same one.
+fn record_effect_receipt(doc: &mut AutoCommit, receipt_json: &str) -> Result<(), String> {
+    use ui::automerge::{ObjType, ScalarValue, Value};
+    let receipt: tilo_desktop_model::WorkspaceEffectReceipt =
+        serde_json::from_str(receipt_json).map_err(|e| format!("not an effect receipt: {e}"))?;
+    let redacted = receipt_json.as_bytes();
+    let object = match doc
+        .get(ROOT, "effect_receipts_v1")
+        .map_err(|e| e.to_string())?
+    {
+        Some((Value::Object(ObjType::Map), object)) => object,
+        Some(_) => return Err("invalid canonical effect receipt map".into()),
+        None => doc
+            .put_object(ROOT, "effect_receipts_v1", ObjType::Map)
+            .map_err(|e| e.to_string())?,
+    };
+    let id = receipt.invocation.0.to_string();
+    match doc.get(&object, &id).map_err(|e| e.to_string())? {
+        Some((Value::Scalar(value), _)) if matches!(value.as_ref(), ScalarValue::Bytes(prior) if prior.as_slice() == redacted) =>
+            {}
+        Some(_) => return Err("effect receipt is immutable".into()),
+        None => {
+            doc.put(&object, &id, ScalarValue::Bytes(redacted.to_vec()))
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+impl SessionOwner {
+    /// The capability letting `app` author the workspace, when an
+    /// administrator opens it and it may not yet: as a person's own launcher
+    /// grants an app it opens. `None` otherwise.
+    fn app_authorship(
+        &self,
+        caller: &tilo_user_identity::DeviceCert,
+        app: &str,
+        now: std::time::SystemTime,
+    ) -> Result<Option<collab_types::caps::CapOverride>, String> {
+        use collab_types::caps::{
+            Actor, CapDecision, CapOverride, ResourceRef, Scope, Subject, Verb, decide_capability,
+        };
+        let (role, capabilities, person) =
+            self.peer().permissions(caller.device_public_key, now)?;
+        let room = self.peer().room();
+        let seconds = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| "desktop policy time predates epoch")?
+            .as_secs();
+        let opener = Actor::person(Some(role), person).in_room(room);
+        let decide = |actor: &Actor, verb| {
+            decide_capability(
+                actor,
+                &ResourceRef::Workspace,
+                verb,
+                &capabilities,
+                Some(seconds),
+            ) == CapDecision::Allow
+        };
+        if !decide(&opener, Verb::Admin) || decide(&Actor::app(app).in_room(room), Verb::Write) {
+            return Ok(None);
+        }
+        Ok(Some(
+            CapOverride::grant(Subject::app(app), Scope::Workspace, Verb::Write)
+                .with_id(format!("app-author-v1:{app}")),
+        ))
+    }
+
+    /// Apply a permission-profile command with the caller's own authority over
+    /// workspace governance. `Some` names the capabilities an assignment
+    /// expands to, which the governance writer then records; `None` when
+    /// `command` is not a permission-profile command.
+    fn apply_permission_profile_command(
+        &self,
+        workspace: &mut Workspace,
+        caller: &tilo_user_identity::DeviceCert,
+        command: &DesktopCommand,
+        now: std::time::SystemTime,
+    ) -> Result<Option<Vec<collab_types::caps::CapOverride>>, String> {
+        if !matches!(
+            command,
+            DesktopCommand::SavePermissionProfile { .. }
+                | DesktopCommand::AssignPermissionProfile { .. }
+        ) {
+            return Ok(None);
+        }
+        let (role, capabilities, person) =
+            self.peer().permissions(caller.device_public_key, now)?;
+        let actor =
+            collab_types::caps::Actor::person(Some(role), person).in_room(self.peer().room());
+        workspace.capabilities = capabilities;
+        let seconds = now
+            .duration_since(std::time::SystemTime::UNIX_EPOCH)
+            .map_err(|_| "desktop policy time predates epoch")?
+            .as_secs();
+        match command {
+            DesktopCommand::SavePermissionProfile { profile_json } => {
+                workspace
+                    .save_permission_profile_as_actor_at(
+                        &actor,
+                        decode_permission_profile(profile_json)?,
+                        seconds,
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(Some(Vec::new()))
+            }
+            DesktopCommand::AssignPermissionProfile {
+                profile,
+                subject_kind,
+                subject,
+                expires_unix,
+            } => {
+                let (subject, expiry) =
+                    permission_assignment(subject_kind, subject, *expires_unix)?;
+                let ids = workspace
+                    .assign_permission_profile_as_actor_at(
+                        &actor, profile, &subject, expiry, seconds,
+                    )
+                    .map_err(|error| error.to_string())?;
+                Ok(Some(
+                    workspace
+                        .capabilities
+                        .iter()
+                        .filter(|capability| ids.contains(&capability.id))
+                        .cloned()
+                        .collect(),
+                ))
+            }
+            _ => Ok(None),
+        }
     }
 }
 
