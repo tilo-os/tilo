@@ -1800,7 +1800,42 @@ mod action_lifecycle_tests;
 /// Longest a peer that cannot reach readiness withholds its ready file.
 const READY_FALLBACK: Duration = Duration::from_secs(30);
 
-pub async fn run(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
+/// Run the session peer. The serialized owner does its durable work (fsynced
+/// commits) inline, so its loop gets an OS thread of its own: a stalled disk
+/// then blocks only the owner, never the caller's runtime workers, while every
+/// service the loop spawns (relay, packet server, ingress) runs on that
+/// runtime.
+pub async fn run(owner: SessionOwner, ready_path: &Path) -> Result<()> {
+    let ready = ready_path.to_path_buf();
+    on_owner_thread(move || async move { run_owner(owner, &ready).await }).await?
+}
+
+const OWNER_THREAD_STACK_BYTES: usize = 16 * 1024 * 1024;
+
+/// Drive the future `make` builds on a dedicated thread, inside the caller's
+/// runtime: its spawned tasks and sockets belong to that runtime, but its own
+/// blocking steps stall only this thread. On a current-thread runtime the
+/// caller's `block_on` keeps driving timers and IO while it awaits the result.
+async fn on_owner_thread<T, F>(make: impl FnOnce() -> F + Send + 'static) -> Result<T>
+where
+    T: Send + 'static,
+    F: Future<Output = T>,
+{
+    let runtime = tokio::runtime::Handle::current();
+    let (done, result) = tokio::sync::oneshot::channel();
+    std::thread::Builder::new()
+        .name("tilo-workspace-owner".into())
+        .stack_size(OWNER_THREAD_STACK_BYTES)
+        .spawn(move || {
+            let _ = done.send(runtime.block_on(make()));
+        })
+        .context("starting the owner thread")?;
+    result
+        .await
+        .context("the owner thread ended without a result")
+}
+
+async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     let mut interrupt = Box::pin(tokio::signal::ctrl_c());
     let interrupted = std::future::poll_fn(|context| match interrupt.as_mut().poll(context) {
         Poll::Ready(result) => Poll::Ready(result.map(|()| true)),
@@ -3055,6 +3090,71 @@ mod tests {
             current.close().await;
         }
         host.shutdown().await.unwrap();
+    }
+
+    /// A durable owner step that stalls (as a slow fsync does) blocks only
+    /// the owner's thread: another task on the same runtime keeps ticking,
+    /// and tasks the owner spawns still run on that runtime.
+    async fn blocking_owner_step_keeps_other_tasks_live()
+    -> (std::thread::ThreadId, std::thread::ThreadId) {
+        let caller = std::thread::current().id();
+        // (longest gap between ticks, last tick) of a task on this runtime.
+        let ticks = Arc::new(std::sync::Mutex::new((Duration::ZERO, None)));
+        let (ticking, ticked) = tokio::sync::oneshot::channel();
+        let ticker = tokio::spawn({
+            let ticks = ticks.clone();
+            async move {
+                let mut ticking = Some(ticking);
+                loop {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                    let now = std::time::Instant::now();
+                    let mut state = ticks.lock().unwrap();
+                    if let Some(last) = state.1 {
+                        state.0 = state.0.max(now.duration_since(last));
+                    }
+                    state.1 = Some(now);
+                    drop(state);
+                    if let Some(ticking) = ticking.take() {
+                        let _ = ticking.send(());
+                    }
+                }
+            }
+        });
+        // The owner's step starts while the other task is already live.
+        ticked.await.unwrap();
+        let started = std::time::Instant::now();
+        let spawned_on = on_owner_thread(|| async {
+            assert_eq!(std::thread::current().name(), Some("tilo-workspace-owner"));
+            std::thread::sleep(Duration::from_secs(1));
+            tokio::spawn(async { std::thread::current().id() })
+                .await
+                .unwrap()
+        })
+        .await
+        .unwrap();
+        assert!(started.elapsed() >= Duration::from_secs(1));
+        let (longest, last) = *ticks.lock().unwrap();
+        ticker.abort();
+        let longest = longest.max(last.map_or(Duration::MAX, |last| last.elapsed()));
+        assert!(
+            longest < Duration::from_millis(500),
+            "a task on the owner's runtime waited {longest:?} behind its blocking step"
+        );
+        (caller, spawned_on)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_blocking_owner_step_never_stalls_a_current_thread_runtime() {
+        let (caller, spawned_on) = blocking_owner_step_keeps_other_tasks_live().await;
+        assert_eq!(spawned_on, caller, "the owner's tasks run on its runtime");
+    }
+
+    /// From a task on the runtime's only worker, as a spawned host would be.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_blocking_owner_step_never_stalls_a_runtime_worker() {
+        tokio::spawn(blocking_owner_step_keeps_other_tasks_live())
+            .await
+            .unwrap();
     }
 
     #[tokio::test]
