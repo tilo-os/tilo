@@ -131,6 +131,7 @@ fn format_tag(format: WpFormat) -> u8 {
         WpFormat::Html => 4,
         WpFormat::Rtf => 5,
         WpFormat::Epub => 6,
+        WpFormat::Text => 7,
     }
 }
 impl FileContext {

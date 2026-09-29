@@ -5257,6 +5257,26 @@ impl ShellOverlayHost {
                 }
             }
             match &event.kind {
+                LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {
+                    let _ = crate::shell::launcher::take_launch_presented(&event.package_id);
+                }
+                // Its window was up, so it did open; the window, and its
+                // tab, are already gone.
+                LaunchEventKind::Failed { code, .. }
+                    if crate::shell::launcher::take_launch_presented(&event.package_id) =>
+                {
+                    tracing::info!(
+                        target: "shell::launcher",
+                        package_id = %event.package_id,
+                        display_name = %event.display_name,
+                        exit_code = ?code,
+                        "application exited with an error after showing its window"
+                    );
+                    continue;
+                }
+                LaunchEventKind::Failed { .. } | LaunchEventKind::SpawnFailed { .. } => {}
+            }
+            match &event.kind {
                 LaunchEventKind::Started { pid } => {
                     tracing::info!(
                         target: "shell::launcher",
