@@ -729,6 +729,8 @@ pub(crate) struct SessionLaunches {
     launched: Mutex<Vec<(String, Vec<String>, String)>>,
     /// The launch key each mapped surface was attributed to.
     surfaces: Mutex<HashMap<u64, String>>,
+    /// Launch keys whose app has shown a window since it last started.
+    presented: Mutex<std::collections::HashSet<String>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -746,6 +748,7 @@ impl Default for SessionLaunches {
             pending: Mutex::default(),
             launched: Mutex::default(),
             surfaces: Mutex::default(),
+            presented: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -2810,6 +2813,19 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 /// strings and pending-placement matching.
 pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&LaunchSession::current().surfaces).insert(surface_id, launch_key.to_string());
+}
+
+/// A window of launch `key` is on screen: if that launch later exits with
+/// an error, the app ran and then stopped (killed, crashed, quit with a
+/// status) rather than failing to open.
+pub(crate) fn note_launch_presented(key: &str) {
+    lock(&LaunchSession::current().presented).insert(key.to_string());
+}
+
+/// Whether launch `key` has shown a window since it last started, clearing
+/// the mark: a later launch of the same app starts unproven.
+pub(crate) fn take_launch_presented(key: &str) -> bool {
+    lock(&LaunchSession::current().presented).remove(key)
 }
 
 pub(crate) fn forget_surface_launch(surface_id: u64) {
