@@ -210,9 +210,15 @@ impl App {
         invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
     }
 
-    /// Only standalone History opens at a change; a framework History has
-    /// no session rows to select.
+    /// The newest changes, from whichever History serves this app.
     fn recent_changes(&self) -> Vec<RecentChange> {
+        if let Some(history) = &self.history {
+            return history
+                .recent_entries(&self.state.doc, model::RECENT_CHANGES)
+                .iter()
+                .map(RecentChange::from_entry)
+                .collect();
+        }
         if !self.history_chrome_enabled {
             return Vec::new();
         }

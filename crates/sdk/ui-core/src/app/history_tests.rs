@@ -13,6 +13,7 @@ static HISTORY: HistoryDefinition = HistoryDefinition {
         content_schema: Some(&crate::state::owned_restore_tests::SCHEMA),
     }],
 };
+/// An app whose registered framework History has two committed changes.
 fn app() -> App {
     let mut state = State::new();
     state.doc.put(ROOT, "body", "old").unwrap();
@@ -38,13 +39,21 @@ fn app() -> App {
     )
     .unwrap()
 }
-fn layout(app: &mut App) {
+/// Lay out and paint one 900×650 frame, as the native runner does.
+pub(crate) fn layout(app: &mut App) {
     app.init_layout();
     let root = app.layout.root_node.unwrap();
     assert!(run_layout_pass(app, root, 900, 650, 1.0, true, None).is_some());
     let mut scene = vello::Scene::new();
     draw_frame_content(app, &mut scene, 900, 650, 1.0, None);
     complete_native_frame_content(app, |_| {});
+}
+/// [`app`] where the host's own chrome presents History, laid out.
+pub(crate) fn native_chrome_app() -> App {
+    let mut app = app();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::Native);
+    layout(&mut app);
+    app
 }
 #[test]
 fn native_history_surface_composes_installs_and_keeps_editor_state() {
@@ -7935,4 +7944,56 @@ fn host_owned_chrome_opens_framework_history_without_its_toolbar_button() {
     layout(&mut app);
     assert!(!app.history.as_ref().unwrap().is_open());
     assert!(!has_open_button(&app));
+}
+
+#[test]
+fn host_chrome_lists_framework_history_changes_and_opens_at_the_chosen_one() {
+    use crate::host_chrome::model::CommandGroup;
+    let mut app = native_chrome_app();
+    let recent: Vec<_> = app
+        .host_commands(true)
+        .into_iter()
+        .filter(|command| command.group == CommandGroup::RecentChanges)
+        .collect();
+    assert_eq!(recent.len(), 2, "both committed changes are listed");
+    assert!(
+        recent
+            .iter()
+            .all(|command| command.enabled && command.label.contains(" · "))
+    );
+    let entry = |command: &crate::host_chrome::model::HostCommand| {
+        command.invocation().unwrap().arguments["entry"]
+            .as_str()
+            .unwrap()
+            .to_owned()
+    };
+    assert_ne!(entry(&recent[0]), entry(&recent[1]));
+
+    // The older change, so opening at it is not the timeline's default.
+    let chosen = &recent[1];
+    assert!(app.invoke_host_command(&chosen.invocation().unwrap()));
+    layout(&mut app);
+    let history = app.history.as_ref().unwrap();
+    assert!(history.is_open());
+    let selected: Vec<_> = history
+        .timeline_selection()
+        .into_iter()
+        .map(crate::standalone_history_host::encode_entry)
+        .collect();
+    assert_eq!(selected, [entry(chosen)]);
+    assert!(
+        app.layout.node_map.keys().any(|node| {
+            app.inspect_node(*node, |widget| widget.test_id() == Some("history-before"))
+                .unwrap_or(false)
+        }),
+        "the chosen change shows its before and after"
+    );
+    assert_eq!(
+        app.host_commands(true)
+            .iter()
+            .filter(|command| command.group == CommandGroup::RecentChanges)
+            .count(),
+        2,
+        "open History still lists its changes"
+    );
 }
