@@ -10,13 +10,13 @@ on:
     paths:
       - "os/Containerfile.release-tools"
       - "os/tests/release_tools_image.sh"
-      - ".forgejo/workflows/build-release-tools-image.yml"
+      - ".forgejo/workflows/build-release-tools.yml"
   push:
     branches: [main]
     paths:
       - "os/Containerfile.release-tools"
       - "os/tests/release_tools_image.sh"
-      - ".forgejo/workflows/build-release-tools-image.yml"
+      - ".forgejo/workflows/build-release-tools.yml"
 
 concurrency:
   group: release-tools-image-${{ github.event_name }}-${{ github.sha }}

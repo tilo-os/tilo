@@ -109,7 +109,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "os/tests/test_rpm_snapshot_fingerprint.py",
         "tools/tests/test_rpm_pin_contract.py",
     ),
-    ".forgejo/workflows/build-builder-image.yml": (
+    ".forgejo/workflows/build-ci-builder.yml": (
         "os/tests/test_builder_candidate_workflow.py",
         "os/tests/release_pipeline_invariants.sh",
         "os/tests/workflow_dependency_invariants.sh",
@@ -131,7 +131,7 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_ci_receipt.sh",
         "tools/tests/test_resolve_ci_builder.py",
     ),
-    ".forgejo/workflows/legacy-app-e2e.yml": (
+    ".forgejo/workflows/ci-legacy-apps.yml": (
         "tools/tests/test_ci_queue_relief.py",
         "os/tests/test_builder_candidate_workflow.py",
     ),

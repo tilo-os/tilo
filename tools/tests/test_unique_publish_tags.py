@@ -70,7 +70,7 @@ class ShellPushTests(unittest.TestCase):
         self.assertIn('"docker://registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
 
     def test_release_tools_child_and_indexes_are_unique(self):
-        text = self.read("build-release-tools-image.yml")
+        text = self.read("build-release-tools.yml")
         self.assertNotIn("candidate-$SOURCE_REVISION-${{ matrix.arch }}", text)
         self.assertIn('unique="$tag-$GITHUB_RUN_ID-${{ github.run_attempt }}"', text)
         self.assertIn('--tag "$IMAGE_REPOSITORY:$unique"', text)

@@ -11,7 +11,7 @@ Current deployment and measured startup results are recorded in the
   request full checks on both native architectures (x86-64 and ARM64).
 - `lint.yml` runs formatting, repository policy, dependency policy and dependency
   usage checks on the reserved quality lane with its pinned lean tools image.
-- `nightly.yml` runs the complete workspace, all targets, examples, and live
+- `ci-nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
@@ -249,7 +249,7 @@ them to the slot's target tree.
   when the store passes 75%. Checkout gives files new mtimes; the helper
   restores them for blobs a sealed previous job built from, and an unsealed job
   leaves nothing to restore.
-- `release-relay.yml` and `registry-server-image.yml` keep a persistent BuildKit
+- `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.
   Publications start from a fresh builder.
