@@ -211,12 +211,16 @@ pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
 }
 
 impl Theme {
-    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
-        // Derived here, the single funnel every constructor passes through,
-        // so the terminal and every syntax-highlighting surface track the OS
-        // theme instead of a hard-coded one.
+    /// Derived on every colour change, so the terminal and every
+    /// syntax-highlighting surface track the OS theme instead of a
+    /// hard-coded one.
+    fn derive_palettes(tokens: &mut Tokens) {
         tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
         tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
+    }
+
+    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
+        Self::derive_palettes(&mut tokens);
         let c = &tokens.colors;
         Self {
             name: name.into(),
@@ -818,6 +822,22 @@ impl Theme {
             "highcontrast" | "contrast" => Self::high_contrast(),
             _ => return None,
         })
+    }
+
+    /// Re-accented with a colour the host chose — the macOS or desktop
+    /// accent a standalone app follows. The ramp, focus ring and derived
+    /// palettes follow it as they follow a preset's accent; hover is the same
+    /// colour a shade darker.
+    #[must_use]
+    pub fn with_accent(mut self, accent: [u8; 3]) -> Self {
+        let hover = rgb(mix_rgb(accent, [0, 0, 0], 0.15));
+        self.tokens.colors.set_accent(rgb(accent), hover);
+        Self::derive_palettes(&mut self.tokens);
+        let c = &self.tokens.colors;
+        self.accent_primary = c.accent[ACCENT_PRIMARY_IDX];
+        self.accent_hover = c.accent[ACCENT_HOVER_IDX];
+        self.border_focus = c.border_focus;
+        self
     }
 
     #[must_use]

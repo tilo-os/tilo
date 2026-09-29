@@ -1846,8 +1846,35 @@ impl App {
         let Some(intent) = find_appearance_intent(self.root_widget.as_ref()) else {
             return false;
         };
+        self.apply_appearance_intent(intent)
+    }
+
+    /// What a standalone app read from its host OS, through the same door as
+    /// a settings pane's intent. The caller applies each host change once, so
+    /// a contrast toggle made in the app holds until the host changes again.
+    #[cfg(feature = "native")]
+    pub(crate) fn apply_host_appearance(
+        &mut self,
+        host: crate::host_appearance::HostAppearance,
+    ) -> bool {
+        let _entry = self.enter_wake_scope();
+        let mut base_theme = host.theme();
+        base_theme.caret_width = self.accessibility.base_theme.caret_width;
+        self.apply_appearance_intent(crate::theme::AppearanceIntent {
+            base_theme,
+            high_contrast: host.high_contrast,
+            reduce_motion: host.reduce_motion,
+            text_scale: self.accessibility.text_scale,
+            ui_scale: self.accessibility.ui_scale,
+        })
+    }
+
+    #[cfg(feature = "native")]
+    fn apply_appearance_intent(&mut self, intent: crate::theme::AppearanceIntent) -> bool {
         let mut changed = false;
-        if intent.base_theme.name != self.accessibility.base_theme.name {
+        if intent.base_theme.name != self.accessibility.base_theme.name
+            || intent.base_theme.accent_primary != self.accessibility.base_theme.accent_primary
+        {
             self.accessibility.base_theme = intent.base_theme;
             changed = true;
         }
