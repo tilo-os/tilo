@@ -27,6 +27,13 @@ nav = "Getting started"
 description = "Install the tilo-app command, create an app, run it with hot reload, then package it for every platform and publish it."
 
 [[page]]
+slug = "examples"
+source = "docs/examples.md"
+section = "Start"
+nav = "Templates and examples"
+description = "The four templates an app starts from and the runnable examples that each teach one idea."
+
+[[page]]
 slug = "build-an-app"
 source = "docs/app-development.md"
 section = "Guides"
