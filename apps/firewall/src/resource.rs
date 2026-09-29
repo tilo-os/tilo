@@ -36,10 +36,11 @@ impl Resource for Firewall {
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        // Host apply Effects. The intended on/off and panic bits also live in
-        // the document via FirewallAction; there is no drain queue today, so
-        // undo of a host apply is not recorded as a compensating document op.
-        [
+        // Host Effects. Toggle payloads are conservative defaults; live
+        // surfaces bind the intended on/off from the current config. Apply
+        // pushes the stored ruleset through firewall-cmd — there is no drain
+        // queue today, so undo of a host apply is not a compensating document op.
+        let mut ops = [
             (
                 "toggle-enabled",
                 "Toggle firewall",
@@ -71,7 +72,9 @@ impl Resource for Firewall {
                     }),
             )
         })
-        .collect()
+        .collect::<Vec<_>>();
+        ops.push(crate::actions::apply_effect_spec());
+        ops
     }
 
     fn children(state: &FirewallConfig) -> Vec<tilo_actions::Resource> {
@@ -122,9 +125,11 @@ impl ResourceSurface<Firewall> for FirewallApp {
 /// Framework dispatcher when hosted; the local action host for standalone
 /// tests and the screenshot launcher.
 pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Firewall>>,
-    last: Option<EncodedAction>,
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<Dispatcher<Firewall>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    pub(crate) hosted: bool,
+    pub(crate) last: Option<EncodedAction>,
 }
 
 impl Default for ActionSink {
@@ -132,6 +137,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
             last: None,
         }
     }
@@ -140,10 +146,17 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Firewall>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
+        self.hosted
+    }
+
+    /// Test-only: mark hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 
     pub(crate) fn dispatch_with_context(
@@ -180,4 +193,67 @@ impl ActionSink {
 /// Live launch through the framework host.
 pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<FirewallShell>()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::actions::FIREWALL_APPLY_TYPE;
+    use crate::model::FirewallConfig;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn resource_publish_owns_apply_and_hosted_keeps_no_duplicate_root() {
+        let config = FirewallConfig::empty();
+        let published =
+            ui::tilo_resource::publish::<Firewall>("firewall.config", "Firewall", &config);
+        assert_eq!(published.kind, "firewall.config");
+        let apply = published
+            .actions
+            .iter()
+            .find(|action| action.id == "apply")
+            .expect("apply Effect must ride local_operations via publish");
+        assert_eq!(apply.kind, OperationKind::Effect);
+        assert_eq!(apply.operation_type.as_deref(), Some(FIREWALL_APPLY_TYPE));
+        assert!(
+            published
+                .actions
+                .iter()
+                .any(|action| action.id == "toggle-enabled"),
+            "toggle Effects stay on the framework root"
+        );
+
+        let mut app = FirewallApp::new_demo();
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &ui::automerge::ROOT);
+        assert!(!app.is_hosted(), "standalone stays on the local host");
+        let standalone = app.resources(&doc);
+        assert!(
+            standalone.iter().any(|root| {
+                root.kind == "firewall.config"
+                    && root.actions.iter().any(|action| action.id == "apply")
+            }),
+            "standalone still publishes apply"
+        );
+
+        app.mark_hosted_for_test();
+        assert!(app.is_hosted());
+        let extras = app.resources(&doc);
+        assert!(
+            extras.is_empty()
+                || extras
+                    .iter()
+                    .all(|resource| resource.kind == "firewall.recovery"),
+            "hosted must not republish firewall.config beside ResourceRoot: {:?}",
+            extras.iter().map(|r| r.id.as_str()).collect::<Vec<_>>()
+        );
+        assert!(
+            !extras
+                .iter()
+                .any(|resource| resource.kind == "firewall.config"),
+            "hosted must not republish the config door"
+        );
+    }
 }
