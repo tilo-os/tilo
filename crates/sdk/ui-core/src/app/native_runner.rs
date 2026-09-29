@@ -1734,7 +1734,10 @@ impl AppHandler {
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
-        self.decorations.draw(app, &mut scene, transform);
+        {
+            self.decorations.draw(app, &mut scene, transform);
+            full_redraw_required |= self.decorations.take_repaint();
+        }
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
