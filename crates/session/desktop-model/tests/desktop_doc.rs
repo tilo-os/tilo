@@ -253,6 +253,36 @@ fn topology_edits_are_mirrored_into_the_document() {
         let back = layout(&read_back(&doc));
         assert_eq!(back, vec![(1, vec![(11, vec![110, 300]), (10, vec![100])])]);
     }
+    // Phase `a_group_moved_to_another_strip_follows_the_tree`.
+    {
+        let (mut tree, mut doc) = seeded();
+        apply_command(
+            &mut tree.workspaces[0],
+            &DesktopCommand::MoveGroup {
+                group: 10,
+                strip: 2,
+                before: Some(20),
+            },
+            &mut || Err("a move mints nothing".into()),
+            &mut |_, _| Err("a move creates nothing".into()),
+        )
+        .unwrap();
+        assert_eq!(
+            layout(&tree),
+            vec![
+                (1, vec![(11, vec![110])]),
+                (2, vec![(10, vec![100, 101]), (20, vec![200])]),
+            ]
+        );
+        let moved = tree.workspaces[0].strips[1].window_groups[0].clone();
+        assert!(desktop_doc::move_group(&mut doc, StripId(2), &moved, 0));
+        assert_eq!(layout(&read_back(&doc)), layout(&tree));
+
+        // Nothing moves when the destination strip is not in the document.
+        let before = layout(&read_back(&doc));
+        assert!(!desktop_doc::move_group(&mut doc, StripId(9), &moved, 0));
+        assert_eq!(layout(&read_back(&doc)), before);
+    }
 }
 
 fn shortcut(id: &str, name: &str) -> tilo_automation::Shortcut {
