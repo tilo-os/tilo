@@ -80,6 +80,7 @@ pub struct DiskUsageApp {
     scan_cancellation: Option<ScanCancellation>,
     picker_rx: Option<ui::portal::PortalChannel>,
     shot_mode: bool,
+    hosted: bool,
 }
 
 impl DiskUsageApp {
@@ -120,6 +121,7 @@ impl DiskUsageApp {
             scan_cancellation: None,
             picker_rx: None,
             shot_mode: false,
+            hosted: false,
         }
     }
 
@@ -887,8 +889,66 @@ impl Widget for DiskUsageApp {
     }
 }
 
+impl DiskUsageApp {
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn in_analysis(&self) -> bool {
+        matches!(self.view, View::Analysis(_))
+    }
+
+    /// Places and the open scan. Not a second `disk-usage` root; choose / home
+    /// / back already ride `local_operations`.
+    fn live_analyze_extras(&self) -> Vec<Resource> {
+        let mut extras = Vec::new();
+        for place in &self.places {
+            if let Some(resource) = analyze_resource(&place.label, &place.path) {
+                extras.push(resource);
+            }
+        }
+        if let View::Analysis(result) = &self.view {
+            for entry in &result.entries {
+                if entry.path.file_name().is_some_and(|name| name != ".")
+                    && let Some(resource) = analyze_resource(&entry.name, &entry.path)
+                {
+                    extras.push(resource);
+                }
+            }
+        }
+        extras
+    }
+}
+
+fn analyze_resource(label: &str, path: &std::path::Path) -> Option<Resource> {
+    let mut resource = Resource::new(
+        format!("disk-usage.folder:{}", path.display()),
+        "disk-usage.folder",
+        label,
+    );
+    resource.actions.push(operation_action(
+        &format!("analyze:{}", path.display()),
+        &format!("Analyze {label}"),
+        &DiskUsageOperation::Analyze {
+            path: path.to_path_buf(),
+        },
+    )?);
+    Some(resource)
+}
+
 impl ui::resources::PublishesResources for DiskUsageApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        if self.hosted {
+            return self.live_analyze_extras();
+        }
         let mut root = Resource::new("disk-usage:root", "disk-usage", "Disk Usage Analyzer");
         for place in &self.places {
             if let Some(action) = operation_action(
