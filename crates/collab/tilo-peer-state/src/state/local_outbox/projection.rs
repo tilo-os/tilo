@@ -49,7 +49,8 @@ impl StatePeer {
         let mut routes = BTreeMap::new();
         for original in originals {
             let local = self.retained_document(original, selected)?;
-            // A sealed write has no history anyone without its key could project.
+            // A sealed write has no history anyone without its key could
+            // project; its key holder renews it instead (`renew_local_sealed`).
             if local.mutation.is_none()
                 || self.retained_local_document_retired(original, selected)?
             {
