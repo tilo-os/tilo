@@ -37,7 +37,21 @@ rustPlatform.buildRustPackage rec {
       && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
   };
 
-  cargoLock.lockFile = ../../Cargo.lock;
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    # Git dependencies are pinned in Cargo.lock, but Nix also needs the
+    # content hash of each checkout before it can vendor them offline.
+    outputHashes = {
+      "accesskit-0.25.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
+      "accesskit_atspi_common-0.20.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
+      "accesskit_consumer-0.39.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
+      "accesskit_unix-0.23.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
+      "atspi-0.29.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
+      "atspi-common-0.13.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
+      "atspi-proxies-0.13.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
+      "rustypipe-0.11.4" = "sha256-Sdy1ynkgGbQ5q9o3U9OkxJtJJjiBd7IIFLMi1TIStgc=";
+    };
+  };
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"

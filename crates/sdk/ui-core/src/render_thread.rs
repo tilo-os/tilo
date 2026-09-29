@@ -95,6 +95,9 @@ const _: fn() = || {
     clippy::large_enum_variant,
     reason = "keeping Scene inline removes a heap allocation on every frame; the bounded channel reserves only one slot"
 )]
+/// Runs on the render thread once a frame is presented.
+pub type PresentHook = Box<dyn FnOnce(crate::time::SystemTime) + Send>;
+
 pub enum RenderRequest {
     Frame {
         /// Originating CPU profile sample; auxiliary/unprofiled frames have none.
@@ -111,6 +114,9 @@ pub enum RenderRequest {
         damage_regions: Vec<Rect>,
         /// Resize, relayout, structure, or untracked overlay invalidation.
         full_redraw: bool,
+        /// Called with the time this frame, or the first later one, is
+        /// presented.
+        on_present: Option<PresentHook>,
     },
     /// Drain the channel and exit the worker loop. Sent from
     /// `AppHandler::exiting`; the App then `join()`s the handle.
@@ -351,6 +357,7 @@ pub fn spawn_render_thread(
                 observer.log_native_config(&surface);
             }
             let mut first_present_recorded = false;
+            let mut present_hooks: Vec<PresentHook> = Vec::new();
             let geometric_capacity = damage_geometric_capacity_enabled();
             let mut damage_cache = DamageCache {
                 geometric_capacity,
@@ -382,15 +389,19 @@ pub fn spawn_render_thread(
                         damage_regions,
                         full_redraw,
                         cpu_frame_id,
-                    } => (
-                        scene,
-                        width,
-                        height,
-                        base_color,
-                        damage_regions,
-                        full_redraw,
-                        cpu_frame_id,
-                    ),
+                        on_present,
+                    } => {
+                        present_hooks.extend(on_present);
+                        (
+                            scene,
+                            width,
+                            height,
+                            base_color,
+                            damage_regions,
+                            full_redraw,
+                            cpu_frame_id,
+                        )
+                    }
                     RenderRequest::Shutdown {
                         keep_renderer: keep,
                     } => {
@@ -506,6 +517,12 @@ pub fn spawn_render_thread(
                 // length at typical refresh rates, nowhere near `u64::MAX`.
                 frame_ix = frame_ix.saturating_add(1);
                 target_valid = outcome == FrameOutcome::Presented;
+                if target_valid && !present_hooks.is_empty() {
+                    let presented = crate::time::wall();
+                    for hook in std::mem::take(&mut present_hooks) {
+                        hook(presented);
+                    }
+                }
                 if target_valid && !first_present_recorded {
                     first_present_recorded = true;
                     tilo_startup_metrics::mark("first-frame-presented");

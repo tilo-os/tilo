@@ -21,7 +21,7 @@ async fn exact_startup_replay_uses_actual_signed_baseline_without_any_store_writ
         &root,
         crate::store::test_fault::Point::BeforeWrite,
         || {
-            pending.0.apply_scoped_fenced(crate::owner_commit::execution_deadline(), |route, certificate, mutation, authorization| {
+            pending.0.apply_scoped_fenced(crate::owner_commit::turn_budget(), |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("genuine mounted required publication retains custody");
             let mut wrong_route = route.clone();
             wrong_route.app_id.push_str(".wrong");
@@ -77,7 +77,7 @@ async fn exact_startup_replay_refuses_the_retired_original_owner_origin() {
     let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     fixture.retire_policy_origin();
     let (complete, result) = pending.0.apply_scoped_fenced(
-        crate::owner_commit::execution_deadline(),
+        crate::owner_commit::turn_budget(),
         |route, certificate, mutation, authorization| {
             fixture
                 .owner
@@ -138,7 +138,7 @@ async fn exact_startup_replay_refuses_actual_original_invocation_contributors() 
         "the real original invocation must produce actual local history before final refusal"
     );
     let (complete, result) = pending.0.apply_scoped_fenced(
-        crate::owner_commit::execution_deadline(),
+        crate::owner_commit::turn_budget(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("actual required job publication custody");
             let mut contributors = 0;
@@ -189,7 +189,7 @@ async fn exact_startup_replay_refuses_uncommitted_factory_body_with_genuine_sdk_
     let generation = fixture.owner.committed_generation();
     let disk = crate::store::test_durable_state(fixture.owner.root()).unwrap();
     let (complete, result) = pending.0.apply_scoped_fenced(
-        crate::owner_commit::execution_deadline(),
+        crate::owner_commit::turn_budget(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("genuine SDK startup custody");
             authorization.check_binding(route, &mutation).unwrap();

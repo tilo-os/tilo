@@ -14,7 +14,9 @@ use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
 use crate::{State, Theme};
 
+mod component_adapter;
 mod shot_frame;
+pub use component_adapter::{ComponentActions, ComponentLocales, RecordLaunch, record_launch};
 pub use shot_frame::{ShotFrame, ShotLayout};
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
 // the browser has not got; laying out and drawing a frame is portable.
@@ -32,15 +34,19 @@ mod android_env;
 /// executable, so there is no process `main`. Invoked once at the top level
 /// of an app's `main.rs`, this defines the `android_main` the activity calls,
 /// which prepares the process and runs that same `main`. On every other
-/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
-/// as a `cdylib` example.
+/// target it expands to nothing. `tilo-app build --platform android` builds
+/// the file as a `cdylib` example. `android_main!(entry)` runs `entry`
+/// instead of `main`, as `dev_reload_entry!` does for an app library.
 #[macro_export]
 macro_rules! android_main {
     () => {
+        $crate::android_main!(main);
+    };
+    ($entry:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
         fn android_main(app: $crate::launch::android::AndroidApp) {
-            $crate::launch::android::run_main(app, main);
+            $crate::launch::android::run_main(app, $entry);
         }
     };
 }
@@ -175,6 +181,24 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
+    /// The arguments of a component mounted by an in-process host: no
+    /// screenshot, headless or audit mode and no app-specific arguments.
+    pub fn component() -> Self {
+        Self {
+            shots: None,
+            responsive_matrix: None,
+            viewport: None,
+            scenario: None,
+            headless: None,
+            native_audit: false,
+            pseudo_locale: false,
+            text_scale: None,
+            extras: Vec::new(),
+            values: Vec::new(),
+            positionals: Vec::new(),
+        }
+    }
+
     pub fn has(&self, flag: &str) -> bool {
         self.extras.iter().any(|arg| arg == flag)
     }
@@ -325,6 +349,8 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    component_actions: Option<ComponentActions>,
+    component_locales: ComponentLocales,
 }
 
 impl LaunchSpec {
@@ -546,6 +572,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -581,6 +609,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -1309,6 +1339,14 @@ fn run_with_args_with_attachment(
             .transpose()?;
 
     if let Some(out) = &args.shots {
+        if out.is_dir() {
+            return Err(LaunchError::Operation(format!(
+                "--shots writes one PNG file, but {} is a directory; name a file \
+                 (e.g. {}) or use --responsive-matrix DIR for a set of shots",
+                out.display(),
+                out.join(format!("{}.png", spec.app_id)).display()
+            )));
+        }
         if let Some(handler) = spec.shot_handler {
             handler(&args)?;
             return Ok(());
@@ -1953,6 +1991,18 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
+    // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
+    // app follows.
+    let theme = match std::env::var("TILO_SHOTS_ACCENT")
+        .ok()
+        .and_then(|hex| crate::color::parse_hex(&hex))
+    {
+        Some(accent) => {
+            use crate::color_compat::ColorCompat;
+            theme.with_accent([accent.r(), accent.g(), accent.b()])
+        }
+        None => theme,
+    };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
         .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
         .ok();
@@ -2126,6 +2176,14 @@ fn parse_args_extended(
                     return Err(LaunchError::Duplicate(flag.to_owned()));
                 }
                 parsed.native_audit = true;
+            }
+            // A Jump List task: run this host command once the window exists.
+            #[cfg(all(windows, feature = "native"))]
+            crate::host_chrome::windows_items::LAUNCH_OPTION => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let invocation = crate::host_chrome::windows_items::decode(value)
+                    .ok_or_else(|| LaunchError::UnknownArgument(arg.clone()))?;
+                crate::host_chrome::windows::request_startup_command(invocation);
             }
             extra
                 if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))

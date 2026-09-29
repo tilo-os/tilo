@@ -23,12 +23,12 @@ decode = ["media/decode"]
 
 [dependencies]
 fnv.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-actions = { path = "../../crates/collab/actions" }
 settings-store = { path = "../../crates/system/settings-store" }
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 collab-types = { path = "../../crates/collab/collab-types" }
 automerge.workspace = true
 tilo-automerge.workspace = true

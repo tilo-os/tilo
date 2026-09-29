@@ -201,7 +201,8 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.retry = RetryPolicy::AtMostOnce;
             contract.reversible = true;
         }
-        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID => {
+        QS_BRIGHTNESS_ID | QS_VOLUME_ID | QS_WIFI_ID | QS_POWER_ID | QS_VPN_ID
+        | QS_BLUETOOTH_ID | QS_AIRPLANE_ID => {
             contract = quick_settings_contract();
         }
         DISPLAY_EXTEND_ID
@@ -1601,6 +1602,8 @@ impl SharedQsDispatcher {
             QS_WIFI_ID => available.wifi,
             QS_POWER_ID => available.power_profile,
             QS_VPN_ID => available.vpn,
+            QS_BLUETOOTH_ID => available.bluetooth,
+            QS_AIRPLANE_ID => available.airplane_mode,
             _ => false,
         }
     }
@@ -1613,6 +1616,8 @@ pub(crate) const QS_VOLUME_ID: &str = "quick-settings.volume.set";
 pub(crate) const QS_WIFI_ID: &str = "quick-settings.wifi.set-enabled";
 pub(crate) const QS_POWER_ID: &str = "quick-settings.power-profile.set";
 pub(crate) const QS_VPN_ID: &str = "quick-settings.vpn.set-enabled";
+pub(crate) const QS_BLUETOOTH_ID: &str = "quick-settings.bluetooth.set-enabled";
+pub(crate) const QS_AIRPLANE_ID: &str = "quick-settings.airplane-mode.set-enabled";
 
 fn quick_settings_params(id: &str) -> Vec<ActionParam> {
     let percent = || {
@@ -1639,6 +1644,16 @@ fn quick_settings_params(id: &str) -> Vec<ActionParam> {
             "enabled",
             ParamType::Boolean,
             "Whether the Wi-Fi radio should be enabled.",
+        )],
+        QS_BLUETOOTH_ID => vec![ActionParam::required_owned(
+            "enabled",
+            ParamType::Boolean,
+            "Whether the Bluetooth radio should be powered.",
+        )],
+        QS_AIRPLANE_ID => vec![ActionParam::required_owned(
+            "enabled",
+            ParamType::Boolean,
+            "Whether airplane mode should turn the wireless radios off.",
         )],
         QS_POWER_ID => vec![
             ActionParam::required_owned("profile", ParamType::Text, "The host power profile.")
@@ -1681,6 +1696,8 @@ fn apply_quick_settings_effect(
         },
         QS_VOLUME_ID => actions.set_volume(validated_percent(args)),
         QS_WIFI_ID => actions.set_wifi(args.boolean("enabled").unwrap_or(false)),
+        QS_BLUETOOTH_ID => actions.set_bluetooth(args.boolean("enabled").unwrap_or(false)),
+        QS_AIRPLANE_ID => actions.set_airplane_mode(args.boolean("enabled").unwrap_or(false)),
         QS_POWER_ID => {
             let profile = match args.text("profile") {
                 Some("saver") => crate::shell::quick_settings::actions::PowerProfile::Saver,
@@ -1702,7 +1719,7 @@ fn apply_quick_settings_effect(
 }
 
 /// UI adapter for the callable Quick Settings slice. The root panel and its
-/// drill-ins still own presentation state, while these five effects bind the
+/// drill-ins still own presentation state, while these effects bind the
 /// same typed parameters and call the same provider path as external action
 /// invocation. Operations outside this slice pass through unchanged.
 pub(crate) struct ValidatedQsActions<'a> {
@@ -1811,7 +1828,13 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
     }
 
     fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_bluetooth(enabled)
+        self.dispatch(
+            QS_BLUETOOTH_ID,
+            [(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(enabled),
+            )],
+        )
     }
 
     fn connect_bluetooth(&self, address: &str) -> Result<(), String> {
@@ -1827,7 +1850,13 @@ impl crate::shell::quick_settings::actions::QsActions for ValidatedQsActions<'_>
     }
 
     fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
-        self.inner.set_airplane_mode(enabled)
+        self.dispatch(
+            QS_AIRPLANE_ID,
+            [(
+                "enabled".into(),
+                crate::shell::search::action_api::ArgValue::Boolean(enabled),
+            )],
+        )
     }
 
     fn set_hotspot(&self, enabled: bool) -> Result<(), String> {
@@ -2069,6 +2098,16 @@ impl SearchProvider for ActionsProvider {
                 QS_VPN_ID,
                 "search-action-quick-settings-vpn-set-enabled",
                 "search-action-quick-settings-vpn-set-enabled-subtitle",
+            ),
+            (
+                QS_BLUETOOTH_ID,
+                "search-action-quick-settings-bluetooth-set-enabled",
+                "search-action-quick-settings-bluetooth-set-enabled-subtitle",
+            ),
+            (
+                QS_AIRPLANE_ID,
+                "search-action-quick-settings-airplane-mode-set-enabled",
+                "search-action-quick-settings-airplane-mode-set-enabled-subtitle",
             ),
         ];
         if !ctx.wanted.contains(&ResourceKind::Action) {
@@ -2349,6 +2388,13 @@ impl SearchProvider for ActionsProvider {
                         }
                         QS_WIFI_ID => {
                             state.quick_settings.wifi = args.boolean("enabled") == Some(true);
+                        }
+                        QS_BLUETOOTH_ID => {
+                            state.quick_settings.bluetooth = args.boolean("enabled") == Some(true);
+                        }
+                        QS_AIRPLANE_ID => {
+                            state.quick_settings.radios.airplane_mode =
+                                args.boolean("enabled") == Some(true);
                         }
                         QS_POWER_ID => {
                             state.quick_settings.power_profile = match args.text("profile") {
@@ -3944,6 +3990,8 @@ mod tests {
                 QS_WIFI_ID,
                 QS_POWER_ID,
                 QS_VPN_ID,
+                QS_BLUETOOTH_ID,
+                QS_AIRPLANE_ID,
             ] {
                 let result = results
                     .iter()
@@ -3995,6 +4043,8 @@ mod tests {
                 wifi: false,
                 power_profile: true,
                 vpn: false,
+                bluetooth: true,
+                airplane_mode: false,
             };
             let provider = ActionsProvider::with_shared_qs_actions(Rc::new(
                 SharedQsDispatcher::new(dispatcher, availability),
@@ -4014,6 +4064,8 @@ mod tests {
                 (QS_WIFI_ID, false),
                 (QS_POWER_ID, true),
                 (QS_VPN_ID, false),
+                (QS_BLUETOOTH_ID, true),
+                (QS_AIRPLANE_ID, false),
             ] {
                 let contract = results
                     .iter()
@@ -4056,7 +4108,13 @@ mod tests {
             self.result()
         }
 
-        fn set_bluetooth(&self, _enabled: bool) -> Result<(), String> {
+        fn set_bluetooth(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("bluetooth:{enabled}"));
+            self.result()
+        }
+
+        fn set_airplane_mode(&self, enabled: bool) -> Result<(), String> {
+            self.calls.borrow_mut().push(format!("airplane:{enabled}"));
             self.result()
         }
 
@@ -4168,6 +4226,20 @@ mod tests {
                         ),
                     ],
                 ),
+                (
+                    QS_BLUETOOTH_ID,
+                    vec![(
+                        "enabled".into(),
+                        crate::shell::search::action_api::ArgValue::Boolean(true),
+                    )],
+                ),
+                (
+                    QS_AIRPLANE_ID,
+                    vec![(
+                        "enabled".into(),
+                        crate::shell::search::action_api::ArgValue::Boolean(true),
+                    )],
+                ),
             ];
             for (id, supplied) in cases {
                 let result = results.iter().find(|result| result.id == id).expect(id);
@@ -4183,8 +4255,13 @@ mod tests {
                     "wifi:true",
                     "power:Saver",
                     "vpn:Work:false",
+                    "bluetooth:true",
+                    "airplane:true",
                 ]
             );
+            let state = chrome.borrow();
+            assert!(state.quick_settings.bluetooth);
+            assert!(state.quick_settings.radios.airplane_mode);
         }
 
         // Phase `invalid_quick_settings_values_never_dispatch_and_provider_failures_propagate`.
@@ -4281,6 +4358,14 @@ mod tests {
                     ),
                 ],
             );
+            ui.set_bluetooth(true).expect("valid UI value dispatches");
+            external(
+                QS_BLUETOOTH_ID,
+                vec![(
+                    "enabled".into(),
+                    crate::shell::search::action_api::ArgValue::Boolean(true),
+                )],
+            );
             assert_eq!(
                 recorder.calls.borrow().as_slice(),
                 [
@@ -4294,6 +4379,8 @@ mod tests {
                     "power:Saver",
                     "vpn:Work:false",
                     "vpn:Work:false",
+                    "bluetooth:true",
+                    "bluetooth:true",
                 ],
                 "every callable UI/external pair reaches the same provider with the same validated value"
             );
@@ -4301,7 +4388,7 @@ mod tests {
             assert!(ui.set_brightness(101.0).is_err());
             assert_eq!(
                 recorder.calls.borrow().len(),
-                10,
+                12,
                 "invalid UI value never dispatches"
             );
             recorder.fail.set(true);

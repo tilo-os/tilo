@@ -1,10 +1,11 @@
 use generated_app::{App, Document};
 use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
-use ui::prelude::{Replica, TestApp};
+use ui::prelude::{Replica, ResourceApp as _, TestApp};
 
+/// Two collaborators typing in the same field at once converge on one text.
 #[test]
-fn collaborators_edit_concurrently_and_converge() {
+fn concurrent_edits_converge() {
     let mut left = Replica::<Document>::new();
     left.apply(Document::SET_BODY.with("hello world".into()))
         .expect("seed");
@@ -19,15 +20,16 @@ fn collaborators_edit_concurrently_and_converge() {
     assert_eq!(right.state().expect("document").body, "hello brave world!");
 }
 
+/// The inputs invoke the actions, the preview follows, and undo reverts.
 #[test]
-fn document_fields_are_synchronized_and_undoable() {
+fn the_preview_follows_the_inputs_and_undo_reverts() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.harness()
         .perform_named(
             "document-title-input",
             &Action::SetValue("Project Atlas".into()),
         )
-        .expect("the title input remains addressable");
+        .expect("the title input is addressable");
     app.harness()
         .expect(
             &SemanticExpectation::named("document-title-preview")
@@ -35,12 +37,16 @@ fn document_fields_are_synchronized_and_undoable() {
                 .name("Project Atlas"),
         )
         .expect("the preview follows the document");
+    assert_eq!(App::label(&app.state()), "Project Atlas");
     assert!(app.undo(), "the edit is undoable");
     assert_eq!(app.state().title, "");
+    assert_eq!(App::label(&app.state()), "Untitled document");
 }
 
+/// Clearing is destructive, so it needs confirmation; the document is stored
+/// and survives a relaunch.
 #[test]
-fn clearing_asks_for_confirmation_and_the_document_survives_a_relaunch() {
+fn clearing_needs_confirmation_and_the_document_survives_a_relaunch() {
     let mut app = TestApp::<App>::new().expect("the app opens");
     app.invoke(Document::SET_CONTENT.with(("Plan".into(), "Ship it".into())))
         .expect("set content");
@@ -48,6 +54,9 @@ fn clearing_asks_for_confirmation_and_the_document_survives_a_relaunch() {
         app.invoke(Document::CLEAR.invoke()).is_err(),
         "a destructive action needs confirmation"
     );
-    let app = app.reopen().expect("the app reopens");
+    let mut app = app.reopen().expect("the app reopens");
     assert_eq!(app.state().body, "Ship it");
+    app.invoke_confirmed(Document::CLEAR.invoke())
+        .expect("a confirmed clear");
+    assert_eq!(app.state(), Document::default());
 }

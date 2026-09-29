@@ -19,7 +19,7 @@ name = "calculator"
 path = "src/main.rs"
 
 # The Android library around this same `main.rs`, whose `ui::android_main!()`
-# the activity enters. `crates/sdk/ui-core/android/build-apk.sh` builds it.
+# the activity enters. `tilo-app build --platform android` builds it.
 [[example]]
 name = "calculator-android"
 path = "src/android.rs"

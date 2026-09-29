@@ -123,6 +123,7 @@ class PlanProducerTests(unittest.TestCase):
                     'tools/apps/app_release.py',
                     'tools/apps/app_release.py',
                     'tools/apps/app_release.py',
+                    'tools/apps/app_release.py',
                     'tools/app_packaging_plan.py',
                 ]),
             )

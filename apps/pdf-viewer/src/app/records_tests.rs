@@ -395,7 +395,7 @@ fn form_edits_history_and_read_only_roles_govern_record_changes() {
 
 fn engine_fixture(name: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures")
         .join(name)
 }
 

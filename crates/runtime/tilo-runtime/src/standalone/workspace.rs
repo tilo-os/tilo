@@ -77,6 +77,19 @@ impl ProfileWorkspace {
             .unwrap_or_default()
     }
 
+    /// The workspace's name, as people see it.
+    pub(super) fn name(&self) -> String {
+        self.tree
+            .read()
+            .ok()
+            .and_then(|tree| {
+                tree.workspaces
+                    .first()
+                    .map(|workspace| workspace.name.clone())
+            })
+            .unwrap_or_default()
+    }
+
     /// Give an unowned workspace to `actor` and persist this host's tree.
     pub(super) fn adopt(&self, actor: &str) -> io::Result<()> {
         let mut tree = self

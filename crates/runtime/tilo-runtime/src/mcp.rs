@@ -19,6 +19,8 @@ pub struct McpServer<H> {
     /// The page `tilo_query` answers when a call names no `detail`; a client
     /// that parses v1 rows pins `full` for its session at `initialize`.
     detail: Detail,
+    /// The short names compact pages gave long resource ids.
+    handles: std::sync::Mutex<page::Handles>,
 }
 
 #[derive(Default, Deserialize)]
@@ -145,7 +147,24 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             run: None,
             computer: None,
             detail: Detail::Compact,
+            handles: std::sync::Mutex::default(),
         }
+    }
+    fn handles(&self) -> std::sync::MutexGuard<'_, page::Handles> {
+        self.handles
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    /// The resource id a caller named: a handle a compact page issued, or a
+    /// full id.
+    fn full_id(&self, name: String) -> String {
+        if name.is_empty() {
+            return name;
+        }
+        self.handles().full(&name)
+    }
+    fn compact(&self, page: &CataloguePage) -> Value {
+        page::compact_page(page, &mut self.handles())
     }
     /// Offer the canonical `computer` tools, driving `computer`.
     #[must_use]
@@ -328,7 +347,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
         }
         Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":2}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
+            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":3}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
         )
     }
     /// One catalogue page from the action host, as this bridge's caller.
@@ -424,9 +443,11 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .await?;
         let cursor = args.cursor.into_bytes()?;
         let words = page::needle_words(&args.needle);
+        let parent = self.full_id(args.parent_resource);
+        let workspace = tilo_actions::remote::workspace_provider_room(&provider).is_some();
         let query = CatalogueQuery {
             provider: Some(provider),
-            parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
+            parent_resource: (!parent.is_empty()).then_some(parent),
             // A host matches one substring; the longest word narrows most,
             // and the rest are matched here.
             needle: if words.len() > 1 {
@@ -448,7 +469,9 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
             }),
         };
+        let detail = args.detail.unwrap_or(self.detail);
         let mut page = self.ask(query.clone()).await?;
+        let mut partial = false;
         if words.len() > 1 {
             page.rows.retain(|row| page::matches_words(row, &words));
             // A page every row of which another word ruled out would read
@@ -466,15 +489,70 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 page.rows.retain(|row| page::matches_words(row, &words));
                 pages = pages.saturating_add(1);
             }
+            if page.rows.is_empty() && detail == Detail::Compact {
+                page.rows = self.some_words(&query, &words).await?;
+                partial = !page.rows.is_empty();
+                if partial {
+                    page.next_cursor.clear();
+                    page.exhausted = true;
+                }
+            }
         }
-        let detail = args.detail.unwrap_or(self.detail);
-        if detail == Detail::Compact && !query.needle.is_empty() {
+        if detail == Detail::Full {
+            return Ok(page_json(&page));
+        }
+        if !query.needle.is_empty() {
             self.with_every_action(&query, &mut page).await?;
         }
-        Ok(match detail {
-            Detail::Compact => page::compact_page(&page),
-            Detail::Full => page_json(&page),
-        })
+        if workspace {
+            offer_open_path(&mut page);
+        }
+        let mut value = self.compact(&page);
+        if partial && let Some(fields) = value.as_object_mut() {
+            fields.insert("partial_match".into(), Value::Bool(true));
+        }
+        Ok(value)
+    }
+    /// The rows matching the most of `words`, when none matches them all: a
+    /// needle naming several actions ("open paragraph style heading") still
+    /// finds each of them.
+    async fn some_words(
+        &self,
+        query: &CatalogueQuery,
+        words: &[String],
+    ) -> Result<Vec<CatalogueRow>, String> {
+        let mut found = Vec::<(usize, CatalogueRow)>::new();
+        let searched = words
+            .iter()
+            .filter(|word| word.chars().count() >= SOME_WORDS_MIN_CHARS)
+            .take(SOME_WORDS_SEARCHED);
+        for word in searched {
+            let listed = self
+                .ask(CatalogueQuery {
+                    needle: word.clone(),
+                    revision: None,
+                    cursor: Vec::new(),
+                    ..query.clone()
+                })
+                .await?;
+            for row in listed.rows {
+                let seen = found.iter().any(|(_, seen)| {
+                    seen.resource.id == row.resource.id
+                        && seen.action.as_ref().map(|a| &a.address.action)
+                            == row.action.as_ref().map(|a| &a.address.action)
+                });
+                let score = page::word_score(&row, words);
+                if !seen && score > 0 {
+                    found.push((score, row));
+                }
+            }
+        }
+        let best = found.iter().map(|(score, _)| *score).max().unwrap_or(0);
+        Ok(found
+            .into_iter()
+            .filter(|(score, _)| *score == best)
+            .map(|(_, row)| row)
+            .collect())
     }
     /// Add every action of the few resources a needle matched: an agent
     /// that found "paste" on a document also learns its "save-as" without a
@@ -608,7 +686,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 let (revision, _) = self.revision_for(&provider, a.revision).await?;
                 let target = RemoteActionTarget {
                     provider,
-                    address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                    address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
                 };
                 let page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
                 if page.stale_cursor {
@@ -637,7 +715,7 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     }
     /// Start an action and answer with its terminal update when it arrives
     /// within the caller's wait, so a quick action costs one call.
-    async fn invoke(&self, a: InvokeArgs) -> Result<Value, String> {
+    async fn invoke(&self, mut a: InvokeArgs) -> Result<Value, String> {
         if a.revision.as_deref() == Some("") {
             return Err("revision must not be empty".into());
         }
@@ -650,9 +728,19 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         // A host application (`app.host:<desktop-id>`) is no Tilo peer.
         let launching = a
             .resource
-            .strip_prefix("app.")
-            .filter(|app_id| a.workspace && a.action == "open" && !app_id.starts_with("host:"))
+            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX)
+            .filter(|app_id| {
+                a.workspace
+                    && a.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+                    && !app_id.starts_with("host:")
+            })
             .map(str::to_owned);
+        // The workspace launches the app empty; the path goes to the app's
+        // own open action once it runs.
+        let path = match launching {
+            Some(_) => take_path(&mut a.arguments)?,
+            None => None,
+        };
         let before = match &launching {
             Some(app_id) => self.peers_of(app_id).await?,
             None => Vec::new(),
@@ -661,14 +749,63 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             .invocation_id
             .as_deref()
             .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-        let (revision, current) = self.revision_for(&provider, a.revision).await?;
+        let wait =
+            std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
+        let target = RemoteActionTarget {
+            provider,
+            address: tilo_actions::ActionAddress::new(self.full_id(a.resource), a.action),
+        };
+        let mut value = self
+            .run(target, a.arguments, invocation, a.revision, wait)
+            .await?;
+        let Some(app_id) = launching else {
+            return Ok(value);
+        };
+        if value.pointer("/update/state").and_then(Value::as_str) != Some("succeeded") {
+            return Ok(value);
+        }
+        let peer = self.opened_peer(&app_id, &before).await;
+        let opened = match (peer, path) {
+            (Some(peer), Some(path)) => Some(self.open_path(peer, &path, wait).await),
+            (None, Some(_)) => Some(json!({"error":OPENED_NO_PEER})),
+            (_, None) => None,
+        };
+        // Best effort: the app is open whether or not its directory reads.
+        let directory = match peer {
+            Some(peer) if self.detail == Detail::Compact => {
+                self.directory(&peer.to_string()).await.ok()
+            }
+            _ => None,
+        };
+        if let Some(fields) = value.as_object_mut() {
+            if let Some(peer) = peer {
+                fields.insert("peer_id".into(), json!(peer));
+            }
+            if let Some(opened) = opened {
+                fields.insert("opened".into(), opened);
+            }
+            if let Some(directory) = directory {
+                fields.insert("directory".into(), directory);
+            }
+        }
+        Ok(value)
+    }
+    /// Start one invocation of `target` and answer with its update once it
+    /// is terminal or `wait` has passed. An omitted revision is the
+    /// directory as it is now.
+    async fn run(
+        &self,
+        target: RemoteActionTarget,
+        arguments: serde_json::Map<String, Value>,
+        invocation: tilo_actions::InvocationId,
+        revision: Option<String>,
+        wait: std::time::Duration,
+    ) -> Result<Value, String> {
+        let (revision, current) = self.revision_for(&target.provider, revision).await?;
         let mut request = InvokeRequest {
             invocation,
-            target: RemoteActionTarget {
-                provider,
-                address: tilo_actions::ActionAddress::new(a.resource, a.action),
-            },
-            argument: InvokeArgument::Json(a.arguments),
+            target,
+            argument: InvokeArgument::Json(arguments),
             context: self.context(),
             // The MCP client admitted this call under its own
             // allow/deny policy; that decision is the confirmation.
@@ -683,15 +820,145 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             started = self.start_confirmed(&mut request).await;
         }
         started?;
-        let wait =
-            std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
-        let mut value = self.settled(invocation, wait).await?;
-        if let Some(app_id) = launching
-            && value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
-            && let Some(peer) = self.opened_peer(&app_id, &before).await
-            && let Some(fields) = value.as_object_mut()
-        {
-            fields.insert("peer_id".into(), json!(peer));
+        self.settled(invocation, wait).await
+    }
+    /// Open `path` in instance `peer` through the app's own action, so the
+    /// app reads it inside its sandbox, under the file grants it holds: an
+    /// `open` taking a `path`, else an `import-<extension>` taking one.
+    async fn open_path(&self, peer: u64, path: &str, wait: std::time::Duration) -> Value {
+        let provider = peer.to_string();
+        let opener = match self.path_opener(&provider, path).await {
+            Ok(Some(opener)) => opener,
+            Ok(None) => return json!({"error":OPENED_NO_ACTION}),
+            Err(error) => return json!({"error":error}),
+        };
+        let resource = self.handles().short(&opener.resource);
+        let action = opener.action.clone();
+        let mut arguments = serde_json::Map::new();
+        arguments.insert("path".into(), path.into());
+        let target = RemoteActionTarget {
+            provider,
+            address: opener,
+        };
+        let outcome = self
+            .run(
+                target,
+                arguments,
+                tilo_actions::InvocationId::new(),
+                None,
+                wait,
+            )
+            .await;
+        let mut value = match outcome {
+            Ok(value) => value,
+            Err(error) => json!({"error":error}),
+        };
+        if let Some(fields) = value.as_object_mut() {
+            fields.insert("resource".into(), resource.into());
+            fields.insert("action".into(), action.into());
+        }
+        value
+    }
+    /// The action of `provider` that opens `path`, by the directory's
+    /// convention.
+    async fn path_opener(
+        &self,
+        provider: &str,
+        path: &str,
+    ) -> Result<Option<tilo_actions::ActionAddress>, String> {
+        let extension = std::path::Path::new(path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .map(str::to_ascii_lowercase);
+        let names = std::iter::once(tilo_actions::remote::APPLICATION_OPEN_ACTION.to_owned())
+            .chain(extension.map(|extension| format!("import-{extension}")));
+        for name in names {
+            let page = self
+                .ask(CatalogueQuery {
+                    provider: Some(provider.to_owned()),
+                    needle: name.clone(),
+                    max_results: 64,
+                    ..CatalogueQuery::default()
+                })
+                .await?;
+            let found = page.rows.into_iter().find_map(|row| {
+                row.action
+                    .filter(|action| {
+                        action.address.action == name
+                            && action.params.iter().any(|param| param.name == "path")
+                    })
+                    .map(|action| action.address)
+            });
+            if found.is_some() {
+                return Ok(found);
+            }
+        }
+        Ok(None)
+    }
+    /// A just-opened instance's directory: its top-level resources with
+    /// their actions, and the resources beneath them while the page stays
+    /// within [`DIRECTORY_BYTES`], so an agent can act without browsing.
+    async fn directory(&self, provider: &str) -> Result<Value, String> {
+        let listing = |parent: Option<String>| CatalogueQuery {
+            provider: Some(provider.to_owned()),
+            parent_resource: parent,
+            max_results: 64,
+            ..CatalogueQuery::default()
+        };
+        let root = self.ask(listing(None)).await?;
+        let mut page = CataloguePage {
+            revision: root.revision,
+            exhausted: true,
+            ..CataloguePage::default()
+        };
+        let mut truncated = !root.exhausted;
+        let mut queue = std::collections::VecDeque::new();
+        for row in root.rows {
+            if row.has_children && !queue.contains(&row.resource.id) {
+                queue.push_back(row.resource.id.clone());
+            }
+            page.rows.push(row);
+        }
+        let mut expanded = Vec::<String>::new();
+        while let Some(parent) = queue.pop_front() {
+            if expanded.len() >= DIRECTORY_EXPANSIONS {
+                truncated = true;
+                break;
+            }
+            expanded.push(parent.clone());
+            let listed = self.ask(listing(Some(parent.clone()))).await?;
+            truncated |= !listed.exhausted;
+            let mut grown = page.clone();
+            grown.rows.extend(listed.rows.into_iter().filter(|row| {
+                !page.rows.iter().any(|seen| {
+                    seen.resource.id == row.resource.id
+                        && seen.action.as_ref().map(|a| &a.address.action)
+                            == row.action.as_ref().map(|a| &a.address.action)
+                })
+            }));
+            let mut trial = self.handles().clone();
+            if page::compact_page(&grown, &mut trial).to_string().len() > DIRECTORY_BYTES {
+                truncated = true;
+                continue;
+            }
+            for row in grown.rows.iter().skip(page.rows.len()) {
+                let id = &row.resource.id;
+                if row.has_children
+                    && *id != parent
+                    && !expanded.contains(id)
+                    && !queue.contains(id)
+                {
+                    queue.push_back(id.clone());
+                }
+            }
+            page = grown;
+        }
+        let mut value = self.compact(&page);
+        if let Some(fields) = value.as_object_mut() {
+            fields.remove("exhausted");
+            if truncated {
+                fields.insert("truncated".into(), Value::Bool(true));
+            }
         }
         Ok(value)
     }
@@ -861,8 +1128,10 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
 const JUST_LAUNCHED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
 const JUST_LAUNCHED_POLL: std::time::Duration = std::time::Duration::from_millis(200);
 /// The experimental capability naming this surface's version. Version 2
-/// answers `tilo_query` with compact pages; a client sends
-/// `{"so.tilo.mcp": {"detail": "full"}}` to keep version 1's rows.
+/// answers `tilo_query` with compact pages; version 3 names long resource
+/// ids by session handles in them and answers an `open` with the new
+/// instance's directory. A client sends `{"so.tilo.mcp": {"detail": "full"}}`
+/// to keep version 1's rows.
 const SURFACE: &str = "so.tilo.mcp";
 const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
 /// Rows per page when the caller names no limit.
@@ -872,6 +1141,17 @@ const DEFAULT_PAGE: u32 = 64;
 const EXPANDED_RESOURCES: usize = 3;
 /// Host pages one multi-word needle reads before answering with none.
 const WORD_FILTER_PAGES: usize = 8;
+/// Words of a needle no row matches whole that are searched one by one,
+/// and the shortest searched: "as" or "to" would match nearly everything.
+const SOME_WORDS_SEARCHED: usize = 6;
+const SOME_WORDS_MIN_CHARS: usize = 3;
+/// Largest directory an `open` answers with, in bytes of JSON, and how many
+/// resources beneath the top level it lists. A model reads it again on every
+/// later turn; beyond this, `tilo_query` browses the rest.
+const DIRECTORY_BYTES: usize = 12 * 1024;
+const DIRECTORY_EXPANSIONS: usize = 6;
+const OPENED_NO_PEER: &str = "the app did not publish its directory in time, so the file is not open; tilo_list_apps shows whether it runs";
+const OPENED_NO_ACTION: &str = "the app offers no open action taking a path, so it started empty; its directory shows what it can do";
 /// How long `tilo_invoke` waits for a terminal update by default, at most,
 /// and how often it looks.
 const DEFAULT_WAIT_MS: u64 = 5_000;
@@ -881,6 +1161,36 @@ const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
 const STALE: &str = "changed since that revision";
 fn empty_object() -> Value {
     json!({})
+}
+/// The `path` an application `open` names, taken out of its arguments: the
+/// workspace launches the app empty and this bridge hands the path to the
+/// app itself.
+fn take_path(arguments: &mut serde_json::Map<String, Value>) -> Result<Option<String>, String> {
+    match arguments.remove("path") {
+        None | Some(Value::Null) => Ok(None),
+        Some(Value::String(path)) if !path.trim().is_empty() => Ok(Some(path)),
+        Some(_) => Err("path must be a non-empty string".into()),
+    }
+}
+/// Offer `path` on the workspace's application `open` actions, which this
+/// bridge opens through the launched app's own action.
+fn offer_open_path(page: &mut CataloguePage) {
+    for action in page.rows.iter_mut().filter_map(|row| row.action.as_mut()) {
+        let app = action
+            .address
+            .resource
+            .strip_prefix(tilo_actions::remote::APPLICATION_RESOURCE_PREFIX);
+        if action.address.action == tilo_actions::remote::APPLICATION_OPEN_ACTION
+            && app.is_some_and(|app| !app.starts_with("host:"))
+            && !action.params.iter().any(|param| param.name == "path")
+        {
+            action.params.push(tilo_actions::ActionParam::optional(
+                "path",
+                tilo_actions::ParamType::Text,
+                "A file to open in it; the app reads only files it was granted",
+            ));
+        }
+    }
 }
 fn page_json(page: &CataloguePage) -> Value {
     json!({"revision":page.revision,"rows":page.rows.iter().map(browsed_row_json).collect::<Vec<_>>(),"next_cursor":page.next_cursor,"exhausted":page.exhausted,"stale_cursor":page.stale_cursor,"budget_exhausted":page.budget_exhausted})
@@ -946,14 +1256,17 @@ fn tool_definitions() -> Vec<Value> {
     }
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\"} starts one and returns its peer_id (app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool)",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices). parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
+        ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\", arguments: {path?}} starts one, opens path in it, and returns its peer_id and directory (its resources and all their actions, so no tilo_query is needed); app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
+        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; rows matching every word, else those matching most (partial_match). Each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices, 1..64 range). Long resource ids appear as handles such as r3, accepted wherever a resource is named. parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
         ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
         ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
         ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
         ("tilo_cancel","Stop an invocation",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
     ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
 }
+#[cfg(test)]
+#[path = "mcp_open_tests.rs"]
+mod open_tests;
 #[cfg(test)]
 #[path = "mcp_tests.rs"]
 mod tests;

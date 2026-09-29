@@ -58,6 +58,16 @@ rustflags = [
 # Tokio's test harness workers use this process default rather than an
 # application runtime builder. Leave caller overrides intact.
 RUST_MIN_STACK = { value = "16777216", force = false }
+# sccache (the CI runners' RUSTC_WRAPPER, which cc-rs reuses for C) must not
+# use its preprocessor direct mode: it dropped declarations from libspa-sys's
+# generated wrappers under Fedora 44's GCC 16. Its rustup probe (`rustc
+# +stable`) must not auto-install `stable`; the images carry only the pinned
+# toolchain.
+SCCACHE_DIRECT = { value = "false", force = false }
+RUSTUP_AUTO_INSTALL = { value = "0", force = false }
+# sccache's server exits after 600 s without a new request, even with one
+# long compile in flight; the client then compiles it again locally.
+SCCACHE_IDLE_TIMEOUT = { value = "0", force = false }
 # Scope GNU C/assembler options to Linux targets, too. Global CFLAGS would
 # send -Wa,--noexecstack to MSVC/Apple clang while building the host Imager.
 CFLAGS_aarch64_unknown_linux_gnu = { value = "-U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3 -Wno-cpp -fstack-protector-strong -fstack-clash-protection -Wa,--noexecstack", force = true }
