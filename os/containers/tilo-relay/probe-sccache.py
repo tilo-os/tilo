@@ -27,8 +27,9 @@ def count(stats: dict, name: str) -> int:
 
 
 def main() -> None:
-    # sccache names its GHA namespace "sccache-v<version>-<SCCACHE_GHA_VERSION>".
-    namespace = os.environ["SCCACHE_GHA_VERSION"]
+    bucket = os.environ["SCCACHE_BUCKET"]
+    prefix = os.environ["SCCACHE_S3_KEY_PREFIX"]
+    expected_location = f"s3, name: {bucket}, prefix: /{prefix}/"
 
     with tempfile.TemporaryDirectory(prefix="tilo-relay-cache-probe-") as directory:
         root = Path(directory)
@@ -50,9 +51,8 @@ def main() -> None:
                     "--crate-type", "rlib", str(source), "--emit=link", "--out-dir", directory,
                 )
                 payload = json.loads(run("sccache", "--show-stats", "--stats-format=json").stdout)
-                location = payload.get("cache_location", "")
-                if not (location.startswith("ghac, name: sccache-v") and f"-{namespace}, " in location):
-                    raise RuntimeError("compiler probe did not use the bound remote cache")
+                if payload.get("cache_location") != expected_location:
+                    raise RuntimeError("compiler probe did not use the bound remote S3 cache")
                 stats = payload.get("stats", {})
                 counters = {name: count(stats, name) for name in (
                     "cache_hits", "cache_misses", "cache_writes", "cache_errors",
