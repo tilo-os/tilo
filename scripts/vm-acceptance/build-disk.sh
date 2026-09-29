@@ -9,6 +9,8 @@
 #   TILO_DISK_SCRATCH   scratch directory on the builder for image storage and output
 #   TILO_DISK_MIRRORS   glob of rcargo worktree mirrors on the builder
 #                       (default /srv/rcargo/p/*/w/*)
+#   TILO_DISK_OCI       an OCI layout already built from <commit> on the builder: skip the
+#                       image build and write the disk from it
 #   RPMS_REF, KERNEL_RPMS_REF   optional overrides; build-image.sh resolves both otherwise
 #
 # Nothing is compiled here: the OS image is built by `rcargo --on-builder run -p tilo-vm --
@@ -29,19 +31,28 @@ cleanup() { git -C "$repo" worktree remove --force "$wt" >/dev/null 2>&1 || true
 trap cleanup EXIT
 git -C "$repo" worktree add --detach "$wt" "$sha" >/dev/null
 
-echo "== image for ${sha:0:12} (SOURCE_DATE_EPOCH=$sde)"
-marker=$(ssh "$TILO_DISK_BUILDER" 'm=$(mktemp); echo "$m"')
-(cd "$wt" && RCARGO_ENV_SOURCE_DATE_EPOCH=$sde rcargo --on-builder run -p tilo-vm -- image build)
+marker=
+if [ -z "${TILO_DISK_OCI:-}" ]; then
+  echo "== image for ${sha:0:12} (SOURCE_DATE_EPOCH=$sde)"
+  marker=$(ssh "$TILO_DISK_BUILDER" 'm=$(mktemp); echo "$m"')
+  (cd "$wt" && RCARGO_ENV_SOURCE_DATE_EPOCH=$sde rcargo --on-builder run -p tilo-vm -- image build)
+fi
 
 echo "== disk"
-# shellcheck disable=SC2087 # the builder expands its own variables
-ssh -o ServerAliveInterval=30 "$TILO_DISK_BUILDER" bash -s -- "$TILO_DISK_SCRATCH" "$sde" \
-  "${RPMS_REF:-}" "${KERNEL_RPMS_REF:-}" "${sha:0:12}" "$marker" "$MIRRORS" <<'REMOTE' | tee "$out.build.log"
+# ssh joins its arguments into one command line, so each is quoted for the remote shell.
+remote_args=$(printf '%q ' "$TILO_DISK_SCRATCH" "$sde" "${RPMS_REF:-}" "${KERNEL_RPMS_REF:-}" \
+  "${sha:0:12}" "$marker" "$MIRRORS" "${TILO_DISK_OCI:-}")
+ssh -o ServerAliveInterval=30 "$TILO_DISK_BUILDER" "bash -s -- $remote_args" <<'REMOTE' | tee "$out.build.log"
 set -euo pipefail
-S=$1 SDE=$2 RPMS=$3 KERNEL=$4 TAG=$5 MARKER=$6 MIRRORS=$7
-oci=$(for d in $MIRRORS/target/tilo-vm/image; do [ "$d/index.json" -nt "$MARKER" ] && echo "$d"; done | head -1)
-rm -f "$MARKER"
+S=$1 SDE=$2 RPMS=$3 KERNEL=$4 TAG=$5 MARKER=$6 MIRRORS=$7 oci=$8
+if [ -z "$oci" ]; then
+  for d in $MIRRORS/target/tilo-vm/image; do
+    if [ "$d/index.json" -nt "$MARKER" ]; then oci=$d; break; fi
+  done
+  rm -f "$MARKER"
+fi
 [ -n "$oci" ] || { echo "no OCI layout newer than this build under $MIRRORS" >&2; exit 1; }
+echo "oci_layout=$oci"
 src=${oci%/target/tilo-vm/image}/src
 mkdir -p "$S/src" "$S/storage" "$S/disks"
 [ -f "$S/storage.conf" ] || printf '[storage]\ndriver = "overlay"\ngraphroot = "%s/storage"\nrunroot = "/run/user/%s/tilo-disk-run"\n' "$S" "$(id -u)" > "$S/storage.conf"
