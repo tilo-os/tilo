@@ -9,7 +9,7 @@ use ui::{
 // Shared text-selection + clipboard primitives from the toolkit — the terminal
 // reuses these rather than re-implementing word/line boundary walking, multi-
 // click gesture detection, or clipboard access.
-use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
+use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value, transaction::Transactable};
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, MasterPty, PtySize, native_pty_system};
 use std::collections::{HashMap, HashSet, VecDeque};
@@ -2156,16 +2156,27 @@ impl TerminalWidget {
     }
 
     pub(crate) fn init_crdt(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::EnsureStructure,
-            state,
-        );
+        // The terminal app's session record is the document root, so its grids
+        // are created by EnsureStructure. A terminal embedded in another app
+        // lives under that app's object and keeps its grid there.
+        let at_document_root = root == &automerge::ROOT;
+        if at_document_root {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::EnsureStructure,
+                state,
+            );
+        }
         if self.grid_id.is_none() {
-            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid")
-            else {
+            self.grid_id = adopt_or_create(
+                state,
+                root,
+                "terminal_grid",
+                ObjType::List,
+                at_document_root,
+            );
+            if self.grid_id.is_none() {
                 return;
-            };
-            self.grid_id = Some(id);
+            }
         }
         let Some(grid_id) = self.grid_id.clone() else {
             return;
@@ -2173,11 +2184,16 @@ impl TerminalWidget {
         Self::ensure_lines(state, &grid_id, false, self.height, &mut self.line_ids);
 
         if self.alt_grid_id.is_none() {
-            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_grid_alt")
-            else {
+            self.alt_grid_id = adopt_or_create(
+                state,
+                root,
+                "terminal_grid_alt",
+                ObjType::List,
+                at_document_root,
+            );
+            if self.alt_grid_id.is_none() {
                 return;
-            };
-            self.alt_grid_id = Some(id);
+            }
         }
         let Some(alt_grid_id) = self.alt_grid_id.clone() else {
             return;
@@ -2191,18 +2207,28 @@ impl TerminalWidget {
         );
 
         if self.links_id.is_none() {
-            let Ok(Some((Value::Object(ObjType::Map), id))) = state.get(root, "terminal_links")
-            else {
+            self.links_id = adopt_or_create(
+                state,
+                root,
+                "terminal_links",
+                ObjType::Map,
+                at_document_root,
+            );
+            if self.links_id.is_none() {
                 return;
-            };
-            self.links_id = Some(id);
+            }
         }
         if self.images_id.is_none() {
-            let Ok(Some((Value::Object(ObjType::List), id))) = state.get(root, "terminal_images")
-            else {
+            self.images_id = adopt_or_create(
+                state,
+                root,
+                "terminal_images",
+                ObjType::List,
+                at_document_root,
+            );
+            if self.images_id.is_none() {
                 return;
-            };
-            self.images_id = Some(id);
+            }
         }
 
         // Adopt (or seed) a shared pane id so both peers of a shared terminal
@@ -2211,7 +2237,7 @@ impl TerminalWidget {
         // to touch the doc writes its id; late joiners read it back.
         if let Some(id) = Self::shared_pane_id(state, root) {
             self.pane_id = id;
-        } else {
+        } else if at_document_root {
             let action = crate::resource::TerminalAction::ClaimPane {
                 pane_id: self.pane_id.clone(),
             };
@@ -2219,6 +2245,8 @@ impl TerminalWidget {
             if let Some(id) = Self::shared_pane_id(state, root) {
                 self.pane_id = id;
             }
+        } else {
+            let _ = state.put(root, "terminal_pane_id", self.pane_id.clone());
         }
 
         if self.cursor_id.is_none() {
@@ -2233,13 +2261,20 @@ impl TerminalWidget {
                         .saturating_sub(history_offset)
                         .min(self.height.saturating_sub(1));
                 }
-            } else if ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
-                state,
-            )
-            .is_ok()
+            } else if at_document_root
+                && ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::SetCursor { x: 0, y: 0 },
+                    state,
+                )
+                .is_ok()
                 && let Ok(Some((Value::Object(ObjType::Map), cursor_id))) =
                     state.get(root, "cursor")
+            {
+                self.cursor_id = Some(cursor_id);
+            } else if !at_document_root
+                && let Ok(cursor_id) = state.put_object(root, "cursor", ObjType::Map)
+                && state.put(&cursor_id, "x", 0u64).is_ok()
+                && state.put(&cursor_id, "y", 0u64).is_ok()
             {
                 self.cursor_id = Some(cursor_id);
             }
@@ -2265,10 +2300,26 @@ impl TerminalWidget {
         let Some(min_len) = u32::try_from(min_len).ok() else {
             return;
         };
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
-            state,
-        );
+        let key = if alternate {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(state, key, grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::EnsureLines { alternate, min_len },
+                state,
+            );
+        } else {
+            let target = min_len as usize;
+            let current_len = state.length(grid_id);
+            for y in current_len..target {
+                let Ok(line_id) = state.insert_object(grid_id, y, ObjType::Map) else {
+                    break;
+                };
+                let _ = state.put_object(&line_id, "text", ObjType::Text);
+            }
+        }
         let new_len = state.length(grid_id);
         if ids.len() != new_len {
             ids.clear();
@@ -2279,6 +2330,31 @@ impl TerminalWidget {
             }
         }
     }
+}
+
+fn grid_is_document_root(state: &AutoCommit, key: &str, grid_id: &ObjId) -> bool {
+    matches!(
+        state.get(&automerge::ROOT, key),
+        Ok(Some((_, id))) if &id == grid_id
+    )
+}
+
+fn adopt_or_create(
+    state: &mut AutoCommit,
+    root: &ObjId,
+    key: &str,
+    kind: ObjType,
+    at_document_root: bool,
+) -> Option<ObjId> {
+    if let Ok(Some((Value::Object(found), id))) = state.get(root, key)
+        && found == kind
+    {
+        return Some(id);
+    }
+    if at_document_root {
+        return None;
+    }
+    state.put_object(root, key, kind).ok()
 }
 
 /// Retained scrollback lines for the main buffer. Sized for a daily-driver
@@ -5999,20 +6075,35 @@ impl TerminalPerformer<'_> {
     /// underlying doc rejected the insert (nothing sane to fall back to —
     /// callers skip the line rather than fabricate an id).
     fn make_blank_line(&mut self, idx: usize) -> Option<ObjId> {
-        let index = u32::try_from(idx).ok()?;
+        let grid_id = self.active_grid_id();
         let text = " ".repeat(self.width);
         let attrs = vec![Attr::default().pack(); self.width].concat();
-        ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::InsertBlankLine {
-                alternate: *self.alt_active,
-                index,
-                text,
-                attrs,
-            },
-            self.state,
-        )
-        .ok()?;
-        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
+        };
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let index = u32::try_from(idx).ok()?;
+            ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::InsertBlankLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            )
+            .ok()?;
+        } else {
+            let line_id = self.state.insert_object(&grid_id, idx, ObjType::Map).ok()?;
+            let text_id = self
+                .state
+                .put_object(&line_id, "text", ObjType::Text)
+                .ok()?;
+            let _ = self.state.splice_text(&text_id, 0, 0, &text);
+            let _ = self.state.put(&line_id, "attrs", attrs);
+        }
         match self.state.get(&grid_id, idx).ok().flatten() {
             Some((Value::Object(ObjType::Map), id)) => Some(id),
             _ => None,
@@ -6020,31 +6111,55 @@ impl TerminalPerformer<'_> {
     }
 
     fn delete_grid_line(&mut self, index: usize) {
-        let Some(index) = u32::try_from(index).ok() else {
-            return;
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
         };
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::DeleteGridLine {
-                alternate: *self.alt_active,
-                index,
-            },
-            self.state,
-        );
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::DeleteGridLine {
+                    alternate: *self.alt_active,
+                    index,
+                },
+                self.state,
+            );
+        } else {
+            let _ = self.state.delete(&grid_id, index);
+        }
     }
 
     fn write_grid_line(&mut self, index: usize, text: String, attrs: Vec<u8>) {
-        let Some(index) = u32::try_from(index).ok() else {
-            return;
+        let grid_id = self.active_grid_id();
+        let key = if *self.alt_active {
+            "terminal_grid_alt"
+        } else {
+            "terminal_grid"
         };
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::WriteLine {
-                alternate: *self.alt_active,
-                index,
-                text,
-                attrs,
-            },
-            self.state,
-        );
+        if grid_is_document_root(self.state, key, &grid_id) {
+            let Some(index) = u32::try_from(index).ok() else {
+                return;
+            };
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::WriteLine {
+                    alternate: *self.alt_active,
+                    index,
+                    text,
+                    attrs,
+                },
+                self.state,
+            );
+        } else if let Some(line) = self.active_line_id(index) {
+            if let Ok(Some((Value::Object(ObjType::Text), text_id))) = self.state.get(&line, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &text);
+            }
+            let _ = self.state.put(&line, "attrs", attrs);
+        }
     }
 
     fn line_text_and_attrs(&self, line_obj: &ObjId) -> Option<(String, Vec<u8>)> {
@@ -6061,6 +6176,45 @@ impl TerminalPerformer<'_> {
             _ => Vec::new(),
         };
         Some((text, attrs))
+    }
+
+    fn shift_nested_image_placements(&mut self, removed_rows: usize) {
+        for index in (0..self.state.length(&self.images_id)).rev() {
+            let Ok(Some((Value::Object(ObjType::Map), placement))) =
+                self.state.get(&self.images_id, index)
+            else {
+                continue;
+            };
+            let alternate = self
+                .state
+                .get(&placement, "alternate_screen")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| {
+                    matches!(value, automerge::ScalarValue::Boolean(true)).then_some(true)
+                })
+                .unwrap_or(false);
+            if alternate {
+                continue;
+            }
+            let row = self
+                .state
+                .get(&placement, "row")
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.into_scalar().ok())
+                .and_then(|value| value.as_u64())
+                .and_then(|value| usize::try_from(value).ok())
+                .unwrap_or(0);
+            if row < removed_rows {
+                let _ = self.state.delete(&self.images_id, index);
+            } else {
+                let _ = self
+                    .state
+                    .put(&placement, "row", (row - removed_rows) as u64);
+            }
+        }
     }
 
     fn newline(&mut self) {
@@ -6092,17 +6246,24 @@ impl TerminalPerformer<'_> {
             // stays aligned.
             if self.main_line_ids.len() > MAX_HISTORY + HISTORY_TRIM_SLACK {
                 let overflow = self.main_line_ids.len() - MAX_HISTORY;
-                if let Ok(count) = u32::try_from(overflow) {
-                    let _ = ui::tilo_actions::Action::apply(
-                        &crate::resource::TerminalAction::TrimGridPrefix { count },
-                        self.state,
-                    );
-                    let _ = ui::tilo_actions::Action::apply(
-                        &crate::resource::TerminalAction::ShiftImageRows {
-                            removed_rows: count,
-                        },
-                        self.state,
-                    );
+                if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+                    if let Ok(count) = u32::try_from(overflow) {
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::TrimGridPrefix { count },
+                            self.state,
+                        );
+                        let _ = ui::tilo_actions::Action::apply(
+                            &crate::resource::TerminalAction::ShiftImageRows {
+                                removed_rows: count,
+                            },
+                            self.state,
+                        );
+                    }
+                } else {
+                    for _ in 0..overflow {
+                        let _ = self.state.delete(&self.main_grid_id, 0);
+                    }
+                    self.shift_nested_image_placements(overflow);
                 }
                 self.main_line_ids.drain(0..overflow);
                 *self.trimmed_front += overflow;
@@ -6515,15 +6676,32 @@ impl TerminalPerformer<'_> {
     /// A no-op when nothing is buffered.
     pub(crate) fn flush_print_buf(&mut self) {
         if let Some(buf) = self.print_buf.take() {
-            let _ = ui::tilo_actions::Action::apply(
-                &crate::resource::TerminalAction::WriteLine {
-                    alternate: buf.alternate,
-                    index: buf.index,
-                    text: buf.text,
-                    attrs: buf.attrs,
-                },
-                self.state,
-            );
+            let grid = if buf.alternate {
+                &self.alt_grid_id
+            } else {
+                &self.main_grid_id
+            };
+            let key = if buf.alternate {
+                "terminal_grid_alt"
+            } else {
+                "terminal_grid"
+            };
+            if grid_is_document_root(self.state, key, grid) {
+                let _ = ui::tilo_actions::Action::apply(
+                    &crate::resource::TerminalAction::WriteLine {
+                        alternate: buf.alternate,
+                        index: buf.index,
+                        text: buf.text,
+                        attrs: buf.attrs,
+                    },
+                    self.state,
+                );
+            } else if let Ok(Some((Value::Object(ObjType::Text), text_id))) =
+                self.state.get(&buf.line_obj, "text")
+            {
+                ui::doc::splice_text_diffed(self.state, &text_id, &buf.text);
+                let _ = self.state.put(&buf.line_obj, "attrs", buf.attrs);
+            }
         }
     }
 
@@ -6536,10 +6714,15 @@ impl TerminalPerformer<'_> {
         self.flush_print_buf();
         let x = self.cursor_x as u64;
         let y = self.absolute_y() as u64;
-        let _ = ui::tilo_actions::Action::apply(
-            &crate::resource::TerminalAction::SetCursor { x, y },
-            self.state,
-        );
+        if grid_is_document_root(self.state, "terminal_grid", &self.main_grid_id) {
+            let _ = ui::tilo_actions::Action::apply(
+                &crate::resource::TerminalAction::SetCursor { x, y },
+                self.state,
+            );
+        } else {
+            let _ = self.state.put(&self.cursor_id, "x", x);
+            let _ = self.state.put(&self.cursor_id, "y", y);
+        }
     }
 
     /// Stage `bytes` to be written back to the PTY once this feed's parse
