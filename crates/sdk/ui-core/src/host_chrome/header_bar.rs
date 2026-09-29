@@ -40,7 +40,32 @@ pub(crate) enum HeaderRequest {
 
 type Requests = Rc<RefCell<VecDeque<HeaderRequest>>>;
 
+/// What a bar shows and does: its title, and each command's label, enabled
+/// state, place and invocation.
+type Presented = (
+    String,
+    Vec<(String, bool, CommandGroup, Option<ControlInvocation>)>,
+);
+
+fn presented(title: &str, commands: &[HostCommand]) -> Presented {
+    (
+        title.to_owned(),
+        commands
+            .iter()
+            .map(|command| {
+                (
+                    command.label.clone(),
+                    command.enabled,
+                    command.group,
+                    command.invocation(),
+                )
+            })
+            .collect(),
+    )
+}
+
 pub(crate) struct HeaderBar {
+    presented: Presented,
     row: Row,
     menu: ContextMenu,
     /// The History menu's rows, in menu order; `None` for a separator.
@@ -141,6 +166,7 @@ impl HeaderBar {
                 })));
         }
         Self {
+            presented: presented(title, commands),
             row,
             menu,
             menu_commands,
@@ -152,6 +178,12 @@ impl HeaderBar {
             last_press: None,
             swallow_release: false,
         }
+    }
+
+    /// Whether this bar already shows `title` and `commands`, so a refresh
+    /// can keep it, and the pointer and press state it holds.
+    pub(crate) fn presents(&self, title: &str, commands: &[HostCommand]) -> bool {
+        self.presented == presented(title, commands)
     }
 
     /// The window area the History menu may open into.
@@ -523,6 +555,28 @@ mod tests {
         assert!(
             controls.windows(2).all(|pair| pair[0].1.x1 <= pair[1].1.x0),
             "controls never overlap: {controls:?}"
+        );
+    }
+
+    #[test]
+    fn a_bar_is_kept_until_what_it_presents_changes() {
+        let mut app = app_with_history();
+        let commands = app.host_commands(true);
+        let bar = HeaderBar::new("Notes", &commands);
+        assert!(
+            bar.presents("Notes", &app.host_commands(true)),
+            "a refresh keeps it"
+        );
+        assert!(!bar.presents("Other", &commands), "a new title replaces it");
+        let search = commands
+            .iter()
+            .find(|command| command.group == CommandGroup::Search)
+            .and_then(HostCommand::invocation)
+            .unwrap();
+        assert!(app.invoke_host_command(&search));
+        assert!(
+            !bar.presents("Notes", &app.host_commands(true)),
+            "Search stepping aside while the palette is open replaces it"
         );
     }
 
