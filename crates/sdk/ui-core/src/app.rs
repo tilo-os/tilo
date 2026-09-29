@@ -1858,7 +1858,7 @@ impl App {
         host: crate::host_appearance::HostAppearance,
     ) -> bool {
         let _entry = self.enter_wake_scope();
-        let mut base_theme = host.theme();
+        let mut base_theme = crate::host_appearance::theme(host);
         base_theme.caret_width = self.accessibility.base_theme.caret_width;
         self.apply_appearance_intent(crate::theme::AppearanceIntent {
             base_theme,
