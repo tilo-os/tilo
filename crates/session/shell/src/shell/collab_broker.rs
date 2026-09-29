@@ -603,12 +603,8 @@ fn spawn_inner(
     let table = Arc::new(FanoutState::new());
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
-    let (mls_authority, channel_encryption) = open_session_services(
-        membership.as_ref(),
-        peer_sync,
-        &channels,
-        config.is_none(),
-    );
+    let (mls_authority, channel_encryption) =
+        open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread

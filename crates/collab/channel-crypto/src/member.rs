@@ -199,7 +199,9 @@ impl ChannelMember {
                 journal.append_mirrored(channel, steward, frame)?,
                 MirrorAppend::Appended(_)
             ) {
-                return Err(Error::InvalidState("exported journal is out of order".into()));
+                return Err(Error::InvalidState(
+                    "exported journal is out of order".into(),
+                ));
             }
         }
         Ok(Self {
