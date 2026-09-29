@@ -35,6 +35,7 @@ mod media_governance;
 mod native_publication;
 pub use native_publication::NativePublicationCut;
 mod resources;
+mod sealed_compaction;
 pub use media_governance::VerifiedSecurityMetadataOnly;
 
 #[expect(
@@ -230,6 +231,8 @@ pub(crate) enum LocalWrite<'a> {
 }
 
 /// Most sealed writes, and their bytes, one record keeps for a key holder.
+/// Past them a key holder compacts the history
+/// ([`StatePeer::compact_sealed_history`]).
 const MAX_SEALED_OPS: usize = 4096;
 const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
@@ -1985,6 +1988,14 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
+        if envelope.op_class == OpClass::Compaction
+            && !matches!(
+                payload,
+                collab_types::WholeDocumentPayload::Encrypted { .. }
+            )
+        {
+            return Err("a document compaction is only ever sealed".into());
+        }
         let mutation = match (payload, local) {
             (collab_types::WholeDocumentPayload::Encrypted { .. }, Some(LocalWrite::Opened(open))) => {
                 // Every check on the sealed envelope, its author's signature over
@@ -2029,8 +2040,7 @@ impl StatePeer {
                         MissingPrerequisite::RecordCheckpoint,
                     );
                 }
-                candidate.channel = validated_channel;
-                return self.admit_sealed(route, candidate, *envelope);
+                return self.admit_sealed(route, candidate, validated_channel, *envelope);
             }
             collab_types::WholeDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
             },
@@ -2197,30 +2207,46 @@ impl StatePeer {
         ))
     }
     /// Keep a sealed write this replica holds no key for: its author, role,
-    /// route, signature and sequence were checked above, and the ciphertext
-    /// itself becomes the record's durable history, never opened here.
+    /// route, signature and sequence were checked above (`validated` is the
+    /// record's channel with its sequence), and the ciphertext itself
+    /// becomes the record's durable history, never opened here. A verified
+    /// compaction replaces exactly the writes it covers.
     fn admit_sealed(
         &mut self,
         route: Route,
         mut candidate: Document,
+        validated: ChannelState,
         envelope: SignedOp,
     ) -> Result<AdmissionReport, AdmissionError> {
-        let held: usize = candidate.sealed.iter().map(|op| op.payload.len()).sum();
-        if candidate.sealed.len() >= MAX_SEALED_OPS
-            || held.saturating_add(envelope.payload.len()) > MAX_SEALED_BYTES
-        {
-            return Err("sealed record history is full; a key holder must compact it".into());
+        let admitted =
+            DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
+        let history = if envelope.op_class == OpClass::Compaction {
+            sealed_compaction::supersede(
+                &candidate.sealed,
+                &candidate.channel.last_seq_per_author,
+                &envelope,
+            )?
+        } else {
+            let mut history = std::mem::take(&mut candidate.sealed);
+            history.push(envelope);
+            history
+        };
+        let held: usize = history.iter().map(|op| op.payload.len()).sum();
+        if history.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
+            return Err(
+                "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
+                    .into(),
+            );
         }
         let primary = if self.core.admission_v5 {
-            let admitted =
-                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
             self.core.exact_admissions.insert(&admitted)?;
             InputDisposition::Accepted(admitted)
         } else {
             InputDisposition::MetadataOnly
         };
+        candidate.channel = validated;
         candidate.encryption_required = true;
-        candidate.sealed.push(envelope);
+        candidate.sealed = history;
         self.core.documents.insert(route, candidate);
         Ok(AdmissionReport::new(
             primary,
@@ -2234,6 +2260,7 @@ impl StatePeer {
     /// Reinstall `route`'s stored sealed history, checking every write as it
     /// was admitted: sealed for this exact route, signed by its author, with
     /// exact admission evidence and within the record's watermark and bounds.
+    /// A compaction is only ever first and covers none of the later writes.
     fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
         let held: usize = ops.iter().map(|op| op.payload.len()).sum();
         if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
@@ -2277,6 +2304,7 @@ impl StatePeer {
                 return Err("sealed history is ahead of the record's watermark".into());
             }
         }
+        sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
         if let Some(document) = self.core.documents.get_mut(route) {
             document.sealed = ops;
         }
@@ -3483,6 +3511,9 @@ mod delivery_admission_resource_tests {
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
 
+#[cfg(test)]
+#[path = "state/sealed_compaction_tests.rs"]
+mod sealed_compaction_tests;
 #[cfg(test)]
 #[path = "state/sealed_tests.rs"]
 mod sealed_tests;
