@@ -423,7 +423,11 @@ impl App {
                 .invoke_history_address_local(&intent.address, Some(&argument))
                 .unwrap_or_else(|| Err(tilo_actions::DoorError::Unknown(intent.address.clone())));
             for button in self.document_history.in_window_controls_mut() {
-                crate::widget::controls::on_control_invocation_result(button, &intent.address, &result);
+                crate::widget::controls::on_control_invocation_result(
+                    button,
+                    &intent.address,
+                    &result,
+                );
             }
             if let Some(pane) = self.document_history.pane_mut() {
                 crate::widget::controls::on_control_invocation_result(
