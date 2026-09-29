@@ -876,19 +876,22 @@ impl App {
     /// standalone one, without selecting a change: it has no session rows.
     fn framework_history_resource(&self) -> Option<tilo_actions::Resource> {
         let history = self.history.as_ref()?;
-        let mut resource =
-            crate::standalone_history_host::history_resource(true, history.is_open());
-        resource.actions.retain(|action| action.id != "open_at");
-        Some(resource)
+        Some(crate::standalone_history_host::history_resource(
+            true,
+            history.is_open(),
+        ))
     }
 
     fn invoke_framework_history(
         &mut self,
         encoded: &tilo_actions::EncodedAction,
     ) -> Result<(), String> {
-        let history = self.history.as_ref().ok_or("History is unavailable")?;
+        let history = self.history.as_mut().ok_or("History is unavailable")?;
         match serde_json::from_slice(&encoded.payload) {
             Ok(HistoryCommand::Open) if history.request_open() => {}
+            Ok(HistoryCommand::OpenAt { entry })
+                if crate::standalone_history_host::decode_entry(&entry)
+                    .is_ok_and(|entry| history.request_open_at(entry)) => {}
             Ok(HistoryCommand::Hide) => history.request_close(),
             _ => return Err("Unsupported History operation".into()),
         }

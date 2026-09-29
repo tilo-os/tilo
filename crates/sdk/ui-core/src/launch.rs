@@ -1991,6 +1991,18 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
+    // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
+    // app follows.
+    let theme = match std::env::var("TILO_SHOTS_ACCENT")
+        .ok()
+        .and_then(|hex| crate::color::parse_hex(&hex))
+    {
+        Some(accent) => {
+            use crate::color_compat::ColorCompat;
+            theme.with_accent([accent.r(), accent.g(), accent.b()])
+        }
+        None => theme,
+    };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
         .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
         .ok();

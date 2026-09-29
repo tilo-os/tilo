@@ -97,6 +97,8 @@ pub struct HistoryHost {
     unavailable: Text,
     unavailable_node: Option<NodeId>,
     open_requested: Rc<Cell<bool>>,
+    /// The change to select once History next refreshes open.
+    requested_entry: Option<crate::HistoryEntryId>,
     open: bool,
     /// Whether the closed toolbar offers its own History button. Off where
     /// the host's chrome (a menu bar, the Tilo shell) presents History.
@@ -154,8 +156,38 @@ impl HistoryHost {
         }
     }
 
+    /// Open with `entry` selected, as choosing a recent change in a History
+    /// menu does. Selecting a change shows its before and after.
+    pub(crate) fn request_open_at(&mut self, entry: crate::HistoryEntryId) -> bool {
+        if !self.request_open() {
+            return false;
+        }
+        self.requested_entry = Some(entry);
+        true
+    }
+
     pub(crate) fn is_open(&self) -> bool {
         self.open
+    }
+
+    /// The newest `limit` changes the timeline would list now, newest first,
+    /// whether or not History is open.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn recent_entries(
+        &self,
+        doc: &AutoCommit,
+        limit: usize,
+    ) -> Vec<crate::widget::HistoryEntry> {
+        let Some(controller) = self.controller.as_ref().filter(|_| !self.invalid_owner) else {
+            return Vec::new();
+        };
+        let Ok(document) = self.source().document(doc) else {
+            return Vec::new();
+        };
+        let mut entries = controller.entries_at(&document);
+        entries.reverse();
+        entries.truncate(limit);
+        entries
     }
 
     /// The host's own chrome presents History: drop the toolbar's button.
@@ -233,6 +265,7 @@ impl HistoryHost {
             unavailable_node: None,
             timeline: ActivityTimeline::new().with_preview_selection(),
             open_requested: request,
+            requested_entry: None,
             open: false,
             open_button: true,
             rect: Rect::ZERO,
@@ -736,6 +769,14 @@ impl HistoryHost {
     ) -> Vec<super::pending_controls::ContinuationCommand> {
         self.pending_controls.drain_commands()
     }
+    /// The changes the timeline shows selected.
+    pub(crate) fn timeline_selection(&self) -> Vec<crate::HistoryEntryId> {
+        self.timeline
+            .selection()
+            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
+            .map(|entries| entries.iter().map(|entry| entry.id).collect())
+            .unwrap_or_default()
+    }
     #[cfg(test)]
     pub(crate) fn queue_pending_control_command_for_test(
         &self,
@@ -945,17 +986,13 @@ impl HistoryHost {
             || self.toolbar_dirty
             || !self.pending_controls.commands().borrow().is_empty()
             || self.open_requested.get()
+            || self.requested_entry.is_some()
             || !self.commands.borrow().is_empty()
             || (self.width < 600.0) != (width < 600.0)
         {
             return true;
         }
-        let selected: Vec<_> = self
-            .timeline
-            .selection()
-            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect())
-            .unwrap_or_default();
+        let selected = self.timeline_selection();
         if !selected.is_empty() && selected != self.selected {
             return true;
         }
@@ -1006,6 +1043,7 @@ impl HistoryHost {
             }
             changed = true;
         }
+        let requested = self.requested_entry.take().filter(|_| self.open);
         let commands: Vec<_> = self.commands.borrow_mut().drain(..).collect();
         for command in commands {
             // These callbacks were produced by the superseded presentation.
@@ -1133,12 +1171,7 @@ impl HistoryHost {
         }
         // Resolve actual current selected IDs before replacing the projection;
         // positions are never retained as version authority.
-        let selected: Vec<_> = self
-            .timeline
-            .selection()
-            .and_then(|(start, end)| self.timeline.entries().get(start..=end))
-            .map(|entries| entries.iter().map(|entry| entry.id).collect())
-            .unwrap_or_default();
+        let selected = requested.map_or_else(|| self.timeline_selection(), |entry| vec![entry]);
         // Projecting history replays the document's change log, and the live
         // frontier moves with every keystroke. Only an open history view needs
         // it — or the copy of the document it projects from, which costs as
@@ -1176,6 +1209,16 @@ impl HistoryHost {
                 changed = true;
             }
             self.timeline.set_entries(controller.entries().to_vec());
+            if let Some(entry) = requested
+                && self.selected == [entry]
+                && let Some(index) = self
+                    .timeline
+                    .entries()
+                    .iter()
+                    .position(|row| row.id == entry)
+            {
+                self.timeline.set_selection(Some((index, index)));
+            }
         }
         self.refresh_media();
         let now_has_updates = self

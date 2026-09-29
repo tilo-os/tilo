@@ -14779,6 +14779,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-appearance"
+version = "0.1.0"
+dependencies = [
+ "objc2 0.6.3",
+ "objc2-app-kit 0.3.2",
+ "objc2-foundation 0.3.2",
+ "tokio",
+ "tracing",
+ "workspace-hack",
+ "zbus",
+]
+
+[[package]]
 name = "tilo-automation"
 version = "0.1.0"
 dependencies = [
@@ -16138,6 +16151,7 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-resource",
  "tilo-rt",
+ "tilo-secrets",
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
@@ -16297,6 +16311,7 @@ dependencies = [
  "thiserror 2.0.18",
  "threshold-identity",
  "tilo-actions",
+ "tilo-appearance",
  "tilo-automerge",
  "tilo-content",
  "tilo-desktop-model",
@@ -16387,6 +16402,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-secrets",
  "workspace-hack",
  "zeroize",
 ]
