@@ -13,10 +13,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  # Push and pull-request checks are distinct required evidence. Include both
-  # event and commit so neither can replace another result.
-  group: lint-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run: the lander only
+  # reads the current head. Pushes keep one run per commit.
+  group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
