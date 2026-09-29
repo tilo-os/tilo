@@ -1305,7 +1305,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && gst-inspect-1.0 h264parse >/dev/null \
     && gst-inspect-1.0 rtph264pay >/dev/null \
     && gst-inspect-1.0 rtponviftimestamp >/dev/null \
-    && gst-inspect-1.0 rtpstreampay >/dev/null
+    && gst-inspect-1.0 rtpstreampay >/dev/null \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # Display manager + fingerprint auth (pam_fprintd for the greeter; the
 # greeter's PAM stack references it via a tolerant `-auth` line).  The same
@@ -1539,7 +1540,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
                /usr/share/fonts/tilo/*) ;; \
                *) echo "fontconfig does not resolve $generic from the catalog" >&2; exit 1 ;; \
            esac; \
-       done
+       done \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # The frozen snapshot already resolves these development specs and their exact
 # runtime library closure. Erase the header/pkg-config payloads in the same
@@ -1617,7 +1619,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo \
     && gst-inspect-1.0 pulsesrc >/dev/null \
     && gst-inspect-1.0 avenc_aac >/dev/null \
     && gst-inspect-1.0 aacparse >/dev/null \
-    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above"
+    && bash /run/tilo-check-wpe-runtime.sh "the rootfs WPE WebKit runtime dnf list above" \
+    && /usr/libexec/tilo/clean-dnf-layer-state
 
 # ---------------------------------------------------------------------------
 # Bootloader — swap GRUB for systemd-boot
@@ -2940,6 +2943,7 @@ RUN rm -f /etc/resolv.conf && printf '# build-only resolver placeholder\n' > /et
 RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/usr/local/libexec/tilo-clean-bootc-transient-state.py,ro \
     --mount=type=bind,source=os/scripts/verify-boot-ordering.sh,target=/usr/local/libexec/tilo-verify-boot-ordering.sh,ro \
     --mount=type=bind,source=os/scripts/verify-rpm-files.sh,target=/usr/local/libexec/tilo-verify-rpm-files.sh,ro \
+    --mount=type=bind,source=os/scripts/pin-directory-times.py,target=/usr/local/libexec/tilo-pin-directory-times.py,ro \
     find /usr/lib /usr/lib64 \
       \( -path '*/ossl-modules/legacy.so' -o -path '*/engines-3/*.so' \
          -o -name 'libshout.so*' \
@@ -2969,6 +2973,14 @@ RUN --mount=type=bind,source=os/scripts/clean-bootc-transient-state.py,target=/u
     && bash /usr/local/bin/verify-no-ui-toolkits.sh \
     && rm -f /usr/local/bin/verify-runtime-crypto-packages.sh /usr/local/bin/verify-no-ui-toolkits.sh \
              /usr/local/bin/dnf /usr/local/bin/rpm /usr/libexec/tilo/build-clock.so \
+    # The system font cache, written once here: fontconfig records each font
+    # directory's time, so those are pinned to the epoch first, the time the
+    # image carries, and the cache is the same in every build and valid on
+    # the booted system.
+    && for fonts in /usr/share/fonts /usr/share/X11/fonts /usr/local/share/fonts; do \
+         if [ -d "$fonts" ]; then python3 -B /usr/local/libexec/tilo-pin-directory-times.py "$fonts" "$SOURCE_DATE_EPOCH"; fi; \
+       done \
+    && HOME=/root fc-cache -s -f \
     && python3 /usr/local/libexec/tilo-clean-bootc-transient-state.py \
     && bash /usr/local/libexec/tilo-verify-boot-ordering.sh \
     && sh /usr/local/libexec/tilo-verify-rpm-files.sh \
