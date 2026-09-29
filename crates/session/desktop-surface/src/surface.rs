@@ -24,7 +24,9 @@ use tilo_desktop_model::{
     WorkspaceId,
 };
 use ui::automerge::{AutoCommit, ObjId};
+use ui::collaboration::PresencePayload;
 use ui::kurbo::{Affine, Point, Rect};
+use ui::presence::PresenceKey;
 use ui::taffy::{NodeId, Style, TaffyTree};
 use ui::time::{Duration, Instant};
 use ui::vello::Scene;
@@ -41,6 +43,23 @@ use crate::navigation::{
 };
 
 mod search;
+
+/// The caret or selection a surface publishes as its presence: the
+/// keyboard-focused widget's when it is one of the focused window's (or
+/// application's) editors `window`, else that window's first editor caret.
+/// Keyboard focus can stay behind in another window, an action can move a
+/// caret without focus, and a hidden mount never holds keyboard focus.
+pub fn published_selection(
+    keyboard: Option<(PresenceKey, PresencePayload)>,
+    window: &[(PresenceKey, PresencePayload)],
+) -> Option<(PresenceKey, PresencePayload)> {
+    match keyboard {
+        Some(focused) if window.is_empty() || window.iter().any(|(key, _)| *key == focused.0) => {
+            Some(focused)
+        }
+        _ => window.first().cloned(),
+    }
+}
 
 /// Where a host's tab contents come from.
 pub trait TileSource {
@@ -82,6 +101,9 @@ struct Shared {
     /// The content bounds of each window's active tab in the shown strip,
     /// as last laid out.
     shown_tabs: Vec<(TabId, Rect)>,
+    /// Carets and selections of the focused window's editors, as last laid
+    /// out ([`ui::presence::capability::subtree_presence`]).
+    focused_presence: Vec<(PresenceKey, PresencePayload)>,
     /// Tabs whose content the host asked to build again.
     rebuild: Vec<TabId>,
     search_request: Option<search::SearchRequest>,
@@ -134,6 +156,17 @@ impl DesktopHandle {
     /// strips are absent.
     pub fn shown_tabs(&self) -> Vec<(TabId, Rect)> {
         self.shared.borrow().shown_tabs.clone()
+    }
+
+    /// The caret or selection this desktop publishes as its presence, given
+    /// the keyboard-focused widget's (`keyboard`): see
+    /// [`published_selection`], with the focused window's editors as of the
+    /// last layout.
+    pub fn published_selection(
+        &self,
+        keyboard: Option<(PresenceKey, PresencePayload)>,
+    ) -> Option<(PresenceKey, PresencePayload)> {
+        published_selection(keyboard, &self.shared.borrow().focused_presence)
     }
 
     pub fn snapshot(&self, generation: &str, applications: Vec<Application>) -> Snapshot {
@@ -315,6 +348,7 @@ impl DesktopSurface {
             viewport_width: ui::widget::DEFAULT_STRIP_USABLE_PX,
             replaced: false,
             shown_tabs: Vec::new(),
+            focused_presence: Vec::new(),
             rebuild: Vec::new(),
             search_request: None,
             search_open: false,
@@ -1320,7 +1354,22 @@ impl Widget for DesktopSurface {
                     .collect()
             })
             .unwrap_or_default();
-        self.shared.borrow_mut().shown_tabs = shown_tabs;
+        let focused_presence = {
+            let shared = self.shared.borrow();
+            navigation::active_route(&shared.tree)
+                .and_then(|ids| {
+                    let row = self.rows.get(&ids.strip)?;
+                    let group = row.groups.iter().find(|g| g.id == ids.group)?;
+                    group.active_host()
+                })
+                .map(|host| ui::presence::capability::subtree_presence(host))
+                .unwrap_or_default()
+        };
+        {
+            let mut shared = self.shared.borrow_mut();
+            shared.shown_tabs = shown_tabs;
+            shared.focused_presence = focused_presence;
+        }
         self.refresh_presentation();
     }
 
