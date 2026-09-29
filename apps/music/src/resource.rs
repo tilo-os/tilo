@@ -5,11 +5,14 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
-use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
+use ui::tilo_actions::{ActionParam, ActionSpec, EncodedAction, ParamType};
+use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{MUSIC_ACTION_TYPE, MusicAction, MusicResourceCtx, register};
+use crate::actions::{
+    MUSIC_ACTION_TYPE, MusicAction, MusicResourceCtx, create_playlist_action, document_children,
+    new_playlist_id, open_local_file_spec, register,
+};
 use crate::app::MusicApp;
 use crate::doc;
 use crate::model::Library;
@@ -33,31 +36,42 @@ impl Resource for Music {
         Ok(doc::load_library(doc))
     }
 
+    fn declarations() -> Vec<ActionDecl<Self>> {
+        vec![
+            ActionDecl::new(
+                "new-playlist",
+                "New playlist",
+                vec![ActionParam::required(
+                    tilo_actions::PROMPTED_PARAM,
+                    ParamType::Text,
+                    "playlist name…",
+                )],
+                |args, _| {
+                    let name = args
+                        .text(tilo_actions::PROMPTED_PARAM)
+                        .unwrap_or_default()
+                        .trim()
+                        .to_owned();
+                    let name = if name.is_empty() {
+                        "New Playlist".to_owned()
+                    } else {
+                        name
+                    };
+                    Ok(create_playlist_action(&new_playlist_id(), &name))
+                },
+            )
+            .describe("Create a new empty playlist."),
+        ]
+    }
+
     fn children(state: &Library) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        for playlist in state.playlists.iter().take(64) {
-            children.push(tilo_actions::Resource::new(
-                crate::actions::playlist_resource_id(&playlist.id),
-                "music.playlist",
-                playlist.name.clone(),
-            ));
-        }
-        for track in state.tracks.values().take(64) {
-            children.push(tilo_actions::Resource::new(
-                crate::actions::track_resource_id(&track.id),
-                "music.track",
-                track.title.clone(),
-            ));
-        }
-        children
+        document_children(&MusicResourceCtx::from_library(state))
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::provide_resources(&MusicResourceCtx::default(), &AutoCommit::new())
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .filter(|spec| spec.kind != OperationKind::Document)
-            .collect()
+        // Open-file is a device Effect. Navigation destinations are child
+        // `music.view` resources (same tree `provide_resources` publishes).
+        vec![open_local_file_spec()]
     }
 
     fn search(state: &Library) -> Vec<SearchEntry> {
@@ -132,6 +146,10 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Music>) {
         self.framework = Some(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.framework.is_some()
     }
 
     pub(crate) fn dispatch_with_context(

@@ -6,13 +6,13 @@ use std::rc::Rc;
 
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
-use ui::tilo_actions::{ActionSpec, EncodedAction, OperationKind};
+use ui::tilo_actions::{ActionSpec, EncodedAction};
 use ui::tilo_resource::{Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{TUBE_ACTION_TYPE, TubeAction, register};
+use crate::actions::{TUBE_ACTION_TYPE, TubeAction, document_children, register};
 use crate::app::TubeApp;
-use crate::model::{Settings, TubeModel};
+use crate::model::{Settings, SkipMode, TubeModel};
 
 /// Shared collaborative projection written by [`TubeAction`].
 #[derive(Clone, Debug, Default)]
@@ -21,6 +21,24 @@ pub struct TubeShared {
     pub queue: BTreeMap<String, bool>,
     pub subscriptions: BTreeMap<String, bool>,
     pub settings: Settings,
+}
+
+impl TubeShared {
+    /// Membership sets and settings only — no fetched catalogue.
+    pub(crate) fn as_model_projection(&self) -> TubeModel {
+        let on = |map: &BTreeMap<String, bool>| -> Vec<String> {
+            map.iter()
+                .filter(|(_, enabled)| **enabled)
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+        let mut model = TubeModel::default();
+        model.liked = on(&self.likes);
+        model.queue = on(&self.queue);
+        model.subscriptions = on(&self.subscriptions);
+        model.settings = self.settings.clone();
+        model
+    }
 }
 
 /// The Tube application resource.
@@ -43,46 +61,36 @@ impl Resource for Tube {
     }
 
     fn children(state: &TubeShared) -> Vec<tilo_actions::Resource> {
-        let mut children = Vec::new();
-        for video_id in state.queue.keys().take(64) {
-            children.push(tilo_actions::Resource::new(
-                format!("tube.queue:{video_id}"),
-                "tube.queue-entry",
-                video_id.clone(),
-            ));
-        }
-        for channel_id in state.subscriptions.keys().take(64) {
-            children.push(tilo_actions::Resource::new(
-                format!("tube.subscription:{channel_id}"),
-                "tube.subscription",
-                channel_id.clone(),
-            ));
-        }
-        children
+        document_children(state)
     }
 
     fn local_operations() -> Vec<ActionSpec> {
-        crate::actions::provide_resources(&TubeModel::default())
-            .into_iter()
-            .flat_map(|resource| resource.actions)
-            .filter(|spec| spec.kind != OperationKind::Document)
-            .collect()
+        // Navigation and settings ride `children`. Toggle-playback needs the
+        // live watch route and stays on the widget's current-video extra.
+        Vec::new()
     }
 
     fn search(state: &TubeShared) -> Vec<SearchEntry> {
         state
             .queue
-            .keys()
-            .map(|video_id| SearchEntry {
+            .iter()
+            .filter(|(_, queued)| **queued)
+            .map(|(video_id, _)| SearchEntry {
                 anchor: Some(format!("tube.queue:{video_id}")),
                 title: video_id.clone(),
                 text: "queue".into(),
             })
-            .chain(state.subscriptions.keys().map(|channel_id| SearchEntry {
-                anchor: Some(format!("tube.subscription:{channel_id}")),
-                title: channel_id.clone(),
-                text: "subscription".into(),
-            }))
+            .chain(
+                state
+                    .subscriptions
+                    .iter()
+                    .filter(|(_, subscribed)| **subscribed)
+                    .map(|(channel_id, _)| SearchEntry {
+                        anchor: Some(format!("tube.subscription:{channel_id}")),
+                        title: channel_id.clone(),
+                        text: "subscription".into(),
+                    }),
+            )
             .collect()
     }
 }
@@ -95,21 +103,57 @@ fn read_shared(doc: &Doc) -> TubeShared {
     shared.likes = bool_map(doc, &tube, "likes");
     shared.queue = bool_map(doc, &tube, "queue");
     shared.subscriptions = bool_map(doc, &tube, "subscriptions");
-    if let Ok(Some((Value::Object(ObjType::Map), settings))) = doc.get(&tube, "settings") {
-        if let Ok(Some((value, _))) = doc.get(&settings, "sponsorblock")
+    let Ok(Some((Value::Object(ObjType::Map), settings))) = doc.get(&tube, "settings") else {
+        return shared;
+    };
+    for (key, slot) in [
+        ("sponsorblock", &mut shared.settings.sponsorblock_enabled),
+        ("dearrow", &mut shared.settings.dearrow_enabled),
+        ("dearrow_titles", &mut shared.settings.dearrow_titles),
+        (
+            "dearrow_thumbnails",
+            &mut shared.settings.dearrow_thumbnails,
+        ),
+        (
+            "return_dislike",
+            &mut shared.settings.return_dislike_enabled,
+        ),
+        ("autoplay", &mut shared.settings.autoplay),
+        ("show_comments", &mut shared.settings.show_comments),
+    ] {
+        if let Ok(Some((value, _))) = doc.get(&settings, key)
             && let Some(flag) = value.as_bool()
         {
-            shared.settings.sponsorblock_enabled = flag;
+            *slot = flag;
         }
-        if let Ok(Some((value, _))) = doc.get(&settings, "autoplay")
-            && let Some(flag) = value.as_bool()
-        {
-            shared.settings.autoplay = flag;
-        }
-        if let Ok(Some((value, _))) = doc.get(&settings, "preferred_quality")
-            && let Some(quality) = value.as_str()
-        {
-            shared.settings.preferred_quality = quality.to_owned();
+    }
+    if let Ok(Some((value, _))) = doc.get(&settings, "preferred_quality")
+        && let Some(quality) = value.as_str()
+    {
+        shared.settings.preferred_quality = quality.to_owned();
+    }
+    if let Ok(Some((Value::Object(ObjType::Map), categories))) =
+        doc.get(&settings, "sponsor_categories")
+    {
+        for category in crate::model::Category::ALL {
+            let Some(mode) = doc
+                .get(&categories, category.api_key())
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
+                .and_then(|value| match value.as_str() {
+                    "skip" => Some(SkipMode::Skip),
+                    "show" => Some(SkipMode::Show),
+                    "disabled" => Some(SkipMode::Disabled),
+                    _ => None,
+                })
+            else {
+                continue;
+            };
+            shared
+                .settings
+                .categories
+                .insert(category.api_key().to_string(), mode);
         }
     }
     shared
@@ -176,6 +220,10 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Tube>) {
         self.framework = Some(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.framework.is_some()
     }
 
     pub(crate) fn dispatch_with_context(
