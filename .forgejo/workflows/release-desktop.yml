@@ -25,8 +25,6 @@ on:
       - ".forgejo/workflows/release-desktop.yml"
       - "docs/install-contract.json"
       - "scripts/check-install-contract.py"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
   schedule:
     # One weekly candidate, separated from Saturday's OS image build.
     - cron: "0 4 * * 5"
@@ -52,21 +50,7 @@ env:
   TILO_DESKTOP_ARM64_RELEASES: "1"
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/release-desktop.yml
-      event: ${{ github.event_name }}
-
   validate:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     runs-on: runner
     timeout-minutes: 30
     outputs:

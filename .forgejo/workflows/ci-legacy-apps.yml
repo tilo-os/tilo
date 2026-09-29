@@ -23,8 +23,6 @@ on:
       - ".forgejo/actions/prepare-rust-build/**"
       - ".forgejo/workflows/ci-legacy-apps.yml"
       - ".forgejo/workflows/resolve-builder.yml"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
   # Capacity relief: main-push validation is covered by nightly/manual runs.
   # push:
   #   branches: ["main"]
@@ -56,33 +54,12 @@ env:
   FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/ci-legacy-apps.yml
-      event: ${{ github.event_name }}
-
   builder:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     uses: ./.forgejo/workflows/resolve-builder.yml
     secrets: inherit
 
   caret:
-    needs: [applicability, builder]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.builder.result == 'success'
-      }}
+    needs: builder
     runs-on: runner
     timeout-minutes: 45
     container:
