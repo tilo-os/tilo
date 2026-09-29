@@ -2222,6 +2222,17 @@ impl App {
         self.update_focusable_order();
     }
 
+    /// The root's structure flag, and framework History's: it is composed
+    /// as a separate root, so its replaced controls are not the app's.
+    pub(crate) fn take_composition_dirty(&mut self) -> bool {
+        let root = self.root_widget.take_structure_dirty();
+        let history = self
+            .history
+            .as_mut()
+            .is_some_and(|history| history.take_structure_dirty());
+        root || history
+    }
+
     /// When [`Self::autofocus_on_structure_change`] is set, restores the
     /// focused widget's caret/selection only if focus lands back on the SAME
     /// focusable ordinal after rebuild (never onto a different field);
@@ -2232,8 +2243,7 @@ impl App {
     pub fn rebuild_structure(&mut self) {
         let _entry = self.enter_wake_scope();
         // A reported mutation can already have invalidated old widget pointers.
-        let topology_changed =
-            self.layout.structure_dirty || self.root_widget.take_structure_dirty();
+        let topology_changed = self.layout.structure_dirty || self.take_composition_dirty();
         // Node ids below are about to be invalidated.
         let (prev_focus_idx, prev_focus_state, focus_reset) = if self.autofocus_on_structure_change
         {

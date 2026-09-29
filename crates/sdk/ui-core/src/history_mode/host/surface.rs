@@ -24,6 +24,7 @@ impl HistoryHost {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.admit_composition();
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
         // Open History lays out its own navigation rows edge to edge; only
         // the closed strip is inset like a bar.
@@ -316,5 +317,12 @@ impl Widget for HistoryHost {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = self.composition_changed();
+        for child in self.children_mut() {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
     }
 }
