@@ -960,7 +960,7 @@ mod tests {
             set_mode => |_| encoded(&CameraAction::SetMode { mode: CaptureMode::Video }),
         ],
         encodes: [
-            video_mode => ("camera.capture", "video-mode", |_, _| {
+            video_mode => ("camera", "video-mode", |_, _| {
                 encoded(&CameraAction::SetMode { mode: CaptureMode::Video })
             }),
             resolution_4k => ("camera.settings", "resolution-4k", |_, _| {
@@ -1012,7 +1012,13 @@ mod tests {
             assert_eq!(browse_payload["app_id"].as_str(), Some("so.tilo.photos"));
             assert!(browse_payload.get("content_hash").is_none());
             assert!(captures.children.len() <= 1);
-            for resource in &captures.children {
+            let camera = resources
+                .iter()
+                .find(|resource| resource.id.as_str() == "camera")
+                .expect("camera resource");
+            for resource in camera.children.iter().filter(|resource| {
+                matches!(resource.kind.as_str(), "camera.photo" | "camera.video")
+            }) {
                 let action = resource
                     .actions
                     .iter()
@@ -1045,7 +1051,10 @@ mod tests {
             }
             let ids: Vec<_> = resources
                 .iter()
-                .map(|resource| resource.id.as_str())
+                .flat_map(|resource| {
+                    std::iter::once(resource.id.as_str())
+                        .chain(resource.children.iter().map(|child| child.id.as_str()))
+                })
                 .collect();
             assert!(ids.contains(&"camera.scanner"));
             assert!(ids.contains(&"camera.document-scanner"));

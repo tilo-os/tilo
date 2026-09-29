@@ -3488,11 +3488,17 @@ impl ui::resources::PublishesResources for CameraApp {
         if self.is_hosted() {
             return crate::resource::live_extras(self);
         }
-        // Photos and Video Player are destinations, not Camera resources.
-        // Their typed launch operation is attached only to the one current
-        // capture resource, so search and agents cannot mistake Camera for a
-        // second media library.
-        self.publish_resources(doc)
+        let state =
+            <crate::resource::Camera as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut resources = vec![ui::tilo_resource::publish::<crate::resource::Camera>(
+            crate::resource::CAMERA_RESOURCE_ID,
+            "Camera",
+            &state,
+        )];
+        resources.extend(crate::actions::live_effect_extras(
+            &self.camera_resource_ctx(),
+        ));
+        resources
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.publish_resource(doc, id)
