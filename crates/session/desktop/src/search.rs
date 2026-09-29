@@ -13,7 +13,8 @@
 use std::fmt::Write as _;
 
 use tilo_desktop_model::{
-    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, Workspace, WorkspaceId,
+    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, Workspace,
+    WorkspaceId,
 };
 
 use crate::i18n::{t, t_args};
@@ -260,6 +261,80 @@ fn move_rows(
     }
 }
 
+/// The close rows for `group` and each of its tabs, admitted only once the
+/// query names the verb.
+fn close_rows(
+    rows: &mut Vec<WindowRow>,
+    admit: &impl Fn(&str, bool) -> bool,
+    verbs: Verbs,
+    workspace: &Workspace,
+    strip: &Strip,
+    group: &WindowGroup,
+) {
+    let group_id = group.id;
+    let group_title = group
+        .tabs
+        .iter()
+        .find(|tab| tab.id == group.active_tab)
+        .or_else(|| group.tabs.first())
+        .map_or_else(
+            || t("search-window-group-untitled"),
+            |tab| tab.title.clone(),
+        );
+    let id = group_close_id(group_id);
+    if admit(&id, verbs.close) {
+        let label = t_args(
+            "search-window-close-group",
+            &[("group", group_title.as_str().into())],
+        );
+        rows.push(WindowRow {
+            kind: WindowRowKind::WindowGroup,
+            id,
+            names: vec![label.clone()],
+            title: label,
+            subtitle: t_args(
+                "search-window-close-group-detail",
+                &[
+                    ("workspace", workspace.name.as_str().into()),
+                    ("strip", strip.name.as_str().into()),
+                    ("count", group.tabs.len().into()),
+                ],
+            ),
+            badge: t("search-badge-window-group"),
+            hint: None,
+            action: WindowAction::CloseGroup { group: group_id },
+        });
+    }
+    for tab in &group.tabs {
+        let id = tab_close_id(group_id, tab.id);
+        if admit(&id, verbs.close) {
+            let label = t_args(
+                "search-window-close-tab",
+                &[("tab", tab.title.as_str().into())],
+            );
+            rows.push(WindowRow {
+                kind: WindowRowKind::Tab,
+                id,
+                names: vec![label.clone()],
+                title: label,
+                subtitle: t_args(
+                    "search-window-close-tab-detail",
+                    &[
+                        ("workspace", workspace.name.as_str().into()),
+                        ("strip", strip.name.as_str().into()),
+                    ],
+                ),
+                badge: t("search-badge-tab"),
+                hint: app_hint(&tab.tile),
+                action: WindowAction::CloseTab {
+                    group: group_id,
+                    tab: tab.id,
+                },
+            });
+        }
+    }
+}
+
 /// Every window row of the active workspace that `needle` may be asking for.
 ///
 /// Rows are admitted, not ranked: the host ranks [`WindowRow::names`]
@@ -298,66 +373,8 @@ pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
                     });
                 }
             }
-            let group_title = group
-                .tabs
-                .iter()
-                .find(|tab| tab.id == group.active_tab)
-                .or_else(|| group.tabs.first())
-                .map_or_else(
-                    || t("search-window-group-untitled"),
-                    |tab| tab.title.clone(),
-                );
-            let id = group_close_id(group_id);
-            if admit(&id, verbs.close) {
-                let label = t_args(
-                    "search-window-close-group",
-                    &[("group", group_title.as_str().into())],
-                );
-                rows.push(WindowRow {
-                    kind: WindowRowKind::WindowGroup,
-                    id,
-                    names: vec![label.clone()],
-                    title: label,
-                    subtitle: t_args(
-                        "search-window-close-group-detail",
-                        &[
-                            ("workspace", workspace.name.as_str().into()),
-                            ("strip", strip.name.as_str().into()),
-                            ("count", group.tabs.len().into()),
-                        ],
-                    ),
-                    badge: t("search-badge-window-group"),
-                    hint: None,
-                    action: WindowAction::CloseGroup { group: group_id },
-                });
-            }
+            close_rows(&mut rows, &admit, verbs, workspace, strip, group);
             for tab in &group.tabs {
-                let id = tab_close_id(group_id, tab.id);
-                if admit(&id, verbs.close) {
-                    let label = t_args(
-                        "search-window-close-tab",
-                        &[("tab", tab.title.as_str().into())],
-                    );
-                    rows.push(WindowRow {
-                        kind: WindowRowKind::Tab,
-                        id,
-                        names: vec![label.clone()],
-                        title: label,
-                        subtitle: t_args(
-                            "search-window-close-tab-detail",
-                            &[
-                                ("workspace", workspace.name.as_str().into()),
-                                ("strip", strip.name.as_str().into()),
-                            ],
-                        ),
-                        badge: t("search-badge-tab"),
-                        hint: app_hint(&tab.tile),
-                        action: WindowAction::CloseTab {
-                            group: group_id,
-                            tab: tab.id,
-                        },
-                    });
-                }
                 move_rows(
                     &mut rows,
                     &admit,
