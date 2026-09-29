@@ -220,10 +220,7 @@ class OsDevLaneTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
             self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
-            self.assertIn("-f os/Containerfile.dev", step)
-            self.assertIn("tilo-buildcache:$ARCH-dev", step)
-            self.assertIn("push=true", step)
-            self.assertIn("PUSHED_DIGEST=", step)
+            self.assertIn("TILO_DEV_DISK=0", step)
             self.assertIn("IMAGE_ONLY=1", step)
             self.assertIn("TILO_DEV_RUST_LTO=off", step)
             gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
@@ -324,7 +321,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 6)
+            self.assertEqual(len(uses), 7)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],
