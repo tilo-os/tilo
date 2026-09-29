@@ -42,7 +42,10 @@ pub(crate) fn request(ingress: &Ingress, target: &str, body: Vec<u8>) -> (Buffer
             body: Bytes::from(body),
             proof: parsed.proof,
             route: parsed.route,
-            deadline: Instant::now() + DEADLINE,
+            // The shipping request deadline would also bound the owner turns
+            // (commits, fsyncs) these tests run on a loaded runner; callers
+            // cancel through the probe instead.
+            deadline: Instant::from_std(tilo_test_env::hang_deadline()),
             cancelled,
             response,
             lease,
