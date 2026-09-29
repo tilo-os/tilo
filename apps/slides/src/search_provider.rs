@@ -192,6 +192,7 @@ impl SlideSearchProvider {
         SlidesResourceCtx {
             deck_title: self.deck.title.clone(),
             slides,
+            selection: None,
         }
     }
 }

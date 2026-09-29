@@ -1474,19 +1474,33 @@ pub struct SlideResource {
     pub elements: Vec<ElementResource>,
 }
 
+/// The current live selection. Published beside the framework root when hosted
+/// — never a second copy of the deck document door. Its actions are bound to
+/// the peer's selected element (or current slide when nothing is selected).
+#[derive(Clone)]
+pub struct SelectionResourceCtx {
+    pub slide_id: String,
+    pub element_id: Option<String>,
+    pub label: String,
+    pub actions: Vec<ActionSpec>,
+}
+
 /// The presentation context Slides hands [`provide_resources`]: the deck title,
-/// and the slides it currently has open (each with its elements). Everything
-/// here is derived from the in-memory deck mirror, which the document already
-/// holds; nothing is fabricated.
-#[derive(Debug, Clone)]
+/// the slides it currently has open (each with its elements), and the peer's
+/// live selection. Deck rows come from the document; selection is local.
+#[derive(Clone)]
 pub struct SlidesResourceCtx {
     pub deck_title: String,
     pub slides: Vec<SlideResource>,
+    /// Per-peer current slide / selected element. Not collaborative document
+    /// state — rides [`live_presentation_resources`] when hosted.
+    pub selection: Option<SelectionResourceCtx>,
 }
 
 impl SlidesResourceCtx {
     /// The context for `deck` as it stands: each slide in deck order, each
-    /// slide's elements back to front.
+    /// slide's elements back to front. Selection is left unset — callers that
+    /// know the peer's focus fill it in (see [`crate::app::SlidesApp::slides_resource_ctx`]).
     pub fn from_deck(deck: &crate::model::Deck) -> Self {
         Self {
             deck_title: deck.title.clone(),
@@ -1509,6 +1523,7 @@ impl SlidesResourceCtx {
                         .collect(),
                 })
                 .collect(),
+            selection: None,
         }
     }
 }
@@ -2149,11 +2164,96 @@ fn notes_resource(sr: &SlideResource) -> Resource {
     ))
 }
 
+/// Build the peer's live selection from a slide snapshot and optional element id.
+/// Element-bound delete / restack / reveal ride here; slide document ops stay on
+/// the durable `slides.slide:<id>` child published via [`SlidesDeck::children`].
+pub fn selection_ctx_for(slide: &SlideResource, element_id: Option<&str>) -> SelectionResourceCtx {
+    let (label, actions) = if let Some(element_id) = element_id {
+        match slide
+            .elements
+            .iter()
+            .find(|element| element.id == element_id)
+        {
+            Some(element) => {
+                let resource = element_resource(slide, element, false);
+                (resource.label, resource.actions)
+            }
+            None => (
+                format!("Slide {}", slide.idx + 1),
+                vec![operation(
+                    "open",
+                    "Open slide",
+                    OperationKind::View,
+                    SlidesOperation::RevealSlide {
+                        slide: slide.data.id.clone(),
+                    },
+                )],
+            ),
+        }
+    } else {
+        (
+            format!("Slide {}", slide.idx + 1),
+            vec![operation(
+                "open",
+                "Open slide",
+                OperationKind::View,
+                SlidesOperation::RevealSlide {
+                    slide: slide.data.id.clone(),
+                },
+            )],
+        )
+    };
+    SelectionResourceCtx {
+        slide_id: slide.data.id.clone(),
+        element_id: element_id
+            .filter(|id| slide.elements.iter().any(|element| element.id == *id))
+            .map(str::to_owned),
+        label,
+        actions,
+    }
+}
+
+/// Live selection. Published beside the framework root when hosted — never a
+/// second copy of the deck document door. Selection-bound palette rows (delete /
+/// restack / reveal on the peer's focus) stay addressable without republishing
+/// every slide already on [`tilo_resource::publish`].
+pub fn live_presentation_resources(ctx: &SlidesResourceCtx) -> Vec<Resource> {
+    let Some(selection) = &ctx.selection else {
+        return Vec::new();
+    };
+    vec![selection_resource(selection)]
+}
+
+fn selection_resource(selection: &SelectionResourceCtx) -> Resource {
+    let id = match &selection.element_id {
+        Some(element) => format!("slides.selection:{}:{}", selection.slide_id, element),
+        None => format!("slides.selection:{}", selection.slide_id),
+    };
+    let mut resource = Resource::new(id, "slides.selection", selection.label.clone());
+    resource.actions.extend(selection.actions.clone());
+    resource
+}
+
+fn attach_live_selection(deck: &mut Resource, ctx: &SlidesResourceCtx) {
+    let Some(selection) = &ctx.selection else {
+        return;
+    };
+    let wanted = slide_resource_id(&selection.slide_id);
+    let Some(slide) = deck.children.iter_mut().find(|slide| slide.id.0 == wanted) else {
+        return;
+    };
+    slide.children.insert(0, selection_resource(selection));
+}
+
 /// Build the bounded contextual resource tree shown by the palette. Search and
 /// agents resolve everything beyond this window by stable id through
 /// [`resolve_resource`], which always rebuilds from the current deck mirror.
+/// Standalone / `--shots` / unit tests nest the live selection under its slide;
+/// when hosted, [`live_presentation_resources`] returns that slice alone.
 pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    vec![deck_resource(ctx)]
+    let mut deck = deck_resource(ctx);
+    attach_live_selection(&mut deck, ctx);
+    vec![deck]
 }
 
 /// Resolve exactly one current durable deck resource without growing the
