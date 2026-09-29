@@ -7,7 +7,6 @@
 //! build-web-standalone.sh`); this module runs it, reads what it wrote, signs
 //! the module as a `web` package, and serves the page while it rebuilds.
 
-use std::ffi::OsString;
 use std::io::{BufRead as _, BufReader, Write as _};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
@@ -21,9 +20,9 @@ use notify::{Event, RecommendedWatcher};
 
 use crate::{
     DEV_STOP_REQUESTED, DevRequest, DevSignalGuard, DevWatcher, PackageOutcome, PackageRequest,
-    WatchTick, changed_sources, dev_watch_roots, doctor_resolved_app, drain_until_quiet,
-    load_app_package_spec, local_ui_dependency, resolve_app_dir, sdk_root_from_metadata,
-    snapshot_restart_sources, watch_tick,
+    WatchTick, cargo_metadata, changed_sources, dev_watch_roots, doctor_resolved_app,
+    drain_until_quiet, load_app_package_spec, local_ui_dependency, resolve_app_dir,
+    sdk_root_from_metadata, snapshot_restart_sources, watch_tick,
 };
 
 /// The build script, relative to the SDK checkout.
@@ -165,20 +164,7 @@ fn web_build_script(app_dir: &Path) -> Result<PathBuf> {
 }
 
 fn sdk_root_via_metadata(app_dir: &Path) -> Result<Option<PathBuf>> {
-    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
-    let output = ProcessCommand::new(&cargo)
-        .args(["metadata", "--format-version", "1", "--manifest-path"])
-        .arg(app_dir.join("Cargo.toml"))
-        .current_dir(app_dir)
-        .stderr(Stdio::inherit())
-        .output()
-        .context("running cargo metadata")?;
-    if !output.status.success() {
-        bail!("cargo metadata failed with {}", output.status);
-    }
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
-    Ok(sdk_root_from_metadata(&metadata))
+    Ok(sdk_root_from_metadata(&cargo_metadata(app_dir)?))
 }
 
 /// What the build wrote to `output`: `runtime.json`, `apps/index.json` naming
@@ -311,7 +297,7 @@ pub(crate) fn package_web(start: &Path, request: &PackageRequest) -> Result<Pack
     }
     let staged = staging.path().join("package.tapp");
     let identity = crate::signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = crate::resource_kinds::declared_in(&spec.app_dir)?;
+    let resource_kinds = crate::resource_kinds::declared_by_app(&spec.app_dir)?;
     let packed =
         crate::pack::pack_manifest(manifest, resource_kinds, &payload, &staged, &identity)?;
     let entrypoints = vec![PathBuf::from(module_name)];
