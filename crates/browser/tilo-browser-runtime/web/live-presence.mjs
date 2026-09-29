@@ -43,10 +43,11 @@ export const ENDED_DRAG_TIMEOUT_MS = 5000;
 /** A publisher with no frame for this long is reported stale. */
 export const STALE_AFTER_MS = 10000;
 
-const FIELDS = ['focus', 'pointer', 'selection', 'drag'];
+const FIELDS = ['focus', 'pointer', 'selection', 'drag', 'participant'];
+const PARTICIPANT_KINDS = new Set(['person', 'agent']);
 const PHASES = new Set(['start', 'move', 'end', 'cancel']);
 
-const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null});
+const emptyState = () => ({focus: null, pointer: null, selection: null, drag: null, participant: null});
 
 function finitePair(value, name) {
   if (value === null) return null;
@@ -61,6 +62,11 @@ function normalizeField(key, value) {
     case 'pointer': return finitePair(value, 'pointer');
     case 'focus': return {app: String(value.app), record: String(value.record)};
     case 'selection': return {anchor: String(value.anchor), head: String(value.head)};
+    case 'participant': {
+      if (!PARTICIPANT_KINDS.has(value.kind)) throw new TypeError('participant kind must be person or agent');
+      if (!/^#[0-9a-f]{6}$/.test(value.color)) throw new TypeError('participant colour must be #rrggbb');
+      return {kind: value.kind, label: String(value.label), color: value.color, activity: value.activity == null ? null : String(value.activity)};
+    }
     case 'drag': {
       if (!PHASES.has(value.phase)) throw new TypeError('drag phase must be start, move, end or cancel');
       return {
@@ -284,6 +290,7 @@ export function createRemotePresence({maxSamples = 8} = {}) {
       pointer: frame.pointer ?? null,
       selection: frame.selection ?? null,
       drag: frame.drag ?? null,
+      participant: frame.participant ?? null,
     };
     const previous = samples.at(-1);
     if (previous && sample.sentAtMs > previous.sentAtMs) {
@@ -370,6 +377,8 @@ export function createRemotePresence({maxSamples = 8} = {}) {
       receivedAtMs: newest.receivedAtMs,
       focus: newest.focus,
       selection: newest.selection,
+      /** `{kind: 'person' | 'agent', label, color, activity}` or `null`. */
+      participant: newest.participant,
       pointer,
       drag,
       endedDrags,

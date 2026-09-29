@@ -60,6 +60,11 @@ pub struct WebArgs {
     /// `files:<chain.pem>,<key.pem>`.
     #[arg(long, default_value = "dev", value_name = "SOURCE")]
     pub tls: TlsArg,
+    /// Also serve the HTTPS routes as plain HTTP at this loopback address,
+    /// so a local page needs no certificate exception (the live plane then
+    /// uses the HTTPS stream fallback).
+    #[arg(long = "web-plain", value_name = "ADDR")]
+    pub web_plain: Option<SocketAddr>,
 }
 
 /// The relay the command line started.
@@ -105,6 +110,7 @@ fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfi
         listen,
         tls,
         allowed_origins: args.allowed_origins.clone(),
+        plain_listen: args.web_plain,
     }
 }
 
@@ -269,6 +275,7 @@ fn announce(web: &WebHandle, user: &[u8; 32], allowed: &[String], state: &Path) 
         serde_json::json!({
             "origin": web.origin,
             "localhostOrigin": localhost,
+            "plainOrigin": web.plain_origin,
             "userPublicKey": user,
             "certificateSha256": web.certificate_sha256,
             "allowedOrigins": allowed,
@@ -548,6 +555,7 @@ pub async fn room(
         "{}",
         serde_json::json!({
             "origin": web.origin,
+            "plainOrigin": web.plain_origin,
             "userPublicKey": hex::encode(user),
             "certificateSha256": web.certificate_sha256,
             "allowedOrigins": args.web.allowed_origins,
