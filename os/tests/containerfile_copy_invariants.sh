@@ -65,13 +65,15 @@ containerfile="$repo/os/Containerfile"
 # takes its build outputs from native-builder-payload, the builder's outputs
 # copied unchanged, so it no longer needs the compile stage's intermediate
 # cache.
+# tilo-esp-write and its unit, the only writer of the read-only ESP, are
+# deliberate additions.
 # Sorting
 # intentionally ignores instruction order:
 # destinations are unique, and the source-stage/source/destination triple defines
 # each COPY's installed bytes and path. Modes remain source modes except at the
 # explicitly equivalent COPY --chmod=0755 sites checked below. COPY preserves
 # ownership, mtimes and symlinks through scratch stages; no RUN mutates them.
-expected_contract=5cbe4535c14af14f332bee98bb8e36d9cd1a5853c7261cfd62d427013a6e5ff8
+expected_contract=e17ce8194539352f9f6fcb1f8ffc7f853ff99b0f46f2bf2be93cde60712ea0b6
 actual_contract="$(containerfile_expanded_rootfs_copy_contract "$containerfile" |
   LC_ALL=C sort | sha256sum | awk '{print $1}')"
 [ "$actual_contract" = "$expected_contract" ] || {
