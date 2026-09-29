@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub mod ci;
+pub mod examples;
 mod json;
 mod pack;
 pub mod portability;
@@ -179,6 +180,8 @@ pub struct NewAppRequest {
     /// `None` prompts in an interactive terminal and defaults to `Starter`
     /// for deterministic non-interactive use.
     pub template: Option<Template>,
+    /// Copy this example instead of rendering a template.
+    pub example: Option<&'static examples::Example>,
     pub directory: Option<PathBuf>,
     /// Explicit toolkit crate. `None` discovers `TILO_UI_PATH`, a surrounding
     /// checkout, the running executable's checkout, or the build checkout.
@@ -8095,7 +8098,7 @@ fn create_app_interactive_from(
             validate_app_id,
         )?);
     }
-    if request.template.is_none() {
+    if request.template.is_none() && request.example.is_none() {
         request.template = Some(if interactive {
             prompt_template(input, output)?
         } else {
@@ -8218,7 +8221,16 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         sdk,
         template: request.template.unwrap_or(Template::Starter),
     };
-    let rendered = render(&spec)?;
+    let mut rendered = render(&spec)?;
+    if let Some(example) = request.example {
+        examples::overlay(
+            &mut rendered,
+            example,
+            &spec.crate_name,
+            &spec.app_id,
+            &spec.title,
+        )?;
+    }
     let files = rendered.iter().map(|(path, _)| path.clone()).collect();
 
     if !request.dry_run {
@@ -8918,13 +8930,10 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
-        (
-            PathBuf::from("locales/en-US.ftl"),
-            spec.template.catalog().to_owned(),
-        ),
+        (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
     ];
     if spec.template == Template::Graph {
-        files.push((PathBuf::from("ui/main.json"), graph_document(spec)?));
+        files.push((PathBuf::from("ui/main.json"), graph_document()?));
         files.push((
             PathBuf::from("src/screens.rs"),
             screen_registry_source(&["main".into()]),
@@ -9065,14 +9074,27 @@ fn headless_actions(spec: &AppSpec) -> String {
     }
 }
 
-fn graph_document(spec: &AppSpec) -> Result<String> {
+/// The app's source catalog. A graph screen's static text is a message id
+/// too, so the graph template's catalog also names the screen it generates.
+fn app_catalog(spec: &AppSpec) -> String {
+    let catalog = spec.template.catalog();
+    if spec.template != Template::Graph {
+        return catalog.to_owned();
+    }
+    format!(
+        "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
+        escape_fluent_string(&spec.title)
+    )
+}
+
+fn graph_document() -> Result<String> {
     let document = tilo_ui_graph::UiDocument::new(tilo_ui_graph::UiNode::Column {
         id: "root".into(),
         children: vec![
             tilo_ui_graph::UiNode::Text {
                 id: "title".into(),
                 text: tilo_ui_graph::UiTextSource::Static {
-                    value: spec.title.clone(),
+                    value: "graph-title".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
                 size: None,
@@ -9080,8 +9102,7 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
             tilo_ui_graph::UiNode::Text {
                 id: "graph-introduction".into(),
                 text: tilo_ui_graph::UiTextSource::Static {
-                    value: "This read-only screen remains live-editable; native controls below publish actions."
-                        .into(),
+                    value: "graph-introduction".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
                 size: None,
