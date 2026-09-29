@@ -4469,6 +4469,7 @@ impl FrameHarness {
             {
                 let mods = self.modifiers.state();
                 if let Some(request) = crate::undo::shortcut(
+                    self.platform,
                     character,
                     self.platform.command_modifier_down(mods),
                     mods.shift_key(),
