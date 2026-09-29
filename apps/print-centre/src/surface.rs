@@ -67,6 +67,7 @@ pub struct PrintCentre {
     scan: ScanState,
     scan_save_picker: Option<ui::portal::PortalChannel>,
     scan_save_document: bool,
+    hosted: bool,
 }
 
 /// The scan page's controls and the pages scanned so far.
@@ -2464,6 +2465,7 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            hosted: false,
         }
     }
     pub fn demo(scenario: DemoScenario) -> Self {
@@ -2487,7 +2489,43 @@ impl PrintCentre {
             scan: ScanState::default(),
             scan_save_picker: None,
             scan_save_document: false,
+            hosted: false,
         }
+    }
+
+    pub(crate) fn mark_framework_hosted(&mut self) {
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
+
+    /// Printers, jobs, and scanners from the live CUPS/SANE snapshot. Not a
+    /// second `print-centre.dashboard` root; dashboard Views already ride publish.
+    fn live_device_resources(&self) -> Vec<Resource> {
+        let Some(snapshot) = &self.snapshot else {
+            return Vec::new();
+        };
+        let mut extras = Vec::new();
+        if let Ok(queues) = &snapshot.queues {
+            extras.extend(queues.iter().map(printer_resource));
+        }
+        if let Ok(jobs) = &snapshot.jobs {
+            extras.extend(jobs.iter().map(job_resource).map(|mut job| {
+                job.actions
+                    .retain(|action| action.id.as_str() != "open-queue");
+                job
+            }));
+        }
+        if let Ok(scanners) = &snapshot.scanners {
+            extras.extend(scanners.iter().map(scanner_resource));
+        }
+        extras
     }
 
     fn request_document(&mut self) {
@@ -3399,6 +3437,9 @@ impl Widget for PrintCentre {
 
 impl ui::resources::PublishesResources for PrintCentre {
     fn resources(&self, _: &AutoCommit) -> Vec<Resource> {
+        if self.hosted {
+            return self.live_device_resources();
+        }
         let mut root = Resource::new("print-centre", "print-centre.dashboard", "Print Centre");
         for (id, label, kind, command) in [
             (
@@ -3473,6 +3514,53 @@ impl ui::resources::PublishesResources for PrintCentre {
 mod tests {
     use super::*;
     use automerge::ROOT;
+
+    #[test]
+    fn hosted_resources_keep_devices_without_dashboard_root() {
+        let mut centre = PrintCentre::demo(DemoScenario::Dashboard);
+        centre.snapshot = Some(demo_snapshot());
+        let doc = AutoCommit::new();
+        assert!(!centre.is_framework_hosted());
+        let standalone = ui::resources::resources(&centre, &doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "print-centre.dashboard");
+        assert!(
+            standalone[0]
+                .children
+                .iter()
+                .any(|child| child.kind == "print-centre.printer")
+        );
+
+        centre.mark_hosted_for_test();
+        let extras = ui::resources::resources(&centre, &doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.kind != "print-centre.dashboard"
+                    && resource.id.as_str() != "print-centre"),
+            "hosted must not republish the dashboard: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "print-centre.printer")
+        );
+        assert!(
+            extras
+                .iter()
+                .any(|resource| resource.kind == "print-centre.job")
+        );
+        assert!(extras.iter().all(|resource| {
+            resource
+                .actions
+                .iter()
+                .all(|action| action.id.as_str() != "open-queue")
+        }));
+    }
 
     /// The surface Print Centre publishes once a refresh has found printers,
     /// documents and scanners.
