@@ -382,6 +382,44 @@ pub enum Envelope {
         /// The position.
         position: Vec<u8>,
     },
+
+    /// This device answers [`Envelope::CompactRequest`]s for
+    /// `workspace_id` while its subscription lasts. Sent only to a host
+    /// that advertised compaction.
+    CompactVolunteer {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// The host holds a long sealed tail for one route and asks this member
+    /// for a snapshot of it and a
+    /// [`crate::compaction::CoverageStatement`]. Sent only to volunteers.
+    CompactRequest {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Echoed in the statement.
+        request: [u8; 16],
+        /// The route's application.
+        app_id: String,
+        /// The route's room.
+        cluster_id: String,
+        /// The route's record.
+        record: String,
+    },
+
+    /// A member's answer to [`Envelope::CompactRequest`], sent after the
+    /// snapshot's commits.
+    Compacted {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Encoded [`crate::compaction::CoverageStatement`].
+        #[serde(with = "serde_bytes")]
+        statement: Vec<u8>,
+        /// The member's device signature over
+        /// [`crate::compaction::signing_bytes`] of `statement`.
+        #[serde(with = "crate::sig64")]
+        signature: [u8; 64],
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The
