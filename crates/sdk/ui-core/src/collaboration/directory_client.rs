@@ -3,6 +3,41 @@
 use super::{ByteMeter, Duration, SdkRoute};
 
 const DIRECTORY_RPC_TIMEOUT: Duration = Duration::from_secs(2);
+/// How long a resolved invocation waits for the broker's admission answer.
+/// Admission journals the invocation durably, which takes seconds on a loaded
+/// host, and a missed answer can only be reported as an unknown outcome. This
+/// bounds a hung broker, not an ordinary slow one.
+const ADMISSION_RPC_TIMEOUT: Duration = Duration::from_secs(60);
+
+fn admission_timeout() -> Duration {
+    #[cfg(test)]
+    if let Some(timeout) = tests_admission_timeout() {
+        return timeout;
+    }
+    ADMISSION_RPC_TIMEOUT
+}
+
+/// A test bound for admission answers, so a never-answered invocation's
+/// unknown outcome is observed without waiting out the production bound.
+#[cfg(test)]
+static TEST_ADMISSION_TIMEOUT_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(test)]
+fn tests_admission_timeout() -> Option<Duration> {
+    match TEST_ADMISSION_TIMEOUT_MS.load(std::sync::atomic::Ordering::SeqCst) {
+        0 => None,
+        ms => Some(Duration::from_millis(ms)),
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_test_admission_timeout(timeout: Duration) {
+    TEST_ADMISSION_TIMEOUT_MS.store(
+        u64::try_from(timeout.as_millis()).unwrap_or(u64::MAX),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
 
 pub(super) fn query_bytes(query: &runtime_collab::ActionDirectoryQuery, meter: &mut ByteMeter) {
     meter.string_capacity(&query.revision);
@@ -135,7 +170,7 @@ pub(super) async fn invoke(
     // Losing the response is not proof that admission or an effect failed.
     // This wire method returns its server-generated identity only in the
     // response; timeout cannot safely retry or invent a terminal receipt.
-    tokio::time::timeout(DIRECTORY_RPC_TIMEOUT, route.channel.invoke_resolved_published_action(
+    tokio::time::timeout(admission_timeout(), route.channel.invoke_resolved_published_action(
             peer_id,
             revision,
             resource,
