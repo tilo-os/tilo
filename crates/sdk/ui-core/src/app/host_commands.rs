@@ -210,14 +210,22 @@ impl App {
         invocation.is_some_and(|invocation| self.invoke_host_command(&invocation))
     }
 
-    /// The newest changes, from whichever History serves this app.
+    /// The newest changes people made, from whichever History serves this
+    /// app. The document's genesis is a version, not a change anyone made.
     fn recent_changes(&self) -> Vec<RecentChange> {
+        self.history_rows()
+            .iter()
+            .rev()
+            .filter(|entry| !entry.is_genesis())
+            .take(model::RECENT_CHANGES)
+            .map(RecentChange::from_entry)
+            .collect()
+    }
+
+    /// The rows whichever History serves this app lists, in causal order.
+    fn history_rows(&self) -> Vec<crate::widget::HistoryEntry> {
         if let Some(history) = &self.history {
-            return history
-                .recent_entries(&self.state.doc, model::RECENT_CHANGES)
-                .iter()
-                .map(RecentChange::from_entry)
-                .collect();
+            return history.current_entries(&self.state.doc);
         }
         if !self.history_chrome_enabled {
             return Vec::new();
@@ -240,15 +248,7 @@ impl App {
             &context,
             crate::history_source::AuthorDirectory::new(),
         )
-        .map(|history| {
-            history
-                .rows()
-                .iter()
-                .rev()
-                .take(model::RECENT_CHANGES)
-                .map(RecentChange::from_entry)
-                .collect()
-        })
+        .map(|history| history.rows().to_vec())
         .unwrap_or_default()
     }
 

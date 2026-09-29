@@ -1092,12 +1092,16 @@ impl HistoryScrubber {
             return;
         };
         let now = self.now();
-        let detail = format!(
-            "{} by {} \u{00b7} {}",
-            entry.summary,
-            entry.author.name,
-            format_relative_time(entry.timestamp, now)
-        );
+        let detail = if entry.is_genesis() {
+            entry.summary.clone()
+        } else {
+            format!(
+                "{} by {} \u{00b7} {}",
+                entry.summary,
+                entry.author.name,
+                format_relative_time(entry.timestamp, now)
+            )
+        };
         // An unnamed segment of one change derives its title *from* that
         // change, so a two-line popover would print the same words twice —
         // once as the version and once as the change. Say it once.
