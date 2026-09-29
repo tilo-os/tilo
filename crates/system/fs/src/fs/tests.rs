@@ -164,8 +164,11 @@ mod availability_control_tests {
                 wake.send_modify(|generation| *generation = generation.wrapping_add(1));
             });
 
+            // The transfer outlasts any unpin: persisting the unpinned
+            // registry is a durable write, which a loaded disk can hold for
+            // longer than any fixed transfer time.
             let cancelled = await_current_pinned_hydration(
-                tokio::time::sleep(Duration::from_secs(1)),
+                tokio::time::sleep(tilo_test_env::hang_bound()),
                 &candidate,
                 &namespace,
                 &registry,

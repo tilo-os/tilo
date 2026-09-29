@@ -660,6 +660,125 @@ impl QuickFS {
         })
     }
 
+    /// Whether the file at `rel` is a document: kept as a CRDT and read and
+    /// written in the legacy format its name declares.
+    pub fn document_at(&self, rel: &Path) -> bool {
+        path_components(rel)
+            .ok()
+            .and_then(|components| self.ino_at(&components))
+            .is_some_and(|ino| self.is_document(ino))
+    }
+
+    /// The whole file at `rel` as a reader of the mount sees it: a
+    /// document exported through its format's codec, other content hydrated
+    /// first when it is not local.
+    ///
+    /// # Errors
+    ///
+    /// `ENOENT` when `rel` is not a file here, `EIO` when its content could
+    /// not be exported or hydrated.
+    pub fn read_path(&self, rel: &Path) -> Result<Vec<u8>, i32> {
+        let components = path_components(rel)?;
+        let ino = self.ino_at(&components).ok_or(ENOENT)?;
+        let attr = self.ns().getattr(ino);
+        if attr.is_some_and(|attr| attr.kind == FileType::Directory) {
+            return Err(EISDIR);
+        }
+        self.read_full_blocking(ino).map_err(|e| to_errno(&e))
+    }
+
+    /// Writes the file at `snapshot` (immutable while this runs) as the
+    /// whole file at `rel`, as a create or an open, write and close of the
+    /// mount would: a document is imported through its format's codec (an
+    /// invalid document is refused and the current one kept), a new file
+    /// named for a registered format becomes a document where the namespace
+    /// keeps documents, and anything else is content, applied as
+    /// [`Self::apply_local_snapshot`].
+    ///
+    /// # Errors
+    ///
+    /// `EINVAL` for a document its codec refuses, else as
+    /// [`Self::apply_local_file`].
+    pub fn write_path(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
+        let components = path_components(rel)?;
+        let Some((name, parents)) = components.split_last() else {
+            return Err(EISDIR);
+        };
+        let parent = self.ensure_dir_components(parents)?;
+        let read = || std::fs::read(snapshot).map_err(|e| to_errno(&e));
+        match self.lookup_kind(parent, name) {
+            Some((ino, FileType::RegularFile)) if self.is_document(ino) => {
+                self.commit_buffer(ino, &read()?)
+            }
+            None => {
+                if let Some(codec) = self.new_document_codec(name) {
+                    return self.create_local_document(parent, name, &codec, &read()?, mtime_ms);
+                }
+                self.write_snapshot(rel, snapshot, mtime_ms)?;
+                // A signed record's first version is its creation; an
+                // unsigned one is created as FUSE `create` creates it.
+                if !self.signed()
+                    && let Some((ino, _)) = self.lookup_kind(parent, name)
+                {
+                    self.record_version(ino, collab_types::FileProvenance::Create, None);
+                }
+                Ok(())
+            }
+            Some(_) => self.write_snapshot(rel, snapshot, mtime_ms),
+        }
+    }
+
+    fn write_snapshot(&self, rel: &Path, snapshot: &Path, mtime_ms: u64) -> Result<(), i32> {
+        let attrs = PosixAttrs::default_for(false);
+        self.apply_local_snapshot(rel, snapshot, None, mtime_ms, attrs, None)
+    }
+
+    fn signed(&self) -> bool {
+        self.record_publisher.is_some() && self.history.is_some()
+    }
+
+    /// The codec a new file named `name` is kept in as a document. Signed
+    /// records carry opaque content only, so there it is always `None`.
+    fn new_document_codec(&self, name: &[u8]) -> Option<String> {
+        if self.signed() || self.ns().content_authority() != ContentAuthority::LegacyNamespace {
+            return None;
+        }
+        std::str::from_utf8(name)
+            .ok()
+            .and_then(|name| self.document_codec_for(name))
+    }
+
+    /// Creates the document `name` in `parent` with `data` as its content,
+    /// as a FUSE create followed by a write and close.
+    fn create_local_document(
+        &self,
+        parent: u64,
+        name: &[u8],
+        codec: &str,
+        data: &[u8],
+        mtime_ms: u64,
+    ) -> Result<(), i32> {
+        let name = std::str::from_utf8(name).map_err(|_| libc::EINVAL)?;
+        let (ino, delta) = {
+            let mut ns = self.ns();
+            let ino = ns
+                .create_document(parent, name, codec, mtime_ms)
+                .ok_or(ENOENT)?;
+            (ino, ns.save_incremental())
+        };
+        self.publish(delta);
+        self.record_version(ino, collab_types::FileProvenance::Create, None);
+        if data.is_empty() {
+            return Ok(());
+        }
+        let committed = self.commit_buffer(ino, data);
+        if committed.is_err() {
+            // A document its codec refuses must not stay behind empty.
+            let _ = self.delete_named(parent, name.as_bytes(), false);
+        }
+        committed
+    }
+
     /// The write lease of the file at `rel`, if it has one.
     pub fn write_lease_at(&self, rel: &Path) -> Option<WriteLease> {
         let components = path_components(rel).ok()?;
