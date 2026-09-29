@@ -310,7 +310,7 @@ impl Harness {
         let prev_state = self
             .focused
             .and_then(|id| self.node_map.get(&id).copied())
-            .and_then(|w| unsafe { (*w).get_state() });
+            .and_then(|w| unsafe { ui::undo::get_state(&(*w)) });
         // The old node ids are about to be invalidated (fresh taffy tree).
         self.focused = None;
         self.layout();
@@ -321,7 +321,7 @@ impl Harness {
             if let Some(s) = &prev_state
                 && let Some(&w) = self.node_map.get(&id)
             {
-                unsafe { (*w).set_state(s) };
+                unsafe { ui::undo::set_state(&mut (*w), s) };
             }
         }
     }
@@ -562,12 +562,12 @@ fn query_rebuild_keeps_active_content_local_text_and_caret_state() {
     h.click(h.search_field_rect().center());
     let content = find_test_widget(&h.app, "content-retention-probe").unwrap();
     let identity = std::ptr::from_ref(content).cast::<()>() as usize;
-    let state = content.get_state().unwrap();
+    let state = ui::undo::get_state(content).unwrap();
     let text = local.with(Clone::clone);
     h.type_char("z");
     let retained = find_test_widget(&h.app, "content-retention-probe").unwrap();
     assert_eq!(std::ptr::from_ref(retained).cast::<()>() as usize, identity);
-    assert_eq!(retained.get_state(), Some(state));
+    assert_eq!(ui::undo::get_state(retained), Some(state));
     assert_eq!(local.with(Clone::clone), text);
     h.app.select(super::Category::About);
     h.rebuild();

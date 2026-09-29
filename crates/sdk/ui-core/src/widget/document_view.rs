@@ -201,7 +201,8 @@ where
         dyn crate::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         dyn crate::record::capability::RecordScoped,
-        dyn crate::view::capability::ViewState
+        dyn crate::view::capability::ViewState,
+        dyn crate::undo::UndoPoints
     );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
@@ -302,14 +303,6 @@ where
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset) || self.child.take_focus_reset()
     }
@@ -347,6 +340,18 @@ where
             presence,
             permissions,
         );
+    }
+}
+
+impl<K> crate::undo::UndoPoints for ModelView<K>
+where
+    K: PartialEq + 'static,
+{
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 

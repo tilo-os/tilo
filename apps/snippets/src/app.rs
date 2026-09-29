@@ -1023,7 +1023,8 @@ impl ui::widget::Widget for SnippetsApp {
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -1402,33 +1403,6 @@ impl ui::widget::Widget for SnippetsApp {
         true
     }
 
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-            || self.body_editor.needs_commit()
-            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
-    }
-
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-        self.body_editor.on_commit();
-        if let Some(modal) = &mut self.expand {
-            modal.on_commit();
-        }
-    }
-
-    fn get_state(&self) -> Option<String> {
-        serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        if let Ok((id, Some(caret))) =
-            serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
-            && id == self.open
-        {
-            self.body_editor.set_state(&caret);
-        }
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.body_available() && self.body_editor.wants_pointer_capture()
     }
@@ -1473,6 +1447,32 @@ impl ui::widget::Widget for SnippetsApp {
         _permissions: &PermissionContext,
     ) {
         self.draw(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::UndoPoints for SnippetsApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+            || self.body_editor.needs_commit()
+            || self.expand.as_ref().is_some_and(ExpandModal::needs_commit)
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+        self.body_editor.on_commit();
+        if let Some(modal) = &mut self.expand {
+            modal.on_commit();
+        }
+    }
+    fn get_state(&self) -> Option<String> {
+        serde_json::to_string(&(self.open, self.body_editor.get_state())).ok()
+    }
+    fn set_state(&mut self, state: &str) {
+        if let Ok((id, Some(caret))) =
+            serde_json::from_str::<(Option<SnippetId>, Option<String>)>(state)
+            && id == self.open
+        {
+            self.body_editor.set_state(&caret);
+        }
     }
 }
 

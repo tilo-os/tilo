@@ -822,7 +822,8 @@ impl EditorApp {
 impl Widget for EditorApp {
     ui::provides!(
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::record::capability::RecordScoped
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
     );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
@@ -999,19 +1000,18 @@ impl Widget for EditorApp {
     fn is_focused(&self) -> bool {
         self.focused
     }
+}
 
+impl ui::undo::UndoPoints for EditorApp {
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.body.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         Some(self.edit.caret().to_string())
     }
-
     fn set_state(&mut self, s: &str) {
         if let Ok(pos) = s.parse::<usize>() {
             self.edit.set_caret(pos);

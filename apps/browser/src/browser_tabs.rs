@@ -2926,7 +2926,7 @@ mod tests {
                 if widget.test_id() == Some("browser.url_input") {
                     return widget
                         .text_review()
-                        .map(|(_, text)| (text, widget.get_state().unwrap()));
+                        .map(|(_, text)| (text, ui::undo::get_state(widget).unwrap()));
                 }
                 widget.children().iter().find_map(|child| address(*child))
             }

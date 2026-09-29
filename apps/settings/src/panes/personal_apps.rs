@@ -224,6 +224,8 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 }
 
 impl Widget for PersonalAppsPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
@@ -391,24 +393,27 @@ impl Widget for PersonalAppsPane {
             .into_iter()
             .collect()
     }
+    fn name(&self) -> &'static str {
+        "PersonalAppsPane"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for PersonalAppsPane {
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
                 .as_ref()
-                .is_some_and(|content| content.needs_commit());
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
         crate::panes::preference_commit_context(
             pending,
             "personal-apps",
             "Personal app defaults",
             "Change default apps",
         )
-    }
-    fn name(&self) -> &'static str {
-        "PersonalAppsPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

@@ -41,7 +41,7 @@ fn decorators_forward_override_and_intercept_their_inner_widget() {
         }
         let blanket = block_methods(source, "impl<T: Decorator> Widget for T {");
         assert!(
-            widget.len() > 100,
+            widget.len() > 20,
             "parsed only {} Widget methods",
             widget.len()
         );

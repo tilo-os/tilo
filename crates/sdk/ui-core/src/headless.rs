@@ -3935,10 +3935,10 @@ impl FrameHarness {
             }
             if !owns_document && self.state.doc.get_heads() != before {
                 self.state.record_committed_action(before, None, None);
-                self.root.on_commit();
-            } else if !owns_document && self.root.needs_commit() {
+                crate::undo::on_commit(self.root.as_mut());
+            } else if !owns_document && crate::undo::needs_commit(self.root.as_ref()) {
                 self.state.commit_action(None, None);
-                self.root.on_commit();
+                crate::undo::on_commit(self.root.as_mut());
             }
             // Action-bound controls enqueue an intent instead of mutating the
             // document inside `perform_action`; drain it before presenting
@@ -4818,16 +4818,16 @@ impl FrameHarness {
     fn host_tick(&mut self) {
         self.idle_control_tick();
         let author = self.author.clone();
-        if self.root.needs_commit() {
+        if crate::undo::needs_commit(self.root.as_ref()) {
             // Authored *and* carrying the widget's commit context. An
             // anonymous entry is invisible to author-scoped undo, so a
             // scenario that pressed Ctrl+Z would find nothing where the user
             // finds their last edit; dropping the context loses the
             // provenance the history explorer reads.
-            let context = self.root.take_commit_context();
+            let context = crate::undo::take_commit_context(self.root.as_mut());
             self.state
                 .commit_action_authored_with_context(None, None, Some(author), context);
-            self.root.on_commit();
+            crate::undo::on_commit(self.root.as_mut());
         }
         // An Undo/Redo control the widget tree activated during that event.
         // Same route the live host takes: the widget asks, the host performs.
@@ -8028,7 +8028,7 @@ mod tests {
             let current = driver.focused.unwrap();
             assert_eq!(
                 driver
-                    .inspect_node(current, |widget| widget.get_state())
+                    .inspect_node(current, |widget| crate::undo::get_state(widget))
                     .unwrap()
                     .as_deref(),
                 Some("own selection")
@@ -8098,7 +8098,9 @@ mod tests {
             // The retained node is valid until relayout, and `key` has already
             // completed its relayout before this observation.
             assert_eq!(
-                unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+                unsafe {
+                    crate::undo::get_state(&(*(*editor.node_map.get(&editor_node).unwrap())))
+                },
                 Some("4".into()),
                 "Tab reaches the code editor and inserts its configured indent"
             );
@@ -8106,7 +8108,9 @@ mod tests {
             editor.key("Tab");
             let editor_node = editor.focused().expect("editor remains focused");
             assert_eq!(
-                unsafe { (*(*editor.node_map.get(&editor_node).unwrap())).get_state() },
+                unsafe {
+                    crate::undo::get_state(&(*(*editor.node_map.get(&editor_node).unwrap())))
+                },
                 Some("0".into()),
                 "Shift+Tab reaches the same editor and outdents"
             );
@@ -8352,10 +8356,10 @@ mod tests {
         fn replace_before_relayout(&mut self) {
             let access = self.current.accessibility().unwrap();
             let value = access.value.unwrap();
-            let state = self.current.get_state().unwrap();
+            let state = crate::undo::get_state(self.current.as_ref()).unwrap();
             let focused = self.current.is_focused();
             let mut current = Self::editor(&value);
-            current.set_state(&state);
+            crate::undo::set_state(current.as_mut(), &state);
             current.set_focus(focused);
 
             let mut stale = std::mem::replace(&mut self.current, current);
@@ -8363,7 +8367,7 @@ mod tests {
             // Driver starts its next relayout. Keep it alive so the fixture
             // observes the logical stale-map distinction without a UAF.
             stale.set_focus(false);
-            stale.set_state("0");
+            crate::undo::set_state(stale.as_mut(), "0");
             self.retired.push(stale);
             self.structure_dirty = true;
             self.replace_during_sync = true;
@@ -10699,6 +10703,8 @@ mod undo_driver_tests {
     }
 
     impl crate::widget::Widget for Typer {
+        crate::provides!(dyn crate::undo::UndoPoints);
+
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -10772,11 +10778,12 @@ mod undo_driver_tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.rect
         }
+    }
 
+    impl crate::undo::UndoPoints for Typer {
         fn needs_commit(&self) -> bool {
             self.pending
         }
-
         fn on_commit(&mut self) {
             self.pending = false;
         }
@@ -11417,7 +11424,7 @@ mod prepared_driver_tests {
         }
     }
     impl Widget for Observer {
-        crate::provides!(dyn crate::undo::UndoControl);
+        crate::provides!(dyn crate::undo::UndoControl, dyn crate::undo::UndoPoints);
 
         fn set_motion_reduced(&mut self, _: bool) {
             if !std::mem::replace(&mut self.motion_delivered, true)
@@ -11506,6 +11513,9 @@ mod prepared_driver_tests {
         fn get_rect(&self) -> vello::kurbo::Rect {
             self.rect
         }
+    }
+
+    impl crate::undo::UndoPoints for Observer {
         fn get_state(&self) -> Option<String> {
             Some(self.snapshot.clone())
         }
@@ -11636,7 +11646,10 @@ mod prepared_driver_tests {
                 .unwrap();
             let _outer = outer_scope.enter();
             let (_host, mut driver, observed, _) = prepared();
-            assert_eq!(driver.root.get_state(), Some("initial callback".into()));
+            assert_eq!(
+                crate::undo::get_state(driver.root.as_ref()),
+                Some("initial callback".into())
+            );
             assert_eq!(outer_wakes.load(std::sync::atomic::Ordering::Relaxed), 0);
             let writer = observed.local.borrow().as_ref().unwrap().writer();
             let before = observed.syncs.get();
@@ -11649,7 +11662,10 @@ mod prepared_driver_tests {
             );
             let _ = driver.action_registry_mut();
             assert!(observed.syncs.get() > before);
-            assert_eq!(driver.root.get_state(), Some("pending".into()));
+            assert_eq!(
+                crate::undo::get_state(driver.root.as_ref()),
+                Some("pending".into())
+            );
             writer.set("queued before close".into());
             driver.close_components();
             assert!(!writer.try_set("stale".into()));
@@ -11658,7 +11674,10 @@ mod prepared_driver_tests {
             let successor_syncs = next_observed.syncs.get();
             assert!(successor_syncs > 0, "initial composition was synchronized");
             assert!(!writer.try_set("late successor result".into()));
-            assert_eq!(successor.root.get_state(), Some("initial callback".into()));
+            assert_eq!(
+                crate::undo::get_state(successor.root.as_ref()),
+                Some("initial callback".into())
+            );
             assert_eq!(
                 next_observed.syncs.get(),
                 successor_syncs,

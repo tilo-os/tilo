@@ -6792,7 +6792,8 @@ impl Widget for ContactsApp {
         dyn ui::undo::CommittedActions,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::resources::PublishesResources,
-        dyn ui::search::capability::SearchSource
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -8158,23 +8159,6 @@ impl Widget for ContactsApp {
         self.relayout
     }
 
-    fn needs_commit(&self) -> bool {
-        self.search.needs_commit()
-            || self
-                .form
-                .as_ref()
-                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
-    }
-
-    fn on_commit(&mut self) {
-        self.search.on_commit();
-        if let Some(form) = &mut self.form {
-            for f in &mut form.inputs {
-                f.ti.on_commit();
-            }
-        }
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -8185,6 +8169,24 @@ impl Widget for ContactsApp {
         _permissions: &PermissionContext,
     ) {
         self.render(scene, transform, tr, theme, presence);
+    }
+}
+
+impl ui::undo::UndoPoints for ContactsApp {
+    fn needs_commit(&self) -> bool {
+        self.search.needs_commit()
+            || self
+                .form
+                .as_ref()
+                .is_some_and(|f| f.inputs.iter().any(|i| i.ti.needs_commit()))
+    }
+    fn on_commit(&mut self) {
+        self.search.on_commit();
+        if let Some(form) = &mut self.form {
+            for f in &mut form.inputs {
+                f.ti.on_commit();
+            }
+        }
     }
 }
 
