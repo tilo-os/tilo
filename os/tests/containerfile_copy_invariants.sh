@@ -110,9 +110,10 @@ instructions="$(containerfile_instructions "$containerfile" | awk '
 # A build-only resolver placeholder and a final COPY restore the runtime
 # symlink outside the cleanup RUN, keeping BuildKit's DNS mount out of /run.
 # The fixed-clock build adds an ARG, four COPYs, and an early path assertion.
-# Keep the current 149-instruction bound exact and reviewed.
-[ "$instructions" -le 149 ] || {
-  echo "rootfs layer budget exceeded: $instructions instructions (maximum 149)" >&2
+# Pinning the unpacked base's directory times to the epoch adds one RUN.
+# Keep the current 150-instruction bound exact and reviewed.
+[ "$instructions" -le 150 ] || {
+  echo "rootfs layer budget exceeded: $instructions instructions (maximum 150)" >&2
   exit 1
 }
 
