@@ -587,6 +587,141 @@ fn pan_moves_the_shown_strip_without_changing_the_saved_tree() {
     assert_eq!(wrong_strip.unwrap_err(), "Strip is no longer active");
 }
 
+/// Page deltaX of one Mac trackpad swipe: a small lead-in while the
+/// fingers start, then the OS momentum decaying after they lift.
+fn trackpad_swipe() -> Vec<f64> {
+    let mut deltas = vec![1.0, 2.0, 4.0, 7.0, 11.0, 14.0, 16.0, 15.0];
+    let mut v = 15.0_f64;
+    for _ in 0..32 {
+        v *= 0.9;
+        deltas.push((v * 4.0).round() / 4.0);
+    }
+    deltas
+}
+
+/// Send one page wheel event as winit's web backend reports it: negated,
+/// in physical pixels.
+fn page_wheel(driver: &mut ui::headless::Driver, delta_x: f64, delta_y: f64) {
+    driver.send(&ui::winit::event::WindowEvent::MouseWheel {
+        device_id: ui::winit::event::DeviceId::dummy(),
+        delta: ui::winit::event::MouseScrollDelta::PixelDelta(
+            ui::winit::dpi::PhysicalPosition::new(-delta_x, -delta_y),
+        ),
+        phase: ui::winit::event::TouchPhase::Moved,
+    });
+    driver.relayout();
+}
+
+fn pan_offset(handle: &DesktopHandle) -> f64 {
+    handle.snapshot("g", vec![]).desktop_pan.unwrap().offset
+}
+
+/// Longer than the surface's swipe gap, so the next swipe is a new gesture.
+fn pause() {
+    std::thread::sleep(std::time::Duration::from_millis(260));
+}
+
+#[test]
+fn a_trackpad_swipe_pans_the_strip_under_the_fingers_through_its_momentum() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    let focus = handle.snapshot("g", vec![]).active;
+    let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
+    let swipe = trackpad_swipe();
+    let total: f64 = swipe.iter().sum();
+    assert!(
+        total < max,
+        "one swipe stays inside the strip: {total} of {max}"
+    );
+
+    let first_window_x = |driver: &ui::headless::Driver| {
+        find(&driver.inspection().root, "WindowGroup").unwrap().rect[0]
+    };
+    let drawn = first_window_x(&driver);
+    let mut offsets = vec![pan_offset(&handle)];
+    for &dx in &swipe {
+        page_wheel(&mut driver, dx, 0.2);
+        offsets.push(pan_offset(&handle));
+    }
+    assert!(
+        (drawn - first_window_x(&driver) - total).abs() < 0.01,
+        "the windows are drawn where the strip panned to"
+    );
+    for (step, (pair, dx)) in offsets.windows(2).zip(&swipe).enumerate() {
+        assert!(
+            (pair[1] - pair[0] - dx).abs() < 0.01,
+            "event {step} moves the strip 1:1 ({dx} px): {offsets:?}"
+        );
+    }
+    assert_eq!(
+        handle.snapshot("g", vec![]).active,
+        focus,
+        "panning is not choosing a window"
+    );
+
+    // Fingers reversing inside one gesture pan straight back.
+    let before = pan_offset(&handle);
+    for _ in 0..5 {
+        page_wheel(&mut driver, -10.0, 0.0);
+    }
+    assert!((pan_offset(&handle) - (before - 50.0)).abs() < 0.01);
+
+    // A flick past the end stops the strip there, for the whole gesture.
+    pause();
+    for _ in 0..200 {
+        page_wheel(&mut driver, 40.0, 0.0);
+    }
+    assert!(
+        (pan_offset(&handle) - max).abs() < 0.5,
+        "hard stop at the end"
+    );
+    for _ in 0..10 {
+        page_wheel(&mut driver, 40.0, 0.0);
+    }
+    assert!((pan_offset(&handle) - max).abs() < 0.5);
+    pause();
+    for &dx in &swipe {
+        page_wheel(&mut driver, -dx, 0.0);
+    }
+    assert!(
+        (pan_offset(&handle) - (max - total)).abs() < 0.01,
+        "and swiping back follows the fingers again"
+    );
+
+    // Vertical scrolling is never the strip's.
+    pause();
+    let before = pan_offset(&handle);
+    for _ in 0..10 {
+        page_wheel(&mut driver, 1.0, 30.0);
+    }
+    assert!((pan_offset(&handle) - before).abs() < 0.01);
+}
+
+#[test]
+fn a_trackpad_swipe_the_strip_cannot_follow_is_the_apps() {
+    let (mut driver, handle, _) = mount_apps(&["A", "B", "C", "D", "E"]);
+    assert!(pan_offset(&handle).abs() < 0.5, "at home");
+    // Backwards from home the strip cannot move, so the gesture is the
+    // app's, even once it reverses toward later windows.
+    for _ in 0..10 {
+        page_wheel(&mut driver, -12.0, 0.0);
+    }
+    for _ in 0..10 {
+        page_wheel(&mut driver, 12.0, 0.0);
+    }
+    assert!(pan_offset(&handle).abs() < 0.5);
+
+    let (mut driver, handle, _) = mount_apps(&["A"]);
+    let max = handle.snapshot("g", vec![]).desktop_pan.unwrap().max;
+    assert!(max < 0.5, "one window fits: {max}");
+    for &dx in &trackpad_swipe() {
+        page_wheel(&mut driver, dx, 0.0);
+    }
+    assert!(
+        pan_offset(&handle).abs() < 0.5,
+        "a lone window's app scrolls sideways"
+    );
+}
+
 #[test]
 fn scroll_moves_the_focused_windows_primary_region() {
     let (mut driver, handle, _) = mount_apps(&["Long", "B"]);
@@ -769,7 +904,7 @@ fn a_tab_the_host_asks_to_rebuild_gets_its_content_again() {
 }
 
 #[test]
-fn a_sideways_trackpad_swipe_focuses_and_reveals_the_next_window() {
+fn a_run_of_sideways_wheel_clicks_focuses_and_reveals_the_next_window() {
     fn groups(node: &ui::headless::InspectionNode, out: &mut Vec<[f64; 4]>) {
         if node.widget == "WindowGroup" {
             out.push(node.rect);
@@ -799,13 +934,11 @@ fn a_sideways_trackpad_swipe_focuses_and_reveals_the_next_window() {
         device_id: ui::winit::event::DeviceId::dummy(),
         position: ui::winit::dpi::PhysicalPosition::new(600.0, 400.0),
     });
-    // What the browser's winit delivers for one two-finger swipe.
-    for dx in [30.0, 90.0, 120.0, 60.0, 20.0] {
+    // A mouse tilt wheel held sideways: one run of line-delta clicks.
+    for dx in [0.3, 1.0, 2.0, 1.0, 0.5] {
         driver.send(&ui::winit::event::WindowEvent::MouseWheel {
             device_id: ui::winit::event::DeviceId::dummy(),
-            delta: ui::winit::event::MouseScrollDelta::PixelDelta(
-                ui::winit::dpi::PhysicalPosition::new(dx, 0.0),
-            ),
+            delta: ui::winit::event::MouseScrollDelta::LineDelta(dx, 0.0),
             phase: ui::winit::event::TouchPhase::Moved,
         });
     }
@@ -813,7 +946,7 @@ fn a_sideways_trackpad_swipe_focuses_and_reveals_the_next_window() {
     assert_eq!(
         handle.snapshot("g", vec![]).active.unwrap(),
         entries[1].route,
-        "one swipe, one window along the strip"
+        "one run of clicks, one window along the strip"
     );
     for _ in 0..3 {
         std::thread::sleep(std::time::Duration::from_millis(250));
