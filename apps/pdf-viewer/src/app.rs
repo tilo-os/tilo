@@ -1087,7 +1087,10 @@ impl PdfApp {
                 image::Rgba([246, 132, 64, 255])
             };
         }
-        let png = std::env::temp_dir().join("tilo_pdf_demo_import.png");
+        let Some(png) = tilo_paths::temp_dir().map(|dir| dir.join("tilo_pdf_demo_import.png"))
+        else {
+            return;
+        };
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
             // Screenshot-only helper; production imports receive the checked
             // out shared record from `sync`/the portal path.

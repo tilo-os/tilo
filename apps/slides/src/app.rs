@@ -5261,7 +5261,7 @@ fn write_demo_image() -> Option<PathBuf> {
         let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
         *px = Rgb([red, green, blue]);
     }
-    let path = std::env::temp_dir().join("slides-demo-image.png");
+    let path = tilo_paths::temp_dir()?.join("slides-demo-image.png");
     img.save(&path).ok()?;
     Some(path)
 }

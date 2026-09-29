@@ -366,18 +366,11 @@ pub fn save_device_profile(profile: &DeviceProfile) -> std::io::Result<()> {
 fn dirs_data_dir() -> PathBuf {
     tilo_paths::env_dir("XDG_DATA_HOME")
         .or_else(tilo_paths::data_local_dir)
-        // `temp_dir` panics where there is no file system (the page); an
-        // unreachable relative path fails the profile's reads and writes
-        // instead, and the player keeps its state in memory.
-        .unwrap_or_else(|| {
-            if tilo_paths::availability(tilo_paths::Feature::NativePaths)
-                == tilo_paths::Availability::Available
-            {
-                std::env::temp_dir()
-            } else {
-                PathBuf::from("tilo-music")
-            }
-        })
+        .or_else(tilo_paths::temp_dir)
+        // No file system (the page): an unreachable relative path fails the
+        // profile's reads and writes, and the player keeps its state in
+        // memory.
+        .unwrap_or_else(|| PathBuf::from("tilo-music"))
 }
 
 #[cfg(test)]

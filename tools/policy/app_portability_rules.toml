@@ -238,8 +238,10 @@ paths = ["Instant::now", "SystemTime::now"]
 
 [rules.W3]
 summary = "uses the std filesystem or sockets, which fail on web"
-help = "use `tilo_files::Dir` / `tilo_net`; their `blocking` variants for desktop-only code"
+help = "use `tilo_files::Dir` / `tilo_net`, and `tilo_paths::AppPaths` for a directory; their `blocking` variants for desktop-only code"
 applies = "web"
 severity = "error"
 std-modules = ["fs", "net"]
-paths = ["File::open", "File::create", "OpenOptions::new"]
+# `env::temp_dir` panics on web rather than failing, even as a fallback
+# (`.unwrap_or_else(std::env::temp_dir)`).
+paths = ["File::open", "File::create", "OpenOptions::new", "env::temp_dir"]

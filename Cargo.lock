@@ -13507,6 +13507,7 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-files",
+ "tilo-paths",
  "tilo-rich-text",
  "tilo-test-env",
  "tilo-vello",
@@ -15777,6 +15778,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
 ]

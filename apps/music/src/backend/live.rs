@@ -156,7 +156,8 @@ fn cache_dir() -> std::path::PathBuf {
     // set one); otherwise the platform's own cache directory.
     let base = tilo_paths::env_dir("XDG_CACHE_HOME")
         .or_else(tilo_paths::cache_dir)
-        .unwrap_or_else(std::env::temp_dir);
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     let dir = base.join("tilo-music");
     let _ = crate::files::create_dir_all(&dir);
     dir

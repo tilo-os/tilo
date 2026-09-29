@@ -510,7 +510,9 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
         return std::path::PathBuf::from(full);
     }
     let dir = std::env::var_os("TILO_VE_EXPORT_DIR")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        .map(std::path::PathBuf::from)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     dir.join(settings.suggested_filename(&project.name))
 }
 
