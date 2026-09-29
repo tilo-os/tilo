@@ -3984,6 +3984,15 @@ async fn enqueue_state(
         workspace, envelope, source, role, metrics, false,
     ))
     .await
+    .map(drop)
+}
+
+/// A state commit admitted to its workspace's ordered persistence owner.
+struct AdmittedState {
+    /// Resolves once the commit is durable and published.
+    completion: tokio::sync::oneshot::Receiver<Result<StateCommit, StoreError>>,
+    /// The durable host order it took; 0 until then, or when unpublished.
+    sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
@@ -4001,6 +4010,7 @@ pub(crate) async fn enqueue_federated(
         sync,
     ))
     .await
+    .map(drop)
 }
 #[expect(
     clippy::too_many_lines,
@@ -4017,7 +4027,7 @@ async fn enqueue_state_inner(
     role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
-) -> Result<(), PeerError> {
+) -> Result<AdmittedState, PeerError> {
     let Envelope::Delta {
         author_device_public_key: author,
         delta,
@@ -4064,7 +4074,9 @@ async fn enqueue_state_inner(
     let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
     let mut pending_work = None;
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
-    Box::pin(owner.submit_resumable_wait(
+    let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let durable_sequence = durable.clone();
+    let completion = Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
@@ -4163,6 +4175,7 @@ async fn enqueue_state_inner(
                 }
                 let seq = state.next_sequence()?;
                 sequence = Some(seq);
+                durable_sequence.store(seq, std::sync::atomic::Ordering::SeqCst);
                 let continuity = continuity_evidence.clone().map(|evidence| evidence.accept(seq));
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
@@ -4501,7 +4514,10 @@ async fn enqueue_state_inner(
         },
     ))
     .await?;
-    Ok(())
+    Ok(AdmittedState {
+        completion,
+        sequence: durable,
+    })
 }
 
 #[expect(
@@ -4694,13 +4710,43 @@ async fn handle_commit(
         delta,
         signature: [0; 64],
     };
-    enqueue_state(&ws, delta, Some(source), peer.role, session.metrics.clone()).await?;
-    let seq = ws.lock().await.next_seq(unix_now_ns());
-    Ok(Some(Envelope::Committed {
-        workspace_id,
-        op,
-        seq,
-    }))
+    let author = source.clone();
+    let admitted = Box::pin(enqueue_state_inner(
+        &ws,
+        delta,
+        Some(source),
+        peer.role,
+        session.metrics.clone(),
+        false,
+    ))
+    .await?;
+    // Acknowledged once durable, at the host order it was published in: an
+    // earlier acknowledgement could name a change a restart then lost, and a
+    // separately taken order could disagree with what members receive.
+    // Awaiting it inline would stall this session's other traffic.
+    tokio::spawn(async move {
+        if crate::persistence::receipt(admitted.completion)
+            .await
+            .is_err()
+        {
+            // The failed persistence disconnects the source; the author
+            // resends its outbox.
+            return;
+        }
+        let seq = match admitted.sequence.load(std::sync::atomic::Ordering::SeqCst) {
+            0 => ws.lock().await.next_seq(unix_now_ns()),
+            seq => seq,
+        };
+        let committed = Envelope::Committed {
+            workspace_id,
+            op,
+            seq,
+        };
+        if author.tx.send(committed).await.is_err() {
+            let _ = author.disconnect.try_send(());
+        }
+    });
+    Ok(None)
 }
 
 /// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
