@@ -75,17 +75,17 @@ mkdir -p "$out/pkg" "$out/fonts"
 if [[ $bundle == desktop ]]; then
   cp "$repo/crates/browser/tilo-web-desktop/apps.json" "$out/apps.json"
   # The Typst editor's fonts, which only native builds embed; the editor asks
-  # for them by name when it opens (apps/typst-editor/src/compile.rs).
+  # for them by name when it opens (crates/platform/tilo-typst-fonts).
   typst_assets=$(cargo metadata --format-version 1 --locked --offline --filter-platform wasm32-unknown-unknown |
     python3 -c 'import json,os,sys; print(next(os.path.dirname(p["manifest_path"]) for p in json.load(sys.stdin)["packages"] if p["name"]=="typst-assets"))')
   mkdir -p "$out/data/typst"
   cp "$typst_assets"/files/fonts/*.otf "$typst_assets"/files/fonts/*.ttf "$out/data/typst/"
   cp "$typst_assets/NOTICE" "$out/data/typst/NOTICE.txt"
-  python3 - "$repo/apps/typst-editor/src/compile.rs" "$out/data/typst" <<'PY'
+  python3 - "$repo/crates/platform/tilo-typst-fonts/src/lib.rs" "$out/data/typst" <<'PY'
 import pathlib, re, sys
 wanted = set(re.findall(r'"typst/([^"]+)"', pathlib.Path(sys.argv[1]).read_text()))
 shipped = {p.name for p in pathlib.Path(sys.argv[2]).iterdir() if p.suffix in ('.otf', '.ttf')}
-assert wanted == shipped, f'BROWSER_FONTS and typst-assets differ: {sorted(wanted ^ shipped)}'
+assert wanted == shipped, f'tilo_typst_fonts::HOST_FONTS and typst-assets differ: {sorted(wanted ^ shipped)}'
 PY
 fi
 # The features rustc enables for wasm32-unknown-unknown; wasm-opt refuses
