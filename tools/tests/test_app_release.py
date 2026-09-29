@@ -104,12 +104,16 @@ class AppReleaseTests(unittest.TestCase):
             push = workflow.split("  push:\n", 1)[1].split("  workflow_dispatch:\n", 1)[0]
             self.assertIn("    branches: [main]", push)
             self.assertNotIn("refs/heads/main", selection)
-            self.assertIn("github.event.before", selection)
+            # Superseded queued runs must not drop their changes: select
+            # relative to the published collection, else rebuild it all.
+            self.assertNotIn("github.event.before", workflow)
+            self.assertIn("COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}", selection)
             self.assertIn(
-                "if [[ -z $base || $base == "
-                "0000000000000000000000000000000000000000 ]]",
+                'if ! [[ $base =~ ^[0-9a-f]{40}$ ]] || ! use_base "$base"; then\n'
+                "              args+=(--collection default)",
                 selection,
             )
+            self.assertIn('update_variable TILO_APP_COLLECTION_SOURCE "$GITHUB_SHA"', workflow)
             self.assertIn("if [[ $GITHUB_REF == refs/heads/main ]]; then", workflow)
             self.assertIn("collection=default", workflow)
 
