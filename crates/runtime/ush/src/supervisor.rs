@@ -70,6 +70,15 @@ impl Default for SessionOptions {
     }
 }
 
+/// Printed under `bwrap`'s own one-line reason, which names a mount option
+/// rather than a cause. Short lines: it lands in a terminal of any width.
+const SANDBOX_SETUP_FAILED: &str = "\
+ush: the shell's sandbox could not be set up, so no shell started;
+ush: bwrap's reason is above. An overlay mount refused with \"Invalid
+ush: argument\" usually means /usr is already a stacked overlay (a
+ush: system extension merged over the image): the kernel stacks no
+ush: deeper, and `dmesg` shows \"maximum fs stacking depth exceeded\".";
+
 /// Where the runtime's own binary is, as the supervisor sees it.
 /// `current_exe` rather than a constant: the guest must run the same build
 /// that built its confinement, which in a dev tree is under `target/`.
@@ -275,6 +284,9 @@ impl Session {
         let mut child = crate::guest::spawn(&plan)?;
         let status = child.wait()?;
         let code = status.code().unwrap_or(1);
+        if code != 0 && !broker.guest_connected() {
+            eprintln!("{SANDBOX_SETUP_FAILED}");
+        }
 
         let restart = broker.restart_requested();
         let burn = broker.burn_requested();

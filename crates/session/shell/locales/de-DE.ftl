@@ -1083,6 +1083,9 @@ launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Ve
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
+launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
@@ -1299,6 +1302,7 @@ search-session-logout = Von Tilo abmelden
 search-session-logout-detail = Diese Desktop-Sitzung sauber beenden und zur Anmeldung zurückkehren
 search-session-unsaved-work = Eine App hat ungesicherte Arbeit
 search-session-inhibited = { $reason } – schließe die App oder beende zuerst ihre Arbeit.
+search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen Desktop, der seine Energieverwaltung steuert.
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden
@@ -1507,6 +1511,7 @@ search-apps-group-work = Arbeit
 search-apps-group-media = Medien
 search-apps-group-system-tools = Systemwerkzeuge
 search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
 search-apps-open-subtitle = { $target } · { $detail }

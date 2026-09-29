@@ -24,6 +24,9 @@ runtime  = "tilo-runtime/2026.07"
 platforms = ["linux", "macos"]
 platform-reason = "Runs language servers and build tools as processes."
 
+[package.names]
+de = "Code-Editor"
+
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
