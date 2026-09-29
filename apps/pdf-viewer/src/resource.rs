@@ -1,6 +1,8 @@
 //! PDF Viewer as a [`tilo_resource::Resource`]: markup on the open document is
 //! the shared state; page/zoom presentation is View; annotations are document
-//! actions.
+//! actions. Live find-in-page hits stay on the surface — hosted
+//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
+//! slice beside the framework door.
 
 use std::rc::Rc;
 
@@ -115,6 +117,8 @@ impl ResourceSurface<PdfViewer> for PdfApp {
 pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<PdfViewer>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
     last: Option<EncodedAction>,
 }
 
@@ -123,6 +127,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
             last: None,
         }
     }
@@ -131,10 +136,11 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<PdfViewer>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
     }
 
     pub(crate) fn is_hosted(&self) -> bool {
-        self.framework.is_some()
+        self.hosted
     }
 
     pub(crate) fn dispatch_with_context(
@@ -166,6 +172,12 @@ impl ActionSink {
             self.local.last_dispatched()
         }
     }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
 }
 
 pub fn launch_spec() -> ui::launch::LaunchSpec {
@@ -187,4 +199,122 @@ pub fn standalone_launch() -> bool {
         }
     }
     false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn hosted_resources_keep_find_hits_without_document_root() {
+        let published = ui::tilo_resource::publish::<PdfViewer>(
+            "pdf.document:sample",
+            "PDF",
+            &PdfMarkup::default(),
+        );
+        assert_eq!(published.kind, "pdf.document");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in [
+            "previous-page",
+            "next-page",
+            "zoom-in",
+            "zoom-out",
+            "fit-page",
+            "find",
+            "open",
+            "save-as",
+        ] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride local_operations via publish: {ids:?}"
+            );
+        }
+        let find = published
+            .actions
+            .iter()
+            .find(|action| action.id == "find")
+            .expect("find");
+        assert_eq!(find.kind, OperationKind::View);
+
+        let mut app = PdfApp::sample();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(
+            !app.is_hosted(),
+            "standalone stays on the local action host"
+        );
+
+        app.stage_find_for_test("sandbox");
+        assert!(
+            app.find_match_count_for_test() > 0,
+            "sample must yield find hits for the hosted extras contract"
+        );
+
+        let standalone = app.resources(&state.doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "pdf.document");
+        let standalone_find = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "pdf.search")
+            .expect("standalone nests find hits under the document");
+        assert!(
+            !standalone_find.children.is_empty(),
+            "standalone find projection carries match rows"
+        );
+        assert!(
+            standalone_find
+                .children
+                .iter()
+                .all(|hit| hit.kind == "pdf.search-result"
+                    && hit.actions.iter().any(|action| action.id == "open")),
+            "each find hit is a navigable search-result row"
+        );
+
+        app.mark_hosted_for_test();
+        assert!(app.is_hosted());
+        let extras = app.resources(&state.doc);
+        assert!(
+            extras
+                .iter()
+                .all(|resource| resource.kind != "pdf.document"),
+            "hosted must not republish pdf.document beside ResourceRoot: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(extras.len(), 1, "hosted returns the find slice alone");
+        assert_eq!(extras[0].kind, "pdf.search");
+        assert_eq!(
+            extras[0].id, standalone_find.id,
+            "hosted find tree matches the standalone nested slice"
+        );
+        assert_eq!(
+            extras[0].children.len(),
+            standalone_find.children.len(),
+            "hosted keeps the same bounded match rows"
+        );
+        assert!(
+            extras[0]
+                .children
+                .iter()
+                .all(|hit| hit.kind == "pdf.search-result"),
+            "hosted extras are find hits only, not pages/markup: {:?}",
+            extras[0]
+                .children
+                .iter()
+                .map(|child| child.kind.as_str())
+                .collect::<Vec<_>>()
+        );
+
+        app.stage_find_for_test("");
+        assert!(
+            app.resources(&state.doc).is_empty(),
+            "hosted publishes no extras when find has no query"
+        );
+    }
 }

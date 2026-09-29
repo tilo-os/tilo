@@ -1587,6 +1587,32 @@ fn search_result_resource(ctx: &PdfResourceCtx, index: usize, page: usize) -> Re
     ))
 }
 
+/// Live find projection for the palette — presentation cache, not CRDT.
+///
+/// Standalone [`provide_resources`] nests this under `pdf.document`. Hosted
+/// [`PublishesResources`] returns the same slice alone so agents keep match
+/// rows without a second document root beside [`crate::resource::PdfViewer`].
+pub fn find_result_resources(ctx: &PdfResourceCtx) -> Vec<Resource> {
+    if ctx.search_query.trim().is_empty() {
+        return Vec::new();
+    }
+    let mut search = Resource::new(
+        format!("pdf.search:{}", ctx.doc_id),
+        "pdf.search",
+        format!("Find results for “{}”", ctx.search_query),
+    );
+    for (index, page) in ctx
+        .search_pages
+        .iter()
+        .copied()
+        .take(SEARCH_RESULT_RESOURCE_LIMIT)
+        .enumerate()
+    {
+        search = search.with_child(search_result_resource(ctx, index, page));
+    }
+    vec![search]
+}
+
 /// A compact page of contextual children, centred on the current page. The
 /// cursor is the current durable page-plan id rather than an ordinal, so a
 /// page remains addressable after a shared reorder.
@@ -1789,21 +1815,7 @@ pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource
             root = root.with_child(resource);
         }
     }
-    if !ctx.search_query.trim().is_empty() {
-        let mut search = Resource::new(
-            format!("pdf.search:{}", ctx.doc_id),
-            "pdf.search",
-            format!("Find results for “{}”", ctx.search_query),
-        );
-        for (index, page) in ctx
-            .search_pages
-            .iter()
-            .copied()
-            .take(SEARCH_RESULT_RESOURCE_LIMIT)
-            .enumerate()
-        {
-            search = search.with_child(search_result_resource(ctx, index, page));
-        }
+    for search in find_result_resources(ctx) {
         root = root.with_child(search);
     }
 
