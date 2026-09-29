@@ -21,8 +21,12 @@
 //!
 //! Nothing is published before the host answered `Ready` for the room, so a
 //! page never announces a stale snapshot over what the room already holds.
+//!
+//! A package's room-primary document travels with an empty record, as the
+//! native broker sends it; in the page's stores it is
+//! [`RecordId::package_primary`], kept at the room index.
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -33,7 +37,7 @@ use tilo_browser_peer::{DocumentRoute, OpenedDocument, PeerEvent, PeerEvents, Pe
 use ui::automerge::{
     AutoCommit, ROOT, ReadDoc as _, ScalarValue, Value, transaction::Transactable as _,
 };
-use ui::record::{RecordCheckout, RecordStore};
+use ui::record::{RecordCheckout, RecordId, RecordStore};
 use ui::state::{DocumentFrontier, DocumentReplica};
 
 /// The desktop document's route. Changing it splits rooms by build.
@@ -79,6 +83,27 @@ pub(crate) struct Room {
     desktop_snapshotted: bool,
     /// The desktop value last published or applied.
     desktop_value: Option<serde_json::Value>,
+    /// Records the room delivered that no mount had open, as wire
+    /// `(app, record)`.
+    stored: BTreeSet<(String, String)>,
+}
+
+/// The record a checkout is on the collaboration wire.
+fn wire_record(id: &RecordId) -> &str {
+    if id.is_package_primary() {
+        ""
+    } else {
+        id.as_str()
+    }
+}
+
+/// The page's storage key of wire record `record` of `app` in `room`.
+fn storage_key(app: &str, room: &str, record: &str) -> Result<StorageKey, &'static str> {
+    if record.is_empty() {
+        return Ok(StorageKey::room_index(app, room));
+    }
+    let id = RecordId::parse(record).ok_or("not a record id")?;
+    Ok(StorageKey::record(app, room, id.storage_key()))
 }
 
 /// Start replicating `room` for peer `id`. `events` must have been created
@@ -108,6 +133,7 @@ pub(crate) fn open(
         desktop: DocumentReplica::new(AutoCommit::new()),
         desktop_snapshotted: false,
         desktop_value: None,
+        stored: BTreeSet::new(),
     };
     ROOMS.with_borrow_mut(|rooms| rooms.insert(id, Rc::new(RefCell::new(room))));
     pump(id);
@@ -117,6 +143,32 @@ pub(crate) fn open(
 /// The certified device key (hex) of peer `id`, if it replicates a room.
 pub(crate) fn device_of(id: u32) -> Option<String> {
     room(id).map(|room| room.borrow().device.clone())
+}
+
+/// Whether peer `id`'s room holds record `record` (wire form) of `app`:
+/// open in a mount, or delivered and stored for whoever opens it.
+pub(crate) fn has_record(id: u32, app: &str, record: &str) -> bool {
+    room(id).is_some_and(|room| {
+        let room = room.borrow();
+        room.stored.contains(&(app.to_owned(), record.to_owned()))
+            || room.open_records().any(|(a, r)| a == app && r == record)
+            || storage_key(app, &room.uuid, record)
+                .ok()
+                .and_then(|key| room.store.read(&key).ok().flatten())
+                .is_some()
+    })
+}
+
+/// The room's records peer `id` holds, open in a mount or delivered, as
+/// wire `(app, record)`, sorted.
+pub(crate) fn records(id: u32) -> Vec<(String, String)> {
+    let Some(room) = room(id) else {
+        return Vec::new();
+    };
+    let room = room.borrow();
+    let mut records = room.stored.clone();
+    records.extend(room.open_records());
+    records.into_iter().collect()
 }
 
 pub(crate) fn close(id: u32) {
@@ -184,6 +236,24 @@ fn warn(message: &str) {
 }
 
 impl Room {
+    /// Every record a mount has open in this room, as wire `(app, record)`.
+    fn open_records(&self) -> impl Iterator<Item = (String, String)> + '_ {
+        self.mounts.values().flat_map(|mounted| {
+            let stores = mounted.attachment.stores.borrow();
+            stores
+                .iter()
+                .filter(|store| store.package_and_home().1 == self.uuid)
+                .flat_map(|store| {
+                    let app = store.package_and_home().0;
+                    store
+                        .open_records()
+                        .into_iter()
+                        .map(move |checkout| (app.clone(), wire_record(&checkout.id).to_owned()))
+                })
+                .collect::<Vec<_>>()
+        })
+    }
+
     fn route(&self, app: &str, record: &str) -> DocumentRoute {
         DocumentRoute {
             app_id: app.to_owned(),
@@ -242,7 +312,7 @@ impl Room {
                 let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| checkout.id.as_str() == record)
+                    .find(|checkout| wire_record(&checkout.id) == record)
                 else {
                     continue;
                 };
@@ -266,6 +336,7 @@ impl Room {
             return Ok(());
         }
         self.store_unopened(&app, &record, mutation)?;
+        self.stored.insert((app, record));
         for (&id, mounted) in &self.mounts {
             if let Some((handle, shared)) = &mounted.attachment.desktop {
                 shared.retry_waiting(handle);
@@ -282,8 +353,7 @@ impl Room {
         record: &str,
         mutation: DocumentMutation,
     ) -> Result<(), String> {
-        let id = ui::record::RecordId::parse(record).ok_or("not a record id")?;
-        let key = StorageKey::record(app, self.uuid.clone(), id.storage_key());
+        let key = storage_key(app, &self.uuid, record)?;
         let stored = self.store.read(&key).map_err(|error| error.to_string())?;
         let mut doc = match &stored {
             Some(stored) if !stored.bytes.is_empty() => {
@@ -351,7 +421,7 @@ impl Room {
                     continue;
                 }
                 for checkout in store.open_records() {
-                    let key = (app.clone(), checkout.id.as_str().to_owned());
+                    let key = (app.clone(), wire_record(&checkout.id).to_owned());
                     let replica = mounted
                         .records
                         .entry(key.clone())
