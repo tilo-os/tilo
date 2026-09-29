@@ -129,10 +129,9 @@ jobs:
           cargo build --locked --release -p tilo-crypto
           cp target/release/tilo-crypto "$context/tilo-crypto"
           cp os/tests/Containerfile.development-source "$context/Containerfile"
-          cache="$TILO_LAYER_CACHE_REGISTRY/tilo/tilo-development-source-fixture-buildcache:${{ matrix.arch }}"
+          cache="type=gha,scope=development-source-fixture-${{ matrix.arch }}"
           docker buildx build --load --file "$context/Containerfile" --tag "$image" \
-            --cache-from "type=registry,ref=$cache" \
-            --cache-to "type=registry,ref=$cache,mode=max,ignore-error=true" "$context"
+            --cache-from "$cache" --cache-to "$cache,mode=max,ignore-error=true" "$context"
           # Nested Podman mounts only inside this disposable CI container.
           # No host directories or credentials are mounted.
           case "$TILO_NATIVE_PROOF" in

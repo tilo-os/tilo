@@ -91,11 +91,10 @@ jobs:
             cache+=(--secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID
                     --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY)
           fi
-          layers="$TILO_LAYER_CACHE_REGISTRY/tilo/ci-fast-buildcache:x86_64"
           docker buildx build --pull --load --progress=plain --provenance=false \
             --platform linux/amd64 "${cache[@]}" \
-            --cache-from "type=registry,ref=$layers" \
-            --cache-to "type=registry,ref=$layers,mode=max,ignore-error=true" \
+            --cache-from type=gha,scope=ci-fast-x86_64 \
+            --cache-to type=gha,scope=ci-fast-x86_64,mode=max,ignore-error=true \
             --file os/Containerfile.ci-fast --tag "$fast" "$context"
           # ci-control builds on the ci-fast image just built, not the pin. The
           # docker-container builder cannot read that loaded image, so the
