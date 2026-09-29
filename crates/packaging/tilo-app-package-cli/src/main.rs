@@ -294,6 +294,23 @@ enum Command {
         /// The .tapp to describe.
         file: PathBuf,
     },
+    /// Print the registry entry this publisher has waiting for review for a
+    /// package id, as `--previous-entry` accepts it; prints nothing when none
+    /// is waiting. A newer request replaces the waiting one and must keep its
+    /// versions, so it builds on this entry rather than the published one.
+    Pending(PendingArgs),
+}
+
+#[derive(clap::Args)]
+struct PendingArgs {
+    /// Registry origin, e.g. `https://apps.tilo.so`.
+    #[arg(long)]
+    registry: String,
+    /// Publisher identity JSON that signs the time-bound read.
+    #[arg(long)]
+    identity: PathBuf,
+    /// Package id, e.g. `so.tilo.notes`.
+    package_id: String,
 }
 
 fn main() -> Result<()> {
@@ -392,6 +409,7 @@ fn main() -> Result<()> {
             action,
             previous_entry.as_deref(),
         ),
+        Command::Pending(args) => cmd_pending(&args),
     }
 }
 
@@ -991,6 +1009,23 @@ fn cmd_keygen(out: &Path) -> Result<()> {
     }
     eprintln!("wrote {}", out.display());
     println!("{}", hex::encode(sk.verifying_key().to_bytes()));
+    Ok(())
+}
+
+fn cmd_pending(args: &PendingArgs) -> Result<()> {
+    let package_id = args.package_id.as_str();
+    let signer = load_signing_key(&args.identity)?;
+    let client = registry_client::RegistryClient::new(&args.registry)?;
+    let Some(entry) = client.pending(&signer, package_id)? else {
+        return Ok(());
+    };
+    if !registry_types::verify_entry_signature(&entry) {
+        bail!("pending entry for {package_id} has an invalid publisher signature");
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&entry).context("encode pending entry")?
+    );
     Ok(())
 }
 
