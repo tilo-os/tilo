@@ -936,13 +936,6 @@ jobs:
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
           echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
-          # A release and its reproduction clamp every mtime and compress
-          # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
-          if [[ $fast == true ]]; then
-            echo 'TILO_OCI_EXPORT=compression=zstd,compression-level=1,force-compression=true' >> "$GITHUB_ENV"
-          else
-            echo 'TILO_OCI_EXPORT=rewrite-timestamp=true' >> "$GITHUB_ENV"
-          fi
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
           # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
@@ -959,6 +952,18 @@ jobs:
             series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
           fi
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
+          # A release and its reproduction clamp every mtime and compress
+          # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
+          if [[ $fast == true ]]; then
+            # Pushed straight from BuildKit to its tilo-ci name; no archive.
+            {
+              echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"
+              echo 'TILO_IMAGE_OUTPUT=type=image,push=true,compression=zstd,compression-level=1,force-compression=true'
+            } >> "$GITHUB_ENV"
+          else
+            [[ $validate != true ]] \
+              || echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> "$GITHUB_ENV"
+          fi
           echo "dev-gate=$([[ $validate == true && $publish != true && $fast != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
@@ -1295,8 +1300,8 @@ jobs:
             ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: ${{ env.TILO_IMAGE_OUTPUT }}
+          tags: ${{ env.TILO_IMAGE_TAGS || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           # TILO_WITH_BROWSER: a manual run can omit the browser + its WPE WebKit
           # engine stage, which is ~45 of the ~60 minutes a cold build takes.
@@ -1347,7 +1352,9 @@ jobs:
           cache-from: |
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
             type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }}
-          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=max,ignore-error=true
+          # The image's own layers suffice: the rootfs is its lineage, and the
+          # compile stages export their intermediate layers above.
+          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-image-${{ matrix.arch }},mode=min,ignore-error=true
 
       # Reached only when one of the three cached builds failed. A missing
       # cache blob is a cache miss; anything else fails the job here.
@@ -1392,8 +1399,8 @@ jobs:
             ${{ env.TILO_WPE_STAGE_REF && format('wpe-builder=docker-image://{0}', env.TILO_WPE_STAGE_REF) || (steps.wpe-uncached.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)) || (steps.wpe-stage.outputs.digest && format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)) || '' }}
           file: os/Containerfile
           push: false
-          outputs: ${{ steps.release-mode.outputs.validate == 'true' && format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT) || '' }}
-          tags: ${{ steps.meta.outputs.tags }}
+          outputs: ${{ env.TILO_IMAGE_OUTPUT }}
+          tags: ${{ env.TILO_IMAGE_TAGS || steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             SOURCE_DATE_EPOCH=${{ env.SOURCE_DATE_EPOCH }}
@@ -1443,19 +1450,26 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          DEV_FAST: ${{ steps.release-mode.outputs.dev-fast }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
         run: |
           set -euo pipefail
           ref="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
-          # Buildx writes a full image name and a bare OCI ref for each tag.
-          # Skopeo selects the latter; verify its descriptor and digest first.
-          source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
-          test -n "$source_tag"
-          source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" '${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}')"
-          digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
-          TMPDIR=/var/tmp skopeo copy --retry-times 3 \
-            --digestfile "$digest_file" \
-            "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
-          digest="$(tr -d '[:space:]' < "$digest_file")"
+          if [[ $DEV_FAST == true ]]; then
+            # BuildKit pushed it already.
+            digest="$BUILD_DIGEST"
+          else
+            # Buildx writes a full image name and a bare OCI ref for each tag.
+            # Skopeo selects the latter; verify its descriptor and digest first.
+            source_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+            test -n "$source_tag"
+            source_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$source_tag" "$BUILD_DIGEST")"
+            digest_file="$(mktemp /var/tmp/tilo-ci-digest.XXXXXX)"
+            TMPDIR=/var/tmp skopeo copy --retry-times 3 \
+              --digestfile "$digest_file" \
+              "oci-archive:/var/tmp/tilo-image.tar:$source_ref" "docker://$ref"
+            digest="$(tr -d '[:space:]' < "$digest_file")"
+          fi
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
           revision="$(skopeo inspect "docker://registry.tilo.so/tilo/tilo-ci@$digest" \
             | jq -r '.Labels["org.opencontainers.image.revision"] // empty')"
@@ -1572,7 +1586,7 @@ jobs:
       # source-bound list of layer/config digests from each lane, with no blob
       # payload or environment values, so the first difference is actionable.
       - name: Record OCI layer digests
-        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         run: |
           set -euo pipefail
@@ -1587,7 +1601,7 @@ jobs:
             --arch '${{ matrix.arch }}' --role "$role"
 
       - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
-        if: always() && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
+        if: always() && steps.release-mode.outputs.dev-fast != 'true' && (steps.build.outcome == 'success' || steps.build-uncached.outcome == 'success' || steps.repro.outcome == 'success')
         continue-on-error: true
         with:
           name: oci-layer-report-${{ matrix.arch }}-${{ matrix.role == 'reproduce' && 'reproduce' || 'primary' }}
