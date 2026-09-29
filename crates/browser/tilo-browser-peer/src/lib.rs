@@ -32,6 +32,7 @@
 )]
 
 pub mod carrier;
+mod channels;
 mod clock;
 pub mod custody;
 pub mod document;

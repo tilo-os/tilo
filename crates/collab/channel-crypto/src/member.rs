@@ -82,7 +82,8 @@ pub struct ChannelMember {
     steward: Ed25519PublicKey,
     journal: GovernanceJournal,
     record: MemberRecord,
-    record_path: PathBuf,
+    /// `None` for a member kept only in memory.
+    record_path: Option<PathBuf>,
     buffered: BTreeMap<[u8; 32], MlsGovernanceFrameV1>,
 }
 
@@ -123,7 +124,31 @@ impl ChannelMember {
             steward,
             journal,
             record,
-            record_path,
+            record_path: Some(record_path),
+            buffered: BTreeMap::new(),
+        })
+    }
+
+    /// A waiting member with a fresh member key whose state and journal
+    /// mirror stay in memory, for a device with no private filesystem (a
+    /// browser page). A new session starts waiting again and asks anew;
+    /// the vault passed to its other methods is not used.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the member key cannot be minted.
+    pub fn in_memory(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        steward: Ed25519PublicKey,
+    ) -> Result<Self> {
+        Ok(Self {
+            channel,
+            device,
+            steward,
+            journal: GovernanceJournal::in_memory(),
+            record: MemberRecord::Waiting(Box::new(MemberKey::for_device(&device)?)),
+            record_path: None,
             buffered: BTreeMap::new(),
         })
     }
@@ -198,7 +223,7 @@ impl ChannelMember {
         let package = crate::encode_key_package(&member.fresh_key_package()?)?;
         // The package's HPKE secret now lives in the member key's storage;
         // it must be durable before the package leaves the device.
-        self.record.save_sealed(&self.record_path, vault)?;
+        self.save(vault)?;
         MlsAccessRequestV1::signed(self.channel, package, issued_at, device_key)
             .map(Some)
             .map_err(|error| Error::Serialization(error.to_string()))
@@ -341,7 +366,7 @@ impl ChannelMember {
                     return Ok(MemberEvent::Desynchronised);
                 }
                 let epoch = group.epoch();
-                self.record.save_sealed(&self.record_path, vault)?;
+                self.save(vault)?;
                 Ok(MemberEvent::Advanced { epoch })
             }
             (_, MemberRecord::Removed) => Ok(MemberEvent::Recorded),
@@ -349,9 +374,50 @@ impl ChannelMember {
     }
 
     fn store(&mut self, record: MemberRecord, vault: &VaultKey) -> Result<()> {
-        record.save_sealed(&self.record_path, vault)?;
+        if let Some(path) = &self.record_path {
+            record.save_sealed(path, vault)?;
+        }
         self.record = record;
         Ok(())
+    }
+
+    fn save(&self, vault: &VaultKey) -> Result<()> {
+        match &self.record_path {
+            Some(path) => self.record.save_sealed(path, vault),
+            None => Ok(()),
+        }
+    }
+
+    /// Mint a fresh key package and return the access request for it,
+    /// unsigned (see [`MlsAccessRequestV1::unsigned`]), or `None` when the
+    /// device is already admitted. For a device key held outside this
+    /// process; [`Self::access_request`] otherwise.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when minting or persisting the key package fails.
+    pub fn unsigned_access_request(
+        &mut self,
+        issued_at: u64,
+        vault: &VaultKey,
+    ) -> Result<Option<MlsAccessRequestV1>> {
+        if matches!(self.record, MemberRecord::Removed) {
+            self.store(
+                MemberRecord::Waiting(Box::new(MemberKey::for_device(&self.device)?)),
+                vault,
+            )?;
+        }
+        let MemberRecord::Waiting(member) = &self.record else {
+            return Ok(None);
+        };
+        let package = crate::encode_key_package(&member.fresh_key_package()?)?;
+        self.save(vault)?;
+        Ok(Some(MlsAccessRequestV1::unsigned(
+            self.channel,
+            self.device,
+            package,
+            issued_at,
+        )))
     }
 }
 
