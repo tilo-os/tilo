@@ -61,7 +61,7 @@ env:
   # main still run them here, and ci-nightly.yml runs them with the whole
   # workspace, so a regression is caught at the merge that caused it.
   PUSH_ONLY_FILTER: >-
-    (package(fs) and binary(collab_release_matrix)) or
+    (package(tilo-fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
 
 jobs:
