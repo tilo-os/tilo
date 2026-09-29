@@ -197,15 +197,10 @@ ENV KBUILD_BUILD_TIMESTAMP="@${SOURCE_DATE_EPOCH}" \
     LC_ALL=C.UTF-8 \
     TZ=UTC
 
-# Compiler cache for the kernel's C and assembly objects. BuildKit exposes the
-# credential only to the compile RUN as a secret, never to a layer or build
-# argument. KBUILD_BUILD_TIMESTAMP reaches only the version objects, so a new
-# source epoch still reuses everything else.
-ARG SCCACHE_BUCKET=""
-ARG SCCACHE_ENDPOINT=""
-ARG SCCACHE_REGION="auto"
-ARG SCCACHE_S3_KEY_PREFIX="tilo/kernel/v1"
-ARG SCCACHE_S3_USE_SSL="false"
+# Compiler cache for the kernel's C and assembly objects: the runner's Actions
+# cache, whose URL and job token BuildKit exposes only to the compile RUN as
+# secrets, never to a layer or build argument. KBUILD_BUILD_TIMESTAMP reaches
+# only the version objects, so a new source epoch still reuses everything else.
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `off` is for publications: every CI job can write the shared compiler cache,
 # so a published kernel compiles without a launcher and refuses to receive
@@ -219,12 +214,13 @@ ARG TILO_COMPILER_CACHE=shared
 # phase on this kernel size. Rolling our own spec below skips the
 # entire brp-* chain and produces the exact three files we need
 # (vmlinuz, modules tree, System.map) as a single tight RPM.
-RUN --mount=type=secret,id=aws_access_key_id \
-    --mount=type=secret,id=aws_secret_access_key \
+RUN --mount=type=secret,id=actions_cache_url \
+    --mount=type=secret,id=actions_runtime_token \
     set -eu; \
-    AWS_ACCESS_KEY_ID="$(cat /run/secrets/aws_access_key_id 2>/dev/null || true)"; \
-    AWS_SECRET_ACCESS_KEY="$(cat /run/secrets/aws_secret_access_key 2>/dev/null || true)"; \
-    export AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY SCCACHE_DIRECT=false; \
+    ACTIONS_CACHE_URL="$(cat /run/secrets/actions_cache_url 2>/dev/null || true)"; \
+    ACTIONS_RUNTIME_TOKEN="$(cat /run/secrets/actions_runtime_token 2>/dev/null || true)"; \
+    export ACTIONS_CACHE_URL ACTIONS_RUNTIME_TOKEN SCCACHE_DIRECT=false \
+      SCCACHE_GHA_ENABLED=on SCCACHE_GHA_VERSION=tilo-kernel-v1; \
     case "$TILO_COMPILER_CACHE:$TILO_REQUIRE_COMPILER_CACHE" in \
       shared:0|off:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 ;; \
       shared:1) export SCCACHE_IGNORE_SERVER_IO_ERROR=0 ;; \
@@ -232,11 +228,11 @@ RUN --mount=type=secret,id=aws_access_key_id \
     esac; \
     TILO_KERNEL_CC_LAUNCHER=; \
     if [ "$TILO_COMPILER_CACHE" = off ]; then \
-      if [ -n "${AWS_ACCESS_KEY_ID}${AWS_SECRET_ACCESS_KEY}${SCCACHE_BUCKET}${SCCACHE_ENDPOINT}" ]; then \
+      if [ -n "${ACTIONS_CACHE_URL}${ACTIONS_RUNTIME_TOKEN}" ]; then \
         echo "A kernel build without the compiler cache received compiler-cache settings" >&2; exit 1; \
       fi; \
       echo "compiling the kernel without a compiler cache" >&2; \
-    elif [ -n "$SCCACHE_BUCKET" ] && command -v sccache >/dev/null && sccache --start-server; then \
+    elif [ -n "$ACTIONS_CACHE_URL" ] && [ -n "$ACTIONS_RUNTIME_TOKEN" ] && command -v sccache >/dev/null && sccache --start-server; then \
       TILO_KERNEL_CC_LAUNCHER=sccache; \
     elif [ "$TILO_REQUIRE_COMPILER_CACHE" = 1 ]; then \
       echo "Required compiler cache is unavailable; refusing an uncached kernel build" >&2; exit 1; \
