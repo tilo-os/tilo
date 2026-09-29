@@ -16552,6 +16552,7 @@ dependencies = [
  "brotli",
  "bytes",
  "calculator",
+ "channel-crypto",
  "chat",
  "collab-types",
  "ed25519-dalek 3.0.0",
