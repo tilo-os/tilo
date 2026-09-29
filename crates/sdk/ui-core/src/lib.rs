@@ -166,6 +166,8 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
+#[cfg(feature = "native")]
+mod host_appearance;
 #[cfg(not(target_arch = "wasm32"))]
 mod host_chrome;
 pub mod host_data;

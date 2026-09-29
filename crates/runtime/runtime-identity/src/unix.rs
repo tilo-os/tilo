@@ -76,7 +76,9 @@ pub use backup::{
     PortableBackupInfo, export_portable_backup, import_portable_backup,
     import_portable_backup_matching, import_portable_backup_with_provider, verify_portable_backup,
 };
-pub use secure_store::{BrokerFileProvider, SecretProvider};
+pub use secure_store::{
+    BrokerFileProvider, FILE_SECRETS_ENV, SecretProvider, file_secrets_requested,
+};
 
 use crate::{
     BrokerSigningIdentity, IDENTITY_SERVICE, NotAvailable, collaboration_join_signing_bytes,
@@ -525,6 +527,10 @@ fn secure_record_unlocked(
     path: &std::path::Path,
 ) -> io::Result<KeyProtection> {
     let record = read_record(path)?;
+    #[cfg(not(test))]
+    let preferred = secure_store::preferred_provider(dir);
+    #[cfg(test)]
+    let preferred = tests::preferred_provider(dir);
     if record.schema_version == 2 {
         let reference = record.secret_ref.as_ref().ok_or_else(|| {
             io::Error::new(
@@ -533,20 +539,23 @@ fn secure_record_unlocked(
             )
         })?;
         let provider = secure_store::provider_for(dir, reference)?;
+        if !secure_store::FILE_FALLBACK
+            && provider.protection() == KeyProtection::BrokerFile
+            && preferred.protection() == KeyProtection::SecretService
+        {
+            return move_secret_unlocked(dir, path, provider.as_ref(), preferred.as_ref());
+        }
         let secret = provider.load(&reference.locator)?;
         identity_from_record(record, Some(secret.as_slice()))
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
         return Ok(provider.protection());
     }
 
-    #[cfg(not(test))]
-    let preferred = secure_store::preferred_provider(dir);
-    #[cfg(test)]
-    let preferred = tests::preferred_provider(dir);
     match secure_record_with_provider_unlocked(dir, path, preferred.as_ref()) {
         Ok(protection) => Ok(protection),
         Err(preferred_error)
-            if preferred.protection() == KeyProtection::SecretService
+            if secure_store::FILE_FALLBACK
+                && preferred.protection() == KeyProtection::SecretService
                 && matches!(
                     atomic_file::publication_state(&preferred_error),
                     None | Some(atomic_file::PublicationState::NotPublished)
@@ -638,6 +647,48 @@ fn secure_record_with_provider_unlocked(
         return Err(error);
     }
     Ok(provider.protection())
+}
+
+/// Move a secured record's secret from `from` into `to`, once: stored there
+/// and read back, the record republished to reference it, and only then
+/// removed from `from`, unless another record still references it there.
+/// Any failure leaves the record on `from`, and is returned.
+fn move_secret_unlocked(
+    dir: &std::path::Path,
+    path: &std::path::Path,
+    from: &dyn SecretProvider,
+    to: &dyn SecretProvider,
+) -> io::Result<KeyProtection> {
+    let mut record = read_record(path)?;
+    let old = record.secret_ref.clone().ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "secured identity has no secret reference",
+        )
+    })?;
+    let secret = from.load(&old.locator)?;
+    identity_from_record(read_record(path)?, Some(secret.as_slice()))
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()))?;
+    to.store(&old.locator, secret.as_slice())?;
+    record.secret_ref = Some(SecretReference {
+        backend: to.backend_id().to_string(),
+        locator: old.locator.clone(),
+    });
+    let metadata = serde_json::to_vec_pretty(&record)
+        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+    write_private_atomic(path, &metadata)?;
+    let shared = list_identities_unlocked(dir)?.iter().any(|other| {
+        identity_path(dir, &other.id)
+            .ok()
+            .filter(|other_path| other_path != path)
+            .and_then(|other_path| read_record(&other_path).ok())
+            .and_then(|other_record| other_record.secret_ref)
+            .is_some_and(|other_ref| other_ref == old)
+    });
+    if !shared {
+        from.remove(&old.locator)?;
+    }
+    Ok(to.protection())
 }
 
 /// Select which identity the launcher brokers into newly started apps.
@@ -2371,6 +2422,52 @@ mod tests {
     }
 
     #[test]
+    fn a_broker_file_secret_moves_into_the_system_store_once_or_not_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.json");
+        let file = BrokerFileProvider::new(dir.path());
+        write_private_atomic(&path, &record_bytes("Ada", 74)).unwrap();
+        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
+        let locator = hex::encode(SigningKey::from_bytes(&[74; 32]).verifying_key().to_bytes());
+
+        let refusing = SecretServiceFixture::new(dir.path(), true);
+        assert!(move_secret_unlocked(dir.path(), &path, &file, &refusing).is_err());
+        assert_published_identity_keeps_secret(&path, &file, 74);
+
+        let keyring = SecretServiceFixture::new(dir.path(), false);
+        assert_eq!(
+            move_secret_unlocked(dir.path(), &path, &file, &keyring).unwrap(),
+            KeyProtection::SecretService
+        );
+        assert_published_identity_keeps_secret(&path, &keyring, 74);
+        assert_eq!(
+            file.load(&locator).unwrap_err().kind(),
+            io::ErrorKind::NotFound,
+            "the broker file stayed behind"
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_moves_broker_file_identities_into_the_keychain_when_secured() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("personal.json");
+        let file = BrokerFileProvider::new(dir.path());
+        write_private_atomic(&path, &record_bytes("Ada", 75)).unwrap();
+        secure_identity_with_provider(dir.path(), "personal", &file).unwrap();
+        assert_eq!(
+            with_preferred_secret_service(false, || secure_identity(dir.path(), "personal"))
+                .unwrap(),
+            KeyProtection::SecretService
+        );
+        assert_published_identity_keeps_secret(
+            &path,
+            &SecretServiceFixture::new(dir.path(), false),
+            75,
+        );
+    }
+
+    #[test]
     fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
         use atomic_file::PublicationState;
         use atomic_file::test_support::{Checkpoint, with_failure};
@@ -2526,16 +2623,28 @@ mod tests {
         }
     }
 
+    /// Where the platform has no file fallback (macOS), a system store that
+    /// fails fails the import, and leaves neither a record nor a file secret.
+    fn assert_import_failed_closed(dir: &std::path::Path, imported: &io::Result<PathBuf>) {
+        assert!(imported.is_err(), "{imported:?}");
+        assert!(!dir.join("personal.json").exists());
+        assert!(!dir.join("secrets").exists(), "a file fallback was written");
+    }
+
     #[test]
     fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
         use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
-        let path = with_preferred_secret_service(false, || {
+        let imported = with_preferred_secret_service(false, || {
             with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
                 import_identity(dir.path(), "personal", &record_bytes("Ada", 77))
             })
-        })
-        .unwrap();
+        });
+        if !secure_store::FILE_FALLBACK {
+            assert_import_failed_closed(dir.path(), &imported);
+            return;
+        }
+        let path = imported.unwrap();
         assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 77);
         let locator = hex::encode(SigningKey::from_bytes(&[77; 32]).verifying_key().to_bytes());
         assert_eq!(
@@ -2560,10 +2669,14 @@ mod tests {
         assert!(atomic_file::publication_state(&error).is_none());
         assert!(!dir.path().join("personal.json").exists());
 
-        let path = with_preferred_secret_service(true, || {
+        let imported = with_preferred_secret_service(true, || {
             import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
-        })
-        .unwrap();
+        });
+        if !secure_store::FILE_FALLBACK {
+            assert_import_failed_closed(dir.path(), &imported);
+            return;
+        }
+        let path = imported.unwrap();
         assert_published_identity_keeps_secret(&path, &BrokerFileProvider::new(dir.path()), 78);
     }
 
