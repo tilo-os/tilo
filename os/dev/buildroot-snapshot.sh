@@ -38,6 +38,7 @@ wpe_inputs=(
 wpe_stage_inputs=(
   os/Containerfile.wpe
   os/dev/build-wpe.sh
+  os/dev/wpe-stage-key.sh
   os/wpe-buildroot-snapshot.env
   os/external-assets/github-assets.tsv
   os/dev/cache-github-assets.sh

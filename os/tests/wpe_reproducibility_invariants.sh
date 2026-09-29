@@ -69,6 +69,29 @@ if grep -Fq 'COPY --from=github-assets / /' "$wpe_recipe"; then
 else
   ok 'unrelated external assets stay out of the WPE compile cache key'
 fi
+key_fixture="$(mktemp -d)"
+mkdir -p "$key_fixture/os/dev" "$key_fixture/os/external-assets"
+cp "$repo/os/dev/wpe-stage-key.sh" "$key_fixture/os/dev/"
+cp "$repo/os/dev/build-wpe.sh" "$key_fixture/os/dev/"
+cp "$wpe_recipe" "$key_fixture/os/Containerfile.wpe"
+cp "$pins" "$key_fixture/os/wpe-buildroot-snapshot.env"
+cp "$manifest" "$key_fixture/os/external-assets/github-assets.tsv"
+key_before="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+legacy_before="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64 --legacy)"
+printf '%064d\tunrelated-test.tar.xz\thttps://example.invalid/unrelated\n' 0 \
+  >> "$key_fixture/os/external-assets/github-assets.tsv"
+key_after="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+legacy_after="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64 --legacy)"
+[[ $key_before == "$key_after" && $legacy_before != "$legacy_after" ]] \
+  && ok 'unrelated asset rows do not invalidate the WPE stage key' \
+  || bad 'unrelated asset row changed the WPE stage key'
+sed -i 's/^b2bafef2751625b7fdf530f230ff0f542ff0eeba3590c3a989d931b2a55c858e\t/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t/' \
+  "$key_fixture/os/external-assets/github-assets.tsv"
+key_changed="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
+[[ $key_changed != "$key_after" ]] \
+  && ok 'WPE archive digest changes invalidate the WPE stage key' \
+  || bad 'WPE archive digest change failed to invalidate the stage key'
+rm -rf "$key_fixture"
 has "$container" 'os/Containerfile.wpe' \
   'OS recipe points at the isolated WPE compile recipe'
 if ! grep -Fq 'bash /build-wpe.sh build' "$container"; then ok 'OS Containerfile does not compile WPE'; else bad 'OS Containerfile still compiles WPE'; fi
