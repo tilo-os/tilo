@@ -3258,7 +3258,7 @@ mod tests {
     fn wait_for_password_prompt(pane: &mut NetworkPane, doc: &mut AutoCommit, root: &ObjId) {
         // A hang guard for the worker thread, not a latency budget.
         let deadline = tilo_test_env::hang_deadline();
-        while std::time::Instant::now() < deadline {
+        while ui::time::now() < deadline {
             pane.sync(doc, root);
             if pane.expanded_ssid.is_some() {
                 return;
@@ -3822,7 +3822,7 @@ mod tests {
             // the visible Connect button did nothing.
             // A hang guard for the worker thread, not a latency budget.
             let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 if !rec.calls().is_empty() {
                     break;
                 }
@@ -3878,7 +3878,7 @@ mod tests {
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
             let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 pane.sync(&mut doc, &root);
                 if !rec.calls.lock().unwrap().is_empty() {
                     break;
@@ -3928,7 +3928,7 @@ mod tests {
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
             let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 pane.sync(&mut doc, &root);
                 if !commands.lock().unwrap().is_empty() {
                     break;
@@ -3969,7 +3969,7 @@ mod tests {
             pane.sync(&mut doc, &root);
             // A hang guard for the worker thread, not a latency budget.
             let deadline = tilo_test_env::hang_deadline();
-            while std::time::Instant::now() < deadline {
+            while ui::time::now() < deadline {
                 if !rec.calls.lock().unwrap().is_empty() {
                     break;
                 }

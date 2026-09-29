@@ -630,7 +630,7 @@ fn composition_pointer_and_keyboard_send_use_the_live_request() {
                     return String::from_utf8_lossy(&bytes[..count]).to_string();
                 }
                 assert!(
-                    std::time::Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "Send never reached the HTTP server"
                 );
                 std::thread::sleep(std::time::Duration::from_millis(10));
