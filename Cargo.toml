@@ -198,6 +198,16 @@ members = [
     "crates/packaging/runtime-bundle",
 
     # Examples
+    "examples/apps/background-task",
+    "examples/apps/bound-controls",
+    "examples/apps/counter",
+    "examples/apps/data-table",
+    "examples/apps/graph-screens",
+    "examples/apps/localized",
+    "examples/apps/qr-code",
+    "examples/apps/shared-checklist",
+    "examples/apps/tree-browser",
+    "examples/apps/virtual-list",
     "examples/packaging/hello",
     "examples/packaging/notes-cli",
 
