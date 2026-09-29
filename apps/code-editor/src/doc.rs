@@ -316,6 +316,10 @@ impl EditorDoc {
         reason = "ROOT is Automerge's permanent, undeletable root Map, so put_object on it cannot fail short of a corrupted document — there is no meaningful ObjId to fall back to"
     )]
     pub fn terminal_root(doc: &mut AutoCommit) -> ObjId {
+        let _ = tilo_actions::Action::apply(
+            &crate::actions::CodeEditorAction::EnsureTerminalPanel,
+            doc,
+        );
         match doc.get(&ROOT, "terminal_panel") {
             Ok(Some((Value::Object(ObjType::Map), id))) => id,
             _ => doc
