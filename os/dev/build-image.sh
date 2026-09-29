@@ -388,6 +388,18 @@ _tilo_jobs_args=()
 [ -z "${TILO_CARGO_BUILD_JOBS:-}" ] || _tilo_jobs_args=(--build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_BUILD_JOBS")
 # The release profile's debug info (os/Containerfile TILO_RUST_DEBUGINFO) when set.
 [ -z "${TILO_RUST_DEBUGINFO:-}" ] || _tilo_jobs_args+=(--build-arg "TILO_RUST_DEBUGINFO=$TILO_RUST_DEBUGINFO")
+# CI's compiler cache, read-only: TILO_IMAGE_SCCACHE_URL is its Actions cache
+# endpoint (for tilo/tilo: https://code.tilo.so/ci-cache/r/tilo/tilo/) and
+# TILO_IMAGE_SCCACHE_TOKEN_FILE a file holding a Forgejo token that can read the
+# repository. Both reach the Rust compile as build secrets, never as layers.
+if [ -n "${TILO_IMAGE_SCCACHE_URL:-}" ]; then
+  [ -r "${TILO_IMAGE_SCCACHE_TOKEN_FILE:-}" ] \
+    || die "TILO_IMAGE_SCCACHE_URL needs TILO_IMAGE_SCCACHE_TOKEN_FILE, a readable file with a Forgejo token"
+  export TILO_IMAGE_SCCACHE_URL
+  _tilo_jobs_args+=(--secret "id=actions_cache_url,env=TILO_IMAGE_SCCACHE_URL"
+    --secret "id=actions_runtime_token,src=$TILO_IMAGE_SCCACHE_TOKEN_FILE")
+  msg "compiler cache: $TILO_IMAGE_SCCACHE_URL"
+fi
 # Retained development payloads have their own provenance, including an unknown
 # original compilation epoch. Never present them as a current producer build.
 if [ -n "${TILO_WPE_ADOPTION_RECEIPT:-}" ]; then
