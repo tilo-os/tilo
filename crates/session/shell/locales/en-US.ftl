@@ -1420,16 +1420,23 @@ search-action-quick-settings-airplane-mode-set-enabled-subtitle = Turn every wir
 # Search: search sources and workspace governance rows
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
-search-action-workspace-view-subtitle = Local workspace view
+search-action-workspace-switch-subtitle = Go to this workspace and its windows
+search-action-activity-catch-up-subtitle = What others changed since you last looked
+search-action-activity-tasks-subtitle = Work assigned to people and agents here
+search-action-activity-explore-subtitle = Every change here, by person, app and time
+search-action-activity-replay-subtitle = Step through how this workspace changed
 search-action-quick-settings-unavailable = Quick Settings service is unavailable
-# Extra words a search for a workspace view matches; not shown.
-search-action-workspace-view-keywords = workspace activity history
+# Extra words a search for a workspace switch or Activity view matches; not shown.
+search-action-workspace-switch-keywords = switch workspace go
+search-action-activity-keywords = activity history changes timeline who
 search-action-provider-enable = Enable { $source } search
-search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
+search-action-provider-enable-subtitle = Show { $source } results in search and agent discovery
 search-action-provider-disable = Disable { $source } search
-search-action-provider-disable-subtitle = Hide the `{ $id }` source in search and agent discovery
+search-action-provider-disable-subtitle = Hide { $source } results from search and agent discovery
 search-action-provider-badge-on = ON
 search-action-provider-badge-off = OFF
+# Words that ask for the per-source search on/off switches; not shown.
+search-action-provider-keywords = search source sources disable enable
 search-action-governance-subtitle = Signed workspace governance action for the active workspace
 search-action-permission-roles-subtitle = Manage reusable least-privilege workspace roles
 
