@@ -1780,6 +1780,16 @@ struct FilterStripPaint {
     idle_text: Color,
 }
 
+/// When a row's change was made; empty for the genesis, which no one made
+/// at any time worth naming.
+fn row_time(entry: &HistoryEntry, now: SystemTime) -> String {
+    if entry.is_genesis() {
+        String::new()
+    } else {
+        format_relative_time(entry.timestamp, now)
+    }
+}
+
 impl ActivityTimeline {
     fn draw_row(
         &self,
@@ -1793,7 +1803,12 @@ impl ActivityTimeline {
 
         let row = slot.indented();
         let cy = f64::midpoint(row.y0, row.y1);
-        let dot_x = Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry);
+        // A genesis row names no one: no avatar, no author, no time.
+        let dot_x = if entry.is_genesis() {
+            row.x0 + 8.0 + AVATAR_DIAM / 2.0
+        } else {
+            Self::draw_row_avatar(ctx.scene, ctx.transform, row, cy, entry)
+        };
 
         // Reserved only when hovered — reserving it on every row cost the
         // summary a third of its width for something not on screen.
@@ -1812,7 +1827,9 @@ impl ActivityTimeline {
                 0.0
             },
         };
-        self.draw_row_author(ctx, &layout, entry, dot_x);
+        if !entry.is_genesis() {
+            self.draw_row_author(ctx, &layout, entry, dot_x);
+        }
         self.draw_row_body(ctx, &layout, entry, now);
         self.draw_row_trailing(ctx, &layout, entry, now);
     }
@@ -2090,7 +2107,7 @@ impl ActivityTimeline {
         } = layout;
         let rel = fit_text(
             text_renderer,
-            &format_relative_time(entry.timestamp, now),
+            &row_time(entry, now),
             text_size,
             self.time_slot_w(),
         );
@@ -2998,21 +3015,29 @@ impl Widget for ActivityTimeline {
                     VisualRow::Entry(entry, depth) => {
                         let item = self.entries.get(*entry)?;
                         let id = crate::widget::history_group::hex16(&item.id);
+                        let said = if item.is_genesis() {
+                            item.summary.clone()
+                        } else {
+                            format!("{}: {}", item.author.name, item.summary)
+                        };
                         let name = Self::entry_breadcrumb(item).map_or_else(
-                            || format!("{}: {}", item.author.name, item.summary),
-                            |breadcrumb| {
-                                format!("{breadcrumb}: {}: {}", item.author.name, item.summary)
-                            },
+                            || said.clone(),
+                            |breadcrumb| format!("{breadcrumb}: {said}"),
                         );
                         Some(
                             AccessNode::new(Role::ListItem)
                                 .with_action_target(format!("timeline-entry:{id}"))
                                 .with_name(name)
-                                .with_description(format!(
-                                    "{} · {}",
-                                    op_class_glyph(item.op_class),
-                                    format_relative_time(item.timestamp, self.now())
-                                ))
+                                .with_description(
+                                    [
+                                        op_class_glyph(item.op_class).to_owned(),
+                                        row_time(item, self.now()),
+                                    ]
+                                    .into_iter()
+                                    .filter(|part| !part.is_empty())
+                                    .collect::<Vec<_>>()
+                                    .join(" · "),
+                                )
                                 .with_position(index.saturating_add(1), row_count)
                                 .with_level(depth.saturating_add(1))
                                 .with_bounds(bounds)
@@ -3889,6 +3914,41 @@ mod tests {
         timeline_at(rect, entries)
             .on_revert(|_| {})
             .on_name_group(|_| {})
+    }
+
+    #[test]
+    fn a_genesis_row_names_no_author_and_no_time() {
+        use crate::a11y::Role;
+        let mut genesis = entry(OpClass::EditMeta, "Unknown participant", 0, 1);
+        genesis.summary = "Created".into();
+        genesis.context = Some(tilo_actions::ActionContext {
+            facets: vec![crate::widget::history::genesis_facet()],
+            ..tilo_actions::ActionContext::default()
+        });
+        let entries = vec![genesis, entry(OpClass::Splice, "Alice", 10, 2)];
+        let t = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), entries);
+        let semantics = Widget::accessibility(&t).expect("timeline semantics");
+        let rows: Vec<_> = semantics
+            .children
+            .iter()
+            .filter(|node| node.role == Role::ListItem)
+            .map(|node| (node.name.clone(), node.description.clone()))
+            .collect();
+        assert_eq!(
+            rows[0],
+            (
+                Some("Created".to_owned()),
+                Some(op_class_glyph(OpClass::EditMeta).to_owned())
+            ),
+            "the version the document was created as, by no one at no time"
+        );
+        assert_eq!(rows[1].0.as_deref(), Some("Alice: op 2 by Alice"));
+        assert!(
+            rows[1]
+                .1
+                .as_deref()
+                .is_some_and(|text| text.contains(" · "))
+        );
     }
 
     #[test]

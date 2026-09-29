@@ -33,6 +33,7 @@ pub struct MemoryStore {
     state: RefCell<State>,
     leases: Rc<RefCell<BTreeMap<StorageKey, Held>>>,
     claims: RefCell<BTreeMap<StorageKey, String>>,
+    write_hook: RefCell<Option<Rc<dyn Fn()>>>,
 }
 
 /// Who holds one key: an exclusive owner, or shared writers.
@@ -145,7 +146,16 @@ impl MemoryStore {
             state: RefCell::new(State::default()),
             leases: Rc::default(),
             claims: RefCell::default(),
+            write_hook: RefCell::default(),
         }
+    }
+
+    /// Call `hook` after each write a [`queued`](Self::queued) store accepts,
+    /// so its host can schedule a [`drain`](Self::drain) instead of polling.
+    /// The hook runs with no borrow of the store held; it may drain at once,
+    /// but a host that commits asynchronously should coalesce.
+    pub fn set_write_hook(&self, hook: Option<Rc<dyn Fn()>>) {
+        *self.write_hook.borrow_mut() = hook;
     }
 
     /// Load a value the host already holds durably, before any owner writes
@@ -181,6 +191,33 @@ impl MemoryStore {
         }
         out.sort_by_key(|write| write.revision);
         out
+    }
+
+    /// Queue each key whose commit failed, and that has nothing queued, for a
+    /// full replacement with its current value, so the host can retry without
+    /// waiting for the owner's next write. Returns how many were queued.
+    pub fn retry_failed(&self) -> usize {
+        let mut state = self.state.borrow_mut();
+        let State { issued, slots } = &mut *state;
+        let mut queued = 0_usize;
+        for slot in slots.values_mut() {
+            if slot.failed.is_empty() || slot.queued.is_some() {
+                continue;
+            }
+            let Some(revision) = issued.checked_add(1) else {
+                break;
+            };
+            *issued = revision;
+            let current = slot.current.clone().unwrap_or_default();
+            slot.queued = Some(Batch {
+                first: revision,
+                last: revision,
+                op: WriteOp::Replace(current.bytes),
+                writer: current.writer,
+            });
+            queued = queued.saturating_add(1);
+        }
+        queued
     }
 
     /// Report the host's outcome for a drained write.
@@ -286,6 +323,11 @@ impl crate::DurableStore for MemoryStore {
                     writer,
                 });
             }
+        }
+        drop(state);
+        let hook = self.write_hook.borrow().clone();
+        if let Some(hook) = hook {
+            hook();
         }
         Ok(Revision(revision))
     }

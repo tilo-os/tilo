@@ -13,6 +13,10 @@ use anyhow::{Context, Result};
 /// The public repository a scaffold outside any checkout builds against.
 pub const DEFAULT_SDK_GIT: &str = "https://code.tilo.so/tilo/tilo.git";
 
+/// Everything a developer with rustup runs to get this CLI.
+pub const INSTALL_COMMAND: &str =
+    "cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli";
+
 /// The Tilo commit this CLI was built from, when the build could see it.
 pub const BUILT_FROM_REV: Option<&str> = option_env!("TILO_SDK_REV");
 

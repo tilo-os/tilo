@@ -8,15 +8,13 @@
 //! The encoded PNGs live in a [`tilo_content::ContentStore`] — the system's one
 //! content store — addressed by their *own* hash, so identical previews are
 //! stored once and every read is verified. A small key index maps a
-//! [`ThumbKey`] to the PNG address, and a bounded `moka` LRU sits in front of
-//! both. The store handed to [`ThumbCache::with_store`] must be dedicated to
+//! [`ThumbKey`] to the PNG address, and a bounded LRU sits in front of both. The store handed to [`ThumbCache::with_store`] must be dedicated to
 //! previews: pruning collects everything the index no longer names.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
-use moka::sync::Cache;
 use tilo_content::{ContentStore, DirBackend};
 
 use crate::generate::ThumbSize;
@@ -100,13 +98,86 @@ impl ThumbKey {
     }
 }
 
+/// The in-memory tier: at most `capacity` previews, the least recently used
+/// evicted first. A use counter orders them, so it needs no clock (the page
+/// has no `std` one) and stays exact for the few hundred entries it holds.
+#[derive(Clone)]
+struct Cache {
+    capacity: u64,
+    entries: Arc<Mutex<Entries>>,
+}
+
+/// Previews by key, each with the use tick it was last touched at.
+#[derive(Default)]
+struct Entries {
+    tick: u64,
+    map: HashMap<ThumbKey, (u64, Arc<Vec<u8>>)>,
+}
+
+impl Entries {
+    fn touch(&mut self) -> u64 {
+        self.tick = self.tick.wrapping_add(1);
+        self.tick
+    }
+}
+
+impl Cache {
+    fn new(capacity: u64) -> Self {
+        Self {
+            capacity,
+            entries: Arc::default(),
+        }
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Entries> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn get(&self, key: &ThumbKey) -> Option<Arc<Vec<u8>>> {
+        let mut entries = self.lock();
+        let tick = entries.touch();
+        let entry = entries.map.get_mut(key)?;
+        entry.0 = tick;
+        let value = Arc::clone(&entry.1);
+        drop(entries);
+        Some(value)
+    }
+
+    fn contains_key(&self, key: &ThumbKey) -> bool {
+        self.lock().map.contains_key(key)
+    }
+
+    fn insert(&self, key: ThumbKey, value: Arc<Vec<u8>>) {
+        if self.capacity == 0 {
+            return;
+        }
+        let mut entries = self.lock();
+        let tick = entries.touch();
+        entries.map.insert(key, (tick, value));
+        while entries.map.len() as u64 > self.capacity {
+            let Some(oldest) = entries
+                .map
+                .iter()
+                .min_by_key(|(_, (used, _))| *used)
+                .map(|(k, _)| *k)
+            else {
+                break;
+            };
+            entries.map.remove(&oldest);
+        }
+        drop(entries);
+    }
+}
+
 /// Content-addressed PNG-thumbnail store.
 #[derive(Clone)]
 pub struct ThumbCache {
     store: ContentStore,
     /// The key index directory; `None` for a cache that lives in memory only.
     index: Option<PathBuf>,
-    mem: Cache<ThumbKey, Arc<Vec<u8>>>,
+    mem: Cache,
     /// Cap on the number of indexed previews; the least-recently-written are
     /// pruned past it so the cache stays bounded across sessions.
     max_entries: usize,
@@ -287,6 +358,57 @@ mod tests {
         tempfile::tempdir().unwrap()
     }
 
+    #[test]
+    fn key_is_content_addressed() {
+        let hello = ThumbKey::of_bytes(b"hello", 256);
+        let again = ThumbKey::of_bytes(b"hello", 256);
+        assert_eq!(hello, again, "same bytes + size → same key");
+        assert_ne!(
+            hello,
+            ThumbKey::of_bytes(b"world", 256),
+            "different bytes → different key"
+        );
+        assert_ne!(
+            hello,
+            ThumbKey::of_bytes(b"hello", 128),
+            "different size → different key"
+        );
+        assert_ne!(
+            hello,
+            ThumbKey::of_bytes(b"hello", ThumbSize::new(256, 144)),
+            "different box → different key"
+        );
+        assert_ne!(
+            hello.at_frame(0),
+            hello.at_frame(250),
+            "each frame has its own key"
+        );
+        assert_eq!(hello.at_frame(250), again.at_frame(250));
+    }
+
+    #[test]
+    fn content_address_keys_match_hash_keys() {
+        let hash = blake3::hash(b"photo");
+        let by_address = ThumbKey::of_address(&hash.to_hex(), 320).unwrap();
+        assert_eq!(by_address, ThumbKey::of_hash(*hash.as_bytes(), 320));
+        assert!(ThumbKey::of_address("../../etc/passwd", 320).is_none());
+    }
+
+    #[test]
+    fn put_then_get_hits() {
+        let dir = tmpdir();
+        let cache = ThumbCache::open(dir.path()).unwrap();
+        let key = ThumbKey::of_bytes(b"file-content", 256);
+        assert!(cache.get(&key).is_none(), "cold miss");
+        cache.put(&key, vec![1, 2, 3, 4]);
+        assert_eq!(
+            cache.get(&key).unwrap().as_slice(),
+            &[1, 2, 3, 4],
+            "warm hit"
+        );
+        assert!(cache.contains(&key));
+    }
+
     /// The preview bytes are in the content store, under their own address,
     /// and identical previews for two sources are stored once.
     #[test]
@@ -307,94 +429,21 @@ mod tests {
     }
 
     #[test]
-    fn thumbnail_cache_is_content_addressed_persistent_and_bounded() {
-        // Phase `key_is_content_addressed`.
+    fn survives_a_reopen() {
+        let dir = tmpdir();
+        let key = ThumbKey::of_bytes(b"persist-me", 256);
         {
-            let hello = ThumbKey::of_bytes(b"hello", 256);
-            let again = ThumbKey::of_bytes(b"hello", 256);
-            assert_eq!(hello, again, "same bytes + size → same key");
-            assert_ne!(
-                hello,
-                ThumbKey::of_bytes(b"world", 256),
-                "different bytes → different key"
-            );
-            assert_ne!(
-                hello,
-                ThumbKey::of_bytes(b"hello", 128),
-                "different size → different key"
-            );
-            assert_ne!(
-                hello,
-                ThumbKey::of_bytes(b"hello", ThumbSize::new(256, 144)),
-                "different box → different key"
-            );
-            assert_ne!(
-                hello.at_frame(0),
-                hello.at_frame(250),
-                "each frame has its own key"
-            );
-            assert_eq!(hello.at_frame(250), again.at_frame(250));
-        }
-        // Phase `put_then_get_hits`.
-        {
-            let dir = tmpdir();
             let cache = ThumbCache::open(dir.path()).unwrap();
-            let key = ThumbKey::of_bytes(b"file-content", 256);
-            assert!(cache.get(&key).is_none(), "cold miss");
-            cache.put(&key, vec![1, 2, 3, 4]);
-            assert_eq!(
-                cache.get(&key).unwrap().as_slice(),
-                &[1, 2, 3, 4],
-                "warm hit"
-            );
-            assert!(cache.contains(&key));
+            cache.put(&key, vec![9, 8, 7]);
         }
-        // Phase `survives_a_reopen`.
-        {
-            let dir = tmpdir();
-            let key = ThumbKey::of_bytes(b"persist-me", 256);
-            {
-                let cache = ThumbCache::open(dir.path()).unwrap();
-                cache.put(&key, vec![9, 8, 7]);
-            }
-            // A brand-new cache instance on the same directory finds it in the
-            // store — no in-memory state carried over.
-            let reopened = ThumbCache::open(dir.path()).unwrap();
-            assert_eq!(
-                reopened.get(&key).unwrap().as_slice(),
-                &[9, 8, 7],
-                "thumbnail survives a restart via the content store"
-            );
-        }
-        // Phase `cache_stays_bounded_and_collects_unindexed_previews`.
-        {
-            let dir = tmpdir();
-            // Cap of 10 → after inserting 40 the pruner keeps it near 90% (9).
-            let cache = ThumbCache::with_limits(dir.path(), 64, 10).unwrap();
-            for i in 0..40u32 {
-                cache.put(
-                    &ThumbKey::of_bytes(format!("f{i}").as_bytes(), 256),
-                    i.to_le_bytes().repeat(4),
-                );
-            }
-            let indexed = std::fs::read_dir(dir.path().join("index")).unwrap().count();
-            assert!(indexed <= 10, "index pruned to its bound, got {indexed}");
-            let stored: usize = std::fs::read_dir(dir.path().join("content"))
-                .unwrap()
-                .filter_map(Result::ok)
-                .filter(|e| e.path().is_dir())
-                .map(|shard| std::fs::read_dir(shard.path()).unwrap().count())
-                .sum();
-            assert!(stored <= 10, "unindexed previews collected, got {stored}");
-        }
-    }
-
-    #[test]
-    fn content_address_keys_match_hash_keys() {
-        let hash = blake3::hash(b"photo");
-        let by_address = ThumbKey::of_address(&hash.to_hex(), 320).unwrap();
-        assert_eq!(by_address, ThumbKey::of_hash(*hash.as_bytes(), 320));
-        assert!(ThumbKey::of_address("../../etc/passwd", 320).is_none());
+        // A brand-new cache instance on the same directory finds it in the
+        // store — no in-memory state carried over.
+        let reopened = ThumbCache::open(dir.path()).unwrap();
+        assert_eq!(
+            reopened.get(&key).unwrap().as_slice(),
+            &[9, 8, 7],
+            "thumbnail survives a restart via the content store"
+        );
     }
 
     #[test]
@@ -412,6 +461,28 @@ mod tests {
             .join(&address);
         std::fs::write(stored, [9, 9, 9]).unwrap();
         assert!(ThumbCache::open(dir.path()).unwrap().get(&key).is_none());
+    }
+
+    #[test]
+    fn cache_stays_bounded_and_collects_unindexed_previews() {
+        let dir = tmpdir();
+        // Cap of 10 → after inserting 40 the pruner keeps it near 90% (9).
+        let cache = ThumbCache::with_limits(dir.path(), 64, 10).unwrap();
+        for i in 0..40u32 {
+            cache.put(
+                &ThumbKey::of_bytes(format!("f{i}").as_bytes(), 256),
+                i.to_le_bytes().repeat(4),
+            );
+        }
+        let indexed = std::fs::read_dir(dir.path().join("index")).unwrap().count();
+        assert!(indexed <= 10, "index pruned to its bound, got {indexed}");
+        let stored: usize = std::fs::read_dir(dir.path().join("content"))
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| e.path().is_dir())
+            .map(|shard| std::fs::read_dir(shard.path()).unwrap().count())
+            .sum();
+        assert!(stored <= 10, "unindexed previews collected, got {stored}");
     }
 
     #[test]

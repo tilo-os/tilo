@@ -282,6 +282,9 @@ fn operation_wire(
         shared::CollaborationAdminOperation::Remove(input) => {
             (shared::REMOVE_ACTION, serde_json::to_value(input)?)
         }
+        shared::CollaborationAdminOperation::SetAdministrator(_) => {
+            bail!("a cloud workspace has no administrator members")
+        }
         shared::CollaborationAdminOperation::MediaCreate(v) => {
             (shared::MEDIA_CREATE_ACTION, serde_json::to_value(v)?)
         }

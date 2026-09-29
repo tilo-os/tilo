@@ -26,6 +26,7 @@
 //! the broker, which refuses plaintext and stale-epoch content for the
 //! channel on every ingress path. The broker itself never holds a key.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -35,8 +36,8 @@ use channel_crypto::{
     Access, ChannelContentKeys, ChannelMember, ChannelSteward, MemberEvent, VaultKey,
 };
 use collab_types::{
-    ChannelId, Ed25519PublicKey, MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceFrameV1,
-    SignedOp,
+    ArtifactId, ChannelId, ContentRetention, Ed25519PublicKey, EncryptionMetadata,
+    MlsAccessRequestV1, MlsGovernanceAckV1, MlsGovernanceFrameV1, SignedOp,
 };
 use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
@@ -683,13 +684,61 @@ impl ChannelKeyAccess {
     /// Returns a message when the write is not sealed, this device holds no
     /// current key for its channel, or the payload does not open.
     pub fn open_new_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
+        let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
+        keys.open_current_content(envelope.artifact, &metadata, &ciphertext)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Open `envelope`, a write of a sealed record's history (a compaction
+    /// included), under any epoch whose key this device holds: what a key
+    /// holder compacting the history reads. Call it only for writes already
+    /// admitted with every envelope check.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open_new_write`], except that an older epoch opens.
+    pub fn open_history_write(&self, room: RoomId, envelope: &SignedOp) -> Result<Vec<u8>, String> {
+        let (keys, metadata, ciphertext) = self.sealed_parts(room, envelope)?;
+        keys.open_content(envelope.artifact, &metadata, &ciphertext)
+            .map(|plaintext| plaintext.to_vec())
+            .map_err(|error| error.to_string())
+    }
+
+    /// Seal `plaintext`, a record's merged snapshot, for `artifact` on
+    /// `channel` under the channel's current epoch as a checkpoint: the
+    /// ciphertext of a sealed compaction.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when this device holds no current key for the
+    /// channel or sealing fails.
+    pub fn seal_current_checkpoint(
+        &self,
+        room: RoomId,
+        channel: ChannelId,
+        artifact: ArtifactId,
+        plaintext: &[u8],
+    ) -> Result<(EncryptionMetadata, Vec<u8>), String> {
+        let (ChannelAccess::Ready(keys), _) = self.access(room, channel) else {
+            return Err("this device holds no key for the record's channel".into());
+        };
+        keys.seal_content(artifact, ContentRetention::Checkpoint, plaintext)
+            .map_err(|error| error.to_string())
+    }
+
+    fn sealed_parts<'a>(
+        &self,
+        room: RoomId,
+        envelope: &'a SignedOp,
+    ) -> Result<(ChannelContentKeys, EncryptionMetadata, Cow<'a, [u8]>), String> {
         let metadata = envelope.encryption.ok_or("the write is not sealed")?;
+        let ciphertext =
+            collab_types::sealed_ciphertext(envelope).map_err(|error| error.to_string())?;
         let (ChannelAccess::Ready(keys), _) = self.access(room, metadata.channel) else {
             return Err("this device holds no key for the write's channel".into());
         };
-        keys.open_current_content(envelope.artifact, &metadata, &envelope.payload)
-            .map(|plaintext| plaintext.to_vec())
-            .map_err(|error| error.to_string())
+        Ok((keys, metadata, ciphertext))
     }
 
     /// See [`ChannelEncryption::pump`].
@@ -1173,6 +1222,83 @@ mod tests {
                 .open_content(artifact, &after.0, &after.1)
                 .is_err(),
             "the lost device was removed and cannot read what follows"
+        );
+    }
+
+    fn sealed_op(
+        artifact: collab_types::ArtifactId,
+        (metadata, payload): (EncryptionMetadata, Vec<u8>),
+        op_class: collab_types::OpClass,
+    ) -> SignedOp {
+        SignedOp::new_unsigned_with_encryption(
+            payload,
+            artifact,
+            public(1),
+            collab_types::AttestationId::default(),
+            op_class,
+            std::time::SystemTime::UNIX_EPOCH,
+            1,
+            metadata,
+        )
+    }
+
+    /// The key holder compacting a sealed record reads its whole history,
+    /// older epochs included, and seals the merged record as a current
+    /// checkpoint that opens as a new write; a new write still opens only
+    /// under the current epoch.
+    #[test]
+    fn a_key_holder_opens_history_and_seals_a_current_checkpoint() {
+        use collab_types::OpClass;
+        let room = Arc::new(Room::default());
+        let room_id = RoomId::new();
+        let channel = ChannelId::new();
+        let artifact = collab_types::ArtifactId::new();
+        let policy = Policy::default();
+        policy.allowed.lock().unwrap().insert(public(12));
+        let (owner_dir, laptop_dir) = (tempfile::tempdir().unwrap(), tempfile::tempdir().unwrap());
+        let mut now = Instant::now();
+        let mut owner = device(&room, room_id, 0, (11, 11), &policy, owner_dir.path());
+        let mut laptop = device(&room, room_id, 1, (12, 11), &policy, laptop_dir.path());
+        let ChannelAccess::Ready(first) = owner.service.access(room_id, channel, now) else {
+            panic!("owner keys");
+        };
+        let old = sealed_op(
+            artifact,
+            first
+                .seal_content(artifact, ContentRetention::Delta, b"before the rotation")
+                .unwrap(),
+            OpClass::Splice,
+        );
+        laptop.service.access(room_id, channel, now);
+        run(&mut [&mut owner, &mut laptop], &mut now, 5);
+        let keys = ChannelKeyAccess::new(owner.service);
+        let (ChannelAccess::Ready(current), _) = keys.access(room_id, channel) else {
+            panic!("owner keys");
+        };
+        assert!(current.epoch() > first.epoch(), "adding the laptop rotated");
+
+        assert!(keys.open_new_write(room_id, &old).is_err());
+        assert_eq!(
+            keys.open_history_write(room_id, &old).unwrap(),
+            b"before the rotation"
+        );
+        let sealed = keys
+            .seal_current_checkpoint(room_id, channel, artifact, b"merged record")
+            .unwrap();
+        assert_eq!(sealed.0.epoch, current.epoch());
+        assert_eq!(sealed.0.retention(), Some(ContentRetention::Checkpoint));
+        let payload = collab_types::SealedCompaction::new(std::slice::from_ref(&old), sealed.1)
+            .unwrap()
+            .encode()
+            .unwrap();
+        let compaction = sealed_op(artifact, (sealed.0, payload), OpClass::Compaction);
+        assert_eq!(
+            keys.open_new_write(room_id, &compaction).unwrap(),
+            b"merged record"
+        );
+        assert_eq!(
+            keys.open_history_write(room_id, &compaction).unwrap(),
+            b"merged record"
         );
     }
 }

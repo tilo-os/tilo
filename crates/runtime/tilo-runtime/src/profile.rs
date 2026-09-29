@@ -63,6 +63,11 @@ impl MediaHost {
             runtime: Some(runtime),
         })
     }
+
+    /// The content store, which the profile's workspace files share.
+    pub fn store(&self) -> Arc<tilo_fs::ContentStore> {
+        Arc::clone(&self.store)
+    }
 }
 
 impl Drop for MediaHost {

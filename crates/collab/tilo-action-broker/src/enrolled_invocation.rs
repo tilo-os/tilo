@@ -182,6 +182,7 @@ impl CapnpBrokerState {
             },
         });
         drop(workers);
+        self.worker_admitted.notify_one();
         Ok(facts.channel_id.clone())
     }
     /// The live dispatch witness of an accepted enrolled task on `channel`.

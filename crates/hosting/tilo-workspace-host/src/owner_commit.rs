@@ -2,6 +2,7 @@
 //! This mailbox owns no second document writer, signing key or persistence root.
 use crate::{SessionOwner, action_timing::Timing};
 use std::sync::{Arc, Mutex, OnceLock};
+use tilo_action_broker::owner_turn::TurnWait;
 use tilo_action_broker::peer_actions::PolicyTime;
 use tilo_peer_state::owner_commit::{
     CommitFuture, CommitOperation, OwnerCommitReceipt, OwnerCommitRequest, OwnerCommitService,
@@ -10,7 +11,6 @@ use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 
 const MAX_REQUEST_BYTES: usize = 4 * 1024 * 1024;
 const MAX_INFLIGHT: usize = 32;
-const COMMIT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 enum LocalOwnerTurnError {
     Refused(String),
     Uncertain(String),
@@ -83,30 +83,53 @@ impl LocalOwnerPolicyFence {
 
 /// Queue residence is bounded by permits/payload, not by execution time: the
 /// native owner cannot claim work until its retained subscription is ready.
-/// Timestamp at the owner turn, so a delayed caller wake gets no fresh budget.
-pub(crate) fn execution_deadline() -> std::time::Instant {
-    std::time::Instant::now() + COMMIT_TIMEOUT
+/// A started turn is bounded by its owner, which renews this budget at each
+/// step it completes; only a turn that stops progressing is uncertain.
+pub(crate) fn turn_budget() -> std::time::Duration {
+    tilo_action_broker::owner_turn::STALL_BUDGET
 }
 
+/// The latched failure, and whether every failure recorded was a started
+/// owner turn that stalled.
 #[derive(Default)]
-struct Health(Mutex<Option<String>>);
+struct Health(Mutex<(Option<String>, bool)>);
 impl Health {
     fn fail(&self, reason: impl Into<String>) -> String {
-        let reason = reason.into();
+        self.record(reason.into(), false)
+    }
+    /// Fail closed because a started owner turn stopped making progress.
+    fn fail_stalled(&self, reason: impl Into<String>) -> String {
+        self.record(reason.into(), true)
+    }
+    fn record(&self, reason: String, stalled: bool) -> String {
         if let Ok(mut failed) = self.0.lock() {
-            failed.get_or_insert(reason.clone());
+            let (failure, only_stalls) = &mut *failed;
+            *only_stalls = if failure.is_none() {
+                stalled
+            } else {
+                *only_stalls && stalled
+            };
+            failure.get_or_insert(reason.clone());
         }
         reason
     }
     fn check(&self) -> Result<(), String> {
-        match &*self
+        match &self
             .0
             .lock()
             .map_err(|_| "owner commit health unavailable")?
+            .0
         {
             Some(reason) => Err(reason.clone()),
             None => Ok(()),
         }
+    }
+    fn own_failure(&self) -> Result<Option<(String, bool)>, String> {
+        let failed = self
+            .0
+            .lock()
+            .map_err(|_| "owner commit health unavailable")?;
+        Ok(failed.0.clone().map(|reason| (reason, failed.1)))
     }
 }
 #[derive(Clone)]
@@ -124,7 +147,8 @@ pub struct OwnerCommitMailbox {
 pub struct PendingOwnerCommit {
     request: OwnerCommitRequest,
     direct_delivery: bool,
-    started: Option<oneshot::Sender<std::time::Instant>>,
+    started: Option<oneshot::Sender<tilo_action_broker::owner_turn::TurnWatch>>,
+    progress: Option<tilo_action_broker::owner_turn::TurnProgress>,
     reply: Option<oneshot::Sender<Result<OwnerCommitReceipt, String>>>,
     desktop_reply: Option<
         oneshot::Sender<
@@ -210,6 +234,7 @@ impl OwnerCommitService for OwnerCommitHandle {
                     request: request.clone(),
                     direct_delivery: false,
                     started: Some(started),
+                    progress: None,
                     reply: Some(reply),
                     desktop_reply: None,
                     health: this.health.clone(),
@@ -221,13 +246,20 @@ impl OwnerCommitService for OwnerCommitHandle {
                 this.health
                     .fail("owner commit queue unavailable; outcome unknown")
             })?;
-            let deadline = start
+            let turn = start
                 .await
                 .map_err(|_| this.health.fail("owner commit reply lost; outcome unknown"))?;
-            let receipt = tokio::time::timeout_at(deadline.into(), response)
-                .await
-                .map_err(|_| this.health.fail("owner commit timed out; outcome unknown"))?
-                .map_err(|_| this.health.fail("owner commit reply lost; outcome unknown"))??;
+            let receipt = match turn.wait(response).await {
+                TurnWait::Answered(receipt) => receipt?,
+                TurnWait::Lost => {
+                    return Err(this.health.fail("owner commit reply lost; outcome unknown"));
+                }
+                TurnWait::Stalled => {
+                    return Err(this
+                        .health
+                        .fail_stalled("owner commit turn stalled; outcome unknown"));
+                }
+            };
             receipt
                 .validate_for(&request)
                 .map_err(|e| this.health.fail(e))?;
@@ -242,8 +274,10 @@ impl PendingOwnerCommit {
         }
         let health = self.health.check();
         let reason = health.as_ref().err().cloned().unwrap_or(reason);
-        // Consume the private queued-phase marker. No owner callback runs.
-        let _ = self.started.take().unwrap().send(execution_deadline());
+        // Consume the private queued-phase marker. No owner callback runs;
+        // the refusal is the whole turn, so it is answered before it starts.
+        let started = self.started.take().unwrap();
+        let (_ended, turn) = tilo_action_broker::owner_turn::start(turn_budget());
         if let Some(reply) = self.reply.take() {
             let _ = reply.send(Err(reason));
         } else if let Some(reply) = self.desktop_reply.take() {
@@ -255,13 +289,22 @@ impl PendingOwnerCommit {
             };
             let _ = reply.send(Err(error));
         }
+        let _ = started.send(turn);
         health
     }
     fn start_execution(&mut self) {
         if let Some(started) = self.started.take() {
             // This is a milestone, not a cancellation/authorization handshake.
             // Dropped callers still do not cancel an owner's admitted work.
-            let _ = started.send(execution_deadline());
+            let (progress, turn) = tilo_action_broker::owner_turn::start(turn_budget());
+            let _ = started.send(turn);
+            self.progress = Some(progress);
+        }
+    }
+    /// A step of the started turn completed.
+    fn advance(&self) {
+        if let Some(progress) = &self.progress {
+            progress.advance();
         }
     }
     pub fn is_desktop(&self) -> bool {
@@ -319,6 +362,7 @@ impl PendingOwnerCommit {
         } else {
             "semantic_apply_error"
         });
+        self.advance();
         let health = match &result {
             Err(DesktopCommandError::Uncertain(reason)) => Err(self.health.fail(reason.clone())),
             _ => Ok(()),
@@ -368,6 +412,7 @@ impl PendingOwnerCommit {
         } else {
             "semantic_apply_error"
         });
+        self.advance();
         if let Err(LocalOwnerTurnError::Uncertain(reason)) = &result {
             self.health.fail(reason.clone());
         }
@@ -413,6 +458,10 @@ impl Drop for PendingOwnerCommit {
 }
 
 impl OwnerCommitHandle {
+    /// The latched failure, and whether it came only from stalled turns.
+    pub(crate) fn own_failure(&self) -> Result<Option<(String, bool)>, String> {
+        self.health.own_failure()
+    }
     fn check_admission(&self, closed: bool) -> Result<(), String> {
         if closed {
             return Err("owner admission retired".into());
@@ -495,6 +544,7 @@ impl OwnerCommitHandle {
                     request: request.clone(),
                     direct_delivery,
                     started: Some(started),
+                    progress: None,
                     reply: None,
                     desktop_reply: Some(reply),
                     health: this.health.clone(),
@@ -508,26 +558,27 @@ impl OwnerCommitHandle {
                         .fail("desktop owner queue unavailable; outcome unknown"),
                 )
             })?;
-            let deadline = start.await.map_err(|_| {
+            let turn = start.await.map_err(|_| {
                 Uncertain(
                     this.health
                         .fail("desktop owner reply lost; outcome unknown"),
                 )
             })?;
-            let receipt = tokio::time::timeout_at(deadline.into(), response)
-                .await
-                .map_err(|_| {
-                    Uncertain(
-                        this.health
-                            .fail("desktop owner commit timed out; outcome unknown"),
-                    )
-                })?
-                .map_err(|_| {
-                    Uncertain(
+            let receipt = match turn.wait(response).await {
+                TurnWait::Answered(receipt) => receipt?,
+                TurnWait::Lost => {
+                    return Err(Uncertain(
                         this.health
                             .fail("desktop owner reply lost; outcome unknown"),
-                    )
-                })??;
+                    ));
+                }
+                TurnWait::Stalled => {
+                    return Err(Uncertain(
+                        this.health
+                            .fail_stalled("desktop owner turn stalled; outcome unknown"),
+                    ));
+                }
+            };
             receipt
                 .validate_for(&request)
                 .map_err(|e| Uncertain(this.health.fail(e)))?;
@@ -1191,7 +1242,7 @@ mod desktop_mailbox_tests {
         case(true).await;
     }
 
-    #[tokio::test]
+    #[tokio::test(start_paused = true)]
     async fn delayed_start_observation_does_not_restart_ordinary_or_desktop_deadline() {
         let root = tempfile::tempdir().unwrap();
         let owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
@@ -1204,16 +1255,17 @@ mod desktop_mailbox_tests {
         let mut desktop_pending = desktop_mailbox.recv().await.unwrap();
         ordinary_pending.start_execution();
         desktop_pending.start_execution();
-        // Block this current-thread runtime: neither caller can observe Started.
-        // This models an owner turn whose synchronous work exhausted its budget.
-        std::thread::sleep(std::time::Duration::from_millis(5100));
+        // Run out the whole stall budget before either caller can observe
+        // Started: an owner turn that made no progress. A late observer gets
+        // no fresh budget of its own.
+        tokio::time::advance(turn_budget() + std::time::Duration::from_secs(1)).await;
         assert!(
             tokio::time::timeout(std::time::Duration::from_millis(250), &mut ordinary_waiting)
                 .await
                 .unwrap()
                 .unwrap()
                 .unwrap_err()
-                .contains("timed out")
+                .contains("stalled")
         );
         assert!(matches!(
             tokio::time::timeout(std::time::Duration::from_millis(250), &mut desktop_waiting)
@@ -1225,6 +1277,52 @@ mod desktop_mailbox_tests {
         assert!(ordinary.health().is_err());
         assert!(desktop.health().is_err());
         drop((ordinary_pending, desktop_pending));
+    }
+
+    /// A turn that commits and then takes longer than any fixed caller
+    /// timeout to publish still answers definitely, without latching.
+    #[tokio::test(start_paused = true)]
+    async fn slow_but_completing_ordinary_and_desktop_turns_are_definite() {
+        let root = tempfile::tempdir().unwrap();
+        let mut owner = SessionOwner::initialize(&root.path().join("owner")).unwrap();
+        for desktop in [false, true] {
+            let (service, mut mailbox) = OwnerCommitMailbox::bounded(2);
+            let caller = service.clone();
+            let request = if desktop {
+                command(&owner, "Slow but completing")
+            } else {
+                effect(&owner)
+            };
+            let waiting = tokio::spawn(async move {
+                if desktop {
+                    caller
+                        .desktop_command(request)
+                        .await
+                        .map(drop)
+                        .map_err(|e| format!("{e:?}"))
+                } else {
+                    caller.commit(request).await.map(drop)
+                }
+            });
+            let pending = mailbox.recv().await.unwrap();
+            let complete = pending.apply_deferred(&mut owner);
+            tokio::time::sleep(
+                turn_budget()
+                    .checked_sub(std::time::Duration::from_secs(1))
+                    .unwrap(),
+            )
+            .await;
+            assert!(
+                !waiting.is_finished(),
+                "a turn within its budget is not uncertain"
+            );
+            complete().unwrap();
+            waiting
+                .await
+                .unwrap()
+                .expect("the slow turn answers definitely");
+            assert!(service.health().is_ok());
+        }
     }
 
     #[tokio::test]

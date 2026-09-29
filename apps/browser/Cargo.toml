@@ -30,7 +30,7 @@ fnv.workspace = true
 private-fs = { path = "../../crates/system/private-fs" }
 # Session-store ownership and the private cache root's cleanup barrier.
 advisory-lock = { path = "../../crates/system/advisory-lock" }
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 # ui — UI toolkit. The browser is chrome around the toolkit's WebView
 # widget: the engine lives behind `ui::webview::WebViewEngine`, and the
 # `webview-adblock` feature provides filter-list compilation. The default
@@ -42,7 +42,7 @@ runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Filter lists (EasyList/EasyPrivacy) are fetched on a background thread
 # with a blocking client and cached under the user cache dir.
 reqwest = { workspace = true, features = ["blocking"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 host-info = { path = "../../crates/system/host-info" }
 sha2.workspace = true

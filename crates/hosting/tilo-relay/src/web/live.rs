@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use tilo_moq::live::{Admission, AuthorizationStatus, LiveAuthority, LiveSession};
 use tilo_relay_protocol::live::LiveFrame;
-use tilo_relay_protocol::web::{LiveGrant, live_room};
+use tilo_relay_protocol::web::{LiveGrant, agent_publisher, live_room};
 
 use crate::web::sessions::Sessions;
 
@@ -54,6 +54,8 @@ impl LiveGrants {
 
     /// Issue a grant for `workspace_id` to the session `token`, if its
     /// device is subscribed-capable there now.
+    /// With `agent`, the grant publishes as that agent of the device
+    /// ([`agent_publisher`]).
     pub(crate) async fn issue(
         &self,
         sessions: &Sessions,
@@ -61,17 +63,23 @@ impl LiveGrants {
         device: [u8; 32],
         user: [u8; 32],
         workspace_id: u64,
+        agent: Option<&str>,
     ) -> Option<LiveGrant> {
         if !admitted(sessions, device, user, workspace_id).await {
             return None;
         }
         let grant_token: [u8; 32] = rand::random();
+        let room = live_room(workspace_id);
+        let publisher = agent.map_or_else(
+            || hex::encode(device),
+            |agent| hex::encode(agent_publisher(&room, device, agent)),
+        );
         let grant = Arc::new(Grant {
             session: token,
             device,
             workspace_id,
-            room: live_room(workspace_id),
-            publisher: hex::encode(device),
+            room,
+            publisher,
             expires: Instant::now()
                 .checked_add(GRANT_TTL)
                 .unwrap_or_else(Instant::now),
@@ -109,6 +117,18 @@ impl LiveGrants {
             .values()
             .find(|grant| grant.room == room)
             .map(|grant| grant.workspace_id)
+    }
+
+    /// The device that publishes as itself under `publisher` in `room`;
+    /// `None` for an agent's publisher.
+    pub(crate) fn publisher_device(&self, room: &str, publisher: &str) -> Option<[u8; 32]> {
+        self.grants
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+            .find(|grant| grant.room == room && grant.publisher == publisher)
+            .filter(|grant| grant.publisher == hex::encode(grant.device))
+            .map(|grant| grant.device)
     }
 
     /// Observe every grant once.

@@ -516,6 +516,22 @@ pub fn install(
     doc: &mut AutoCommit,
 ) -> Result<RecordCheckout, TransferError> {
     let checkout = identity(doc).ok_or(RecordOpenError::IdentityMismatch)?;
+    install_as(store, package, room, checkout, doc)
+}
+
+/// [`install`] a document that arrived for `checkout`, including the room's
+/// package-primary record, whose identity the document does not carry.
+///
+/// # Errors
+/// A document that is not `checkout` in `room`, an occupied id, or storage
+/// failure.
+pub fn install_as(
+    store: &Rc<dyn DurableStore>,
+    package: &str,
+    room: &str,
+    checkout: RecordCheckout,
+    doc: &mut AutoCommit,
+) -> Result<RecordCheckout, TransferError> {
     validate_identity(doc, &checkout, room)?;
     let key = key(package, room, &checkout.id)?;
     let _writer = writer(store, &key)?;

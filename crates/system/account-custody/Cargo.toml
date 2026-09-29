@@ -49,7 +49,7 @@ serde.workspace = true
 tracing.workspace = true
 # The committed public client registrations (`oauth-clients.toml`).
 toml.workspace = true
-tilo-net = { path = "../tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", optional = true, features = ["blocking"] }
 reqwest = { workspace = true, optional = true, features = ["blocking"] }
 serde_json = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
@@ -68,7 +68,7 @@ cloud-source-onedrive = { path = "../cloud-source-onedrive", features = ["fake-s
 cloud-source-dropbox = { path = "../cloud-source-dropbox", features = ["fake-server"] }
 cloud-source-icloud = { path = "../cloud-source-icloud", features = ["fake-server"] }
 tilo-test-env = { path = "../../dev/test-env" }
-tilo-clock = { path = "../tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-oauth = { path = "../tilo-oauth", features = ["fake"] }
 test-http = { path = "../../dev/test-http" }
 tempfile.workspace = true

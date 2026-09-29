@@ -58,17 +58,28 @@ fail_phase() {
   exit 1
 }
 
-# Wait until CHECK succeeds within DEADLINE_SEC. When REQUIRE_SENDER is 1, a
-# sender exit before progress fails the named phase immediately.
+# Wall clock in microseconds. $SECONDS only ticks at whole
+# seconds, so a deadline measured with it could end almost at once.
+now_us() {
+  local now="${EPOCHREALTIME/[.,]/}"
+  echo "$((10#$now))"
+}
+
+# Wait until CHECK succeeds within DEADLINE_SEC. CHECK always runs at least
+# once. When REQUIRE_SENDER is 1, a sender exit before progress fails the
+# named phase immediately.
 wait_phase() {
   local phase="$1"
   local deadline_sec="$2"
   local check="$3"
   local require_sender="${4:-1}"
-  local started=$SECONDS
-  while (( SECONDS - started < deadline_sec )); do
+  local deadline=$(( $(now_us) + deadline_sec * 1000000 ))
+  while true; do
     if "$check"; then
       return 0
+    fi
+    if (( $(now_us) >= deadline )); then
+      break
     fi
     if [[ "$require_sender" == 1 && -n "${sender_pid}" ]] \
       && ! kill -0 "$sender_pid" 2>/dev/null; then
@@ -118,15 +129,12 @@ fi
   >"$receiver_log" 2>&1 &
 receiver_pid=$!
 
-started=$SECONDS
-while (( SECONDS - started < 5 )); do
-  if receiver_listening; then
-    break
-  fi
+listen_deadline=$(( $(now_us) + 5 * 1000000 ))
+until receiver_listening; do
+  (( $(now_us) < listen_deadline ))
   kill -0 "$receiver_pid"
   sleep 0.05
 done
-receiver_listening
 
 DOUBLETAKE_CODE=4821 \
   "$sender_bin" -target 127.0.0.1 -port 17000 \
@@ -141,9 +149,9 @@ kill -TERM "$sender_pid"
 # Sender may exit as soon as it has sent teardown; do not require it to stay up.
 wait_phase teardown "$teardown_deadline_sec" teardown_progress 0
 
-started=$SECONDS
+cleanup_deadline=$(( $(now_us) + force_cleanup_deadline_sec * 1000000 ))
 while kill -0 "$sender_pid" 2>/dev/null; do
-  if (( SECONDS - started >= force_cleanup_deadline_sec )); then
+  if (( $(now_us) >= cleanup_deadline )); then
     echo "airplay force-cleanup deadline exceeded (${force_cleanup_deadline_sec}s)" >&2
     kill -KILL "$sender_pid" 2>/dev/null || true
     wait "$sender_pid" 2>/dev/null || true

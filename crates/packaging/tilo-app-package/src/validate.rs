@@ -315,13 +315,25 @@ fn validate_target(m: &Manifest) -> Result<(), ManifestError> {
     Ok(())
 }
 
-/// A Linux, Windows or macOS app: `module` is the executable the entrypoint names,
-/// and `runtime` is the toolkit release linked into it, as declared.
+/// A Linux, Windows, macOS or Android app: `module` is the executable (for
+/// Android, the `.apk` or `.aab`) the entrypoint names, and `runtime` is the
+/// toolkit release linked into it, as declared.
 fn validate_desktop_target(
     m: &Manifest,
     target: &crate::manifest::Target,
 ) -> Result<(), ManifestError> {
-    if !crate::package::is_safe_path(&target.module) || target.module.len() > 255 {
+    let android_package = || {
+        std::path::Path::new(&target.module)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                registry_types::ANDROID_PACKAGE_EXTENSIONS.contains(&extension)
+            })
+    };
+    if !crate::package::is_safe_path(&target.module)
+        || target.module.len() > 255
+        || (target.platform == registry_types::ANDROID_PLATFORM && !android_package())
+    {
         return Err(ManifestError::BadTargetModule(target.module.clone()));
     }
     if m.package.isa.x86_64.is_some() || m.package.isa.aarch64.is_some() {
