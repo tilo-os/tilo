@@ -26,6 +26,30 @@ bad="$(printf '%s\n' "$pkgs" \
          substr($1, 1, 1) == "S" || substr($1, 3, 1) == "5" { print }' || true)"
 if [ -n "$bad" ]; then
   printf 'files differ from the packages that installed them:\n%s\n' "$bad" >&2
+  # Lost file data reads back as zeros: name the all-zero 4 KiB blocks.
+  printf '%s\n' "$bad" | awk '{ print $NF }' | python3 -c '
+import sys
+for path in (line.strip() for line in sys.stdin):
+    try:
+        data = open(path, "rb").read()
+    except OSError as error:
+        print(f"  {path}: {error}", file=sys.stderr)
+        continue
+    zero = bytes(4096)
+    blocks = [i for i in range(0, (len(data) + 4095) // 4096)
+              if data[i * 4096:(i + 1) * 4096] == zero[:len(data[i * 4096:(i + 1) * 4096])]]
+    ranges, start = [], None
+    for i, b in enumerate(blocks):
+        if start is None:
+            start = b
+        if i + 1 == len(blocks) or blocks[i + 1] != b + 1:
+            ranges.append(f"{start}-{b}" if b > start else f"{start}")
+            start = None
+    total = (len(data) + 4095) // 4096
+    listed = " ".join(ranges) or "none"
+    print(f"  {path}: {len(data)} bytes, {len(blocks)} of {total} 4 KiB blocks all zero: {listed}",
+          file=sys.stderr)
+' || true
   exit 1
 fi
 echo "verified the files of $count packages this build installed"
