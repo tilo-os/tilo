@@ -103,6 +103,9 @@ on:
       - "crates/packaging/launcher/**"
       - "crates/runtime/runtime-fs/**"
       - "crates/runtime/runtime-portal/**"
+      - "crates/runtime/tilo-runtime/src/standalone/files.rs"
+      - "crates/runtime/tilo-runtime/src/standalone/files/**"
+      - "crates/runtime/tilo-runtime/src/standalone/files_tests.rs"
       - "crates/sdk/font-catalog/**"
       - "crates/platform/tilo-rt/**"
       - "crates/sdk/tilo-resource-macros/**"
@@ -230,6 +233,11 @@ jobs:
         run: >-
           bash scripts/ci-run.sh "real FUSE integration" --
           cargo test --locked -p fs --test integration_test -- --nocapture --test-threads=1
+
+      - name: Mount the standalone runtime's workspace and fall back to its folder
+        run: >-
+          bash scripts/ci-run.sh "standalone runtime workspace mount" --
+          cargo test --locked -p tilo-runtime --lib standalone::files -- --nocapture --test-threads=1
 
       - name: Mount a cloud account through the kernel and write back
         run: >-
