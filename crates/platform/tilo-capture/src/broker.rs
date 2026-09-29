@@ -170,6 +170,22 @@ fn invalid(what: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, what)
 }
 
+/// `msghdr::msg_controllen` for a control buffer of `space` bytes: a
+/// `usize` on Linux, a `socklen_t` elsewhere.
+#[cfg(target_os = "linux")]
+#[allow(
+    clippy::unnecessary_wraps,
+    reason = "only the socklen_t targets can fail; callers share one signature"
+)]
+fn control_len(space: usize) -> io::Result<usize> {
+    Ok(space)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn control_len(space: usize) -> io::Result<libc::socklen_t> {
+    libc::socklen_t::try_from(space).map_err(|_| invalid("control buffer"))
+}
+
 /// Send `bytes` with `fd` attached.
 fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result<()> {
     let mut iov = libc::iovec {
@@ -186,7 +202,7 @@ fn send_with_fd(socket: &UnixDatagram, bytes: &[u8], fd: &OwnedFd) -> io::Result
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = space.try_into().map_err(|_| invalid("control buffer"))?;
+        msg.msg_controllen = control_len(space)?;
         let cmsg = libc::CMSG_FIRSTHDR(&raw const msg);
         (*cmsg).cmsg_level = libc::SOL_SOCKET;
         (*cmsg).cmsg_type = libc::SCM_RIGHTS;
@@ -217,7 +233,7 @@ fn recv_with_fd(socket: &UnixDatagram) -> io::Result<Option<(Vec<u8>, Option<Own
         msg.msg_iov = &raw mut iov;
         msg.msg_iovlen = 1;
         msg.msg_control = control.as_mut_ptr().cast();
-        msg.msg_controllen = space.try_into().map_err(|_| invalid("control buffer"))?;
+        msg.msg_controllen = control_len(space)?;
         let read = libc::recvmsg(socket.as_raw_fd(), &raw mut msg, 0);
         if read < 0 {
             let error = io::Error::last_os_error();
