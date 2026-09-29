@@ -491,3 +491,58 @@ fn a_stale_review_and_a_viewer_cannot_restore() {
         "the refusal names the missing permission"
     );
 }
+
+/// A computer's session configures the collaboration service for every app
+/// it launches, and a hosted editor has no file record of its own: `open`
+/// with a path imports the file into the hosted document, and the import is
+/// kept like any other edit.
+#[test]
+fn open_with_a_path_imports_the_file_under_a_configured_collaboration_service() {
+    const CHILD: &str = "TILO_WRITER_HOSTED_OPEN_CHILD";
+    if std::env::var_os(CHILD).is_none() {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "framework_host::open_with_a_path_imports_the_file_under_a_configured_collaboration_service",
+                "--nocapture",
+            ])
+            .env(CHILD, "1")
+            .env("TILO_SVC_COLLAB_FD", "-1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "isolated hosted open failed:\n{}\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    let directory = std::env::temp_dir().join(format!("tilo-hosted-open-{}", std::process::id()));
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("report.md");
+    std::fs::write(&path, "# Report\n\nOur comittee met.\n").unwrap();
+
+    let mut app = open();
+    app.harness().type_text("draft");
+    let mut arguments = serde_json::Map::new();
+    arguments.insert("path".into(), path.to_string_lossy().into_owned().into());
+    app.harness()
+        .invoke_action(
+            &tilo_actions::ActionAddress::new("word-processor.document", "open"),
+            &arguments,
+            true,
+            None,
+        )
+        .unwrap();
+    for _ in 0..20 {
+        if paragraphs(&app) == ["Report", "Our comittee met."] {
+            break;
+        }
+        app.harness().relayout();
+    }
+    assert_eq!(paragraphs(&app), ["Report", "Our comittee met."]);
+    let app = app.reopen().unwrap();
+    assert_eq!(paragraphs(&app), ["Report", "Our comittee met."]);
+    std::fs::remove_dir_all(directory).unwrap();
+}
