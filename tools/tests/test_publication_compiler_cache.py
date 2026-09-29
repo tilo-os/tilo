@@ -176,8 +176,7 @@ class AppCollectionPublicationTests(unittest.TestCase):
         with self.subTest(phase='only unpublished runs prepare the shared cache'):
             prepare = self.steps["Prepare compiler cache"]
             self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
-            self.assertIn("bash tools/ci/sccache.sh prepare", prepare)
-            self.assertIn("source tools/ci/compiler_cache_env.sh", prepare)
+            self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
         with self.subTest(phase='a publication compiles without cache credentials or wrapper'):
             build = self.steps["Build and verify selected tapps once for this architecture"]
             script = textwrap.dedent(build.split("        run: |\n", 1)[1])
@@ -203,8 +202,9 @@ class DesktopPayloadPublicationTests(unittest.TestCase):
         job = (ROOT / "dist/ci/run-package-job.sh").read_text()
         disabled = job.split("if [[ ${TILO_ENABLE_REMOTE_CACHE:-0} == 1 ]]; then", 1)[1]
         disabled = disabled.split("    else\n", 1)[1].split("    fi\n", 1)[0]
+        self.assertNotIn("SCCACHE_AWS", DESKTOP_WORKFLOW.read_text())
         self.assertIn('unset "$name"', disabled)
-        self.assertIn("grep -E '^(AWS_|SCCACHE_)'", disabled)
+        self.assertIn("grep -E '^(AWS_|SCCACHE_|ACTIONS_CACHE_URL$|ACTIONS_RUNTIME_TOKEN$|RUSTC_WRAPPER$)'", disabled)
 
 
 class ContainerfileTests(unittest.TestCase):
