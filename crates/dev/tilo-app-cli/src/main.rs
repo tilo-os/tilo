@@ -36,6 +36,8 @@ struct Cli {
 enum Command {
     /// Create a buildable app with packaging and headless-test defaults.
     New(NewArgs),
+    /// List the example apps `tilo-app new --from-example` starts from.
+    Examples,
     /// Add a screen, reusable component, headless scenario, or translation catalog.
     Add(AddArgs),
     /// Keep translation catalogs structurally aligned with the source locale.
@@ -674,13 +676,18 @@ struct NewArgs {
     title: Option<String>,
 
     /// Starter shape to generate; `--list-templates` describes each.
-    #[arg(long, value_enum)]
+    #[arg(long, value_enum, conflicts_with = "from_example")]
     template: Option<TemplateArg>,
+
+    /// Start from a complete example app instead of a template, renamed to
+    /// this app; `tilo-app examples` lists them.
+    #[arg(long, value_name = "EXAMPLE")]
+    from_example: Option<String>,
 
     /// List the templates `--template` accepts, then exit.
     #[arg(long, conflicts_with_all = [
-        "name", "id", "title", "template", "directory", "ui_path", "sdk_git", "sdk_rev",
-        "dry_run", "dev",
+        "name", "id", "title", "template", "from_example", "directory", "ui_path", "sdk_git",
+        "sdk_rev", "dry_run", "dev",
     ])]
     list_templates: bool,
 
@@ -810,6 +817,7 @@ fn main() -> ExitCode {
     let name = cli.command.name();
     let result = match cli.command {
         Command::New(args) => run_new(args, interactive),
+        Command::Examples => Ok(list_examples()),
         Command::Add(args) => run_add(args, interactive),
         Command::Locale(args) => run_locale(args),
         Command::Scenario(args) => run_scenario(args),
@@ -911,6 +919,7 @@ impl Command {
     fn name(&self) -> &'static str {
         match self {
             Self::New(_) => "new",
+            Self::Examples => "examples",
             Self::Add(_) => "add",
             Self::Locale(_) => "locale",
             Self::Scenario(_) => "scenario",
@@ -2141,6 +2150,11 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
         app_id: args.id,
         title: args.title,
         template: args.template.map(TemplateArg::template).transpose()?,
+        example: args
+            .from_example
+            .as_deref()
+            .map(tilo_app_cli::examples::find)
+            .transpose()?,
         directory: args.directory,
         ui_path: args.ui_path,
         sdk_git: args.sdk_git,
@@ -2189,9 +2203,59 @@ fn list_templates() -> Value {
     json!({ "templates": templates })
 }
 
+fn list_examples() -> Value {
+    for example in tilo_app_cli::examples::ALL {
+        let web = if example.web { "" } else { " (native only)" };
+        println!("{:<17} {}{web}", example.name, example.concept);
+        println!("{:<17} {}", "", example.summary);
+    }
+    println!(
+        "\nStart an app from one with `tilo-app new NAME --from-example EXAMPLE`; read one in examples/apps/."
+    );
+    json!({ "examples": tilo_app_cli::examples::examples_json() })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// new starts from an example instead of a template, never both, and examples are listed.
+    #[test]
+    fn new_starts_from_an_example_instead_of_a_template() {
+        let cli = Cli::try_parse_from(["tilo-app", "new", "notes", "--from-example", "counter"])
+            .expect("from-example command");
+        let Command::New(args) = cli.command else {
+            panic!("expected new command");
+        };
+        assert_eq!(args.from_example.as_deref(), Some("counter"));
+        for conflicting in [
+            [
+                "tilo-app",
+                "new",
+                "notes",
+                "--from-example",
+                "counter",
+                "--template",
+                "starter",
+            ]
+            .as_slice(),
+            [
+                "tilo-app",
+                "new",
+                "--list-templates",
+                "--from-example",
+                "counter",
+            ]
+            .as_slice(),
+        ] {
+            assert!(Cli::try_parse_from(conflicting).is_err(), "{conflicting:?}");
+        }
+        let listed = list_examples();
+        assert_eq!(
+            listed["examples"].as_array().map(Vec::len),
+            Some(tilo_app_cli::examples::ALL.len())
+        );
+    }
 
     /// new offers each template by name, points a retired template at the example that replaced
     /// it, lists templates only on their own, and can enter dev but cannot dev a dry run.

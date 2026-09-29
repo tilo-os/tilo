@@ -6,6 +6,7 @@ fn request(dir: PathBuf) -> NewAppRequest {
         app_id: None,
         title: None,
         template: Some(Template::Starter),
+        example: None,
         directory: Some(dir),
         ui_path: None,
         sdk_git: None,
@@ -3260,7 +3261,11 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
                 .expect("a source catalog")
                 .1;
             let messages = parse_fluent_catalog(catalog).expect("the catalog parses");
-            let source = app_lib(&spec);
+            let source = files
+                .iter()
+                .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
+                .map(|(_, source)| source.as_str())
+                .collect::<String>();
             for id in messages.entries.keys() {
                 assert!(
                     source.contains(&format!("\"{id}\"")),
@@ -5464,4 +5469,159 @@ fn catalog_only_edits_reload_without_a_build() {
             Path::new("/apps/demo/src/gone.rs"),
         ]
     );
+}
+
+fn checkout_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+fn example_title(example: &examples::Example) -> String {
+    let lib = example
+        .files
+        .iter()
+        .find(|(path, _)| *path == "src/lib.rs")
+        .map(|(_, source)| *source)
+        .expect("every example has a src/lib.rs");
+    let line = lib
+        .lines()
+        .find_map(|line| line.strip_prefix("pub const APP_TITLE: &str = \""))
+        .expect("every example names its title");
+    line.trim_end_matches("\";").to_owned()
+}
+
+fn files_under(root: &Path) -> BTreeSet<PathBuf> {
+    let mut files = BTreeSet::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read example directory") {
+            let path = entry.expect("example entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path.strip_prefix(root).expect("under root").to_path_buf());
+            }
+        }
+    }
+    files
+}
+
+/// Each example in the checkout is exactly what `tilo-app new --from-example`
+/// renders for it under its own identity: the generated files are the ones
+/// `new` writes, and the example's own files are the ones the CLI embeds.
+#[test]
+fn every_example_is_what_new_renders_for_it() {
+    let root = checkout_root();
+    let names = files_under(&root.join("examples/apps"))
+        .into_iter()
+        .filter_map(|path| {
+            (path.file_name()? == "tilo-app.toml")
+                .then(|| path.parent()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let listed = examples::ALL
+        .iter()
+        .map(|example| example.name.to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, listed, "examples/apps and the catalogue agree");
+
+    for example in examples::ALL {
+        let spec = AppSpec {
+            package_name: example.package_name(),
+            crate_name: example.crate_name(),
+            title: example_title(example),
+            app_id: format!("so.tilo.example.{}", example.name),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../../crates/sdk/tilo-app"),
+            },
+            template: Template::Starter,
+        };
+        let mut rendered = render(&spec).expect("render");
+        examples::overlay(
+            &mut rendered,
+            example,
+            &spec.crate_name,
+            &spec.app_id,
+            &spec.title,
+        )
+        .expect("overlay");
+        let dir = root.join(example.path());
+        let on_disk = files_under(&dir);
+        let generated = rendered
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(on_disk, generated, "{}: file set", example.name);
+        for (path, source) in &rendered {
+            let disk = std::fs::read_to_string(dir.join(path)).expect("example file");
+            assert_eq!(&disk, source, "{}: {}", example.name, path.display());
+        }
+    }
+}
+
+/// Every example is listed with its lesson in examples/README.md and
+/// docs/examples.md, and every example passes the portability lint.
+#[test]
+fn every_example_is_indexed_and_portable() {
+    let root = checkout_root();
+    let index = std::fs::read_to_string(root.join("examples/README.md")).expect("index");
+    let design = std::fs::read_to_string(root.join("docs/examples.md")).expect("design");
+    for example in examples::ALL {
+        let link = format!("[`{}`](apps/{}/)", example.name, example.name);
+        assert!(index.contains(&link), "examples/README.md lists {link}");
+        assert!(
+            design.contains(&format!("`{}`", example.name)),
+            "docs/examples.md describes {}",
+            example.name
+        );
+        let report = portability::lint_app(&root.join(example.path())).expect("lint");
+        assert!(report.passed(), "{}", report.render());
+    }
+    let json = examples::examples_json();
+    assert_eq!(
+        json.as_array().map(Vec::len),
+        Some(examples::ALL.len()),
+        "{json}"
+    );
+    assert!(examples::find("list").is_err());
+}
+
+/// An app started from an example outside the checkout is renamed throughout
+/// and passes the same structural checks as an app from a template.
+#[test]
+fn an_app_from_an_example_is_renamed_and_ready() {
+    for example in examples::ALL {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("my-app");
+        let mut req = request(destination.clone());
+        req.name = Some("my-app".into());
+        req.title = Some("My App".into());
+        req.template = None;
+        req.example = Some(example);
+        let outcome = create_app_from(temp.path(), req).expect("create from example");
+        assert_eq!(outcome.app_id, "local.dev.my.app");
+
+        let lib = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
+        assert!(
+            lib.contains("pub const APP_ID: &str = \"local.dev.my.app\";"),
+            "{}",
+            example.name
+        );
+        assert!(lib.contains("pub const APP_TITLE: &str = \"My App\";"));
+        let tests = std::fs::read_to_string(destination.join("tests/app.rs")).unwrap();
+        assert!(tests.contains("my_app::"), "{}: {tests}", example.name);
+        let readme = std::fs::read_to_string(destination.join("README.md")).unwrap();
+        assert!(readme.starts_with("# My App\n"), "{readme}");
+        for path in files_under(&destination) {
+            let source = std::fs::read_to_string(destination.join(&path)).unwrap_or_default();
+            assert!(
+                !source.contains(&example.crate_name()),
+                "{}: {} keeps the example's crate name",
+                example.name,
+                path.display()
+            );
+        }
+        let report = doctor_app(&destination).unwrap();
+        assert!(report.is_ready(), "{}: {}", example.name, report.summary());
+    }
 }
