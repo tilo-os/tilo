@@ -253,7 +253,10 @@ fn topology_edits_are_mirrored_into_the_document() {
         let back = layout(&read_back(&doc));
         assert_eq!(back, vec![(1, vec![(11, vec![110, 300]), (10, vec![100])])]);
     }
-    // Phase `a_group_moved_to_another_strip_follows_the_tree`.
+}
+
+#[test]
+fn a_group_moved_to_another_strip_follows_the_tree() {
     {
         let (mut tree, mut doc) = seeded();
         apply_command(
