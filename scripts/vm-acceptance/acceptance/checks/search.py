@@ -171,8 +171,12 @@ def history(ctx, res):
     new_targets = sorted(t_after - t_before)
     changed = [k for k in after["chrome"] if after["chrome"][k] != before["chrome"].get(k) and k != "revision"]
     new_groups = len(core.all_groups(after)) - len(core.all_groups(before))
+    # An activity window left open earlier (S08) is toggled or focused rather than duplicated.
+    focus_moved = core.active_group_id(after) != core.active_group_id(before)
     res.metrics.update(new_targets=new_targets[:15], chrome_changed=changed, new_groups=new_groups,
+                       focus_moved=focus_moved,
                        overlays={k: v for k, v in core.overlays(after).items() if v})
     ctx.close_overlays()
-    expect(new_groups > 0 or any(core.overlays(after).values()) or new_targets,
-           "Super+H changed nothing observable (no overlay, window or new target)")
+    expect(new_groups != 0 or focus_moved or any(core.overlays(after).values()) or new_targets,
+           "Super+H changed nothing observable (no overlay, no window opened, closed or focused, "
+           "no new target)")
