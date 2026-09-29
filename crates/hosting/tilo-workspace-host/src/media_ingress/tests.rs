@@ -122,9 +122,7 @@ async fn command(
 #[tokio::test]
 async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody() {
     let mut f = Fixture::new();
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let (listener, udp) = super::bind_https_pair().await;
     let address = listener.local_addr().unwrap();
     let origin = format!("https://127.0.0.1:{}", address.port());
     f.current
@@ -164,9 +162,10 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
         local_enrollment: None,
         frame_ancestors: Vec::new(),
     };
-    let mut ingress = InstalledIngress::start(&mut f.owner, f.current.clone(), listener, config)
-        .await
-        .unwrap();
+    let mut ingress =
+        InstalledIngress::start(&mut f.owner, f.current.clone(), (listener, udp), config)
+            .await
+            .unwrap();
     // No relay here: the fixture stands for a host whose relay replay completed.
     f.current.mark_governance_reconciled();
     {
@@ -587,9 +586,7 @@ async fn installed_tls_native_owner_and_same_origin_draft21_share_real_custody()
 #[tokio::test]
 async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
     let mut f = Fixture::new();
-    let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-        .await
-        .unwrap();
+    let (listener, udp) = super::bind_https_pair().await;
     let origin = format!(
         "https://127.0.0.1:{}",
         listener.local_addr().unwrap().port()
@@ -615,7 +612,7 @@ async fn installed_discovery_cannot_rollback_the_actual_owner_clock() {
     let mut ingress = InstalledIngress::start(
         &mut f.owner,
         f.current.clone(),
-        listener,
+        (listener, udp),
         IngressConfig {
             origin,
             assets: AssetRoot::open(assets.path()).unwrap(),
