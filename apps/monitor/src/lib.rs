@@ -14,6 +14,8 @@
 //! - [`sampler`]    — live `sysinfo` readings folded into the model.
 //! - [`paint`]      — panel and text-metric helpers framing the toolkit's charts.
 //! - [`tree`]       — pure parent→child process tree + subtree-sum roll-ups.
+//! - [`doc`]        — collaborative view preferences (tab, sort, filter,
+//!   selection) stored in Automerge.
 //! - [`prefs`]      — per-window device observation and safety preferences,
 //!   deliberately outside Automerge and collaborative history.
 //! - [`responsive`] — width-driven Processes push navigation + dashboard reflow.
@@ -48,6 +50,7 @@
 )]
 
 pub mod app;
+pub mod doc;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
