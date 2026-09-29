@@ -662,7 +662,7 @@ impl ImagerApp {
         }
     }
 
-    fn target(&self) -> Option<&TargetDrive> {
+    pub(crate) fn target(&self) -> Option<&TargetDrive> {
         self.selected.and_then(|i| self.targets.get(i))
     }
 
@@ -804,6 +804,25 @@ impl ImagerApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Imager>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    /// Whether startup has finished reconciling an in-flight write helper.
+    pub(crate) fn startup_write_reconciled(&self) -> bool {
+        self.startup_write_state_reconciled
+    }
+
+    /// Whether a write/verify worker channel is open on this surface.
+    pub(crate) fn job_active(&self) -> bool {
+        self.job_rx.is_some()
     }
 
     /// Stage the peer-local confirmation for a deterministic offscreen frame.
@@ -5312,43 +5331,15 @@ impl Widget for ImagerApp {
 }
 
 impl ui::resources::PublishesResources for ImagerApp {
-    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the profile / write-plan door — keep only live extras (none today:
+    /// job status is a View on the resource, not a second published tree).
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = self.publish_resources(doc);
-        let available = self.source.is_some() && self.target().is_some();
-        let mut job = crate::actions::operation_resource(
-            self.target().map(TargetDrive::dev_path).as_deref(),
-            available,
-            !self.startup_write_state_reconciled || self.job_rx.is_some(),
-            crate::write::write_available(),
-        );
-        job.actions.push(
-            crate::actions::operation_spec(
-                "export-config",
-                "Export headless configuration",
-                tilo_actions::OperationKind::View,
-                crate::actions::ImagerOperation::ExportConfig,
-            )
-            .with_contract(tilo_actions::ActionContract {
-                availability: if available {
-                    tilo_actions::Availability::Available
-                } else {
-                    tilo_actions::Availability::Unavailable {
-                        code: "incomplete_plan".into(),
-                        reason: "Select an image source and target drive first".into(),
-                    }
-                },
-                result: tilo_actions::ResultSpec::Json {
-                    schema: serde_json::json!({ "type": "string" }),
-                },
-                discovery: tilo_actions::DiscoveryScope::Launchable,
-                ..tilo_actions::ActionContract::view()
-            }),
-        );
-        resources.push(job);
-        resources
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
+        self.publish_resources(doc)
     }
 }
 
@@ -5758,11 +5749,11 @@ mod tests {
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
 
-            let job = ui::resources::resources(&app, &doc)
+            let root = ui::resources::resources(&app, &doc)
                 .into_iter()
-                .find(|resource| resource.kind == "imager.write-plan")
-                .expect("write operation resource");
-            let write = job
+                .find(|resource| resource.kind == "imager.sources")
+                .expect("imager sources resource owns the write Effect");
+            let write = root
                 .actions
                 .iter()
                 .find(|action| action.id == "write")
