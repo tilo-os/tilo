@@ -82,16 +82,16 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "aarch64", "runner": "imager-linux-aarch64", "role": "reproduce"},
                 ],
             )
-        with self.subTest(phase='protected manual main publish uses native large disk fleet'):
+        with self.subTest(phase='protected manual main publish uses the release class'):
             publish, lanes = select_matrix("refs/heads/main", "workflow_dispatch", "true")
             self.assertTrue(publish)
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -108,10 +108,10 @@ class OsReleaseMatrixTests(unittest.TestCase):
             self.assertEqual(
                 lanes,
                 [
-                    {"arch": "x86_64", "runner": "runner-large"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64"},
-                    {"arch": "x86_64", "runner": "runner-large", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
+                    {"arch": "x86_64", "runner": "runner-release"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64"},
+                    {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
                 ],
             )
 
