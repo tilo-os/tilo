@@ -17,6 +17,10 @@ Before=initrd-root-device.target sysroot.mount
 
 [Service]
 Type=oneshot
+# sysroot.mount Requires= this unit. Without RemainAfterExit= a finished run
+# goes inactive, and the next job on sysroot.mount (at initrd-switch-root)
+# starts discovery again after the root is already mounted, and it fails.
+RemainAfterExit=yes
 ExecStart=/usr/libexec/tilo-root-discover
 EOF
 cat >"$out/sysroot.mount" <<'EOF'
