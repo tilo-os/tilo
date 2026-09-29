@@ -378,7 +378,7 @@ the same fallback rule and distinguish `icon`, `screenshot`, and `banner`.
 
 Each signed version binds the package root, exact final-file BLAKE3 and size,
 platform family, architecture, minimum ISA and runtime ABI. The schema can add
-future platform families without changing the signed entry shape. Five
+future platform families without changing the signed entry shape. Six
 families are accepted (`registry_types::target`):
 
 | `platform` | `architecture` | `isa` | `runtime` |
@@ -388,21 +388,24 @@ families are accepted (`registry_types::target`):
 | `linux` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `windows` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 | `macos` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
+| `android` | `x86_64`, `aarch64` | the feature level it was compiled for, non-empty | **required**, the linked `tilo-runtime/<version>` |
 
 A native release must publish a distinct `.tapp` for both architectures. Pass
-each tapp's target with `tilo-app-package entry --arch`. Web, Linux, Windows and
-macOS versions sit beside Tilo OS versions in the same entry: version identity
+each tapp's target with `tilo-app-package entry --arch`. Web, Linux, Windows,
+macOS and Android versions sit beside Tilo OS versions in the same entry: version identity
 is `(version, platform, architecture)`, and a Tilo OS client installs only
 `tilo-os` versions.
 
-**Linux, Windows and macOS.** A `linux` build is for Linux desktops other than
-Tilo OS. Those systems ship no Tilo toolkit, so the package is one
-self-contained executable with the toolkit linked in. Its signed `[target]`
+**Linux, Windows, macOS and Android.** A `linux` build is for Linux desktops
+other than Tilo OS. Those systems ship no Tilo toolkit, so the package is one
+self-contained executable with the toolkit linked in; for `android` that is an
+`.apk` (or an `.aab` for store upload, `registry_types::ANDROID_PACKAGE_EXTENSIONS`). Its signed `[target]`
 names the executable as `module` (the GUI entrypoint must name the same path)
 and the linked release as `runtime`, equal to `[package].runtime`
 (`tilo_app_package::desktop::desktop_manifest`). Such a build may be up to
 `MAX_DESKTOP_APP_TAPP_BYTES` (64 MiB), a distribution policy rather than a
-design target; `tilo-app-package entry --platform linux|windows|macos` binds it.
+design target; `tilo-app-package entry --platform linux|windows|macos|android`
+binds it.
 
 **Web `isa`.** `wasm32-mvp` followed by zero or more `+<feature>`, where each
 feature is one of `atomics`, `bulk-memory`, `bulk-memory-opt`,

@@ -119,7 +119,7 @@ pub const MAX_APP_TAPP_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 /// cannot turn a tiny tapp into an arbitrarily large install.
 pub const MAX_APP_UNPACKED_BYTES: u64 = APP_SIZE_LIMIT_BYTES;
 
-/// Wire size limit of a Linux, Windows or macOS build. Those systems ship no Tilo
+/// Wire size limit of a Linux, Windows, macOS or Android build. Those systems ship no Tilo
 /// toolkit, so the executable links it in; the limit is a distribution
 /// policy, not a design target.
 pub const MAX_DESKTOP_APP_TAPP_BYTES: u64 = 64 * 1024 * 1024;
