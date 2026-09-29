@@ -79,6 +79,8 @@ workspace-hack = { version = "0.1" }
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
 launcher-macos = { path = "../../packaging/launcher-macos" }
+# The file chooser a confined app asks this runtime to show.
+tilo-dialogs = { path = "../../platform/tilo-dialogs" }
 # The login Keychain keeps the channel-state key.
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
