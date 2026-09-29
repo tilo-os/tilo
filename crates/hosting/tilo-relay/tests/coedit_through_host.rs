@@ -387,4 +387,6 @@ async fn a_pinged_host_answers_and_resets_the_silence() {
         session.silent_for() < Duration::from_millis(500),
         "the Pong counts as hearing from the host"
     );
+    // The host serves until here.
+    drop(host);
 }
