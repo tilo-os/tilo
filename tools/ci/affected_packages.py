@@ -208,19 +208,9 @@ UNRECORDED_TEST_SECONDS = 20
 TEST_SHARD_SECONDS = 500
 MAX_TEST_SHARDS = 4
 # A tested package heavier than this (structural cost plus weighted recorded
-# test seconds) runs on several test jobs of its own, each executing one
-# `nextest --partition count:K/N` slice of its tests. One archive job builds
-# the package's test binaries once (`cargo nextest archive`) and the partition
-# jobs run their slice from that archive, so the build stays on the critical
-# path once: the package gets the fewest partitions that bring cost + test
-# weight / N under the target, and none when its build alone exceeds it. Test
-# groups and threads-required limits apply per job, so each partition keeps
-# them.
-TEST_PARTITION_WEIGHT = 1_000
-MAX_TEST_PARTITIONS = 3
-# The archive build is the only compile of a partitioned package and every
-# partition waits for it, so on x86 it takes the larger slot.
-ARCHIVE_RUNNERS = {"x86_64": "runner-large", "aarch64": NATIVE_RUNNERS["aarch64"]}
+# test seconds) gets a test job of its own, so it builds and tests beside the
+# balanced shards instead of lengthening one of them.
+DEDICATED_TEST_WEIGHT = 1_000
 # Suites whose tests fsync heavily: fs's durability, checked-restore and
 # release-matrix tests over real FUSE (with fs-native and private-fs), and the
 # host suites that commit a durable Store, owner journal or relay journal on
@@ -537,37 +527,18 @@ def balance(names: set[str], packages: dict[str, dict], shard_count: int,
     return result
 
 
-def test_partitions(names: set[str], packages: dict[str, dict],
-                    test_seconds: dict[str, int] | None) -> dict[str, int]:
-    """Partition count for each package too heavy for one test job."""
-    split = {}
-    for name in names:
-        cost = package_cost(packages[name])
-        tests = TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds)
-        if cost + tests <= TEST_PARTITION_WEIGHT or cost >= TEST_PARTITION_WEIGHT:
-            continue
-        room = TEST_PARTITION_WEIGHT - cost
-        split[name] = min(MAX_TEST_PARTITIONS, (tests + room - 1) // room)
-    return split
-
-
-def partition_shards(split: dict[str, int], packages: dict[str, dict],
-                     test_seconds: dict[str, int] | None) -> list[dict]:
-    """One dedicated test shard per partition, heaviest package first."""
+def dedicated_test_shards(names: set[str], packages: dict[str, dict],
+                          test_seconds: dict[str, int] | None) -> list[dict]:
+    """A test shard of its own for each package too heavy to share one."""
     test_seconds = test_seconds or {}
-    rows = []
-    for name in sorted(split, key=lambda n: (-test_seconds.get(n, 0), n)):
-        count = split[name]
-        for index in range(1, count + 1):
-            rows.append({
-                "shard": 0,
-                "packages": f"-p {name}",
-                "package_count": 1,
-                "estimated_cost": package_cost(packages[name]),
-                "recorded_test_seconds": test_seconds.get(name, 0) // count,
-                "partition": f"count:{index}/{count}",
-            })
-    return rows
+    heavy = [name for name in names
+             if package_cost(packages[name])
+             + TEST_SECOND_WEIGHT * expected_test_seconds(name, test_seconds)
+             > DEDICATED_TEST_WEIGHT]
+    return [{"packages": f"-p {name}", "package_count": 1,
+             "estimated_cost": package_cost(packages[name]),
+             "recorded_test_seconds": test_seconds.get(name, 0)}
+            for name in sorted(heavy, key=lambda n: (-test_seconds.get(n, 0), n))]
 
 
 def useful_shard_count(names: set[str], packages: dict[str, dict], maximum: int) -> int:
@@ -749,26 +720,20 @@ def make_plan(
         for shard in balance(selected, packages, effective_shards, test_seconds):
             check_rows.append({**shard, "arch": arch, "runner": runner, "check_runner": runner})
     # Test shards cover the tested packages and scoped readers, split by
-    # recorded test time. Packages too heavy for one job run partitioned on
-    # dedicated shards, which start first; the rest balance around them.
+    # recorded test time. Packages too heavy to share a job get their own
+    # shards, which start first; the rest balance around them.
     test_units = (tested | scoped_tests.keys()) & selected
-    split = test_partitions(tested & selected, packages, test_seconds)
-    whole_units = test_units - split.keys()
-    test_shards = partition_shards(split, packages, test_seconds) + [
-        {**shard, "partition": ""} for shard in balance(
-            whole_units, packages, useful_test_shard_count(whole_units, test_seconds or {}),
-            test_seconds, TEST_SHARD_APART)]
+    dedicated = dedicated_test_shards(tested & selected, packages, test_seconds)
+    shared_units = test_units - {shard["packages"].split()[1] for shard in dedicated}
+    test_shards = dedicated + balance(
+        shared_units, packages, useful_test_shard_count(shared_units, test_seconds or {}),
+        test_seconds, TEST_SHARD_APART)
     for index, shard in enumerate(test_shards, 1):
         shard["shard"] = index
-    # Partitioned packages run from a prebuilt archive in their own jobs
-    # (partition_matrix, archive_matrix); every other shard builds and tests
-    # its packages in one job (matrix).
-    partitioned = [shard for shard in test_shards if shard["partition"]]
-    whole_shards = [shard for shard in test_shards if not shard["partition"]]
-    if selected and not whole_shards:
+    if selected and not test_shards:
         # Keep the aggregate's test result applicable: one row whose steps skip.
-        whole_shards = [{"shard": len(test_shards) + 1, "packages": "", "package_count": 0,
-                         "estimated_cost": 0, "recorded_test_seconds": 0, "partition": ""}]
+        test_shards = [{"shard": 1, "packages": "", "package_count": 0,
+                        "estimated_cost": 0, "recorded_test_seconds": 0}]
 
     def test_row(shard: dict, arch: str, runner: str) -> dict:
         shard_names = set(shard["packages"].split()[1::2])
@@ -787,16 +752,7 @@ def make_plan(
                 "scoped_tests": json.dumps(scoped, separators=(",", ":")) if scoped else ""}
 
     matrix = [test_row(shard, arch, runner)
-              for arch, runner in runners.items() for shard in whole_shards]
-    partition_matrix = [
-        {**test_row(shard, arch, runner),
-         "archive": f"nextest-archive-{arch}-{shard['packages'].split()[1]}"}
-        for arch, runner in runners.items() for shard in partitioned]
-    archive_matrix = [
-        {"arch": arch, "runner": ARCHIVE_RUNNERS[arch], "package": name,
-         "test_packages": f"-p {name}", "partitions": split[name],
-         "archive": f"nextest-archive-{arch}-{name}"}
-        for arch in runners for name in sorted(split)]
+              for arch, runner in runners.items() for shard in test_shards]
     # Hermetic suites outside Cargo follow their declared inputs; explicit full
     # runs and pushes to main (all_suites) run every one of them.
     suites = (path_suites.select(suite_manifest, changes, run_all=force_full or all_suites)
@@ -836,14 +792,8 @@ def make_plan(
         "estimated_cost": sum(package_cost(packages[name]) for name in selected),
         "requested_shards": shard_count,
         "shard_count": effective_shards,
-        "test_shard_count": (len(matrix) + len(partition_matrix)) // len(runners) if matrix else 0,
+        "test_shard_count": len(matrix) // len(runners) if matrix else 0,
         "matrix": {"include": matrix},
-        # Partitions of packages too heavy for one test job. check.yml's
-        # `test-archive` builds each package's tests once per architecture
-        # (archive_matrix); its `test-partition` jobs run one slice each.
-        "partitions_required": bool(partition_matrix),
-        "partition_matrix": {"include": partition_matrix},
-        "archive_matrix": {"include": archive_matrix},
         # Clippy's lint result is architecture-independent; lint each package
         # set once, on x86_64.
         "clippy_matrix": {"include": [row for row in check_rows if row["arch"] == "x86_64"]},
@@ -858,9 +808,6 @@ def emit_github(plan: dict, output: Path) -> None:
     compact_matrix = json.dumps(plan["matrix"], separators=(",", ":"))
     with output.open("a", encoding="utf-8") as handle:
         handle.write(f"matrix={compact_matrix}\n")
-        for name in ("partition_matrix", "archive_matrix"):
-            handle.write(f"{name}={json.dumps(plan[name], separators=(',', ':'))}\n")
-        handle.write(f"partitions_required={'true' if plan['partitions_required'] else 'false'}\n")
         compact_clippy_matrix = json.dumps(plan["clippy_matrix"], separators=(",", ":"))
         handle.write(f"clippy_matrix={compact_clippy_matrix}\n")
         compact_check_matrix = json.dumps(plan["check_matrix"], separators=(",", ":"))

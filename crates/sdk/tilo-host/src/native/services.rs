@@ -132,6 +132,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
             ui_scale: factor(&["TILO_UI_SCALE", "TILO_A11Y_UI_SCALE"]),
         },
         locale: crate::host::environment::locale_from_vars(|name| std::env::var(name).ok()),
+        desktop: text("XDG_CURRENT_DESKTOP"),
         diagnostics: crate::host::RunnerDiagnostics {
             debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
             perf_log: set("QUICK_UI_PERF"),

@@ -675,18 +675,6 @@ impl PortableStorage {
             .owners
             .insert((package.into(), workspace.into()), Rc::downgrade(owner));
     }
-    /// Every live record owner of `workspace` in this cache: the stores the
-    /// page's mounts share, for a host replicating the room itself.
-    pub fn record_stores(&self, workspace: &str) -> Vec<crate::record::RecordStore> {
-        self.cache
-            .borrow()
-            .owners
-            .iter()
-            .filter(|((_, home), _)| home == workspace)
-            .filter_map(|(_, owner)| owner.upgrade())
-            .map(crate::record::RecordStore::from_owner)
-            .collect()
-    }
     pub fn namespace(&self) -> &ProfileNamespace {
         &self.cache.namespace
     }
