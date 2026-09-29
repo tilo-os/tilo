@@ -1533,25 +1533,40 @@ impl ui::search::capability::SearchSource for SnippetsApp {
     }
 }
 
+impl SnippetsApp {
+    fn published_library(&self, doc: &AutoCommit) -> tilo_actions::Resource {
+        let state = <crate::resource::Snippets as ui::tilo_resource::Resource>::read(doc)
+            .unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Snippets>(
+            crate::resource::LIBRARY_RESOURCE_ID,
+            "Snippets",
+            &state,
+        );
+        root.children.extend(crate::actions::live_folder_resources(
+            &self.snippets_resource_ctx(),
+        ));
+        root
+    }
+}
+
 impl ui::resources::PublishesResources for SnippetsApp {
     /// Standalone / `--shots` / unit tests publish the library root. When the
     /// framework hosts the surface, [`tilo_resource::publish`] already owns that
     /// door — keep only the sidebar-folder create extras.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.is_hosted() {
             return crate::actions::live_folder_resources(&self.snippets_resource_ctx());
         }
-        crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
+        vec![self.published_library(doc)]
     }
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if self.is_hosted() {
             return crate::actions::live_folder_resources(&self.snippets_resource_ctx())
                 .into_iter()
                 .find(|resource| resource.id.as_str() == id);
         }
         if id == "snippets.library" {
-            return crate::actions::provide_contextual_resources(&self.snippets_resource_ctx())
-                .pop();
+            return Some(self.published_library(doc));
         }
         if let Some(raw_id) = id.strip_prefix("snippets.snippet:") {
             let snippet_id = uuid::Uuid::parse_str(raw_id).ok()?;
