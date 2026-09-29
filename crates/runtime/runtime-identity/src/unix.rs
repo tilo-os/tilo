@@ -2625,7 +2625,7 @@ mod tests {
 
     /// Where the platform has no file fallback (macOS), a system store that
     /// fails fails the import, and leaves neither a record nor a file secret.
-    fn assert_import_failed_closed(dir: &std::path::Path, imported: io::Result<PathBuf>) {
+    fn assert_import_failed_closed(dir: &std::path::Path, imported: &io::Result<PathBuf>) {
         assert!(imported.is_err(), "{imported:?}");
         assert!(!dir.join("personal.json").exists());
         assert!(!dir.join("secrets").exists(), "a file fallback was written");
@@ -2641,7 +2641,7 @@ mod tests {
             })
         });
         if !secure_store::FILE_FALLBACK {
-            assert_import_failed_closed(dir.path(), imported);
+            assert_import_failed_closed(dir.path(), &imported);
             return;
         }
         let path = imported.unwrap();
@@ -2673,7 +2673,7 @@ mod tests {
             import_identity(dir.path(), "personal", &record_bytes("Ada", 78))
         });
         if !secure_store::FILE_FALLBACK {
-            assert_import_failed_closed(dir.path(), imported);
+            assert_import_failed_closed(dir.path(), &imported);
             return;
         }
         let path = imported.unwrap();

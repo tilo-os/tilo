@@ -189,7 +189,7 @@ mod keychain {
                             label: Some("Tilo channel state key".into()),
                         },
                     )
-                    .map_err(keychain_error)?;
+                    .map_err(|error| keychain_error(&error))?;
                 if get(&store, &name)? != Some(key) {
                     return Err(io::Error::other(
                         "the login Keychain did not return the stored channel state key",
@@ -207,7 +207,7 @@ mod keychain {
     fn get(store: &SecretStore, name: &str) -> io::Result<Option<[u8; 32]>> {
         store
             .get_blocking(name)
-            .map_err(keychain_error)?
+            .map_err(|error| keychain_error(&error))?
             .map(|secret| {
                 secret.expose().try_into().map_err(|_| {
                     io::Error::new(io::ErrorKind::InvalidData, "invalid channel state key")
@@ -216,7 +216,7 @@ mod keychain {
             .transpose()
     }
 
-    fn keychain_error(error: tilo_secrets::SecretError) -> io::Error {
+    fn keychain_error(error: &tilo_secrets::SecretError) -> io::Error {
         let kind = match error {
             tilo_secrets::SecretError::Denied => io::ErrorKind::PermissionDenied,
             _ => io::ErrorKind::Other,
