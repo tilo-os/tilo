@@ -47,7 +47,7 @@ fn persisted(profile: &Path, name: &str) -> bool {
 }
 
 fn wait_for(what: &str, mut done: impl FnMut() -> bool) {
-    let deadline = Instant::now() + tilo_test_env::hang_bound();
+    let deadline = tilo_test_env::hang_deadline();
     while !done() {
         assert!(Instant::now() < deadline, "timed out waiting for {what}");
         std::thread::sleep(Duration::from_millis(50));

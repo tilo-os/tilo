@@ -155,17 +155,11 @@ impl Standalone {
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = profile::MediaHost::start(&root.join("content"), &blob_socket)?;
-        let files = if workspace.governs() {
-            stage("syncing the workspace folder");
-            let author = files::Author {
-                person: identity.user_public_key,
-                device,
-            };
-            workspace_files(root, &workspace.name(), &media, joined.endpoint(), &author)
-        } else {
-            // The desktop session projects the files of a profile it serves.
-            None
+        let author = files::Author {
+            person: identity.user_public_key,
+            device,
         };
+        let files = workspace_files(root, &workspace, &media, joined.endpoint(), &author, stage);
         Ok(Self {
             broker,
             joined,
@@ -321,15 +315,21 @@ fn channels(root: &Path) -> BrokerChannels {
 
 /// The profile's workspace files, mirrored into their folder in this
 /// user's home. Without the folder the host still serves: apps keep their
-/// documents, only the folder view of the files is missing.
+/// documents, only the folder view of the files is missing. A profile the
+/// desktop session serves has none: that host projects its files itself.
 fn workspace_files(
     profile: &Path,
-    workspace: &str,
+    workspace: &ProfileWorkspace,
     media: &profile::MediaHost,
     endpoint: iroh::Endpoint,
     author: &files::Author,
+    stage: &mut dyn FnMut(&str),
 ) -> Option<files::WorkspaceFiles> {
-    let started = files::folder(workspace).and_then(|folder| {
+    if !workspace.governs() {
+        return None;
+    }
+    stage("syncing the workspace folder");
+    let started = files::folder(&workspace.name()).and_then(|folder| {
         files::WorkspaceFiles::start(profile, &folder, media.store(), endpoint, author)
     });
     started
