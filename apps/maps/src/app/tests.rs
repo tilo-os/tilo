@@ -2778,6 +2778,23 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         assert!(!Widget::needs_animation_frame(&a));
     }
 
+    // Phase `pending_requests_and_a_focused_search_take_no_animation_frames`:
+    // requests that never answer (a failing Overpass, a stalled geocode) and
+    // a focused search field leave an idle map without a frame every vsync;
+    // the reply wakes the app when it lands, and a debounce is a deadline.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        a.pending = 3;
+        a.search.set_focused(true);
+        assert!(!Widget::needs_animation_frame(&a));
+        assert_eq!(Widget::next_wake_deadline(&a), None);
+
+        a.schedule_pois();
+        let deadline = Widget::next_wake_deadline(&a).expect("the POI debounce wakes the app");
+        assert!(deadline > ui::time::now());
+        assert!(!Widget::needs_animation_frame(&a));
+    }
+
     // Phase `map_info_sheet_stays_modal_over_extracted_controls`.
     {
         let theme = Theme::dark();
