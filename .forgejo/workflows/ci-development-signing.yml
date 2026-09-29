@@ -90,27 +90,6 @@ jobs:
         run: |
           bash os/dev/assert-native-arch.sh '${{ matrix.arch }}'
           bash os/dev/install-cached-cosign.sh
-      # The runner image's sccache predates --remap-path-prefix support, so
-      # use the checksum-pinned client the builder images carry.
-      - name: Materialize the pinned compiler-cache client
-        uses: ./.forgejo/actions/cache-github-assets
-        with:
-          key: sccache-client-v1-${{ matrix.arch }}
-          assets: sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl.tar.gz
-      - name: Enable the shared compiler cache
-        env:
-          FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-          FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
-          SCCACHE_CLIENT: sccache-v0.17.0-${{ matrix.arch }}-unknown-linux-musl
-        run: |
-          tar -xzf "os/external-assets/cache/$SCCACHE_CLIENT.tar.gz" -C "$RUNNER_TEMP"
-          printf '%s\n' "$RUNNER_TEMP/$SCCACHE_CLIENT" >> "$GITHUB_PATH"
-          # The runner image installs the pinned toolchain on first use; the
-          # wrapper probe below must find it already installed.
-          rustc -vV >/dev/null
-          # shellcheck disable=SC1091
-          source tools/ci/compiler_cache_env.sh
-          PATH="$RUNNER_TEMP/$SCCACHE_CLIENT:$PATH" bash tools/ci/sccache.sh prepare
       - name: Log in to registry.tilo.so
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
