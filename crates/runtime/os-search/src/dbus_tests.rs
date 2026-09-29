@@ -1,5 +1,5 @@
 //! Both providers over a real D-Bus connection pair, called exactly as GNOME
-//! Shell and KRunner call them.
+//! Shell and `KRunner` call them.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -93,7 +93,7 @@ async fn gnome_shell_finds_describes_and_opens_through_the_action_host() {
         "Travel plans"
     );
 
-    let () = call(
+    call::<_, ()>(
         &client,
         GNOME_PATH,
         GNOME,
@@ -123,7 +123,7 @@ async fn gnome_shell_opens_nothing_the_owner_may_no_longer_open() {
     )
     .await;
     host.edit(|catalogue| catalogue.rows.retain(|r| r.resource.id != "page:2"));
-    let () = call(
+    call::<_, ()>(
         &client,
         GNOME_PATH,
         GNOME,
@@ -132,7 +132,7 @@ async fn gnome_shell_opens_nothing_the_owner_may_no_longer_open() {
     )
     .await;
     assert!(host.invoked().is_empty(), "revoked before the next walk");
-    let () = call(
+    call::<_, ()>(
         &client,
         GNOME_PATH,
         GNOME,
@@ -163,7 +163,7 @@ async fn krunner_matches_and_runs_through_the_action_host() {
     assert_eq!(text, "Tax return");
     assert!(*relevance > 0.0 && *relevance <= 1.0);
 
-    let () = call(&client, KRUNNER_PATH, KRUNNER, "Run", &(id.as_str(), "")).await;
+    call::<_, ()>(&client, KRUNNER_PATH, KRUNNER, "Run", &(id.as_str(), "")).await;
     let invoked = host.invoked();
     assert_eq!(invoked.len(), 1);
     assert_eq!(

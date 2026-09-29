@@ -1,14 +1,14 @@
 //! The profile's admitted resources in the host operating system's search.
 //!
 //! The daemon is where resources are known, so it keeps the one index per
-//! user: GNOME Shell and KRunner ask it over the session bus, Spotlight is
+//! user: GNOME Shell and `KRunner` ask it over the session bus, Spotlight is
 //! handed each change, and it walks the catalogue again every [`REFRESH`] so
 //! what the owner may no longer see leaves every host search.
 
 use std::{io, sync::Arc, time::Duration};
 
 use tilo_actions::remote::{ActionHost, Caller};
-use tilo_os_search::OsSearch;
+use tilo_os_search::{Changes, OsSearch};
 
 /// How long a revoked or closed resource may stay findable.
 const REFRESH: Duration = Duration::from_secs(10);
@@ -45,16 +45,21 @@ where
         }
         loop {
             match feeding.refresh().await {
-                #[cfg(target_os = "macos")]
-                Ok(changes) => tilo_os_search::spotlight::apply(&changes),
-                #[cfg(not(target_os = "macos"))]
-                Ok(_) => {}
+                Ok(changes) => publish(&changes),
                 Err(error) => tracing::debug!(%error, "host search keeps its previous index"),
             }
             tokio::time::sleep(REFRESH).await;
         }
     });
     Ok(search)
+}
+
+/// Hand the host searches that keep their own copy what changed.
+fn publish(changes: &Changes) {
+    #[cfg(target_os = "macos")]
+    tilo_os_search::spotlight::apply(changes);
+    #[cfg(not(target_os = "macos"))]
+    let _ = changes;
 }
 
 /// Open every Spotlight result the person chooses, running the app on this,
