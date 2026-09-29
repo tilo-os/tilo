@@ -402,7 +402,9 @@ class AppReleaseWorkflowContract(unittest.TestCase):
             self.assertIn('curl --silent --show-error --location --head --dump-header "$headers"', publish)
             self.assertIn("*.svg) expected_type='image/svg+xml'", publish)
             self.assertIn("*.webp) expected_type='image/webp'", publish)
-            self.assertIn('done < "$registry_media_urls"', publish)
+            # Every media URL is checked, eight at a time, and any failure fails.
+            self.assertIn('tr \'\\t\' \'\\n\' < "$registry_media_urls"', publish)
+            self.assertIn("| xargs -d '\\n' -n 2 -P 8 bash -c 'check_media \"$1\" \"$2\"' _", publish)
             self.assertIn('metadata="$registry_metadata/$name.json"', publish)
             self.assertIn('--metadata "$metadata"', publish)
             self.assertIn('--data-binary "@$request"', publish)
