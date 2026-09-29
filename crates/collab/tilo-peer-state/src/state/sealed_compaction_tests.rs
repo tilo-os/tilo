@@ -833,7 +833,7 @@ fn the_governor_publishes_its_compaction_behind_the_records_receipt() {
     assert_eq!(
         mutation.last().map(envelope_of),
         Some(compaction.clone()),
-        "after the snapshot, whose later sequence would otherwise shadow it"
+        "behind the room change that carries the record's receipt"
     );
     let bootstrap = host
         .clone()
