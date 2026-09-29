@@ -1423,16 +1423,23 @@ search-action-quick-settings-airplane-mode-set-enabled-subtitle = Alle Funkverbi
 # Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
 search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
-search-action-workspace-view-subtitle = Lokale Arbeitsbereichsansicht
+search-action-workspace-switch-subtitle = Zu diesem Arbeitsbereich und seinen Fenstern wechseln
+search-action-activity-catch-up-subtitle = Was andere seit deinem letzten Blick geändert haben
+search-action-activity-tasks-subtitle = Arbeit, die hier Personen und Agenten zugewiesen ist
+search-action-activity-explore-subtitle = Jede Änderung hier, nach Person, App und Zeit
+search-action-activity-replay-subtitle = Schritt für Schritt sehen, wie sich dieser Arbeitsbereich verändert hat
 search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
-# Zusätzliche Suchbegriffe für Arbeitsbereichsansichten; nicht angezeigt.
-search-action-workspace-view-keywords = arbeitsbereich aktivität verlauf
+# Zusätzliche Suchbegriffe für Arbeitsbereichswechsel und Aktivitätsansichten; nicht angezeigt.
+search-action-workspace-switch-keywords = wechseln arbeitsbereich gehe switch workspace
+search-action-activity-keywords = aktivität verlauf änderungen zeitleiste wer activity history
 search-action-provider-enable = Suche in { $source } aktivieren
-search-action-provider-enable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung anzeigen
+search-action-provider-enable-subtitle = Ergebnisse aus { $source } in Suche und Agentenerkennung anzeigen
 search-action-provider-disable = Suche in { $source } deaktivieren
-search-action-provider-disable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung ausblenden
+search-action-provider-disable-subtitle = Ergebnisse aus { $source } in Suche und Agentenerkennung ausblenden
 search-action-provider-badge-on = AN
 search-action-provider-badge-off = AUS
+# Wörter, die nach den Ein/Aus-Schaltern einzelner Suchquellen fragen; nicht angezeigt.
+search-action-provider-keywords = suche suchquelle quelle quellen deaktivieren aktivieren search source disable enable
 search-action-governance-subtitle = Signierte Verwaltungsaktion für den aktiven Arbeitsbereich
 search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrollen mit minimalen Rechten verwalten
 
