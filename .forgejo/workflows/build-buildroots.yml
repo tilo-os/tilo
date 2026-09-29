@@ -156,8 +156,9 @@ jobs:
           esac
           echo "WPE_BUILDROOT_REF=$(sed -n "s/^$name=//p" os/wpe-buildroot-snapshot.env)" >> "$GITHUB_ENV"
           echo "TILO_WPE_KEY=$(os/dev/wpe-stage-key.sh '${{ matrix.arch }}')" >> "$GITHUB_ENV"
-          # A WebKit compile job peaks near 2 GiB.
-          jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 2097152 ))
+          # WebKit compile jobs peak near 3 GiB; at 2 GiB per job both
+          # engine builds lost their Docker daemon mid-compile (run 47120).
+          jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 3145728 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
           (( jobs < 1 )) && jobs=1
           echo "TILO_WPE_JOBS=$jobs" >> "$GITHUB_ENV"
