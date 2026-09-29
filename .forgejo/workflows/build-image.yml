@@ -989,13 +989,21 @@ jobs:
           # Every core compiles, bounded only by memory. The builder gets the
           # slot's memory less 4 GiB; a thin-LTO link of one of the large
           # binaries peaks near 6 GiB (11 jobs at 3 GiB each were OOM-killed
-          # linking file-explorer in run 48204), everything else far less.
+          # linking file-explorer in run 48204).
           # The job count never reaches the image, so the two lanes of a
           # release may differ.
-          memory_gib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1048576 - 4 ))
-          per_job=1
-          [[ $publish != true ]] || per_job=6
-          jobs=$(( memory_gib / per_job ))
+          # Without LTO a rustc or mold link still peaks near 2.5 GiB; at one
+          # job per GiB the dev lane drove its slot into swap and starved the
+          # host's disk path for every other slot.
+          # The job's own limit (cgroup), else the VM's memory.
+          memory_mib=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 ))
+          limit="$(cat /sys/fs/cgroup/memory.max 2>/dev/null || echo max)"
+          [[ $limit == max ]] || (( limit / 1048576 >= memory_mib )) || memory_mib=$(( limit / 1048576 ))
+          memory_mib=$(( memory_mib - 4096 ))
+          per_job_mib=2560
+          [[ $publish != true ]] || per_job_mib=6144
+          jobs=$(( memory_mib / per_job_mib ))
+          memory_gib=$(( memory_mib / 1024 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
           (( jobs < 1 )) && jobs=1
           echo "TILO_CARGO_JOBS=$jobs" >> "$GITHUB_ENV"
@@ -1768,7 +1776,7 @@ jobs:
             --build-arg "TILO_BASE_DIGEST=$DEV_BASE_DIGEST" \
             --build-arg "TILO_BASE_CREATED=$created" \
             --build-arg TILO_CARGO_FRESHNESS=clean \
-            --build-arg "TILO_CARGO_BUILD_JOBS=$(nproc)" \
+            --build-arg "TILO_CARGO_BUILD_JOBS=$TILO_CARGO_JOBS" \
             --build-arg TILO_DEV_RUST_LTO=off \
             --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
             "${cache[@]}" \
