@@ -47,6 +47,11 @@ mod close_admission;
 mod document_history;
 mod handoff;
 mod history_actions;
+mod host_commands;
+
+/// The broker-facing History door, which host chrome presents as its own.
+#[cfg(any(feature = "native", test))]
+pub(crate) const HISTORY_ACTION_RESOURCE: &str = history_actions::RESOURCE;
 #[cfg(test)]
 mod history_actions_tests;
 mod model_lifecycle;
@@ -173,6 +178,12 @@ pub enum UserEvent {
     /// Delivered to [`crate::widget::Widget::on_external_event`] rather than
     /// translated to a `WindowEvent` (e.g. installer progress).
     External(String),
+    /// A host command chosen in the operating system's own chrome (a menu
+    /// item), entering the same door as the palette.
+    HostCommand(tilo_actions::ControlInvocation),
+    /// Text typed into the host's title-bar search field; search continues
+    /// in the palette.
+    HostSearch(String),
     /// Synchronize and redraw after typed state was changed by a worker.
     /// Created automatically by [`crate::LocalStateWriter`].
     Wake(crate::wake::WakeEvent),

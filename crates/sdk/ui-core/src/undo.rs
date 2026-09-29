@@ -111,7 +111,8 @@ impl UndoStatus {
 
 /// A widget's request that the host drive the history. The host performs it
 /// through the one undo implementation; a widget never touches the stacks.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum UndoRequest {
     Undo,
     Redo,
@@ -144,29 +145,33 @@ impl UndoRequest {
     }
 }
 
-/// Which history verb, if any, a Ctrl-modified character key means.
+/// Which history verb, if any, a command-modified character key means.
 ///
-/// The single place the binding is written down. Both the live host
-/// ([`App`](crate::app::App)) and the headless
+/// Both the live host ([`App`](crate::app::App)) and the headless
 /// [`Driver`](crate::headless::Driver) resolve the key through this, so an app
 /// driven by a test scenario undoes on the same keystroke the user's fingers
-/// do. `character` is winit's logical key text; `shift` is read from the
-/// modifier state rather than from the character's case, because a shifted "z"
-/// arrives as `"Z"` on some layouts and `"z"` on others.
+/// do. The binding itself is the host-shortcut table in
+/// [`platform`](crate::platform::HostShortcut). `character` is winit's logical
+/// key text; `shift` is read from the modifier state rather than from the
+/// character's case, because a shifted "z" arrives as `"Z"` on some layouts
+/// and `"z"` on others.
 ///
 /// Returns `None` when the key is not a history binding — including when
-/// `ctrl` is not held.
-pub fn shortcut(character: &str, ctrl: bool, shift: bool) -> Option<UndoRequest> {
-    if !ctrl {
+/// the command modifier is not held.
+pub fn shortcut(
+    conventions: crate::platform::PlatformConventions,
+    character: &str,
+    command: bool,
+    shift: bool,
+) -> Option<UndoRequest> {
+    use crate::platform::HostShortcut;
+    if !command {
         return None;
     }
-    match character {
-        // Ctrl+Shift+Z is the Linux/Mac-native redo binding; Ctrl+Y is the
-        // Windows one, and both are common enough on Linux to honour.
-        "z" | "Z" if shift => Some(UndoRequest::Redo),
-        "z" | "Z" => Some(UndoRequest::Undo),
-        "y" | "Y" => Some(UndoRequest::Redo),
-        _ => None,
+    match HostShortcut::resolve(conventions, character, shift)? {
+        HostShortcut::Undo => Some(UndoRequest::Undo),
+        HostShortcut::Redo => Some(UndoRequest::Redo),
+        HostShortcut::Search | HostShortcut::History => None,
     }
 }
 
@@ -574,6 +579,9 @@ mod tests {
     fn undo_shortcuts_and_descriptions_never_promise_a_missing_action() {
         // Case `the_shortcut_table_is_the_one_binding_both_hosts_read`.
         {
+            use crate::platform::{Platform, PlatformConventions};
+            let linux = PlatformConventions::new(Platform::Linux);
+            let shortcut = |c, command, shift| shortcut(linux, c, command, shift);
             assert_eq!(shortcut("z", true, false), Some(UndoRequest::Undo));
             assert_eq!(shortcut("Z", true, false), Some(UndoRequest::Undo));
             // Shift is read from the modifiers, not from the character's case:
@@ -585,6 +593,9 @@ mod tests {
             assert_eq!(shortcut("z", false, false), None);
             assert_eq!(shortcut("Z", false, true), None);
             assert_eq!(shortcut("k", true, false), None);
+            // ⌘Y is History on macOS, never Redo.
+            let mac = PlatformConventions::new(Platform::MacOs);
+            assert_eq!(super::shortcut(mac, "y", true, false), None);
         }
 
         // Case `description_never_promises_an_action_that_is_not_there`.
