@@ -121,7 +121,9 @@ audit() {
     probe="$(mktemp -d)"
     container="$(docker create --entrypoint /none "$ref")"
     docker cp "$container:/usr/lib/tilo/wpe-stage-arch" "$probe/arch"
-    docker cp "$container:/wpe/usr/lib" "$probe/lib"
+    # Containerfile.wpe removes /wpe/usr/lib when it is a symlink; Fedora's
+    # WebKit libraries are installed in the retained /wpe/usr/lib64 tree.
+    docker cp "$container:/wpe/usr/lib64" "$probe/lib"
     docker rm "$container" >/dev/null
     test "$(cat "$probe/arch")" = "$arch"
     find "$probe/lib" -name 'libWPEWebKit-2.0.so*' -print -quit | grep -q .

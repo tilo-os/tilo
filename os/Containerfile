@@ -314,6 +314,7 @@ COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
+    os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
     os/scripts/browser-runtime-launcher.c \
@@ -580,6 +581,8 @@ ARG TILO_CARGO_BUILD_JOBS=4
 # either way): the profile's line tables by default; 0 skips them, which only
 # makes a dev build compile faster.
 ARG TILO_RUST_DEBUGINFO=line-tables-only
+# 1 prints where each cargo build spent its time (cargo --timings).
+ARG TILO_CARGO_TIMINGS=
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `shared` compiles through sccache: CI's runner cache when the build passes
 # the actions_cache_url and actions_runtime_token secrets (the Actions cache
@@ -678,13 +681,17 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
     && build_phase rust-release \
+    # Without LTO nothing merges the units again, so a dev build splits the
+    # large crates (shell's library alone ran 180 s at eight) further.
+    && release_units="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 8)" \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
-       CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
+       CARGO_PROFILE_RELEASE_CODEGEN_UNITS="$release_units" \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
        cargo build --release -p windows-vm \
          --bin tilo-windows-vm-control --bin tilo-windows-rail \
@@ -778,7 +785,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
          CARGO_PROFILE_THIN_APP_DEBUG="$TILO_RUST_DEBUGINFO" \
+         EXTRA_CARGO_ARGS="${TILO_CARGO_TIMINGS:+--timings}" \
            /build/os/scripts/build-thin-apps.sh \
+         && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
               b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
@@ -1634,6 +1643,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+# The fedora-bootc base ships the NFS client and server stack. The Tilo kernel
+# has no NFS or rpc_pipefs (os/kernel/config-fragments/tilo.config: remote
+# storage is the userspace QuickFS protocol), so its units could only fail at
+# every boot (var-lib-nfs-rpc_pipefs.mount: "unknown filesystem type
+# 'rpc_pipefs'"). Remove the packages rather than their units; rpm -e without
+# --nodeps fails the build if anything else comes to need them.
+RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils \
+        nfs-common-utils rpcbind \
+    && ${FINALIZE_RPMDB}
+
 # Keep encrypted-root unlock in the same visual path as the UKI splash.
 # Assets are generated at build time so the source remains reviewable and the
 # initramfs does not depend on a desktop image stack. Copied here, beside their
@@ -2041,6 +2060,8 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
+# The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
+COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -2577,7 +2598,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
     install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
-    python3 /run/tilo-prepare-hardware-profile.py \
+    # -B: the script imports hardware_profile from /run, and its bytecode
+    # (which records the checkout's mtime) would otherwise stay in the layer.
+    python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
@@ -2968,6 +2991,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
 
+# Nothing ships from this stage. It gathers the image's small tool stages, which
+# change with neither the Rust build nor the rootfs, into one target that CI
+# caches with its intermediate steps: the image build then neither repeats
+# their dnf transactions nor pulls the RPM snapshot to run them.
+FROM scratch AS image-tool-stages
+COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
+COPY --from=doubletake-builder /out/ /doubletake/
+COPY --from=fluxcast-builder /src/src/ /fluxcast/
+COPY --from=joycond-builder /out/ /joycond/
+
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`
 # computes the authoritative digest and os/dev/build-image.sh rewrites only the
@@ -2983,10 +3016,13 @@ ENV TILO_SEAL_GENERATION=${TILO_SEAL_GENERATION}
 # /tmp and /run are tmpfs because ukify needs ordinary build scratch but none of
 # it belongs in the image layer. The authoritative composefs digest comes from
 # the install gate, so this stage no longer needs a rootfs-sized /var/tmp cache.
+# The rootfs mounts are writable (writes are discarded): BuildKit keys a
+# read-only mount by a content hash of everything under it, which for the whole
+# rootfs took two minutes of every build before this step could start.
 RUN --mount=type=tmpfs,target=/tmp \
     --mount=type=tmpfs,target=/run \
-    --mount=type=bind,from=split,target=/target \
-    --mount=type=bind,from=split,source=/kernel,target=/kernel \
+    --mount=type=bind,from=split,target=/target,rw \
+    --mount=type=bind,from=split,source=/kernel,target=/kernel,rw \
     bash /usr/local/bin/uki.sh
 
 # NOTHING MAY BE LAYERED ON THIS IMAGE. A derived image that adds a single file to

@@ -118,7 +118,6 @@ members = [
 
     # SDK
     "crates/sdk/font-catalog",
-    "crates/sdk/rt",
     "crates/sdk/tilo-app",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
@@ -160,7 +159,6 @@ members = [
     "crates/doc/bounded-zip",
     "crates/doc/format-host",
     "crates/doc/format-provider-abi",
-    "crates/doc/pdf",
     "crates/doc/qdoc",
     "crates/doc/qdoc-codecs",
     "crates/doc/qdoc-rich-text",
@@ -176,7 +174,6 @@ members = [
     "crates/hosting/tilo-relay-protocol",
 
     # Media
-    "crates/media/core",
     "crates/media/ocr",
     "crates/media/thumbnail",
     "crates/media/vision",
@@ -203,6 +200,23 @@ members = [
     # Examples
     "examples/packaging/hello",
     "examples/packaging/notes-cli",
+
+    # Platform
+    "crates/platform/tilo-capture",
+    "crates/platform/tilo-clipboard",
+    "crates/platform/tilo-clock",
+    "crates/platform/tilo-dialogs",
+    "crates/platform/tilo-files",
+    "crates/platform/tilo-location",
+    "crates/platform/tilo-media",
+    "crates/platform/tilo-net",
+    "crates/platform/tilo-notify",
+    "crates/platform/tilo-paths",
+    "crates/platform/tilo-pdf",
+    "crates/platform/tilo-process",
+    "crates/platform/tilo-rt",
+    "crates/platform/tilo-secrets",
+    "crates/platform/tilo-sandbox",
 
     # Runtime
     "crates/runtime/cli",
@@ -265,12 +279,10 @@ members = [
     "crates/system/system-extension",
     "crates/system/tilo-bluez",
     "crates/system/tilo-cli",
-    "crates/system/tilo-clock",
     "crates/system/tilo-crypto",
     "crates/system/tilo-dav",
     "crates/system/tilo-oauth",
     "crates/system/tilo-native-certs",
-    "crates/system/tilo-net",
     "crates/system/tilo-rollback",
     "crates/system/tilo-seal",
     "crates/system/tilo-startup-metrics",
@@ -299,6 +311,8 @@ resolver = "2"
 [workspace.package]
 license = "AGPL-3.0-only"
 publish = false
+repository = "https://code.tilo.so/tilo/tilo"
+homepage = "https://tilo.so"
 
 # workspace-hack is never named in code: it only unifies third-party features.
 [workspace.metadata.cargo-machete]
@@ -383,7 +397,7 @@ taffy = "0.10.1"
 winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
 automerge = "0.12.0"
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
-tilo-automerge = { path = "crates/doc/tilo-automerge" }
+tilo-automerge = { version = "0.1.0", path = "crates/doc/tilo-automerge" }
 tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
 pollster = "0.4.0"
 rustc-hash = "2.1"
@@ -395,7 +409,15 @@ cosmic-text = { version = "0.19.0", default-features = false }
 # Async runtime and networking
 # ---------------------------------------------------------------------------
 tokio = "1.52.3"
-tilo-rt = { path = "crates/sdk/rt" }
+tilo-rt = { version = "0.1.0", path = "crates/platform/tilo-rt" }
+tilo-paths = { version = "0.1.0", path = "crates/platform/tilo-paths" }
+tilo-clipboard = { version = "0.1.0", path = "crates/platform/tilo-clipboard" }
+tilo-dialogs = { version = "0.1.0", path = "crates/platform/tilo-dialogs" }
+tilo-notify = { version = "0.1.0", path = "crates/platform/tilo-notify" }
+tilo-location = { version = "0.1.0", path = "crates/platform/tilo-location" }
+tilo-secrets = { version = "0.1.0", path = "crates/platform/tilo-secrets" }
+tilo-net = { path = "crates/platform/tilo-net" }
+tilo-sandbox = { version = "0.1.0", path = "crates/platform/tilo-sandbox" }
 tokio-util = { version = "0.7.18", features = ["compat"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring"] }
 async-imap = { version = "0.10", default-features = false, features = ["runtime-tokio"] }
@@ -440,7 +462,9 @@ hex = "0.4.3"
 bytes = "1.11.1"
 flate2 = "1"
 miniz_oxide = "0.8"
-zip = { version = "8.6", default-features = false, features = ["deflate-flate2"] }
+# A standalone build (a published crate) needs flate2 to name its backend;
+# zlib-rs is the one the workspace already links.
+zip = { version = "8.6", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 tar = "0.4"
 
 # ---------------------------------------------------------------------------
@@ -751,6 +775,12 @@ lto = false
 # profile names its own value. The wrapper also forces one unit on each tapp
 # crate; this keeps their dependencies on the same size-oriented setting.
 codegen-units = 1
+
+# tilo-ui is one crate on the critical path of every thin build: at one unit
+# its codegen alone takes about 4.5 of a full collection's 10 minutes. Sixteen
+# cost the shared runtime 1.8% in size; tapp crates stay at one unit.
+[profile.thin-app.package.tilo-ui]
+codegen-units = 16
 
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.

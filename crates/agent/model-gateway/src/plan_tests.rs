@@ -276,7 +276,6 @@ fn assert_unknown(observed: Observed) {
     assert!(error.len() <= 160, "bounded error: {error}");
     assert!(!error.contains("fabricated-test-key"));
     assert!(!error.contains("test instruction"));
-    assert!(observed.elapsed < Duration::from_secs(5));
 }
 
 #[test]
@@ -289,6 +288,9 @@ fn plan_dispatch_lost_response_is_unknown() {
 #[test]
 fn plan_dispatch_timeout_is_unknown() {
     if let Some(observed) = run_case("plan_dispatch_timeout_is_unknown", "timeout") {
+        // The peer holds the connection: only the 200 ms Plan timeout, not the
+        // 10 s one the other cases pass, ends the child before this bound.
+        assert!(observed.elapsed < Duration::from_secs(10));
         assert_unknown(observed);
     }
 }

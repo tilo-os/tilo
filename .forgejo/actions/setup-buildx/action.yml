@@ -85,6 +85,22 @@ runs:
           digest=$( { cat "$config"; printf '%s' "$opts"; } | sha256sum | cut -c1-12)
           name="tilo-$TRUST-$digest"
           echo "::notice::persistent BuildKit builder $name"
+        else
+          # Large-class golden stores carry a BuildKit state volume, seeded by
+          # the pool's warmer with main's pinned base and buildroot images and
+          # keyed by the BuildKit image digest. Each clone-per-job slot owns
+          # its copy, which leaves with the clone; elsewhere the volume does
+          # not exist and the builder starts empty as before.
+          image_digest=$(grep -oE '(^|[[:space:],])image=[^[:space:],]*@sha256:[0-9a-f]{64}' <<< "$opts" \
+            | grep -oE '[0-9a-f]{64}$' | head -1 || true)
+          if [[ -n $image_digest ]]; then
+            seed="ci-seed-${image_digest:0:12}"
+            if docker volume inspect "buildx_buildkit_${seed}0_state" >/dev/null 2>&1 \
+                && ! docker buildx inspect "$seed" >/dev/null 2>&1; then
+              name=$seed
+              echo "::notice::BuildKit builder $name starts from the slot's seeded state"
+            fi
+          fi
         fi
         echo "name=$name" >> "$GITHUB_OUTPUT"
         echo "path=$config" >> "$GITHUB_OUTPUT"

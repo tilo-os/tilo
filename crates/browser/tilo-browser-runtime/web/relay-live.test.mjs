@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {createRelayLive, relayLiveCarriers} from './relay-live.mjs';
+import {createRelayLive, createSpeakers, relayLiveCarriers} from './relay-live.mjs';
 
 const ROOM = 'aa'.repeat(32);
 const ME = 'bb'.repeat(32);
@@ -149,6 +149,33 @@ test('an agent layer publishes under the agent grant, and agents are told apart 
   assert.deepEqual(person.members(), []);
   assert.equal(activity[0].name, 'Reading agent');
   person.stop();
+});
+
+test('mounts sharing a layer: the one acted in speaks, and an action that moved nothing does not take over', () => {
+  const published = [];
+  const layer = {api: {state: 'live', publishPresence: partial => { published.push(partial); return true; }, publishPreview: () => true}};
+  const speakers = createSpeakers();
+  const notes = speakers.mount();
+  const chat = speakers.mount();
+  const idle = speakers.mount();
+  const NOTES = {app: 'so.tilo.word-processor', record: 'notes'};
+  const CHAT = {app: 'so.tilo.chat', record: 'general'};
+  // The first to publish speaks until another mount is acted in.
+  assert.equal(chat.view(layer).publishPresence({focus: CHAT, selection: {anchor: 'c0', head: 'c0'}}), true);
+  // An edit in the notes moves their caret: the notes speak.
+  notes.acted();
+  assert.equal(notes.view(layer).publishPresence({focus: NOTES, selection: {anchor: 'n9', head: 'n9'}}), true);
+  // Posting in Chat left its caret where it was: the notes keep speaking.
+  chat.acted();
+  assert.equal(chat.view(layer).publishPresence({focus: CHAT, selection: {anchor: 'c0', head: 'c0'}}), false);
+  // An idle mount's state republish is dropped.
+  assert.equal(idle.view(layer).publishPresence({focus: null, selection: null}), false);
+  assert.deepEqual(published.at(-1).focus, NOTES);
+  // Input claims at once; releasing hands the layer back.
+  chat.claim(layer);
+  assert.equal(chat.view(layer).publishPresence({pointer: [1, 2]}), true);
+  chat.release();
+  assert.equal(idle.view(layer).publishPresence({focus: null, selection: null}), true);
 });
 
 test('durable events from the peer drop previews and reach onDurable', async () => {

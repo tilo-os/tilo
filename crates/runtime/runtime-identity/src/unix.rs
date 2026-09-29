@@ -89,8 +89,8 @@ use crate::{
 
 /// True when a secured identity's Secret Service item could not be obtained.
 /// The storage provider marks this condition with `ENOKEY`; keeping the
-/// classification typed avoids making startup policy depend on localized
-/// `secret-tool` diagnostics.
+/// classification typed avoids making startup policy depend on a store's
+/// localized diagnostics.
 pub fn is_secret_service_unavailable(error: &NotAvailable) -> bool {
     matches!(
         error,

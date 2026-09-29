@@ -22,7 +22,7 @@ default = ["live-capture"]
 live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 
 [dependencies]
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Scanned links and the privacy-settings hand-off open through the desktop
 # OpenURI portal.

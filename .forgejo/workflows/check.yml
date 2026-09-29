@@ -9,7 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
   workflow_dispatch:
     inputs:
       builder_image:
@@ -61,8 +64,6 @@ env:
     (package(fs) and binary(collab_release_matrix)) or
     (package(tilo-rollback) and binary(mechanism))
 
-  FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-  FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
 jobs:
   builder:
     runs-on: runner-quality
@@ -224,9 +225,6 @@ jobs:
           python3 -c 'import PIL'
           fc-match -f '%{family}' 'Noto Sans' | grep -Fq 'Noto Sans'
           test -n "$(find /etc/pki/rpm-gpg -maxdepth 1 -name 'RPM-GPG-KEY-fedora-*-primary' -print -quit)"
-
-      - name: Use the compiler cache
-        uses: ./.forgejo/actions/compiler-cache
 
       - name: Security boundary invariants
         run: bash tools/run-security-boundary-invariants.sh

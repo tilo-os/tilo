@@ -529,7 +529,19 @@ where
                                             }
                                         };
                                         if let Some(reply) = reply {
-                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                            // Wait for the writer, still polling the held
+                                            // state future that it may depend on.
+                                            let sending = send_private_reply(&private_tx, reply);
+                                            tokio::pin!(sending);
+                                            loop {
+                                                tokio::select! {
+                                                    biased;
+                                                    result = &mut operation, if completed.is_none() => {
+                                                        completed = Some(result?);
+                                                    }
+                                                    result = &mut sending => break result?,
+                                                }
+                                            }
                                         }
                                         if let Some(reply) = completed {
                                             break reply;
@@ -574,7 +586,7 @@ where
                             tokio::select! {
                                 biased;
                                 result = &mut sending => {
-                                    result.map_err(|_| PeerError::Protocol("reply backpressure".into()))?;
+                                    result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                                     break;
                                 }
                                 frame = reader.read_next(), if backlog.len() < 32 => {
@@ -582,7 +594,7 @@ where
                                     let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
-                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                            send_private_reply(&private_tx, reply).await?;
                                         }
                                     } else {
                                         let budget = crate::persistence::delivery_budget(inbound_bytes(&frame))?;
@@ -600,11 +612,7 @@ where
                 }
                 frame => {
                     if let Some(reply) = handle_private(frame, &peer, &session).await? {
-                        private_tx
-                            .try_send(PrivateOutbound::Reply(reply))
-                            .map_err(|_| {
-                                PeerError::Protocol("private reply backpressure".into())
-                            })?;
+                        send_private_reply(&private_tx, reply).await?;
                     }
                 }
             }
@@ -974,6 +982,19 @@ struct ReplayWrite {
     reply: Option<Envelope>,
     replaying: bool,
 }
+/// Queue a reply to the peer's own private request. A full queue means the
+/// peer is not reading its replies yet: wait for the writer, which stops this
+/// reader and so backpressures the peer, rather than dropping the connection.
+async fn send_private_reply(
+    private_tx: &mpsc::Sender<PrivateOutbound>,
+    reply: EnvelopeV2,
+) -> Result<(), PeerError> {
+    private_tx
+        .send(PrivateOutbound::Reply(reply))
+        .await
+        .map_err(|_| PeerError::Protocol("private reply writer closed".into()))
+}
+
 async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     private: PrivateOutbound,
     peer: &AuthenticatedPeer,
@@ -7652,6 +7673,97 @@ mod private_transport_tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_releases_routing_lock() {
         paused_state_private_roundtrip(true, false, false, false).await;
+    }
+
+    /// A peer that pipelines more private requests than the reply queue holds,
+    /// while its own replies are not yet read, is backpressured: the relay
+    /// stops reading until the writer drains, and never disconnects it.
+    #[tokio::test(start_paused = true)]
+    async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
+        const REQUESTS: usize = PEER_OUTBOUND_CAPACITY * 4;
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.admit_device(a.device_public_key).unwrap();
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(runtime)),
+        )])));
+        let ctx = PeerContext {
+            workspaces: registry,
+            autobind: None,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            trust_policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user_public_key: user.public_key,
+            own_device_cert: a.cert.clone(),
+            own_device_public_key: a.cert.device_public_key,
+            app_serving: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            live_bridge: None,
+            agents: crate::peer::AgentRegistry::default(),
+        };
+        // Requests flow through a roomy pipe; replies through a small one, so
+        // the relay's writer blocks until the client reads.
+        let (mut requests, server_read) = tokio::io::duplex(1 << 20);
+        let (server_write, replies) = tokio::io::duplex(256);
+        let (server_read, _) = tokio::io::split(server_read);
+        let (_, server_write) = tokio::io::split(server_write);
+        let (replies, _) = tokio::io::split(replies);
+        let relay = tokio::spawn(run_peer_stream(
+            a.clone(),
+            server_read,
+            server_write,
+            ctx,
+            true,
+            false,
+            std::future::pending::<()>(),
+        ));
+        let mut reader = SessionReader::new(replies, true);
+        requests
+            .write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(
+                    &Envelope::Subscribe { workspace_id: id },
+                    true,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(Envelope::Ready { .. }))
+        ));
+        let enable =
+            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room })
+                .unwrap();
+        for _ in 0..REQUESTS {
+            requests.write_all(&enable).await.unwrap();
+        }
+        // The clock is paused: this returns only once the relay has nothing
+        // left to do, its writer blocked on the unread replies.
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        assert!(
+            !relay.is_finished(),
+            "the relay dropped a backpressured peer"
+        );
+        for _ in 0..REQUESTS {
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::ActionsReady { .. })
+            ));
+        }
+        assert!(!relay.is_finished());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

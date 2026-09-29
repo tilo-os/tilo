@@ -218,15 +218,18 @@ test('a successful retry clears only its prior font-specific availability issue'
 });
 
 function prewarmFixture({fail=new Set(),corrupt=new Set(),gate=false}={}){
-  const requested=[],gates=new Map();let manifest;
+  const requested=[],gates=new Map(),arrivals=new Map();let manifest;
+  const arrival=name=>{if(!arrivals.has(name)){let resolve;arrivals.set(name,{seen:new Promise(r=>{resolve=r;}),resolve});}return arrivals.get(name);};
   const fetch=async (url,options)=>{
     if(String(url).endsWith('fonts.json'))return response(manifest);
-    const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');requested.push([name,options?.cache??'default']);
+    const name=new URL(url).pathname.split('/').at(-1).replace('.ttf','');requested.push([name,options?.cache??'default']);arrival(name).resolve();
     if(gate)await new Promise(resolve=>gates.set(name,resolve));
     if(fail.has(name))throw TypeError('offline');
     return response(corrupt.has(name)?new Uint8Array(bytes[name].byteLength):bytes[name]);
   };
-  return {requested,gates,fetch,async ready(){manifest=await descriptor();return manifest;}};
+  // fetched(name) settles once a fetch for name starts, however long the
+  // verification before it takes.
+  return {requested,gates,fetch,fetched:name=>arrival(name).seen,async ready(){manifest=await descriptor();return manifest;}};
 }
 
 test('pre-warm verifies optional fonts within budget and a later demand is a cache hit',async()=>{
@@ -280,8 +283,8 @@ test('a demand is never queued behind idle pre-warm work',async()=>{
   const cjk=loader.request('cjk.ttf');await new Promise(resolve=>setTimeout(resolve,0));
   assert.deepEqual(f.requested.map(([name])=>name),['emoji','cjk'],'the demand starts beside the pre-warm fetch');
   f.gates.get('cjk')();await cjk;
-  f.gates.get('emoji')();await new Promise(resolve=>setTimeout(resolve,0));
-  // arabic is now queued as idle work; a demand for it is promoted and shares the fetch.
+  // Once emoji is verified, arabic's pre-warm fetch starts; a demand for it shares that fetch.
+  f.gates.get('emoji')();await f.fetched('arabic');
   const arabic=loader.request('arabic.ttf');await new Promise(resolve=>setTimeout(resolve,0));
   assert.equal(f.requested.filter(([name])=>name==='arabic').length,1);
   f.gates.get('arabic')();
