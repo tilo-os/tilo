@@ -1305,7 +1305,7 @@ dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/rel
 ```
 
 `--apply-live` refuses while a Tilo session is running on the machine. Builds go
-through the `cargo` on your `PATH`, so an `rcargo` shim compiles remotely.
+through the `cargo` on your `PATH`, so any cargo drop-in on it is used.
 
 Either way, log **out** (not lock) afterwards: the greeter reads
 `/usr/share/wayland-sessions` when it starts, so a new entry appears at the next
