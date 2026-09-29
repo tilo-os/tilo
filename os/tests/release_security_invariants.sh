@@ -56,13 +56,15 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
 
 # BuildKit applies SOURCE_DATE_EPOCH to file mtimes only when the exporter
 # rewrites them; without it COPY keeps checkout times and RUN the wall clock.
-# Only a Build / OS dev image, never compared or released, skips it.
+# Only a Build / OS dev image, never compared or released, skips it: BuildKit
+# pushes it straight to tilo-ci.
 release_rule="$(awk '/- name: Select build, validation, or publication mode/,/dev-channel=/' "$workflow")"
 grep -Fq "outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true" "$workflow" \
-  && [ "$(grep -Fc "format('type=oci,dest=/var/tmp/tilo-image.tar,{0}', env.TILO_OCI_EXPORT)" "$workflow")" -eq 2 ] \
-  && grep -Fq "echo 'TILO_OCI_EXPORT=rewrite-timestamp=true' >> \"\$GITHUB_ENV\"" <<<"$release_rule" \
+  && [ "$(grep -Fc 'outputs: ${{ env.TILO_IMAGE_OUTPUT }}' "$workflow")" -eq 2 ] \
+  && grep -Fq "echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> \"\$GITHUB_ENV\"" <<<"$release_rule" \
   && grep -Fq "if [[ \$GITHUB_EVENT_NAME == workflow_call ]]; then" <<<"$release_rule" \
   && grep -Fq '[[ $publish != true ]]' <<<"$release_rule" \
+  && grep -Fq 'echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"' <<<"$release_rule" \
   && ok 'every compared or released OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
   || bad 'an OS image export keeps build-time file mtimes'
 
