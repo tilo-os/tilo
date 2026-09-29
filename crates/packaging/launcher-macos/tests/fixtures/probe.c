@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
@@ -51,6 +52,18 @@ int main(int argc, char **argv) {
         strncpy(addr.sun_path, arg, sizeof addr.sun_path - 1);
         int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         return fd >= 0 && connect(fd, (struct sockaddr *)&addr, sizeof addr) == 0 ? 0 : 1;
+    }
+    if (strcmp(op, "cache") == 0) {
+        /* Write arg below the cache directory frameworks such as Metal use. */
+        char dir[1024];
+        size_t len = confstr(_CS_DARWIN_USER_CACHE_DIR, dir, sizeof dir);
+        if (len == 0 || len > sizeof dir) {
+            return 1;
+        }
+        char path[2048];
+        snprintf(path, sizeof path, "%s%s", dir, arg);
+        int fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        return fd >= 0 && write(fd, marker, sizeof marker) == sizeof marker ? 0 : 1;
     }
     if (strcmp(op, "env") == 0) {
         /* arg is NAME=expected */

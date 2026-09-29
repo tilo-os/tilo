@@ -33,7 +33,10 @@ use launcher::netgate::EgressDecision;
 
 use crate::classify::{CodeSignature, MacLaunchMode, TrustRequirement, decide};
 use crate::codesign::{adhoc_sign, inspect, verify_process};
-use crate::policy::{PolicyError, PolicyInputs, SeatbeltNetwork, SeatbeltPolicy, app_environment};
+use crate::policy::{
+    DARWIN_DIR_SUFFIX_ENV, DarwinCache, PolicyError, PolicyInputs, SeatbeltNetwork, SeatbeltPolicy,
+    app_environment, prepare_darwin_cache,
+};
 use crate::sbpl::{self, SeatbeltProfile};
 
 /// The system's Seatbelt trampoline.
@@ -240,6 +243,7 @@ fn start_seatbelted(
     request: &LaunchRequest,
     executable: &Path,
 ) -> Result<libc::pid_t, LaunchError> {
+    let darwin_cache = darwin_cache(request);
     let policy = SeatbeltPolicy::resolve(&PolicyInputs {
         payload_dir: &request.payload_dir,
         runtime_dylib_dir: request.runtime_dylib_dir.as_deref(),
@@ -247,6 +251,7 @@ fn start_seatbelted(
         capabilities: &request.capabilities,
         egress: &request.egress,
         gate_socket: request.gate_socket.as_deref(),
+        darwin_cache: darwin_cache.as_ref().map(|cache| cache.dir.as_path()),
     })?;
     for gap in &policy.not_enforced {
         tracing::warn!(
@@ -270,6 +275,9 @@ fn start_seatbelted(
     if let SeatbeltNetwork::Gate(socket) = &policy.network {
         fixed.push(("TILO_NET_GATE".to_string(), socket.display().to_string()));
     }
+    if let Some(cache) = darwin_cache {
+        fixed.push((DARWIN_DIR_SUFFIX_ENV.to_string(), cache.suffix));
+    }
     let env = environment(&request.env, &fixed);
     spawn(
         Path::new(SANDBOX_EXEC),
@@ -282,6 +290,45 @@ fn start_seatbelted(
         program: PathBuf::from(SANDBOX_EXEC),
         source,
     })
+}
+
+/// The app's own per-user cache directory, so Metal keeps its compiled
+/// shaders across launches. Without one the app still runs; its shaders
+/// compile on every launch.
+fn darwin_cache(request: &LaunchRequest) -> Option<DarwinCache> {
+    let prepared = user_cache_dir()
+        .and_then(|user_cache| prepare_darwin_cache(&user_cache, &request.container_dir));
+    match prepared {
+        Ok(cache) => Some(cache),
+        Err(e) => {
+            tracing::warn!(
+                target: "tilo_launcher::macos",
+                package = %request.package_id,
+                "no shader cache for this launch: {e}"
+            );
+            None
+        }
+    }
+}
+
+/// `confstr(_CS_DARWIN_USER_CACHE_DIR)`: this user's cache directory below
+/// `/var/folders`.
+fn user_cache_dir() -> io::Result<PathBuf> {
+    let mut buf = vec![0_u8; libc::PATH_MAX as usize];
+    // SAFETY: `buf` is writable for `buf.len()` bytes; confstr writes at most
+    // that many, NUL included.
+    let len = unsafe {
+        libc::confstr(
+            libc::_CS_DARWIN_USER_CACHE_DIR,
+            buf.as_mut_ptr().cast(),
+            buf.len(),
+        )
+    };
+    if len == 0 || len > buf.len() {
+        return Err(io::Error::last_os_error());
+    }
+    buf.truncate(len - 1);
+    Ok(PathBuf::from(OsString::from_vec(buf)))
 }
 
 /// Apply `profile` to a throwaway child that then tries to exec a path that
@@ -558,6 +605,7 @@ mod tests {
                 payload: dir("payload"),
                 runtime: Some(dir("runtime")),
                 container: dir("container"),
+                darwin_cache: Some(dir("cache")),
                 read_only: vec![dir("ro")],
                 read_write: vec![dir("rw with \"quotes\" (and parens)")],
                 network,
