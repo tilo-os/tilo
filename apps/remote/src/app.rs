@@ -3610,13 +3610,17 @@ impl ui::resources::PublishesResources for RemoteApp {
         if self.actions.is_hosted() {
             return self.live_session_resources();
         }
-        let mut resources = self.publish_resources(doc);
-        if let Some(session) = self.live_session_resources().pop()
-            && let Some(workspace) = resources.first_mut()
-        {
-            workspace.children.push(session);
+        let state =
+            <crate::resource::Remote as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Remote>(
+            "remote.connections",
+            "Remote connections",
+            &state,
+        );
+        if let Some(session) = self.live_session_resources().pop() {
+            root.children.push(session);
         }
-        resources
+        vec![root]
     }
 }
 
