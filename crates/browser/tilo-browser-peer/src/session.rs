@@ -264,6 +264,7 @@ enum Command {
     Publish(DocumentRoute, Vec<Vec<u8>>),
     InstallCipher(DocumentRoute, Box<dyn ContentCipher>),
     OpenRoute(DocumentRoute),
+    PinGovernor(String, [u8; 32]),
     LiveJoin(u64),
     Live(u64, Vec<u8>),
     RemoteAction(u64, [u8; 32], Vec<u8>),
@@ -382,7 +383,15 @@ impl PeerHandle {
         let events: Queue = Arc::new(Mutex::new(VecDeque::new()));
         lock(&shared).queues.push(Arc::downgrade(&events));
         let record = store.load().unwrap_or_default();
-        let channels = crate::channels::Channels::new(config.cert.device_public_key);
+        let mut channels = crate::channels::Channels::new(
+            config.cert.device_public_key,
+            config.cert.user_public_key,
+        );
+        let saved = store
+            .load_channels()
+            .and_then(|bytes| postcard::from_bytes::<SavedPeerChannels>(&bytes).ok())
+            .unwrap_or_default();
+        channels.restore(saved.channels);
         let task = Task {
             config,
             signer,
@@ -396,7 +405,7 @@ impl PeerHandle {
             channels,
             channel_changes: crate::channels::Changes::default(),
             held_inbound: BTreeMap::new(),
-            held_outbound: BTreeMap::new(),
+            held_outbound: saved.held.into_iter().collect(),
             doc_seq: 0,
             barriers: Vec::new(),
             admission_since: None,
@@ -471,6 +480,17 @@ impl PeerHandle {
     /// Returns an error once the session is closed.
     pub fn open_route(&self, route: DocumentRoute) -> Result<(), String> {
         self.send(Command::OpenRoute(route))
+    }
+
+    /// Name the device that governs `room` (a room id), as the room itself
+    /// says: its channels are stewarded by that device only, whatever a
+    /// genesis frame claims.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn pin_governor(&self, room: &str, governor: [u8; 32]) -> Result<(), String> {
+        self.send(Command::PinGovernor(room.to_owned(), governor))
     }
 
     /// Join a room's live plane (after [`Self::join`]).
@@ -1141,6 +1161,13 @@ impl Task {
                 self.absorb(changes);
                 true
             }
+            Command::PinGovernor(room, governor) => {
+                let changes = self
+                    .channels
+                    .pin_governor(&room, governor, crate::clock::now_ms());
+                self.absorb(changes);
+                true
+            }
             Command::Publish(route, frames) => self.publish(route, frames, client).await,
             Command::Barrier(done) => {
                 match self.outbox.back() {
@@ -1201,9 +1228,11 @@ impl Task {
         let changes = self.channels.open(&route, crate::clock::now_ms());
         self.absorb(changes);
         if !self.ciphers.contains_key(&route) && self.channels.gated(&route) {
-            // Never in the clear on an encrypted channel: the frames wait
-            // for this device's keys.
+            // Never in the clear on an encrypted channel, nor before the
+            // page knows whether it is one: the frames wait for this
+            // device's keys or for the room's replay to name no governor.
             self.held_outbound.entry(route).or_default().extend(frames);
+            self.persist_channels(true);
             return true;
         }
         let mut delivered = true;
@@ -1260,6 +1289,8 @@ impl Task {
                 self.update(|status| {
                     status.rooms.insert(workspace_id, true);
                 });
+                let changes = self.channels.replayed(workspace_id);
+                self.absorb(changes);
                 self.emit(&PeerEvent::Ready { workspace_id });
             }
             Envelope::NotAuthorised { reason, .. } => {
@@ -1334,8 +1365,8 @@ impl Task {
                 let changes = self.channels.note_cert(author, *cert, now);
                 self.absorb(changes);
             }
-            Ok(neighbour_wire::NeighbourMsg::MlsGovernance { frame, .. }) => {
-                let changes = self.channels.receive_frame(author, *frame, now);
+            Ok(neighbour_wire::NeighbourMsg::MlsGovernance { room, frame, .. }) => {
+                let changes = self.channels.receive_frame(author, &room, *frame, now);
                 self.absorb(changes);
             }
             Ok(neighbour_wire::NeighbourMsg::AppDocument {
@@ -1375,8 +1406,34 @@ impl Task {
     }
 
     fn absorb(&mut self, changes: crate::channels::Changes) {
-        self.channel_changes.keys.extend(changes.keys);
-        self.channel_changes.outgoing.extend(changes.outgoing);
+        self.channel_changes.extend(changes);
+    }
+
+    /// Store channel state and held edits when either changed, so a
+    /// reloaded page keeps its access and what it wrote before the keys.
+    fn persist_channels(&mut self, held_changed: bool) {
+        let Some(channels) = self.channels.export_if_changed().or_else(|| {
+            held_changed.then(|| {
+                self.channels.mark_changed();
+                self.channels.export_if_changed().unwrap_or_default()
+            })
+        }) else {
+            return;
+        };
+        let saved = SavedPeerChannels {
+            channels,
+            held: self
+                .held_outbound
+                .iter()
+                .map(|(route, frames)| (route.clone(), frames.clone()))
+                .collect(),
+        };
+        let result = postcard::to_stdvec(&saved)
+            .map_err(|error| error.to_string())
+            .and_then(|bytes| self.store.save_channels(&bytes));
+        if let Err(error) = result {
+            self.fail_on(FailureSubject::Storage, "storage-transaction-failed", error);
+        }
     }
 
     /// Act on channel changes: install new keys, open what waited for them,
@@ -1386,8 +1443,16 @@ impl Task {
         let mut delivered = true;
         loop {
             let changes = std::mem::take(&mut self.channel_changes);
-            if changes.keys.is_empty() && changes.outgoing.is_empty() {
+            if changes.keys.is_empty() && changes.outgoing.is_empty() && changes.released.is_empty()
+            {
+                self.persist_channels(false);
                 return delivered;
+            }
+            let held_before = self.held_outbound.len();
+            for route in changes.released {
+                if let Some(frames) = self.held_outbound.remove(&route) {
+                    delivered &= self.publish(route, frames, client).await;
+                }
             }
             for (route, keys) in changes.keys {
                 self.ciphers
@@ -1398,6 +1463,9 @@ impl Task {
                 if let Some(frames) = self.held_outbound.remove(&route) {
                     delivered &= self.publish(route, frames, client).await;
                 }
+            }
+            if self.held_outbound.len() != held_before {
+                self.persist_channels(true);
             }
             for outgoing in changes.outgoing {
                 let Some(client) = client else {
@@ -1413,6 +1481,14 @@ impl Task {
             }
         }
     }
+}
+
+/// A page's channel state and the edits it holds for the durable store,
+/// beside its [`PeerRecord`].
+#[derive(Default, serde::Serialize, serde::Deserialize)]
+struct SavedPeerChannels {
+    channels: crate::channels::SavedChannels,
+    held: Vec<(DocumentRoute, Vec<Vec<u8>>)>,
 }
 
 /// Sign a governance message with the device key and wrap it for the host,
