@@ -15394,7 +15394,6 @@ dependencies = [
  "advisory-lock",
  "atomic-file",
  "js-sys",
- "libc",
  "notify",
  "private-fs",
  "rustix 1.1.4",
@@ -15405,7 +15404,6 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
- "windows-sys 0.61.2",
  "workspace-hack",
 ]
 
