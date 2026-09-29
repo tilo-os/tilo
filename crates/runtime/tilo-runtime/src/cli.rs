@@ -21,6 +21,10 @@ fn configure_profile(profile: &Path) -> io::Result<()> {
 /// run loop the daemon does not have.
 pub const CHOOSER_HELPER_ARG: &str = "--file-chooser";
 
+/// Runs this executable as the consent prompt shown before a confined app
+/// first captures from a camera or microphone (macOS).
+pub const CONSENT_HELPER_ARG: &str = "--device-consent";
+
 fn run<S: RuntimeServices>() -> io::Result<()> {
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     #[cfg(target_os = "macos")]
@@ -29,6 +33,13 @@ fn run<S: RuntimeServices>() -> io::Result<()> {
         .is_some_and(|argument| argument == CHOOSER_HELPER_ARG)
     {
         return tilo_dialogs::confined::run_chooser_helper();
+    }
+    #[cfg(target_os = "macos")]
+    if arguments
+        .first()
+        .is_some_and(|argument| argument == CONSENT_HELPER_ARG)
+    {
+        return tilo_dialogs::confined::run_consent_helper();
     }
     // Legacy manifest invocation remains an independently owned stdio session.
     if arguments

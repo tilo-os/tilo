@@ -159,6 +159,39 @@ pub(crate) fn show_modal(request: &PickRequest) -> Result<Option<Vec<std::path::
     }
 }
 
+/// Ask the person a yes-or-no question in an alert of its own, modally, in a
+/// process of its own that becomes a foreground app while it asks: the
+/// runtime's consent prompt for a confined app. The refusing button comes
+/// first, so Return refuses. `true` when they chose `allow`.
+///
+/// # Errors
+///
+/// Not on the main thread.
+pub(crate) fn ask_modal(
+    message: &str,
+    detail: &str,
+    allow: &str,
+    refuse: &str,
+) -> Result<bool, String> {
+    use objc2_app_kit::{
+        NSAlert, NSAlertSecondButtonReturn, NSApplication, NSApplicationActivationPolicy,
+    };
+    let mtm = MainThreadMarker::new().ok_or("the alert must run on the main thread")?;
+    let app = NSApplication::sharedApplication(mtm);
+    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    #[allow(
+        deprecated,
+        reason = "a helper process has no other app to cooperate with"
+    )]
+    app.activateIgnoringOtherApps(true);
+    let alert = NSAlert::new(mtm);
+    alert.setMessageText(&NSString::from_str(message));
+    alert.setInformativeText(&NSString::from_str(detail));
+    alert.addButtonWithTitle(&NSString::from_str(refuse));
+    alert.addButtonWithTitle(&NSString::from_str(allow));
+    Ok(alert.runModal() == NSAlertSecondButtonReturn)
+}
+
 /// What `panel` answered with `response`.
 fn picked(
     panel: &NSSavePanel,

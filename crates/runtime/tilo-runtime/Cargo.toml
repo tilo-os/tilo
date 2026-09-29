@@ -88,6 +88,8 @@ fuser.workspace = true
 launcher-macos = { path = "../../packaging/launcher-macos" }
 # The file chooser a confined app asks this runtime to show.
 tilo-dialogs = { path = "../../platform/tilo-dialogs" }
+# The camera and microphone a confined app asks this runtime to capture.
+tilo-capture = { path = "../../platform/tilo-capture", features = ["camera", "microphone"] }
 # The login Keychain keeps the channel-state key.
 tilo-secrets = { path = "../../platform/tilo-secrets" }
 
