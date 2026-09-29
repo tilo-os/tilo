@@ -35,18 +35,21 @@ if [[ ${TILO_IN_PACKAGE_CONTAINER:-0} != 1 ]]; then
         # object key. Sharing the namespace by architecture safely reuses the
         # large distro-neutral Rust graph while ABI-specific objects naturally
         # miss, instead of forcing five entirely isolated cold caches.
-        export SCCACHE_S3_KEY_PREFIX="tilo/package/v2/$arch"
+        # The runner's sccache backend is the job's Actions cache
+        # (SCCACHE_GHA_ENABLED, ACTIONS_CACHE_URL, ACTIONS_RUNTIME_TOKEN).
+        export SCCACHE_GHA_VERSION="tilo/package/v2/$arch"
         export SCCACHE_IGNORE_SERVER_IO_ERROR=1
         while IFS= read -r name; do
             cache_env+=(--env "$name")
-        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+        done < <(compgen -e | grep -E '^(SCCACHE_|ACTIONS_CACHE_URL$|ACTIONS_RUNTIME_TOKEN$)' || true)
     else
         # PRoot inherits this process's environment, unlike Docker where only
-        # cache_env is forwarded. Scrub runner-injected credentials before an
-        # untrusted pull request can enter either target userspace.
+        # cache_env is forwarded. Scrub the runner's cache configuration and
+        # any credentials before an untrusted pull request can enter either
+        # target userspace.
         while IFS= read -r name; do
             unset "$name"
-        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_)' || true)
+        done < <(compgen -e | grep -E '^(AWS_|SCCACHE_|ACTIONS_CACHE_URL$|ACTIONS_RUNTIME_TOKEN$|RUSTC_WRAPPER$)' || true)
     fi
 
     repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
