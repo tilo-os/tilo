@@ -41,17 +41,26 @@ AWS inventory on 2026-09-29 showed two running `r7a.metal-48xl` CI machines
 in the `ci-x86` pool, managed by OpenTofu; they are not general SSH hosts for
 installing a Nix daemon. The EKS API currently admits only three configured
 public CIDRs, none of which is this development machine. AWS login alone does
-not supply cluster access. No production infrastructure was changed.
+not supply cluster access. Both observed x86 metal instances are Spot; a new
+CI controller cannot make those nodes interruption-proof. No production
+infrastructure was changed.
 
-Given that topology, use Argo Workflows as the candidate CI execution plane.
-Argo CD deploys its controller/templates, Forgejo sends commit or merge
-candidate events to a thin status/admission bridge, and Argo creates jobs with
-explicit CPU, memory, scratch and node requirements on the existing x86/ARM
-pools. This replaces the custom Forgejo Actions runner broker rather than
-adding a parallel runner fleet. Keep the existing affected-package planner and
-build scripts at first; turn their selected work into a generated DAG instead
-of embedding product decisions in workflow YAML. Preserve the current merge
-queue's candidate SHA and status contract until the new path proves equivalent.
+The existing CI already uses Kata microVMs on Kubernetes, with a Forgejo
+Actions runner broker and warm disk/image seeds. Argo Workflows would not
+replace Kata or Kubernetes; it could only replace the Actions/broker job
+lifecycle with direct workflow pods. That is a meaningful change only if it
+removes runner registration/heartbeat and broker failures without losing the
+measured warm path. Do not choose Argo merely because the hosts run Kubernetes.
+
+Keep the existing affected-package planner, merge-candidate status contract,
+and build scripts while comparing one identical job and an 80-job burst through
+both execution paths. Measure queue-to-command latency, lost jobs, artifact
+delivery, cache warmth and human intervention. If direct Argo pods win, Argo
+CD can deploy the controller/templates and a thin Forgejo status bridge can
+submit generated DAGs. If they do not, retain Forgejo Actions as executor and
+put the structural effort into artifact selection, receipts and VM development.
+Either way, developers and agents should use a Tilo CI CLI/API and the Forgejo
+check summary; the workflow controller's UI is an operations view.
 
 Nix and BuildStream remain candidates for the artifact/build graph, not the
 cluster scheduler. Nix can run in a container or persistent builder pod, but
@@ -60,7 +69,7 @@ design; the current monolithic source derivation already invalidates on a
 README edit. Hydra would add a separate NixOS/PostgreSQL control plane and
 compete with Kubernetes for scheduling. It is no longer the default choice
 for this Talos/Argo CD environment. If Nix's artifact graph wins a measured
-fit test, invoke it from the same Argo workflow and give it a dedicated cache
+fit test, invoke it from the chosen CI executor and give it a dedicated cache
 and builder pool. For PR-controlled code, isolate builders from signing keys.
 
 ## VM development plane
@@ -91,12 +100,12 @@ graph: (1) shell-only edit, (2) shared toolkit edit, (3) boot-chain edit.
 For each, record changed derivations, executed CPU-minutes, cache bytes moved,
 time to usable Tilo VM, KVM result, and human interventions. The candidate
 must make the existing bootc image and its VM tests first-class outputs; a
-successful Nix build of `tilo-session` alone is insufficient. Run one
-representative PR burst through Argo Workflows on the existing pool. Compare
-native scripts, Nix and BuildStream on the three changes before selecting the
-build graph. Migrate one output class at a time. Keep the present Forgejo
-merge gate active until the replacement emits equivalent status for the
-actual merge candidate.
+successful Nix build of `tilo-session` alone is insufficient. Compare native
+scripts, Nix and BuildStream on the three changes before selecting the build
+graph. Compare Actions/Kata with direct Argo/Kata execution separately. Migrate
+one output class at a time only after both comparisons favor the new path.
+Keep the present Forgejo merge gate active until any replacement emits
+equivalent status for the actual merge candidate.
 
 BuildStream remains a valid competing graph engine for the bootc image. A
 linear build graph, VM provisioning layer, and CI control plane may be
