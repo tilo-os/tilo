@@ -43,7 +43,8 @@ app="$mountpoint/Tilo.app"
 
 contents="$app/Contents"
 agent="$contents/Library/LaunchAgents/so.tilo.runtime.plist"
-for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime"; do
+for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
+            "$contents/MacOS/tilo-runtime-update"; do
   [ -f "$path" ] && [ -x "$path" ] || fail "missing executable ${path#"$mountpoint"/}"
   [ "$(lipo -archs "$path" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || fail "${path#"$mountpoint"/} is not universal"
@@ -51,12 +52,24 @@ for path in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime"; do
   grep -Eq '^CodeDirectory .*flags=.*runtime' <<<"$signature" \
     || fail "${path#"$mountpoint"/} is not signed with the hardened runtime"
 done
-plutil -lint -s "$contents/Info.plist" "$agent"
+update_agent="$contents/Library/LaunchAgents/so.tilo.runtime.update.plist"
+plutil -lint -s "$contents/Info.plist" "$agent" "$update_agent"
 plist() { /usr/libexec/PlistBuddy -c "Print :$2" "$1"; }
 [ "$(plist "$contents/Info.plist" CFBundleExecutable)" = Tilo ] || fail 'CFBundleExecutable is not Tilo'
 [ "$(plist "$contents/Info.plist" CFBundleIdentifier)" = so.tilo.runtime ] || fail 'bundle id is not so.tilo.runtime'
 [ "$(plist "$agent" Label)" = so.tilo.runtime ] || fail 'agent label is not so.tilo.runtime'
 [ "$(plist "$agent" BundleProgram)" = Contents/MacOS/tilo-runtime ] || fail 'agent BundleProgram does not name the runtime'
+[ "$(plist "$update_agent" BundleProgram)" = Contents/MacOS/tilo-runtime-update ] \
+  || fail 'update agent BundleProgram does not name the updater'
+# A bundle without a feed key must decline to update itself, from inside the
+# bundle, without touching the network.
+if ! plist "$contents/Info.plist" TiloUpdateFeedURL >/dev/null 2>&1; then
+  [ "$("$contents/MacOS/tilo-runtime-update" --check)" = 'this build updates through its installer' ] \
+    || fail 'an update-less bundle did not decline to update itself'
+elif [ "$require_signing" = 1 ]; then
+  [[ "$(plist "$contents/Info.plist" TiloUpdatePublicKey)" =~ ^[0-9a-f]{64}$ ]] \
+    || fail 'the update feed has no public key'
+fi
 codesign --verify --deep --strict --verbose=2 "$app"
 
 if [ "$require_signing" = 1 ]; then

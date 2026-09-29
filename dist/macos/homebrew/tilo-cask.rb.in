@@ -11,7 +11,7 @@ cask "tilo" do
 
   app "Tilo.app"
 
-  uninstall launchctl: "so.tilo.runtime",
+  uninstall launchctl: ["so.tilo.runtime", "so.tilo.runtime.update"],
             quit:      "so.tilo.runtime"
 
   # Not ~/Library/Application Support/Tilo itself: on a case-insensitive
