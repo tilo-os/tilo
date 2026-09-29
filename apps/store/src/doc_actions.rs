@@ -1,12 +1,25 @@
 //! Replayable Store-document actions for durable, collaborative reports.
+//!
+//! Resource-tree builders for [`tilo_resource::publish`] live here so the
+//! palette door and the CRDT mutations stay one vocabulary.
 
 use automerge::transaction::Transactable;
-use automerge::{ObjType, ROOT};
+use automerge::{ObjType, ROOT, ReadDoc};
 use serde::{Deserialize, Serialize};
-use tilo_actions::{Action, ActionError, ActionRegistry, Doc};
+use tilo_actions::{
+    Action, ActionError, ActionRegistry, ActionSpec, Doc, EncodedAction, ExecutionLocus, Resource,
+};
+
+use crate::resource::{ReportProjection, StoreState};
 
 pub const STORE_DOCUMENT_ACTION_TYPE: &str = "store.document";
 pub const REPORT_RESOURCE_KEY_PREFIX: &str = "store.report_resource.";
+pub const REPORT_CASE_KEY_PREFIX: &str = "store.report_case.";
+pub const REPORT_NOTE_KEY_PREFIX: &str = "store.report_note.";
+const REPORT_SNAPSHOT_LIMIT: usize = 128;
+const MAX_REPORT_STATUS_CHARS: usize = 128;
+const MAX_REPORT_NOTE_CHARS: usize = 4_096;
+const MAX_CASE_ID_CHARS: usize = 128;
 
 fn valid_app_id(value: &str) -> bool {
     !value.is_empty()
@@ -61,6 +74,112 @@ impl Action for StoreDocumentAction {
 
 pub fn register(registry: &mut ActionRegistry) {
     registry.register::<StoreDocumentAction>(STORE_DOCUMENT_ACTION_TYPE);
+}
+
+fn valid_case_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.chars().count() <= MAX_CASE_ID_CHARS
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == '.' || ch == '-' || ch == ':')
+}
+
+fn note_at(doc: &Doc, app_id: &str) -> String {
+    ui::doc::read_text(doc, &ROOT, &format!("{REPORT_NOTE_KEY_PREFIX}{app_id}"))
+        .unwrap_or_default()
+        .chars()
+        .take(MAX_REPORT_NOTE_CHARS)
+        .collect()
+}
+
+/// Shared report projection for [`tilo_resource::publish`].
+pub(crate) fn state_from_doc(doc: &Doc) -> StoreState {
+    let mut reports = doc
+        .keys(&ROOT)
+        .filter_map(|key| {
+            let app_id = key.strip_prefix(REPORT_RESOURCE_KEY_PREFIX)?.to_string();
+            if !valid_app_id(&app_id) {
+                return None;
+            }
+            let status = doc
+                .get(&ROOT, &key)
+                .ok()
+                .flatten()?
+                .0
+                .as_str()?
+                .chars()
+                .take(MAX_REPORT_STATUS_CHARS)
+                .collect::<String>();
+            let id = doc
+                .get(&ROOT, format!("{REPORT_CASE_KEY_PREFIX}{app_id}"))
+                .ok()
+                .flatten()
+                .and_then(|(value, _)| value.as_str().map(str::to_owned))
+                .filter(|value| valid_case_id(value))
+                .unwrap_or_else(|| format!("report:{app_id}"));
+            Some(ReportProjection {
+                id,
+                note: note_at(doc, &app_id),
+                app_id,
+                status,
+            })
+        })
+        .take(REPORT_SNAPSHOT_LIMIT)
+        .collect::<Vec<_>>();
+    reports.sort_by(|a, b| a.app_id.cmp(&b.app_id));
+    StoreState { reports }
+}
+
+/// Moderation child with report drafts / set-note for the framework door.
+pub(crate) fn report_document_children(state: &StoreState) -> Vec<Resource> {
+    let mut moderation =
+        Resource::new("store:moderation", "store.moderation", "Trust & moderation");
+    if let Ok(show) = ActionSpec::operation(
+        "show",
+        "Show trust and moderation",
+        tilo_actions::OperationKind::View,
+        "store.view-trust",
+        &(),
+    ) {
+        moderation.actions.push(show);
+    }
+    for report in &state.reports {
+        let mut report_resource = Resource::new(
+            report.id.clone(),
+            "store.report",
+            format!("{} · {}", report.app_id, report.status),
+        );
+        let note_app_id = report.app_id.clone();
+        report_resource.actions.push(ActionSpec::prompted(
+            "set-note",
+            "Set report concern",
+            "Concern and supporting evidence",
+            "Describe what happened and how it can be verified",
+            ExecutionLocus::ClientLocal,
+            move |note| {
+                EncodedAction::encode(
+                    STORE_DOCUMENT_ACTION_TYPE,
+                    &StoreDocumentAction::SetReportNote {
+                        app_id: note_app_id.clone(),
+                        note: note.to_owned(),
+                    },
+                )
+                .unwrap_or_else(|_| EncodedAction {
+                    type_id: STORE_DOCUMENT_ACTION_TYPE.into(),
+                    payload: Vec::new(),
+                })
+            },
+        ));
+        if !report.note.trim().is_empty() {
+            report_resource.children.push(Resource::new(
+                format!("{}:note", report.id),
+                "store.report-note",
+                report.note.clone(),
+            ));
+        }
+        moderation.children.push(report_resource);
+    }
+    vec![moderation]
 }
 
 #[cfg(test)]
