@@ -559,6 +559,38 @@ shaders):
 | 9 | hashbrown | 418 | | 19 | image_webp | 103 |
 | 10 | serde_json | 387 | | 20 | regex_syntax | 102 |
 
+## Collaboration end to end
+
+`crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
+apps, headless Chrome pages and a host agent in one room of a local
+`tilo-relay dev` host on spare ports, and checks what a person would see: the
+same record on every side; edits native to browser, browser to native and
+browser to browser, with the time until the other side shows them; named
+cursors and carets both ways; a page that joins late; an agent's edit and
+cursor on native and in the pages; and a reloaded page that keeps its device
+and room membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
+under a throwaway runtime profile that carries the dev host's user root, two
+pages, then a third, and (with `--agents --agent-model scripted`) an agent
+spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
+table) under `--out` and stops everything it started.
+
+```sh
+cargo build --release -p tilo-relay --features web,agents
+cargo build -p shell --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
+crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
+node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
+  --apps notes,sheets,scratchpad --out /abs/e2e
+```
+
+`--build` runs those builds itself (the bundle with `--profile dev` into
+`OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
+for a relay without `agents`. The native window is read and edited from
+outside the process through the macOS accessibility API
+(`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
+running the script needs Accessibility permission; the native pointer moves
+through a `TILO_NATIVE_SCENARIO` timeline. Native presence from the pages is
+read from the runtime daemon's log. macOS only.
+
 ## Tests
 
 ```sh
