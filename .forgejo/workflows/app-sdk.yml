@@ -106,6 +106,12 @@ jobs:
     needs: [builder]
     runs-on: runner-quality
     timeout-minutes: 180
+    # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
+    # app for two targets) share one target directory on the runner's disk.
+    env:
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
     container:
       image: ${{ needs.builder.outputs.image }}
     steps:
