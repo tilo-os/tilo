@@ -869,7 +869,7 @@ emoji-picker-hint = Eingabe fügt ein · Esc schließt
 emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
 emoji-picker-tones = Hauttöne
 emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+emoji-picker-a11y-description = Tippe, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem du geschrieben hast, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
 
 # Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
 emoji-picker-toned = { $name }, { $tone }
@@ -896,7 +896,7 @@ a11y-shell-wheel-add = Arbeitsbereich hinzufügen
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
 overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für Sie
+overview-access-private = Nur für dich
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
@@ -904,9 +904,9 @@ overview-shares = { $count ->
         [one] 1 Element geteilt
        *[other] { $count } Elemente geteilt
     }
-overview-presence-you = Sie sind hier
-overview-presence-you-and-one = Sie und { $name } sind hier
-overview-presence-you-and-many = Sie und { $count } weitere sind hier
+overview-presence-you = Du bist hier
+overview-presence-you-and-one = Du und { $name } seid hier
+overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
 overview-collaborators-here = { $count } Mitwirkende sind hier
