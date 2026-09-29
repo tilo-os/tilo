@@ -13,7 +13,7 @@
 //!
 //! The resource tree mirrors the model: the vault owns its connections. The
 //! vault exports profile import (per protocol) and the global Tor toggle; each
-//! connection exports rename / toggle-Tor / delete.
+//! connection exports connect / disconnect / rename / toggle-Tor / delete.
 //!
 //! ## What is *not* an action
 //!
@@ -59,6 +59,7 @@ pub const VPN_ACTION_TYPE: &str = "vpn.action";
 pub const VPN_IMPORT_TYPE: &str = "vpn.import-profile";
 pub const VPN_DELETE_TYPE: &str = "vpn.delete-profile";
 pub const VPN_PROVISION_TYPE: &str = "vpn.provision-profile";
+pub const VPN_TOGGLE_TYPE: &str = "vpn.toggle-tunnel";
 
 /// Every collaborative operation the VPN client exports on its saved fleet.
 ///
@@ -213,6 +214,37 @@ fn config_contract() -> ActionContract {
     }
 }
 
+/// Connect / disconnect Effects for one saved profile. Live surfaces overlay
+/// availability from local NetworkManager provisioning; the resource door
+/// always advertises both so [`tilo_resource::publish`] owns the palette row.
+pub fn tunnel_toggle_specs(id: ConnId) -> Vec<ActionSpec> {
+    [("connect", "Connect"), ("disconnect", "Disconnect")]
+        .into_iter()
+        .filter_map(|(action_id, label)| {
+            ActionSpec::operation(
+                action_id,
+                label,
+                OperationKind::Effect,
+                VPN_TOGGLE_TYPE,
+                &id.to_string(),
+            )
+            .ok()
+            .map(|spec| {
+                spec.with_contract(ActionContract {
+                    permission: PermissionRequirement::Admin,
+                    risk: RiskLevel::Privileged,
+                    confirmation: ConfirmationPolicy::Confirm,
+                    retry: RetryPolicy::AtMostOnce,
+                    execution: ExecutionMode::Background { cancellable: true },
+                    result: ResultSpec::Job,
+                    tags: vec!["vpn".into(), "tunnel".into()],
+                    ..ActionContract::default()
+                })
+            })
+        })
+        .collect()
+}
+
 /// A one-line label for a connection in the palette.
 fn connection_label(c: &Connection) -> String {
     format!("{} — {} · {}", c.name, c.kind.long_name(), c.status.label())
@@ -305,6 +337,9 @@ pub fn provide_resources(vault: &Vault) -> Vec<Resource> {
                 ..ActionContract::default()
             };
             cr = cr.with_action(provision);
+        }
+        for toggle in tunnel_toggle_specs(id) {
+            cr = cr.with_action(toggle);
         }
         // Never make endpoint, routing, address, certificate/key or other
         // tunnel material searchable. A peer can navigate the stable profile
@@ -487,6 +522,8 @@ mod tests {
             let h_actions: Vec<&str> = home.actions.iter().map(|a| a.id.as_str()).collect();
             assert!(h_actions.contains(&"toggle-tor"), "{h_actions:?}");
             assert!(h_actions.contains(&"delete"), "{h_actions:?}");
+            assert!(h_actions.contains(&"connect"), "{h_actions:?}");
+            assert!(h_actions.contains(&"disconnect"), "{h_actions:?}");
 
             // The flattened tree exports every action, including the per-connection
             // operations that sort after the vault-level ones.
@@ -496,6 +533,8 @@ mod tests {
                 .collect();
             assert!(flat.contains(&"Delete connection"), "{flat:?}");
             assert!(flat.contains(&"Import WireGuard profile"), "{flat:?}");
+            assert!(flat.contains(&"Connect"), "{flat:?}");
+            assert!(flat.contains(&"Disconnect"), "{flat:?}");
         }
         // Case `out_of_range_action_is_a_no_op`:
         // A malformed / out-of-range payload is a no-op, not an error: deleting a
@@ -574,6 +613,8 @@ mod tests {
             "Route all traffic over Tor",
             "Import WireGuard profile",
             "Import OpenVPN profile",
+            "Connect",
+            "Disconnect",
             "Delete connection",
             "Set up on this device",
         ],
