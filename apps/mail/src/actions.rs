@@ -1152,6 +1152,11 @@ pub fn provide_resources(ctx: &MailResourceCtx, doc: &AutoCommit) -> Vec<Resourc
     );
     let protocol = mailbox_root(ctx);
     let mut root = published;
+    // Prefer the contextual View/Effect-enriched folder/message page over
+    // publish's Document-only children. Keep the rich-text draft body from
+    // publish. Hosted ResourceRoot keeps those Document children as the door.
+    root.children
+        .retain(|child| child.id.as_str() == "mail.draft:current/body");
     for action in protocol.actions {
         if root.actions.iter().any(|existing| existing.id == action.id) {
             continue;
@@ -1282,6 +1287,189 @@ pub(crate) fn system_folder_resource(folder: Folder, has_draft: bool) -> Resourc
         );
     }
     folder_node
+}
+
+/// Mailbox-level Document ops for [`tilo_resource::publish`] — bulk triage and
+/// new-folder. Compose / refresh / invitation stay Views/Effects on the
+/// contextual standalone tree (and refresh availability needs a live account).
+pub(crate) fn mailbox_bound_document_actions() -> Vec<ActionSpec> {
+    vec![
+        bulk_spec(
+            "archive-messages",
+            "Archive messages",
+            "Stable ids of loaded messages to archive together",
+            true,
+            |ids| move_action(ids, Folder::Archive),
+        ),
+        bulk_spec(
+            "move-messages-to-trash",
+            "Move messages to Trash",
+            "Stable ids of loaded messages to move to Trash together",
+            true,
+            |ids| move_action(ids, Folder::Trash),
+        ),
+        bulk_spec(
+            "mark-messages-read",
+            "Mark messages read",
+            "Stable ids of loaded messages to mark read together",
+            true,
+            |ids| set_read_action(ids, true),
+        ),
+        bulk_spec(
+            "mark-messages-unread",
+            "Mark messages unread",
+            "Stable ids of loaded messages to mark unread together",
+            true,
+            |ids| set_read_action(ids, false),
+        ),
+        bulk_spec(
+            "purge-trashed-messages",
+            "Delete trashed messages permanently",
+            "Stable ids of messages already in Trash to delete permanently",
+            false,
+            purge_action,
+        )
+        .destructive(),
+        ActionSpec::prompted(
+            "new-folder",
+            "New folder",
+            "Name",
+            "folder name…",
+            ExecutionLocus::ClientLocal,
+            move |name: &str| {
+                let id = uuid::Uuid::new_v4().to_string();
+                encode(&create_folder_action(&id, name.trim()))
+            },
+        )
+        .reversible(),
+    ]
+}
+
+/// Message Document ops for [`tilo_resource::publish`] — read / star / archive /
+/// delete / labels. Open / reply / forward / save-attachment stay Views/Effects.
+pub(crate) fn publish_message_document(message: &MessageRow) -> Resource {
+    let mut resource = Resource::new(
+        format!("mail.message:{}", message.id),
+        "mail.message",
+        message_label(message),
+    );
+    resource = resource.with_action(immediate_spec(
+        "read",
+        if message.read {
+            "Mark unread"
+        } else {
+            "Mark read"
+        },
+        &set_read_action(vec![message.id.clone()], !message.read),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "star",
+        if message.starred { "Unstar" } else { "Star" },
+        &set_starred_action(vec![message.id.clone()], !message.starred),
+    ));
+    resource = resource.with_action(immediate_spec(
+        "archive",
+        "Archive",
+        &move_action(vec![message.id.clone()], Folder::Archive),
+    ));
+    let delete = if message.folder == Folder::Trash {
+        immediate_spec(
+            "delete",
+            "Delete permanently",
+            &purge_action(vec![message.id.clone()]),
+        )
+    } else {
+        immediate_spec(
+            "delete",
+            "Delete",
+            &move_action(vec![message.id.clone()], Folder::Trash),
+        )
+    };
+    resource = resource.with_action(delete.destructive());
+
+    let message_id = message.id.clone();
+    resource = resource.with_action(ActionSpec::prompted(
+        "add-label",
+        "Add label…",
+        "Label",
+        "label…",
+        ExecutionLocus::ClientLocal,
+        move |label: &str| encode(&add_label_action(vec![message_id.clone()], label.trim())),
+    ));
+    for (index, label) in message.labels.iter().enumerate() {
+        resource = resource.with_action(immediate_spec(
+            &format!("remove-label-{index}"),
+            &format!("Remove label “{label}”"),
+            &remove_label_action(vec![message.id.clone()], label),
+        ));
+    }
+    resource
+}
+
+fn publish_system_folder_document(folder: Folder, has_draft: bool) -> Resource {
+    let mut folder_node = Resource::new(
+        format!("mail.folder:{}", folder.as_key()),
+        "mail.folder",
+        folder.title().to_string(),
+    );
+    if folder == Folder::Drafts && has_draft {
+        folder_node = folder_node.with_action(
+            immediate_spec("discard-draft", "Discard draft", &discard_draft_action()).destructive(),
+        );
+        folder_node = folder_node.with_child(
+            Resource::new("mail.draft:current", "mail.draft", "Current draft").with_action(
+                immediate_spec("discard", "Discard draft", &discard_draft_action()).destructive(),
+            ),
+        );
+    }
+    folder_node
+}
+
+fn publish_custom_folder_document(id: &str, name: &str) -> Resource {
+    let rid = id.to_owned();
+    Resource::new(format!("mail.folder:{id}"), "mail.folder", name.to_owned())
+        .with_action(
+            ActionSpec::prompted(
+                "rename",
+                "Rename folder",
+                "Name",
+                "folder name…",
+                ExecutionLocus::ClientLocal,
+                move |n: &str| encode(&rename_folder_action(&rid, n.trim())),
+            )
+            .reversible(),
+        )
+        .with_action(
+            immediate_spec("delete-folder", "Delete folder", &delete_folder_action(id))
+                .destructive(),
+        )
+}
+
+/// Folder / message Document children for [`tilo_resource::publish`]. Bounded
+/// like the standalone eager page; subjects stay on the contextual tree.
+pub(crate) fn publish_document_children(state: &crate::resource::MailboxState) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let mut remaining = OPEN_MESSAGE_LIMIT;
+    for folder in Folder::ALL {
+        let mut folder_node = publish_system_folder_document(folder, state.has_draft);
+        if remaining > 0 {
+            let folder_messages: Vec<&MessageRow> = state
+                .messages
+                .iter()
+                .filter(|message| message.folder == folder)
+                .take(remaining)
+                .collect();
+            for message in folder_messages {
+                folder_node = folder_node.with_child(publish_message_document(message));
+                remaining = remaining.saturating_sub(1);
+            }
+        }
+        children.push(folder_node);
+    }
+    for (id, name) in &state.custom_folders {
+        children.push(publish_custom_folder_document(id, name));
+    }
+    children
 }
 
 pub(crate) fn thread_resource_key(folder: Folder, thread_id: &str) -> String {

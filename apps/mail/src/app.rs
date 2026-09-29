@@ -419,6 +419,24 @@ impl MailApp {
         self.compose.attach_framework(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.shared.borrow().actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.shared.borrow_mut().actions.mark_hosted_for_test();
+    }
+
+    pub(crate) fn has_pending_send(&self) -> bool {
+        self.pending_send.is_some()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mailbox_message_count(&self) -> usize {
+        self.shared.borrow().mailbox.messages.len()
+    }
+
     /// The hermetic constructor used by `--shots` and tests: the bundled
     /// sample corpus, no engine, deterministic "now".
     pub fn new_sample() -> Self {
@@ -5440,13 +5458,12 @@ impl ui::search::capability::SearchSource for MailApp {
 }
 
 impl ui::resources::PublishesResources for MailApp {
-    /// Publish the open mailbox + its folders/messages so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` keeps the full hand-built door. When hosted,
+    /// folder/message Document ops ride [`tilo_resource::publish`]; this
+    /// returns only live extras — never a second `mail.mailbox` Document door.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         if self.shared.borrow().actions.is_hosted() {
-            return Vec::new();
+            return crate::resource::live_extras(self);
         }
         self.publish_resources(doc)
     }
@@ -5456,6 +5473,14 @@ impl ui::resources::PublishesResources for MailApp {
         cursor: &[u8],
         max_results: usize,
     ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        if self.shared.borrow().actions.is_hosted() {
+            // Document mailbox root is ResourceRoot's publish, not a second page.
+            return Some(ui::widget::ActionDirectoryResourcePage {
+                resources: Vec::new(),
+                next_cursor: Vec::new(),
+                exhausted: true,
+            });
+        }
         Some(ui::widget::ActionDirectoryResourcePage {
             resources: (cursor.is_empty() && max_results > 0)
                 .then(|| crate::actions::mailbox_root(&self.mail_resource_ctx(doc)))
