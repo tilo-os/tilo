@@ -35,6 +35,10 @@ pub enum TerminalAction {
     /// A new local process is taking this tab. Drop the previous process's
     /// grid, cursor, links, and images, and record the process id.
     BindLocalSession { session_id: String },
+    /// Register one OSC 8 hyperlink on the shared session.
+    RegisterLink { id: u16, url: String },
+    /// Write the shared pane id when no peer has claimed it yet.
+    ClaimPane { pane_id: String },
 }
 
 impl Action for TerminalAction {
@@ -69,6 +73,29 @@ impl Action for TerminalAction {
                     let _ = doc.delete(ROOT, key);
                 }
                 doc.put(ROOT, "terminal_local_session", session_id.as_str())?;
+            }
+            Self::RegisterLink { id, url } => {
+                if *id == 0 || url.is_empty() || url.len() > 2 * 1024 {
+                    return Err(ActionError::Refused("hyperlink is invalid".into()));
+                }
+                let links = match doc.get(ROOT, "terminal_links")? {
+                    Some((_, existing)) => existing,
+                    None => doc.put_object(ROOT, "terminal_links", automerge::ObjType::Map)?,
+                };
+                let key = id.to_string();
+                if doc.get(&links, &key)?.is_none() && doc.length(&links) >= 4096 {
+                    return Err(ActionError::Refused("hyperlink table is full".into()));
+                }
+                doc.put(&links, key, url.as_str())?;
+            }
+            Self::ClaimPane { pane_id } => {
+                if pane_id.is_empty() || pane_id.len() > 128 {
+                    return Err(ActionError::Refused("pane id is invalid".into()));
+                }
+                if doc.get(ROOT, "terminal_pane_id")?.is_some() {
+                    return Ok(());
+                }
+                doc.put(ROOT, "terminal_pane_id", pane_id.as_str())?;
             }
         }
         Ok(())
@@ -313,6 +340,38 @@ mod tests {
         assert_eq!(
             read_string(&doc, "terminal_local_session").as_deref(),
             Some("process-2")
+        );
+    }
+
+    #[test]
+    fn register_link_and_claim_pane_are_replayable() {
+        let mut doc = ui::automerge::AutoCommit::new();
+        TerminalAction::RegisterLink {
+            id: 1,
+            url: "https://tilo.so".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let links = doc
+            .get(automerge::ROOT, "terminal_links")
+            .unwrap()
+            .map(|(_, id)| id)
+            .unwrap();
+        let stored = doc.get(&links, "1").unwrap().map(|(value, _)| value);
+        assert!(matches!(stored, Some(automerge::Value::Scalar(_))));
+        TerminalAction::ClaimPane {
+            pane_id: "first".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        TerminalAction::ClaimPane {
+            pane_id: "second".into(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        assert_eq!(
+            read_string(&doc, "terminal_pane_id").as_deref(),
+            Some("first")
         );
     }
 }
