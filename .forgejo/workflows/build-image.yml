@@ -997,12 +997,15 @@ jobs:
           fi
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
           # A release and its reproduction clamp every mtime and compress
-          # alike. A Build / OS dev image needs neither: fast zstd, no rewrite.
+          # alike. A Build / OS dev image needs neither: no rewrite, and fast
+          # zstd for new layers only; cached layers keep the blobs they have,
+          # already in the registry, instead of being recompressed and pushed
+          # again every run.
           if [[ $fast == true ]]; then
             # Pushed straight from BuildKit to its tilo-ci name; no archive.
             {
               echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"
-              echo 'TILO_IMAGE_OUTPUT=type=image,push=true,compression=zstd,compression-level=1,force-compression=true'
+              echo 'TILO_IMAGE_OUTPUT=type=image,push=true,compression=zstd,compression-level=1'
             } >> "$GITHUB_ENV"
           else
             [[ $validate != true ]] \
@@ -1848,7 +1851,7 @@ jobs:
             --cache-from "type=gha,scope=tilo-vm-dev-$ARCH" \
             --cache-to "type=gha,scope=tilo-vm-dev-$ARCH,mode=min,ignore-error=true" \
             --metadata-file "$metadata" \
-            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1,force-compression=true" \
+            --output "type=image,name=$child,push=true,compression=zstd,compression-level=1" \
             .
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           echo "::notice::dev image built in $(( $(date +%s) - started ))s: $child ($digest)"
