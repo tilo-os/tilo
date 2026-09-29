@@ -324,7 +324,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
     for task in std::fs::read_dir("/proc/self/task")? {
         let task = match task {
             Ok(task) => task,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         let raw = match std::fs::read_to_string(task.path().join("children")) {
@@ -333,7 +333,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
             // Production preparation is single-threaded, but treating that
             // procfs race as an empty, already-gone task keeps the preflight
             // reliable without weakening child ownership.
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         for pid in raw.split_whitespace() {
@@ -353,7 +353,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
     for process in std::fs::read_dir("/proc")? {
         let process = match process {
             Ok(process) => process,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if vanished(&error) => continue,
             Err(error) => return Err(error),
         };
         let Some(pid) = process
@@ -365,12 +365,7 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
         };
         let status = match std::fs::read_to_string(process.path().join("status")) {
             Ok(status) => status,
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::PermissionDenied
-                ) =>
-            {
+            Err(error) if vanished(&error) || error.kind() == io::ErrorKind::PermissionDenied => {
                 continue;
             }
             Err(error) => return Err(error),
@@ -384,6 +379,16 @@ fn direct_children() -> io::Result<Vec<libc::pid_t>> {
         }
     }
     Ok(children.into_iter().collect())
+}
+
+/// Whether a procfs read failed because its process or thread exited.
+///
+/// An entry that exits after `read_dir` listed it fails with `ENOENT` once
+/// its directory is gone, but with `ESRCH` while the directory is still
+/// open and its task is being released. Any process on the host can exit
+/// mid-scan, so neither may fail the scan.
+fn vanished(error: &io::Error) -> bool {
+    error.kind() == io::ErrorKind::NotFound || error.raw_os_error() == Some(libc::ESRCH)
 }
 
 fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
@@ -702,7 +707,10 @@ mod tests {
             advisory_lock::FileLock::try_exclusive(File::open(temporary.path()).unwrap()).unwrap();
         let competitor =
             || advisory_lock::FileLock::try_shared(File::open(temporary.path()).unwrap());
-        let mut existing = Command::new("/bin/sleep").arg("30").spawn().unwrap();
+        // Killed on drop, so a failing assertion cannot leave it holding the
+        // harness's stderr open after this process exits.
+        let mut existing =
+            ManagedChild::new(Command::new("/bin/sleep").arg("30").spawn().unwrap(), false);
         // acquire bypasses only the production single-thread check: the reexec
         // harness has an idle main thread and exactly this one test worker.
         let descendants = PreparationChildren::acquire().unwrap();
@@ -725,23 +733,16 @@ mod tests {
             .status()
             .unwrap();
         assert!(status.success());
-        let started = Instant::now();
-        let pids: Vec<libc::pid_t> = loop {
-            if let Ok(contents) = std::fs::read_to_string(&pid_file) {
-                let values: Vec<_> = contents
-                    .split_whitespace()
-                    .map(|value| value.parse().unwrap())
-                    .collect();
-                if values.len() == 2 {
-                    break values;
-                }
-            }
-            assert!(
-                started.elapsed() < Duration::from_secs(5),
-                "nested child must start"
-            );
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        // Starting three processes is not what this test measures; on a
+        // loaded runner it takes arbitrarily long, so wait on the hang bound.
+        let pids: Vec<libc::pid_t> = tilo_test_env::wait_for("the nested child to start", || {
+            let contents = std::fs::read_to_string(&pid_file).ok()?;
+            let values: Vec<_> = contents
+                .split_whitespace()
+                .map(|value| value.parse().unwrap())
+                .collect();
+            (values.len() == 2).then_some(values)
+        });
         let pid = pids[0];
         assert_eq!(
             unsafe { libc::getsid(pid) },
@@ -779,7 +780,7 @@ mod tests {
             "grandchild must have exited, not merely remain unowned"
         );
         assert!(
-            existing.try_wait().unwrap().is_none(),
+            existing.child.try_wait().unwrap().is_none(),
             "preexisting server must survive"
         );
         assert!(matches!(
@@ -792,8 +793,7 @@ mod tests {
             0
         );
         assert_eq!(restored, old_state);
-        existing.kill().unwrap();
-        existing.wait().unwrap();
+        drop(existing);
         drop(prefix);
         drop(competitor().unwrap());
     }
