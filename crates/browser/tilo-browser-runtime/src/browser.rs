@@ -32,6 +32,12 @@ thread_local! {
     static REQUESTS: RefCell<HashMap<u64, Request>> = RefCell::new(HashMap::new());
     static NEXT: RefCell<u64> = const { RefCell::new(1) };
     static STOP: RefCell<Option<Function>> = const { RefCell::new(None) };
+    static SHARED_GPU: RefCell<Option<Rc<RefCell<SharedGpu>>>> = const { RefCell::new(None) };
+    /// Mount GPU setups, run one at a time: opening a workspace while another
+    /// sets up must not stack a second device creation on the first.
+    static GPU_SETUPS: RefCell<std::collections::VecDeque<GpuSetup>> =
+        const { RefCell::new(std::collections::VecDeque::new()) };
+    static GPU_SETUP_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 #[derive(serde::Deserialize)]
@@ -91,20 +97,69 @@ struct Request {
     status: Function,
 }
 
-struct Gpu {
+/// The page's one WebGPU device and vello renderer, shared by every mount.
+///
+/// A device per mount cost every opened workspace a second adapter, device
+/// and full pipeline compilation while the first stayed resident. In WebKit
+/// each device holds ~140 MB of its own and compiling vello's pipelines
+/// peaks near 200 MB, under a GPU-process limit (600 MB) that Safari's other
+/// tabs share.
+struct SharedGpu {
     cx: ui::gpu::RenderContext,
-    surface: vello::util::RenderSurface<'static>,
     renderer: vello::Renderer,
     failure: Arc<Mutex<Option<String>>>,
+    /// Mounts rendering with this device; a loss or error wakes each.
+    mounts: Arc<Mutex<Vec<u64>>>,
 }
 
-impl Gpu {
+impl SharedGpu {
     fn failure(&self) -> Option<String> {
         self.failure
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .clone()
     }
+
+    fn detach(&self, id: u64) -> bool {
+        let mut mounts = self.mounts.lock().unwrap_or_else(PoisonError::into_inner);
+        mounts.retain(|&m| m != id);
+        mounts.is_empty()
+    }
+}
+
+/// One mount's surface on the shared device.
+struct Gpu {
+    shared: Rc<RefCell<SharedGpu>>,
+    surface: vello::util::RenderSurface<'static>,
+}
+
+impl Gpu {
+    fn failure(&self) -> Option<String> {
+        self.shared.try_borrow().ok().and_then(|s| s.failure())
+    }
+}
+
+/// Stop rendering `id` with the shared device, and release the device once
+/// no mount renders with it or it failed.
+fn release_gpu(id: u64, gpu: Gpu) {
+    let (last, failed) = gpu
+        .shared
+        .try_borrow()
+        .map_or((false, false), |s| (s.detach(id), s.failure().is_some()));
+    if last || failed {
+        SHARED_GPU.with_borrow_mut(|shared| {
+            if shared.as_ref().is_some_and(|s| Rc::ptr_eq(s, &gpu.shared)) {
+                *shared = None;
+            }
+        });
+    }
+}
+
+struct GpuSetup {
+    id: u64,
+    generation: u64,
+    window: Arc<Window>,
+    caps: SurfaceCaps,
 }
 
 struct Mount {
@@ -315,7 +370,9 @@ pub fn close(id: u64) -> Result<JsValue, JsValue> {
         &serde_json::json!({"phase":"closed","id":id,"closeReports":reports.len(),"pendingWrites":js_sys::Array::from(&writes).length()}),
     );
     unconfigure(&mount.canvas);
-    mount.gpu.take();
+    if let Some(gpu) = mount.gpu.take() {
+        release_gpu(id, gpu);
+    }
     Ok(writes)
 }
 
@@ -830,98 +887,166 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
 }
 
 fn initialize_gpu(id: u64, generation: u64, window: Arc<Window>, caps: SurfaceCaps) {
-    wasm_bindgen_futures::spawn_local(async move {
-        let result = async {
-            let size = window.inner_size();
-            let size = Viewport {
-                width: size.width,
-                height: size.height,
-                dpr: window.scale_factor(),
-            }
-            .bounded_by(caps);
-            let mut cx = ui::gpu::RenderContext::new();
-            let surface = cx
+    GPU_SETUPS.with_borrow_mut(|setups| {
+        setups.push_back(GpuSetup {
+            id,
+            generation,
+            window,
+            caps,
+        });
+    });
+    if GPU_SETUP_RUNNING.replace(true) {
+        return;
+    }
+    wasm_bindgen_futures::spawn_local(async {
+        while let Some(setup) = GPU_SETUPS.with_borrow_mut(std::collections::VecDeque::pop_front) {
+            set_up_gpu(setup).await;
+        }
+        GPU_SETUP_RUNNING.set(false);
+    });
+}
+
+/// The shared device and renderer, created with the first surface.
+async fn shared_gpu(
+    window: &Arc<Window>,
+    size: Viewport,
+    caps: SurfaceCaps,
+) -> Result<(Rc<RefCell<SharedGpu>>, vello::util::RenderSurface<'static>), String> {
+    let live = SHARED_GPU
+        .with_borrow(Clone::clone)
+        .filter(|s| s.try_borrow().is_ok_and(|s| s.failure().is_none()));
+    if let Some(shared) = live {
+        let surface = {
+            // Draws of other mounts skip a frame while this is held.
+            let mut guard = shared.try_borrow_mut().map_err(|_| "shared GPU busy")?;
+            guard
+                .cx
                 .create_surface(
-                    Arc::clone(&window),
+                    Arc::clone(window),
                     size.width.max(1),
                     size.height.max(1),
                     wgpu::PresentMode::Fifo,
                 )
                 .await
-                .map_err(|e| e.to_string())?;
-            let handle = cx
-                .devices
-                .get(surface.dev_id)
-                .ok_or("WebGPU device missing")?;
-            let mut renderer = vello::Renderer::new(
-                &handle.device,
-                vello::RendererOptions {
-                    antialiasing_support: vello::AaSupport::area_only(),
-                    ..Default::default()
-                },
-            )
-            .map_err(|e| e.to_string())?;
-            renderer.set_bump_budget_limit(if caps == SurfaceCaps::CONSERVATIVE {
-                CONSERVATIVE_BUMP_BUDGET_BYTES
-            } else {
-                MAX_BUMP_BUDGET_BYTES
-            });
-            let p = proxy().map_err(|e| format!("{e:?}"))?;
-            let failure = Arc::new(Mutex::new(None));
-            let lost = Arc::clone(&failure);
-            let lost_proxy = p.clone();
-            handle
-                .device
-                .set_device_lost_callback(move |reason, message| {
-                    *lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
-                        "WebGPU device lost: {reason:?}: {message}; call recover"
-                    ));
-                    let _ = lost_proxy.send_event(id);
-                });
-            let uncaptured = Arc::clone(&failure);
-            handle.device.on_uncaptured_error(Arc::new(move |e| {
-                *uncaptured.lock().unwrap_or_else(PoisonError::into_inner) =
-                    Some(format!("WebGPU error: {e}; call recover"));
-                let _ = p.send_event(id);
-            }));
-            Ok::<_, String>(Gpu {
-                cx,
-                surface,
-                renderer,
-                failure,
-            })
+                .map_err(|e| e.to_string())?
+        };
+        return Ok((shared, surface));
+    }
+    let mut cx = ui::gpu::RenderContext::new();
+    let surface = cx
+        .create_surface(
+            Arc::clone(window),
+            size.width.max(1),
+            size.height.max(1),
+            wgpu::PresentMode::Fifo,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let handle = cx
+        .devices
+        .get(surface.dev_id)
+        .ok_or("WebGPU device missing")?;
+    let mut renderer = vello::Renderer::new(
+        &handle.device,
+        vello::RendererOptions {
+            antialiasing_support: vello::AaSupport::area_only(),
+            ..Default::default()
+        },
+    )
+    .map_err(|e| e.to_string())?;
+    renderer.set_bump_budget_limit(if caps == SurfaceCaps::CONSERVATIVE {
+        CONSERVATIVE_BUMP_BUDGET_BYTES
+    } else {
+        MAX_BUMP_BUDGET_BYTES
+    });
+    let p = proxy().map_err(|e| format!("{e:?}"))?;
+    let failure = Arc::new(Mutex::new(None));
+    let mounts: Arc<Mutex<Vec<u64>>> = Arc::new(Mutex::new(Vec::new()));
+    let wake = move |p: &EventLoopProxy<u64>, mounts: &Mutex<Vec<u64>>| {
+        for &id in mounts.lock().unwrap_or_else(PoisonError::into_inner).iter() {
+            let _ = p.send_event(id);
         }
-        .await;
-        let installed = MOUNTS.with_borrow_mut(|mounts| {
-            let Some(m) = mounts.get_mut(&id).filter(|m| m.generation == generation) else {
-                return false;
-            };
-            match result {
-                Ok(gpu) => {
-                    emit(
-                        &m.status,
-                        &serde_json::json!({"initialSurfaceSize":[gpu.surface.config.width,gpu.surface.config.height]}),
-                    );
-                    m.gpu = Some(gpu);
-                    m.viewport.surface_installed();
-                    m.queue_resize();
-                    m.pending = true;
-                    m.window.request_redraw();
-                    true
-                }
-                Err(e) => {
-                    m.error = Some(format!("WebGPU unavailable: {e}"));
-                    m.publish(id);
-                    false
-                }
-            }
+    };
+    let (lost, lost_mounts, lost_proxy) = (Arc::clone(&failure), Arc::clone(&mounts), p.clone());
+    handle
+        .device
+        .set_device_lost_callback(move |reason, message| {
+            *lost.lock().unwrap_or_else(PoisonError::into_inner) = Some(format!(
+                "WebGPU device lost: {reason:?}: {message}; call recover"
+            ));
+            wake(&lost_proxy, &lost_mounts);
         });
-        // GPU setup completes outside winit dispatch. Wake an idle loop after
-        // releasing the mount borrow so the new generation actually presents.
-        if installed && let Ok(wake) = proxy() {
-            let _ = wake.send_event(id);
+    let (uncaptured, error_mounts) = (Arc::clone(&failure), Arc::clone(&mounts));
+    handle.device.on_uncaptured_error(Arc::new(move |e| {
+        *uncaptured.lock().unwrap_or_else(PoisonError::into_inner) =
+            Some(format!("WebGPU error: {e}; call recover"));
+        wake(&p, &error_mounts);
+    }));
+    let shared = Rc::new(RefCell::new(SharedGpu {
+        cx,
+        renderer,
+        failure,
+        mounts,
+    }));
+    SHARED_GPU.with_borrow_mut(|s| *s = Some(Rc::clone(&shared)));
+    Ok((shared, surface))
+}
+
+async fn set_up_gpu(setup: GpuSetup) {
+    let GpuSetup {
+        id,
+        generation,
+        window,
+        caps,
+    } = setup;
+    let current =
+        MOUNTS.with_borrow(|mounts| mounts.get(&id).is_some_and(|m| m.generation == generation));
+    if !current {
+        return;
+    }
+    let size = window.inner_size();
+    let size = Viewport {
+        width: size.width,
+        height: size.height,
+        dpr: window.scale_factor(),
+    }
+    .bounded_by(caps);
+    let result = shared_gpu(&window, size, caps).await;
+    let installed = MOUNTS.with_borrow_mut(|mounts| {
+        let Some(m) = mounts.get_mut(&id).filter(|m| m.generation == generation) else {
+            return false;
+        };
+        match result {
+            Ok((shared, surface)) => {
+                if let Ok(s) = shared.try_borrow() {
+                    s.mounts
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner)
+                        .push(id);
+                }
+                emit(
+                    &m.status,
+                    &serde_json::json!({"initialSurfaceSize":[surface.config.width,surface.config.height]}),
+                );
+                m.gpu = Some(Gpu { shared, surface });
+                m.viewport.surface_installed();
+                m.queue_resize();
+                m.pending = true;
+                m.window.request_redraw();
+                true
+            }
+            Err(e) => {
+                m.error = Some(format!("WebGPU unavailable: {e}"));
+                m.publish(id);
+                false
+            }
         }
     });
+    // GPU setup completes outside winit dispatch. Wake an idle loop after
+    // releasing the mount borrow so the new generation actually presents.
+    if installed && let Ok(wake) = proxy() {
+        let _ = wake.send_event(id);
+    }
 }
 
 impl Mount {
@@ -1000,7 +1125,13 @@ impl Mount {
         if !self.pending {
             return Ok(());
         }
-        let handle = gpu
+        let Ok(mut shared_guard) = gpu.shared.try_borrow_mut() else {
+            // Another mount's GPU setup holds the shared device for a moment.
+            self.window.request_redraw();
+            return Ok(());
+        };
+        let shared = &mut *shared_guard;
+        let handle = shared
             .cx
             .devices
             .get(gpu.surface.dev_id)
@@ -1017,14 +1148,15 @@ impl Mount {
             .viewport
             .needs_surface_resize(gpu.surface.config.width, gpu.surface.config.height)
         {
-            gpu.cx
+            shared
+                .cx
                 .resize_surface(&mut gpu.surface, viewport.width, viewport.height);
         }
         let mut acquired = gpu.surface.surface.get_current_texture();
         if matches!(acquired, wgpu::CurrentSurfaceTexture::Outdated)
             && self.viewport.recover_outdated()
         {
-            gpu.cx.configure_surface(&gpu.surface);
+            shared.cx.configure_surface(&gpu.surface);
             acquired = gpu.surface.surface.get_current_texture();
         }
         let output = match acquired {
@@ -1035,6 +1167,7 @@ impl Mount {
             | wgpu::CurrentSurfaceTexture::Occluded => None,
             other => return Err(format!("WebGPU surface unavailable: {other:?}")),
         };
+        drop(shared_guard);
         let frame = &mut self.frame;
         let Some(output) = self
             .viewport
@@ -1081,12 +1214,18 @@ impl Mount {
             Some(ui::scale::composite_transform(viewport.dpr)),
         );
         let gpu = self.gpu.as_mut().ok_or("WebGPU renderer missing")?;
-        let handle = gpu
+        let mut shared_guard = gpu
+            .shared
+            .try_borrow_mut()
+            .map_err(|_| "shared GPU busy")?;
+        let shared = &mut *shared_guard;
+        let handle = shared
             .cx
             .devices
             .get(gpu.surface.dev_id)
             .ok_or("WebGPU device missing")?;
-        gpu.renderer
+        shared
+            .renderer
             .render_to_texture(
                 &handle.device,
                 &handle.queue,
@@ -1112,6 +1251,7 @@ impl Mount {
                 .create_view(&wgpu::TextureViewDescriptor::default()),
         );
         handle.queue.submit([encoder.finish()]);
+        drop(shared_guard);
         output.present();
         self.viewport.did_present();
         self.pending = false;
@@ -1533,7 +1673,9 @@ pub fn pending_writes(id: u64) -> Result<JsValue, JsValue> {
 pub fn recover(id: u64) -> Result<(), JsValue> {
     with_mount(id, |m| {
         unconfigure(&m.canvas);
-        m.gpu = None;
+        if let Some(gpu) = m.gpu.take() {
+            release_gpu(id, gpu);
+        }
         m.generation = m.generation.saturating_add(1);
         m.error = None;
         initialize_gpu(id, m.generation, Arc::clone(&m.window), m.caps);
