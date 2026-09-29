@@ -126,6 +126,7 @@ TILO_ROOT_CMDLINE_FILE="$work/cmdline" TILO_ROOT_INITRD_RELEASE="$work/initrd-re
   "$repo/os/usr/lib/systemd/system-generators/tilo-root-generator" "$work/generator"
 grep -q 'What=/run/tilo-root/device' "$work/generator/sysroot.mount"
 grep -q 'ExecStart=/usr/libexec/tilo-root-discover' "$work/generator/tilo-root-discover.service"
+grep -qx 'RemainAfterExit=yes' "$work/generator/tilo-root-discover.service"
 echo 'ok: target-independent initrd units generated'
 
 # The booted system runs its generators with the same command line; the root is
