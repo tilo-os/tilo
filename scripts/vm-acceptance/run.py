@@ -150,6 +150,18 @@ def slot_create(vm: TiloVm, outputs: list[str], locale: str | None) -> None:
         vm.run(*args, timeout=300, slot=False)
 
 
+def switch_locale(vm: TiloVm, lang: str) -> None:
+    """Set the system locale as the installer seeds it (/etc/locale.conf, which the
+    session's PAM login inherits from systemd) and restart the slot's session in it."""
+    vm.vm_cmd("ssh", "--", f"localectl set-locale LANG={lang} && systemctl daemon-reload", timeout=60)
+    vm.run("slot", "restart", vm.slot, timeout=300, slot=False)
+    got = vm.root_exec(f"tr '\\0' '\\n' < /proc/$(pgrep -u $(id -u tds-{vm.slot}) -x shell | head -1)/environ "
+                       "| grep -E '^(LANG|LC_ALL|LC_MESSAGES)='", timeout=60)
+    if lang not in got:
+        raise VmError(f"the restarted compositor runs with {got.strip() or 'no LANG'}, not LANG={lang}")
+    time.sleep(5)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     src = ap.add_mutually_exclusive_group(required=True)
@@ -228,15 +240,12 @@ def main() -> int:
         config = {"budgets": BUDGETS, "outputs": outputs, "idle_seconds": args.idle_seconds, "locale": "en"}
         ctx = Context(vm, out, config)
         ctx.facts.update(facts)
-        help_text = vm.run("slot", "create", "--help", slot=False)
         de = "de" in args.locales.split(",")
         if not de:
             ctx.facts["locale_de:why"] = "the German pass was not requested (--locales)"
-        elif "--locale" not in help_text:
-            ctx.facts["locale_de:why"] = "tilo-vm slot create has no --locale, so no German session can be started"
         selected = select(args.only)
         by_id = {c.id: c for c in core.REGISTRY}
-        german = de and "--locale" in help_text
+        german = de
         main_ids = [i for i in ORDER + list(DE_PASS) if i in selected and (i not in DE_PASS or not german)]
         for cid in main_ids:
             r = core.run_check(ctx, by_id[cid])
@@ -245,12 +254,12 @@ def main() -> int:
                   flush=True)
         de_ids = [i for i in DE_PASS if i in selected and german]
         if de_ids:
-            vm.run("slot", "rm", vm.slot, timeout=180, slot=False, check=False)
-            vm.slot = f"{args.slot}-de"
-            slot_create(vm, outputs, "de_DE.UTF-8")
-            time.sleep(5)
-            ctx.facts["locale_de"] = True
-            ctx.config["locale"] = "de"
+            try:
+                switch_locale(vm, "de_DE.UTF-8")
+                ctx.facts["locale_de"] = True
+                ctx.config["locale"] = "de"
+            except VmError as exc:
+                ctx.facts["locale_de:why"] = f"the session could not be restarted in German: {exc.reason()}"
             for cid in de_ids:
                 r = core.run_check(ctx, by_id[cid])
                 results.append(r)

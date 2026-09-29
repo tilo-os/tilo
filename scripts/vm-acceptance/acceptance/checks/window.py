@@ -309,6 +309,10 @@ def touchpad(ctx, res):
         ctx.vm.input("touchpad", "swipe", "--fingers", "3", "0", "-400")
 
 
+# OVERVIEW_TRANSITION_MS in the shell's overlay host; workspace switches use the same span.
+ANIMATION_MS = 400
+
+
 def _animation_window(ctx, res, name, act, undo):
     t0 = core.trace_now_us(ctx)
     act()
@@ -316,7 +320,8 @@ def _animation_window(ctx, res, name, act, undo):
     undo()
     time.sleep(1.2)
     rows = core.trace_since(core.read_trace(ctx), t0 + 1)
-    stats = core.frame_stats(rows)
+    ctx.write(f"W16-{name}-frames.csv", "\n".join(",".join(str(v) for v in r.values()) for r in rows))
+    stats = core.burst_stats(rows, ANIMATION_MS)
     res.metrics[name] = stats
     return stats
 
@@ -335,14 +340,17 @@ def animations(ctx, res):
     res.metrics["renderer"] = ctx.facts.get("renderer")
     problems = []
     for name, st in ((k, v) for k, v in res.metrics.items() if isinstance(v, dict)):
-        if st["painted"] < budgets["animation_min_frames"]:
-            problems.append(f"{name}: only {st['painted']} frames painted for an open+close "
-                            f"(a jump, not an animation; want >= {budgets['animation_min_frames']})")
-        if st["paint_period_ms_p95"] and st["paint_period_ms_p95"] > budgets["paint_period_ms_p95"]:
-            problems.append(f"{name}: paint period p95 {st['paint_period_ms_p95']} ms "
-                            f"> {budgets['paint_period_ms_p95']} ms")
-        if st["paint_period_ms_max"] and st["paint_period_ms_max"] > budgets["paint_gap_ms_max"]:
-            problems.append(f"{name}: a {st['paint_period_ms_max']} ms stall between painted frames "
+        # One burst for the open, one for the close; each should be an animation, not a jump.
+        few = [n for n in st["frames_per_burst"][:2] if n < budgets["animation_min_frames"]]
+        if len(st["frames_per_burst"]) < 2 or few:
+            problems.append(f"{name}: frames per transition {st['frames_per_burst']} "
+                            f"(a jump, not an animation; want >= {budgets['animation_min_frames']} "
+                            f"in each of open and close)")
+        if st["interval_ms_p95"] and st["interval_ms_p95"] > budgets["paint_period_ms_p95"]:
+            problems.append(f"{name}: frame interval p95 {st['interval_ms_p95']} ms inside the "
+                            f"transition > {budgets['paint_period_ms_p95']} ms")
+        if st["interval_ms_max"] and st["interval_ms_max"] > budgets["paint_gap_ms_max"]:
+            problems.append(f"{name}: a {st['interval_ms_max']} ms stall inside the transition "
                             f"> {budgets['paint_gap_ms_max']} ms")
     expect(not problems, "; ".join(problems) + f" [renderer: {ctx.facts.get('renderer')}]")
     del stats

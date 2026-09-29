@@ -20,6 +20,7 @@ THEMES = {
 
 # Chrome only: window contents scroll out of view by design.
 NOT_CHROME = re.compile(r"GroupRow|foreign-surface|^tab:|tabbar_new_tab|TileHost|WindowGroup")
+CONTAINER = re.compile(r"(Host|Container|Layer|Root)(\[\d+\])?$")
 
 
 def set_theme(ctx, name: str) -> None:
@@ -55,6 +56,8 @@ def layout_problems(targets: list[dict], displays: dict) -> dict:
     for n, r in leaves:
         by_parent.setdefault(n.rsplit("/", 1)[0] if "/" in n else "", []).append((n, r))
     for parent, kids in by_parent.items():
+        # A host or container spans its children; it is not a control they can collide with.
+        kids = [(n, r) for n, r in kids if not CONTAINER.search(n.rsplit("/", 1)[-1])]
         for i, (a, ra) in enumerate(kids):
             for b, rb in kids[i + 1:]:
                 if core.rect_inside(ra, rb) or core.rect_inside(rb, ra):

@@ -57,5 +57,16 @@ fail P01 if the VM booted anything else, was moved onto another image since, or 
 | resources | R01/R02 idle CPU, wakeups and frames with no apps and with several, R03 RSS/PSS, R04 frame work p50/p95/p99 during interactions; the renderer is recorded |
 | basics | B01 brightness, B02 Wi-Fi, B03 Bluetooth (unavailable without hardware, no fake controls), B04 de nodeadkeys + compose applied to the physical keys, B05 display arrangement, B06 hotplug, B07 GNOME keyboard import (host-desktop installs only, so unobservable in a VM) |
 
-Budgets live in `run.py` (`BUDGETS`). The German pass needs `tilo-vm slot create
---locale`; without it U03, U04 and S03 fail as unobservable.
+Budgets live in `run.py` (`BUDGETS`). The German pass (U03, U04, S03) runs after the
+English one: the shell takes its language from the session's environment, so the run
+sets the system locale the way the installer seeds it (`localectl set-locale
+LANG=de_DE.UTF-8`, inherited through the session's PAM login) and restarts the slot;
+if the restarted compositor is not German those checks fail as unobservable.
+
+Animation pacing (W16) is read from the session's frame trace per transition: a burst
+starts at the first painted frame after an idle park and spans the transition's length,
+and its painted-to-painted intervals are held to the budgets, so the park itself never
+counts as a stall.
+
+Not yet drivable, so failing as unobservable: touchpad gestures (W15; `tilo-vm input` has
+no touchpad device) and output hotplug (B06; a slot's outputs are fixed at creation).
