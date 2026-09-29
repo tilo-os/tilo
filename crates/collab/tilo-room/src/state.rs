@@ -1536,6 +1536,33 @@ impl StatePeer {
         if let Some(publisher) = self.core.native_cut_publisher {
             self.validate_native_publisher(publisher, now)?;
         }
+        // A device's announcement on one room is its hello there: one
+        // certificate, one set of revocations, whichever message carried it.
+        let message = match message {
+            NeighbourMsg::IdentityAnnouncement { room, device_cert } => {
+                if room != self.core.room {
+                    return Err("room topic mismatch".into());
+                }
+                NeighbourMsg::IdentityHello {
+                    cert: device_cert,
+                    revocations: Vec::new(),
+                }
+            }
+            NeighbourMsg::IdentityAnnouncementV2 {
+                room,
+                device_cert,
+                revocations,
+            } => {
+                if room != self.core.room {
+                    return Err("room topic mismatch".into());
+                }
+                NeighbourMsg::IdentityHello {
+                    cert: device_cert,
+                    revocations,
+                }
+            }
+            message => message,
+        };
         match message {
             NeighbourMsg::IdentityHello { cert, revocations } => {
                 if cert.device_public_key != source {

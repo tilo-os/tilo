@@ -181,14 +181,18 @@ stored state is not migrated.
    behaviour change.
 3. **The core learns the shell's model**: channel classes, delegated host
    admission, direct rooms, comment signing, recording delegations, identity
-   announcements, record seals, one retention classifier, one
-   `extract_governed_fields`. The shell's tests for these move with them.
+   announcements, one retention classifier, one `extract_governed_fields`.
+   Memberships held outside governance (host admissions, recording
+   delegations) are persisted with the room.
 4. **The shell on the core**: every room through the core; `room_docs`,
    `room_authority`, `apply_room_changes`, `document_role`,
    `peer_room_allows`, the admission and delegation code in `network.rs`
    and `network/replica.rs` are deleted; the shell's `CommunityHost` holds
-   the community and direct rooms through the core. May split into local
-   rooms first, then invited, public and direct rooms.
+   the community and direct rooms through the core. The per-entry seals on
+   the room's own record map move into the core with this step, since they
+   are the shell's room records and stand on its authority. The shell's
+   tests for everything the core now decides move with it. May split into
+   local rooms first, then invited, public and direct rooms.
 5. **Several rooms in the Cloud host and the browser**: a store root and a
    relay session per room, `tilo-community` keeping the Cloud user in the
    community with one-action leave, each room served over HTTPS delivery on

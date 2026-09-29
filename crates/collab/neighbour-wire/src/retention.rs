@@ -8,7 +8,7 @@
 use crate::NeighbourMsg;
 
 /// How a retained message relates to the others on its channel.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Retention {
     /// A complete state baseline. What it replaces on the host is stated by
     /// the publisher (`tilo_relay::Coverage`): a merged document names

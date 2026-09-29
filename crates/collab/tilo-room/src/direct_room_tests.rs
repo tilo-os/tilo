@@ -99,10 +99,17 @@ fn the_other_person_of_a_direct_room_joins_on_any_device() {
             .admit_direct_member(pair.team_root.verifying_key().to_bytes(), &reporter, now)
             .unwrap()
     );
+    // The native shell announces a device on a room rather than saying
+    // hello; the room takes either.
+    let room = pair.peer.room().to_string();
     pair.peer
         .receive_from(
             TransportOrigin::RelayDelta(team_laptop_cert.device_public_key),
-            hello(&team_laptop_cert),
+            NeighbourMsg::IdentityAnnouncementV2 {
+                room,
+                device_cert: Box::new(team_laptop_cert.clone()),
+                revocations: Vec::new(),
+            },
             now,
         )
         .unwrap();

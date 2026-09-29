@@ -880,7 +880,7 @@ impl WorkspaceTree {
             self.room_authority
                 .insert(room, RoomAuthority::Peer(PeerOrigin::peer(&endpoint)));
         }
-        let (name, owner, caps) = Self::extract_governed_fields(document);
+        let (name, owner, caps) = tilo_room::room::extract_governed_fields(document);
         let tasks = projection::workspace_tasks_of(document);
         let receipts = projection::workspace_effect_receipts_of(document);
         self.room_docs.insert(room, document.clone());
@@ -2324,39 +2324,6 @@ impl WorkspaceTree {
     /// `(name, owner, capability overrides)` a candidate room document
     /// declares — the governed fields [`Self::apply_room_changes`] folds
     /// into the cached workspace once every refusal gate passes.
-    fn extract_governed_fields(
-        candidate: &AutoCommit,
-    ) -> (Option<String>, Option<String>, Vec<CapOverride>) {
-        use automerge::{ROOT, ReadDoc, ScalarValue, Value};
-        let name = match candidate.get(&ROOT, "name").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let owner = match candidate.get(&ROOT, "owner").ok().flatten() {
-            Some((Value::Scalar(s), _)) => match s.as_ref() {
-                ScalarValue::Str(v) => Some(v.to_string()),
-                _ => None,
-            },
-            _ => None,
-        };
-        let mut caps: Vec<CapOverride> = Vec::new();
-        if let Some((_, caps_id)) = candidate.get(&ROOT, "capabilities").ok().flatten() {
-            let keys: Vec<String> = candidate.keys(&caps_id).collect();
-            for key in keys {
-                if let Some((Value::Scalar(s), _)) = candidate.get(&caps_id, &key).ok().flatten()
-                    && let ScalarValue::Bytes(blob) = s.as_ref()
-                    && let Ok(cap) = serde_json::from_slice::<CapOverride>(blob)
-                {
-                    caps.push(cap);
-                }
-            }
-        }
-        (name, owner, caps)
-    }
-
     /// Diffs `candidate`'s room-record index against what's already held
     /// for `room`, queues the difference for the shell to fold in (see
     /// [`Self::take_inbound_room_records`]), and reports whether
@@ -2637,7 +2604,7 @@ impl WorkspaceTree {
         let Some(workspace) = self.workspace_in_room(room) else {
             return false;
         };
-        let (_, _, caps) = Self::extract_governed_fields(doc);
+        let (_, _, caps) = tilo_room::room::extract_governed_fields(doc);
         let mut governed;
         let workspace = if caps.is_empty() {
             workspace
@@ -2780,7 +2747,7 @@ impl WorkspaceTree {
             return Ok(false);
         }
 
-        let (name, owner, caps) = Self::extract_governed_fields(&candidate);
+        let (name, owner, caps) = tilo_room::room::extract_governed_fields(&candidate);
         let channel_class = projection::channel_class_of(&candidate);
         let recording_delegates_forbidden =
             projection::recording_delegates_forbidden_of(&candidate);
