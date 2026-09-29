@@ -553,41 +553,70 @@ fn source_resource(source: &Source) -> Resource {
     .with_action(clear)
 }
 
+/// Whether an authenticated Tilo image may carry the install-profile palette.
+pub(crate) fn source_is_customizable(source: &Source) -> bool {
+    source.installable
+        && source.kind == SourceKind::TiloImage
+        && source.expected_sha256.as_deref().is_some_and(|digest| {
+            digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+/// Collaborative children for [`tilo_resource::publish`]: reviewed source and
+/// (when customizable) the install-profile actions.
+pub(crate) fn document_children(
+    source: Option<&Source>,
+    profile: &InstallProfile,
+) -> Vec<Resource> {
+    let mut children = Vec::new();
+    let Some(source) = source else {
+        return children;
+    };
+    children.push(source_resource(source));
+    if source_is_customizable(source) {
+        children.extend(provide_resources(&source.name, profile));
+    }
+    children
+}
+
+/// Export headless configuration — a View on the write plan, not document state.
+pub(crate) fn export_config_spec(plan_complete: bool) -> ActionSpec {
+    operation_spec(
+        "export-config",
+        "Export headless configuration",
+        OperationKind::View,
+        ImagerOperation::ExportConfig,
+    )
+    .with_contract(ActionContract {
+        availability: if plan_complete {
+            tilo_actions::Availability::Available
+        } else {
+            tilo_actions::Availability::Unavailable {
+                code: "incomplete_plan".into(),
+                reason: "Select an image source and target drive first".into(),
+            }
+        },
+        result: ResultSpec::Json {
+            schema: serde_json::json!({ "type": "string" }),
+        },
+        discovery: DiscoveryScope::Launchable,
+        ..ActionContract::view()
+    })
+}
+
 fn target_id(target: &TargetDrive) -> String {
     let identity = target.stable_id.as_deref().unwrap_or(&target.name);
     format!("imager.target:{identity}")
 }
 
-/// The complete resource topology, including local device/job observations.
-/// Source/profile records are collaborative; device and job resources are
-/// explicitly local capability projections and expose only safe status/write
-/// operations with their contracts.
-pub fn plan_resources(
-    source: Option<&Source>,
+/// Machine-local target / job / result projections. Not document state — the
+/// framework resource does not own these; standalone publish and (optionally)
+/// hosted extras may attach them beside the one document door.
+pub(crate) fn machine_local_resources(
     targets: &[TargetDrive],
     progress: &crate::model::Progress,
-    profile: &InstallProfile,
 ) -> Vec<Resource> {
     let mut resources = Vec::new();
-    let source_root = source.map_or_else(
-        || Resource::new("imager.sources", "imager.sources", "Image sources"),
-        |source| {
-            Resource::new("imager.sources", "imager.sources", "Image sources")
-                .with_child(source_resource(source))
-        },
-    );
-    resources.push(source_root);
-
-    if let Some(source) = source.filter(|source| {
-        source.installable
-            && source.kind == SourceKind::TiloImage
-            && source.expected_sha256.as_deref().is_some_and(|digest| {
-                digest.len() == 64 && digest.bytes().all(|byte| byte.is_ascii_hexdigit())
-            })
-    }) {
-        resources.extend(provide_resources(&source.name, profile));
-    }
-
     let target_children = targets
         .iter()
         .map(|target| Resource::new(target_id(target), "imager.target", target.dev_path()));
@@ -627,15 +656,47 @@ pub fn plan_resources(
     resources
 }
 
+/// The complete resource topology, including local device/job observations.
+/// Source/profile records are collaborative; device and job resources are
+/// explicitly local capability projections and expose only safe status/write
+/// operations with their contracts.
+pub fn plan_resources(
+    source: Option<&Source>,
+    targets: &[TargetDrive],
+    progress: &crate::model::Progress,
+    profile: &InstallProfile,
+) -> Vec<Resource> {
+    let mut resources = Vec::new();
+    let mut source_root = Resource::new("imager.sources", "imager.sources", "Image sources");
+    source_root.children = document_children(source, profile);
+    resources.push(source_root);
+    resources.extend(machine_local_resources(targets, progress));
+    resources
+}
+
 // Inherent resource publication (was ResourceProvider)
 impl crate::app::ImagerApp {
+    /// Standalone / `--shots` / unit tests: one tree from [`tilo_resource::publish`]
+    /// plus machine-local target/job observations.
     pub fn publish_resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        plan_resources(
-            self.resource_source(),
+        use ui::tilo_resource::Resource as _;
+        let mut state = crate::resource::Imager::read(doc).unwrap_or_default();
+        if state.source.is_none() {
+            state.source = self.resource_source().cloned();
+        }
+        let mut root = ui::tilo_resource::publish::<crate::resource::Imager>(
+            "imager.sources",
+            "Image sources",
+            &state,
+        );
+        // Live write availability on the same root (not a second sibling tree).
+        crate::resource::overlay_live_write_ops(&mut root, self);
+        let mut resources = vec![root];
+        resources.extend(machine_local_resources(
             self.resource_targets(),
             self.resource_progress(),
-            &ImagerDoc::profile(doc),
-        )
+        ));
+        resources
     }
 }
 
@@ -888,9 +949,14 @@ mod tests {
                         .any(|child| child.kind == "imager.source")
             }));
             assert!(
-                !resources
-                    .iter()
-                    .any(|resource| resource.kind == "imager.customization")
+                !resources.iter().any(|resource| {
+                    resource.kind == "imager.customization"
+                        || resource
+                            .children
+                            .iter()
+                            .any(|child| child.kind == "imager.customization")
+                }),
+                "plain ISO must not publish a customization resource"
             );
         }
 
