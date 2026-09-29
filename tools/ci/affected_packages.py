@@ -84,7 +84,6 @@ QUALITY_ONLY_HELPERS = {
     "tools/ci/native-mold-linker.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/verify-native-mold.sh": "tools/tests/test_ci_native_mold.py",
     "tools/ci/dispatch_merge.py": "tools/tests/test_ci_merge_dispatch.py",
-    "tools/ci/workflow_applicability.py": "tools/tests/test_workflow_applicability.py",
     "tools/ci/suites.py": "tools/tests/test_suites.py",
     "tools/ci/suites.toml": "tools/tests/test_suites.py",
     "tools/policy/run.sh": "tools/tests/test_ci_select.py",
@@ -117,7 +116,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
         "tools/tests/test_cosign_install_action.py",
     ),
     ".forgejo/workflows/build-kernel.yml": (
-        "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
     ".forgejo/workflows/dev-disk.yml": (
@@ -136,7 +134,6 @@ QUALITY_ONLY_CONTROL_INPUTS = {
     ),
     ".forgejo/workflows/release-relay.yml": (
         "tools/tests/test_workflow_package_paths.py",
-        "tools/tests/test_workflow_applicability.py",
         "os/tests/workflow_dependency_invariants.sh",
     ),
 }

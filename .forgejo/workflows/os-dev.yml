@@ -11,10 +11,9 @@ name: Build / OS dev
 # moves a VM onto any pushed commit. No reproduction lane, no signing, no
 # release channel: those are Release / OS (build-image.yml), which this calls.
 #
-# A pull request builds only when its own diff touches the image (the
-# applicability gate below; Forgejo's paths filter also counts main's changes
-# merged into the branch), builds x86_64, and adds aarch64 when it changes an
-# architecture-specific input or carries the `os-arm64` label
+# A pull request builds only when its own diff touches the image, builds
+# x86_64, and adds aarch64 when it changes an architecture-specific input or
+# carries the `os-arm64` label
 # (tools/ci/os_dev_arches.py). Main always builds both.
 on:
   push:
@@ -27,8 +26,6 @@ on:
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"
       - "tools/ci/os_dev_arches.py"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
 
 # One run per pull request: its newest commit cancels the build of the one
 # before. On main the running build finishes and only the newest waiting
@@ -38,21 +35,7 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/os-dev.yml
-      event: ${{ github.event_name }}
-
   arches:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     runs-on: runner-quality
     timeout-minutes: 5
     container:
@@ -81,14 +64,7 @@ jobs:
           python3 -I tools/ci/os_dev_arches.py "${args[@]}"
 
   image:
-    needs: [applicability, arches]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.arches.result == 'success'
-      }}
+    needs: arches
     uses: ./.forgejo/workflows/build-image.yml
     with:
       arches: ${{ needs.arches.outputs.arches }}
