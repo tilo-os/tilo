@@ -267,7 +267,11 @@ jobs:
           elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
-            matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+            # Its publication lane runs on the release class like a generic
+            # publication's; the reproduction runs on the large ARM runners,
+            # since the publication holds the one ARM release slot while it
+            # waits for it.
+            matrix='{"include":[{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
           elif [[ $publish == true ]]; then
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
