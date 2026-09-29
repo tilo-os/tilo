@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 
 class RegistryServerImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.source = (ROOT / ".forgejo/workflows/registry-server-image.yml").read_text()
+        self.source = (ROOT / ".forgejo/workflows/release-registry-server.yml").read_text()
 
     def test_registry_server_image_is_smoke_tested_before_credentials_and_pushed_by_tested_sha(self) -> None:
         with self.subTest(phase='pull requests build and smoke test without registry write'):

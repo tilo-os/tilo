@@ -14,6 +14,34 @@ standalone-history-restore-pending = Schließe die aktuelle Bearbeitung ab und s
 standalone-history-restore-denied = Nur Bearbeitende können eine Version wiederherstellen.
 standalone-history-restore-unavailable = Diese Version kann hier nicht wiederhergestellt werden.
 standalone-history-preview-resource = Dokument
+host-search = Suchen…
+host-search-placeholder = Suchen
+host-undo = Widerrufen
+host-undo-named = { $change } widerrufen
+host-redo = Wiederholen
+host-redo-named = { $change } wiederholen
+host-history-show = Verlauf einblenden
+host-history-hide = Verlauf ausblenden
+host-history-compare = Auswahl vergleichen
+host-history-recent = { $author } · { $change } — { $when }
+host-history-unavailable = Es gibt kein Dokument, dessen Verlauf angezeigt werden kann.
+host-history-compare-unavailable = Wähle zwei oder mehr Änderungen aus, um sie zu vergleichen.
+host-menu-file = Ablage
+host-menu-edit = Bearbeiten
+host-menu-view = Darstellung
+host-menu-history = Verlauf
+host-menu-window = Fenster
+host-menu-help = Hilfe
+host-menu-about = Über { $app }
+host-menu-services = Dienste
+host-menu-hide = { $app } ausblenden
+host-menu-hide-others = Andere ausblenden
+host-menu-show-all = Alle einblenden
+host-menu-quit = { $app } beenden
+host-menu-close = Fenster schließen
+host-menu-minimize = Im Dock ablegen
+host-menu-zoom = Zoomen
+host-menu-front = Alle nach vorne bringen
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
    *[other] { $path } und { $more } weitere bearbeitet
@@ -21,6 +49,14 @@ history-edited-field = { $more ->
 history-removed-field = { $more ->
     [0] { $path } entfernt
    *[other] { $path } und { $more } weitere entfernt
+}
+history-edited-fields = { $count ->
+    [one] 1 Feld bearbeitet
+   *[other] { $count } Felder bearbeitet
+}
+history-removed-fields = { $count ->
+    [one] 1 Feld entfernt
+   *[other] { $count } Felder entfernt
 }
 history-review-title = { $resource } wiederherstellen
 history-review-confirm = Version wiederherstellen

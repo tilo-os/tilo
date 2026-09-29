@@ -868,9 +868,12 @@ impl FrameHarness {
             wake.close();
         }
         self.component_close_reports
-            .extend(self.root.close_components());
-        self.component_close_reports
-            .extend(self.root.take_component_close_reports());
+            .extend(crate::component_lifecycle::close_components(
+                self.root.as_mut(),
+            ));
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
+        );
         self.discard_layout_tree();
     }
 
@@ -912,8 +915,9 @@ impl FrameHarness {
     pub fn take_component_close_reports(
         &mut self,
     ) -> Vec<crate::application::ComponentCloseReport> {
-        self.component_close_reports
-            .extend(self.root.take_component_close_reports());
+        self.component_close_reports.extend(
+            crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
+        );
         std::mem::take(&mut self.component_close_reports)
     }
 
@@ -2121,7 +2125,7 @@ impl FrameHarness {
 
     fn tick_records(&mut self) {
         if self.records.is_none()
-            && self.root.record_intent().is_some()
+            && crate::record::capability::record_intent(self.root.as_ref()).is_some()
             && let Some((mut records, room_index)) = self.record_persistence.take()
         {
             records.discover_room(&room_index);
@@ -2147,7 +2151,7 @@ impl FrameHarness {
     /// record set so an app that does not use records is left alone.
     pub fn root_record_intent(&self) -> Option<crate::record::RecordCheckout> {
         self.drain_component_wakes();
-        self.root.record_intent()
+        crate::record::capability::record_intent(self.root.as_ref())
     }
 
     /// Offer the live document to its record's writer. Returns whether a
@@ -2354,11 +2358,13 @@ impl FrameHarness {
             if structure || rebuild {
                 rebuilt_this_pass = true;
                 stats.rebuilt = true;
-                let view = view.get_or_insert_with(|| self.root.view_state());
+                let view = view
+                    .get_or_insert_with(|| crate::view::capability::view_state(self.root.as_ref()));
                 self.layout_built = false;
                 self.taffy = TaffyTree::new();
-                self.component_close_reports
-                    .extend(self.root.take_component_close_reports());
+                self.component_close_reports.extend(
+                    crate::component_lifecycle::take_component_close_reports(self.root.as_mut()),
+                );
                 self.bindings.clear();
                 self.node_map.clear();
                 if let Some(history) = &mut self.history {
@@ -2418,7 +2424,7 @@ impl FrameHarness {
                     self.child_node
                 };
                 if let Some(view) = &view {
-                    self.root.restore_view_state(view);
+                    crate::view::capability::restore_view_state(self.root.as_mut(), view);
                 }
                 // Retained app controls own their ordinary event focus (some
                 // intentionally focus both sidebar and editor). Restore after
@@ -4463,6 +4469,7 @@ impl FrameHarness {
             {
                 let mods = self.modifiers.state();
                 if let Some(request) = crate::undo::shortcut(
+                    self.platform,
                     character,
                     self.platform.command_modifier_down(mods),
                     mods.shift_key(),
@@ -9628,6 +9635,8 @@ mod tests {
         ready: bool,
     }
     impl Widget for LateRecordProbe {
+        crate::provides!(dyn crate::record::capability::RecordScoped);
+
         fn update(
             &mut self,
             doc: &mut crate::widget::AppModel,
@@ -9640,9 +9649,6 @@ mod tests {
                     .unwrap();
             }
             self.frames == 2
-        }
-        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-            (self.frames >= 2).then(|| self.checkout.clone())
         }
         fn sync(&mut self, doc: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             let (doc, _) = crate::doc::document(doc, path);
@@ -9703,13 +9709,22 @@ mod tests {
         }
     }
 
+    impl crate::record::capability::RecordScoped for LateRecordProbe {
+        fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
+            (self.frames >= 2).then(|| self.checkout.clone())
+        }
+    }
+
     /// A standalone app whose root names a record: the runner checks that
     /// record out as its own State, so the root is not a separate owner.
     struct RecordRootProbe {
         checkout: crate::record::RecordCheckout,
     }
     impl Widget for RecordRootProbe {
-        crate::provides!(dyn crate::resources::PublishesResources);
+        crate::provides!(
+            dyn crate::resources::PublishesResources,
+            dyn crate::record::capability::RecordScoped
+        );
 
         crate::testing::inert_widget_methods!(
             leaf_layout,
@@ -9718,6 +9733,9 @@ mod tests {
             get_rect,
             name = "RecordRootProbe"
         );
+    }
+
+    impl crate::record::capability::RecordScoped for RecordRootProbe {
         fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
             Some(self.checkout.clone())
         }

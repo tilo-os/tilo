@@ -17,8 +17,8 @@ from urllib.request import Request, build_opener, HTTPRedirectHandler
 from urllib.error import URLError
 
 WORKFLOWS = frozenset({
-    "build-image.yml", "package-desktop.yml",
-    "release-apps.yml", "fs-fuse.yml", "legacy-app-e2e.yml",
+    "build-image.yml", "release-desktop.yml",
+    "release-apps.yml", "ci-filesystem.yml", "ci-legacy-apps.yml",
 })
 UNSTARTED = {None, "", "1970-01-01T00:00:00Z", "0001-01-01T00:00:00Z"}
 

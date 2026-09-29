@@ -127,6 +127,15 @@ pub struct HomePeerExpectation {
     pub device_public_key: [u8; 32],
 }
 
+/// A compositor-loop wake handed to the actor ([`NetCmd::SetWake`]).
+#[derive(Clone)]
+pub struct LoopWake(pub crate::session_runtime::Wake);
+impl std::fmt::Debug for LoopWake {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("LoopWake")
+    }
+}
+
 #[derive(Debug)]
 pub enum NetCmd {
     NativeConnect(native_ingress::Connect),
@@ -138,6 +147,16 @@ pub enum NetCmd {
     },
     NativePublish {
         ws: u64,
+    },
+    /// Wake the compositor loop when legacy-window traffic arrives: an idle
+    /// headless loop otherwise sleeps until something else wakes it.
+    SetWake(LoopWake),
+    /// This device's own topology entries (`SyncResp`) for a room another
+    /// device governs, to its workspace hosts as a retained delta: the
+    /// governor admits them within this device's registered namespace.
+    PublishHostedTopology {
+        ws: u64,
+        msg: NeighbourMsg,
     },
     NativeMedia(super::native_media::Command),
     NativeEnrollment(super::invite::enrollment_driver::Command),
@@ -692,6 +711,9 @@ struct ActorState {
     personal_fabric_ingress: HashMap<(EndpointId, u64), Option<(WorkspaceId, MembershipEpoch)>>,
     recent: HashSet<(WorkspaceId, [u8; 32])>,
     recent_order: VecDeque<(WorkspaceId, [u8; 32])>,
+    /// When each recent remote-input message arrived (see [`mark_new_input`]).
+    recent_input: HashMap<(WorkspaceId, [u8; 32]), Instant>,
+    wake: Option<crate::session_runtime::Wake>,
     /// Long-lived direct media connections. One unidirectional QUIC stream
     /// per frame avoids head-of-line blocking between viewers and frames.
     surface_connections: HashMap<EndpointId, iroh::endpoint::Connection>,
@@ -996,6 +1018,21 @@ impl ActorState {
                         msg,
                         false,
                         true,
+                        true,
+                    )
+                    .await;
+                }
+            }
+            Some(NetCmd::SetWake(LoopWake(wake))) => self.wake = Some(wake),
+            Some(NetCmd::PublishHostedTopology { ws, msg }) => {
+                if matches!(msg, NeighbourMsg::SyncResp { .. }) {
+                    publish(
+                        &self.topics,
+                        &self.host_sessions,
+                        ws,
+                        msg,
+                        false,
+                        false,
                         true,
                     )
                     .await;
@@ -2240,11 +2277,24 @@ impl ActorState {
                 fingerprint,
                 msg,
             } => {
+                if matches!(
+                    msg,
+                    NeighbourMsg::RemoteInput { .. } | NeighbourMsg::IdentityHello { .. }
+                ) {
+                    tracing::debug!(ws, author = %author, kind = ?std::mem::discriminant(&msg), "host session message");
+                }
                 // A remote-action retry is byte-identical on purpose; the
                 // receiving host deduplicates it by invocation id instead.
-                if !matches!(msg, NeighbourMsg::RemoteAction { .. })
-                    && !mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
-                {
+                let new = match msg {
+                    NeighbourMsg::RemoteAction { .. } => true,
+                    NeighbourMsg::RemoteInput { .. } => {
+                        mark_new_input(ws, fingerprint, Instant::now(), &mut self.recent_input)
+                    }
+                    _ => {
+                        mark_new_message(ws, fingerprint, &mut self.recent, &mut self.recent_order)
+                    }
+                };
+                if !new {
                     return;
                 }
                 Some(NetEvent::Msg {
@@ -2267,7 +2317,20 @@ impl ActorState {
             }
         };
         if let (Some(event), Some(tx)) = (mapped, self.subscribers.get(&ws)) {
+            let legacy = matches!(
+                &event,
+                NetEvent::Msg {
+                    msg: NeighbourMsg::RemoteInput { .. }
+                        | NeighbourMsg::SurfaceStreamStart { .. }
+                        | NeighbourMsg::SurfaceFrame { .. }
+                        | NeighbourMsg::SurfaceStreamEnd { .. },
+                    ..
+                }
+            );
             let _ = tx.send(event).await;
+            if legacy && let Some(wake) = &self.wake {
+                wake();
+            }
         }
     }
 
@@ -2821,6 +2884,8 @@ async fn run(
         personal_fabric_ingress: HashMap::new(),
         recent: HashSet::new(),
         recent_order: VecDeque::new(),
+        recent_input: HashMap::new(),
+        wake: None,
         surface_connections: HashMap::new(),
         surface_fanout_tasks: HashMap::new(),
         pending_surface_frames: HashMap::new(),
@@ -2945,6 +3010,25 @@ async fn publish(
 
 fn message_fingerprint(bytes: &[u8]) -> [u8; 32] {
     *blake3::hash(bytes).as_bytes()
+}
+
+/// Remote input is not deduplicated for good: a second click or key press is
+/// byte-identical to the first. Only a copy arriving within [`INPUT_COPY`]
+/// (the same event over another route to this room) is dropped.
+fn mark_new_input(
+    ws: WorkspaceId,
+    fingerprint: [u8; 32],
+    now: Instant,
+    recent: &mut HashMap<(WorkspaceId, [u8; 32]), Instant>,
+) -> bool {
+    const INPUT_COPY: Duration = Duration::from_millis(30);
+    if recent.len() > 256 {
+        recent.retain(|_, seen| now.saturating_duration_since(*seen) < INPUT_COPY);
+    }
+    match recent.insert((ws, fingerprint), now) {
+        Some(seen) => now.saturating_duration_since(seen) >= INPUT_COPY,
+        None => true,
+    }
 }
 
 fn mark_new_message(
@@ -3388,6 +3472,27 @@ fn topic_id(ws: WorkspaceId) -> TopicId {
 mod tests {
     use super::*;
     use getrandom::{SysRng, rand_core::UnwrapErr};
+
+    #[test]
+    fn a_repeated_click_is_new_but_its_copy_over_another_route_is_not() {
+        let mut recent = HashMap::new();
+        let start = Instant::now();
+        assert!(mark_new_input(1, [7; 32], start, &mut recent));
+        assert!(
+            !mark_new_input(1, [7; 32], start + Duration::from_millis(1), &mut recent),
+            "the same event arriving over a second relay session"
+        );
+        assert!(
+            mark_new_input(1, [7; 32], start + Duration::from_millis(200), &mut recent),
+            "a second, byte-identical click"
+        );
+        assert!(mark_new_input(
+            2,
+            [7; 32],
+            start + Duration::from_millis(200),
+            &mut recent
+        ));
+    }
 
     fn active_personal_media(generation: u64) -> ActivePersonalMediaTransfer {
         let (cancel, _receiver) = tokio::sync::watch::channel(false);

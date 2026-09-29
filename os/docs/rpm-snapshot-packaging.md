@@ -25,7 +25,7 @@ environment would conceal the omission. The boundary regression tests cover both
 
 ## Local preparation
 
-Publication normally runs through `.forgejo/workflows/snapshot-rpms.yml`, which
+Publication normally runs through `.forgejo/workflows/build-rpms.yml`, which
 tags `registry.tilo.so/tilo/rpms:set-<fingerprint>` and is also a reusable
 workflow for image builds. Local builds are supported for preparation and
 diagnosis; they do not publish, sign or promote an artifact. There is no

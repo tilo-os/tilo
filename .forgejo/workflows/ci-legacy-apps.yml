@@ -21,7 +21,7 @@ on:
       - "scripts/legacy-app-caret-e2e.py"
       - ".forgejo/actions/restore-cargo-downloads/**"
       - ".forgejo/actions/prepare-rust-build/**"
-      - ".forgejo/workflows/legacy-app-e2e.yml"
+      - ".forgejo/workflows/ci-legacy-apps.yml"
       - ".forgejo/workflows/resolve-builder.yml"
       - "tools/ci/workflow_applicability.py"
       - "tools/ci/prepare_pr_history.py"
@@ -42,7 +42,7 @@ on:
   #     - "scripts/legacy-app-caret-e2e.py"
   #     - ".forgejo/actions/restore-cargo-downloads/**"
   #     - ".forgejo/actions/prepare-rust-build/**"
-  #     - ".forgejo/workflows/legacy-app-e2e.yml"
+  #     - ".forgejo/workflows/ci-legacy-apps.yml"
   schedule:
     - cron: "30 3 * * *"
   workflow_dispatch:
@@ -59,7 +59,7 @@ jobs:
   applicability:
     uses: ./.forgejo/workflows/applicability.yml
     with:
-      workflow: .forgejo/workflows/legacy-app-e2e.yml
+      workflow: .forgejo/workflows/ci-legacy-apps.yml
       event: ${{ github.event_name }}
 
   builder:

@@ -21,11 +21,11 @@ run 'Workflow dependency and supply-chain invariants' \
   bash os/tests/workflow_dependency_invariants.sh
 run 'Path-filtered package dependency triggers' \
   python3 tools/policy/check_workflow_package_paths.py \
-  --check atomic-file .forgejo/workflows/build-builder-image.yml \
-  --check tilo-crypto .forgejo/workflows/development-source.yml \
-  --check fs .forgejo/workflows/fs-fuse.yml \
+  --check atomic-file .forgejo/workflows/build-ci-builder.yml \
+  --check tilo-crypto .forgejo/workflows/ci-development-signing.yml \
+  --check fs .forgejo/workflows/ci-filesystem.yml \
   --check tilo-relay .forgejo/workflows/release-relay.yml \
-  --check tilo-runtime .forgejo/workflows/runtime-macos.yml
+  --check tilo-runtime .forgejo/workflows/dev-runtime-macos.yml
 run 'Repository policy unit tests' \
   python3 -m unittest discover -s tools/tests -p 'test_*.py'
 run 'Compiler-cache helper tests' bash tools/tests/ci_sccache.sh

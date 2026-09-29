@@ -35,7 +35,7 @@ on:
       - os/Containerfile.host
       - os/dev/composefs/Containerfile
       - os/containers/tilo-relay/Containerfile
-      - .forgejo/workflows/snapshot-rpms.yml
+      - .forgejo/workflows/build-rpms.yml
 
 concurrency:
   # Serialize by fingerprint so concurrent create attempts for the same set

@@ -80,7 +80,7 @@ on:
   #     - "tools/ci/workflow_applicability.py"
   #     - "tools/native-tier1.sh"
   #     - ".forgejo/workflows/build-image.yml"
-  #     - ".forgejo/workflows/fs-fuse.yml"
+  #     - ".forgejo/workflows/ci-filesystem.yml"
   pull_request:
     branches: ["main"]
     paths:
@@ -159,7 +159,7 @@ on:
       - "tools/ci/workflow_applicability.py"
       - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
-      - ".forgejo/workflows/fs-fuse.yml"
+      - ".forgejo/workflows/ci-filesystem.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   schedule:
     - cron: "30 4 * * *"
@@ -192,7 +192,7 @@ jobs:
   applicability:
     uses: ./.forgejo/workflows/applicability.yml
     with:
-      workflow: .forgejo/workflows/fs-fuse.yml
+      workflow: .forgejo/workflows/ci-filesystem.yml
       event: ${{ github.event_name }}
 
   builder:

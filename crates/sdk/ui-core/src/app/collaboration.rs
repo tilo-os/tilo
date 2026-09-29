@@ -353,11 +353,13 @@ impl App {
         else {
             return;
         };
-        self.root_widget
-            .restore_view_state(&crate::view::ViewContribution {
+        crate::view::capability::restore_view_state(
+            self.root_widget.as_mut(),
+            &crate::view::ViewContribution {
                 scroll: view.scroll.clone(),
                 view_mode: view.view_mode,
-            });
+            },
+        );
         self.layout.layout_dirty = true;
         self.needs_sync = true;
     }

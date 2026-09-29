@@ -21,7 +21,7 @@ env:
   # write baselines that every other runner correctly rejects.
   VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.x86_64.json
   WGPU_ADAPTER_NAME: llvmpipe
-  # Keep this identical to nightly.yml and the nextest gpu-golden override:
+  # Keep this identical to ci-nightly.yml and the nextest gpu-golden override:
   # candidates are rendered for exactly the tests nightly verifies.
   GOLDEN_FILTER: >-
     (package(tilo-ui) and test(typography_visual_regression::)) or
@@ -35,7 +35,7 @@ jobs:
     runs-on: runner
     timeout-minutes: 120
     container:
-      # Keep this identical to nightly.yml. Updating visual baselines under a
+      # Keep this identical to ci-nightly.yml. Updating visual baselines under a
       # mutable image would silently bless changes in fonts or Mesa.
       image: registry.tilo.so/tilo/tilo-builder@sha256:568fca1f8b4a4b1700c871cca033d2d291a5eb02c4b3be9681410f456b5a7bc9
     steps:

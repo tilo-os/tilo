@@ -3688,9 +3688,12 @@ impl ShellOverlayHost {
             // Settle outgoing components while the old root still owns them,
             // so their recovery reports survive the swap.
             self.desktop_close_reports
-                .extend(self.content.close_components());
-            self.desktop_close_reports
-                .extend(self.content.take_component_close_reports());
+                .extend(ui::component_lifecycle::close_components(
+                    self.content.as_mut(),
+                ));
+            self.desktop_close_reports.extend(
+                ui::component_lifecycle::take_component_close_reports(self.content.as_mut()),
+            );
             // Replace content and pointer map in one step: dropping the old
             // root frees every old GroupRow, and the map must never outlive
             // the rows it points into.
@@ -15430,13 +15433,7 @@ fn focus_quick_settings_accessibility(host: &mut ShellOverlayHost, child_path: &
 }
 
 impl Widget for ShellOverlayHost {
-    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.desktop_close_reports);
-        for child in self.children_mut() {
-            reports.extend(child.take_component_close_reports());
-        }
-        reports
-    }
+    ui::provides!(dyn ui::component_lifecycle::ComponentLifecycle);
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -17936,6 +17933,16 @@ impl Widget for ShellOverlayHost {
         .into_iter()
         .flatten()
         .min()
+    }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for ShellOverlayHost {
+    fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.desktop_close_reports);
+        for child in self.children_mut() {
+            reports.extend(ui::component_lifecycle::take_component_close_reports(child));
+        }
+        reports
     }
 }
 

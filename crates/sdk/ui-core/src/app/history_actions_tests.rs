@@ -21,7 +21,7 @@ fn document(values: &[&str]) -> App {
 }
 
 fn present(app: &mut App) {
-    app.prepare_native_presentation();
+    app.prepare_native_presentation(crate::host_chrome::HostChrome::InWindow);
     app.init_layout();
     assert!(app.history_chrome_enabled);
 }

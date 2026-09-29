@@ -46,6 +46,7 @@ struct AppHandler {
     /// hidden); lazy, so the hot path pays nothing with no screen reader
     /// running.
     a11y_adapter: Option<PrimaryA11yAdapter>,
+    /// Also carries host-chrome requests back into the loop.
     a11y_proxy: EventLoopProxy<UserEvent>,
     /// Last text-input-v3 state applied to winit. Edge-triggering this avoids
     /// emitting a protocol commit on every idle loop.
@@ -78,6 +79,61 @@ struct AppHandler {
     /// The reload library this process runs. The dev loop stages the first one
     /// from the build that produced this host, so it starts as the running code.
     dev_loaded_library: Option<std::path::PathBuf>,
+    /// The menu bar and title-bar search field, when the host draws them.
+    #[cfg(target_os = "macos")]
+    host_chrome: Option<crate::host_chrome::macos::MacChrome>,
+    /// What the host chrome last presented, to skip unchanged refreshes.
+    #[cfg(target_os = "macos")]
+    host_commands_key: Option<super::host_commands::HostCommandsKey>,
+}
+
+#[cfg(target_os = "macos")]
+impl AppHandler {
+    /// Put History, Search and Undo into the menu bar and title bar.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Some(mtm) = objc2::MainThreadMarker::new() else {
+            return;
+        };
+        let proxy = self.a11y_proxy.clone();
+        let chrome = crate::host_chrome::macos::MacChrome::new(mtm, move |request| {
+            let _ = proxy.send_event(match request {
+                crate::host_chrome::macos::ChromeRequest::Command(invocation) => {
+                    UserEvent::HostCommand(invocation)
+                }
+                crate::host_chrome::macos::ChromeRequest::Search(query) => {
+                    UserEvent::HostSearch(query)
+                }
+            });
+        });
+        chrome.install(&objc2_app_kit::NSApplication::sharedApplication(mtm));
+        if let Ok(handle) = window.window_handle()
+            && let RawWindowHandle::AppKit(handle) = handle.as_raw()
+        {
+            // SAFETY: winit hands out the live NSView of a window it owns, on
+            // the main thread, for at least the duration of this call.
+            let view = unsafe { handle.ns_view.cast::<objc2_app_kit::NSView>().as_ref() };
+            chrome.attach_toolbar(view);
+        }
+        self.host_chrome = Some(chrome);
+        self.host_commands_key = None;
+    }
+
+    /// Hand the host chrome fresh commands when anything they show changed.
+    fn refresh_host_chrome(&mut self) {
+        if let Some(chrome) = &self.host_chrome {
+            let key = self.app.host_commands_key();
+            if self.host_commands_key != Some(key) {
+                self.host_commands_key = Some(key);
+                chrome.update(self.app.host_commands(true));
+            }
+        }
+    }
 }
 
 /// The reload library the dev session currently points at.
@@ -1531,7 +1587,7 @@ impl AppHandler {
             floating_content_changed = true;
             full_redraw_required = true;
         }
-        if app.root_widget.take_window_close_intent() {
+        if crate::component_lifecycle::take_window_close_intent(app.root_widget.as_mut()) {
             if app.admit_native_close_request() {
                 event_loop.exit();
                 return;
@@ -2043,11 +2099,15 @@ impl AppHandler {
                         ..
                     },
                     ..
-                } if (c.as_str() == "k" || c.as_str() == "K")
-                    && app
-                        .input
-                        .platform
-                        .command_modifier_down(app.input.modifiers.state())
+                } if app
+                    .input
+                    .platform
+                    .command_modifier_down(app.input.modifiers.state())
+                    && crate::platform::HostShortcut::resolve(
+                        app.input.platform,
+                        c,
+                        app.input.modifiers.state().shift_key(),
+                    ) == Some(crate::platform::HostShortcut::Search)
             );
             if !is_ctrl_k
                 && matches!(
@@ -2126,81 +2186,33 @@ impl AppHandler {
             } = event
         {
             let shift = app.input.modifiers.state().shift_key();
-            let history_request = crate::undo::shortcut(c, true, shift);
-            if let Some(request) = history_request {
-                if crate::undo::handle_local_undo_request(app.root_widget.as_mut(), request) {
-                    app.needs_sync = true;
-                    window.request_redraw();
-                } else {
-                    // Otherwise round-tripping document undo/redo loses caret
-                    // position.
-                    let current_meta = app.root_widget.get_state();
-                    let current_focus_idx = app
-                        .focused_node
-                        .and_then(|id| app.focusable_order.iter().position(|x| *x == id));
-                    let binding = app
-                        .focused_node
-                        .and_then(|node| app.bindings.binding_for(node))
-                        .or_else(|| app.root_widget.callback_binding());
-                    let owned_target = binding.is_some()
-                        || app
-                            .focused_node
-                            .is_some_and(|node| app.bindings.owns_document(node));
-                    let entry = if let Some(binding) = binding {
-                        binding
-                            .history_request(&mut app.state.doc, request)
-                            .ok()
-                            .flatten()
-                    } else if let Some(owner) = app
-                        .focused_node
-                        .and_then(|node| app.bindings.legacy_for(node))
-                    {
-                        crate::bound_dispatch::legacy_history_request(
-                            &owner,
-                            request,
-                            &app.permission_ctx,
-                            &app.collaboration.local_author,
-                        )
-                        .ok()
-                        .flatten()
+            match crate::platform::HostShortcut::resolve(app.input.platform, c, shift) {
+                Some(crate::platform::HostShortcut::Undo) => {
+                    app.perform_undo_request(crate::undo::UndoRequest::Undo);
+                    is_undo_redo = true;
+                    handled = true;
+                }
+                Some(crate::platform::HostShortcut::Redo) => {
+                    app.perform_undo_request(crate::undo::UndoRequest::Redo);
+                    is_undo_redo = true;
+                    handled = true;
+                }
+                // A second press closes the palette.
+                Some(crate::platform::HostShortcut::Search) => {
+                    if app.actions.action_palette.is_some() {
+                        app.close_action_palette();
                     } else {
-                        match request {
-                            crate::undo::UndoRequest::Undo => app.state.undo_as(
-                                Some(&app.collaboration.local_author),
-                                current_focus_idx,
-                                current_meta,
-                            ),
-                            crate::undo::UndoRequest::Redo => app.state.redo_as(
-                                Some(&app.collaboration.local_author),
-                                current_focus_idx,
-                                current_meta,
-                            ),
-                        }
-                    };
-                    if let Some(entry) = entry {
-                        if owned_target {
-                            app.needs_sync = true;
-                            app.layout.layout_dirty = true;
-                        } else {
-                            app.apply_undo_entry(entry);
-                        }
+                        app.open_action_palette();
                     }
+                    handled = true;
                 }
-                is_undo_redo = true;
-                handled = true;
-            } else {
-                match c.as_str() {
-                    // A second Ctrl+K closes the palette.
-                    "k" | "K" => {
-                        if app.actions.action_palette.is_some() {
-                            app.close_action_palette();
-                        } else {
-                            app.open_action_palette();
-                        }
-                        handled = true;
-                    }
-                    _ => {}
+                Some(crate::platform::HostShortcut::History) => {
+                    handled = app.invoke_host_shortcut(crate::platform::HostShortcut::History);
                 }
+                None => {}
+            }
+            if handled {
+                window.request_redraw();
             }
         }
 
@@ -2763,6 +2775,23 @@ impl ApplicationHandler<UserEvent> for AppHandler {
                 app.needs_sync = true;
                 window.request_redraw();
             }
+            UserEvent::HostCommand(invocation) => {
+                self.app.invoke_host_command(&invocation);
+                self.app.needs_sync = true;
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
+            UserEvent::HostSearch(query) => {
+                if self
+                    .app
+                    .invoke_host_shortcut(crate::platform::HostShortcut::Search)
+                    && let Some(palette) = self.app.actions.action_palette.as_mut()
+                {
+                    palette.set_query(&query);
+                }
+                self.app.layout.layout_dirty = true;
+                window.request_redraw();
+            }
             #[cfg(target_os = "android")]
             UserEvent::PlatformTextInput => {
                 for op in super::android_text_input::bridge::drain() {
@@ -2970,6 +2999,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             event_loop.exit();
             return;
         }
+        #[cfg(target_os = "macos")]
+        self.install_host_chrome(&window);
         // Honour system/presentation roots before the first visible configure.
         // The normal reconcile path still owns output selection and later changes.
         self.app.reconcile_fullscreen(&window);
@@ -3073,6 +3104,8 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
+        #[cfg(target_os = "macos")]
+        self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
         // Conservative shared-root fallback: hidden primary work may stay at
@@ -3517,7 +3550,7 @@ impl AppHandler {
     }
 
     fn close_primary_window(&mut self, event_loop: &ActiveEventLoop, window: &Arc<Window>) {
-        match self.app.root_widget.on_window_close_requested() {
+        match crate::component_lifecycle::on_window_close_requested(self.app.root_widget.as_mut()) {
             crate::widget::WindowCloseAdmission::Allow => {
                 if self.app.admit_native_close_request() {
                     event_loop.exit();
@@ -3635,7 +3668,9 @@ impl App {
             self.wake_scope.is_some(),
             "live App requires from_factory, try_from_factory, or from_scoped_parts"
         );
-        self.prepare_native_presentation();
+        self.prepare_native_presentation(crate::host_chrome::HostChrome::current(
+            self.input.platform,
+        ));
         crate::host::native::install_default_if_unset(self.window.app_id.as_deref());
         // The event loop never waits on async work: anything that must is
         // spawned onto the app runtime and handed back through the wake scope.
@@ -3723,6 +3758,10 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
+            #[cfg(target_os = "macos")]
+            host_chrome: None,
+            #[cfg(target_os = "macos")]
+            host_commands_key: None,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}

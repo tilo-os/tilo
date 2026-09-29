@@ -89,9 +89,9 @@ jobs:
             workflows = {
                 'build-kernel.yml': 'os/kernel/new.config',
                 'release-relay.yml': 'crates/hosting/tilo-relay/src/lib.rs',
-                'fs-fuse.yml': 'crates/system/fs/src/lib.rs',
-                'legacy-app-e2e.yml': 'scripts/legacy-app-caret-e2e.py',
-                'package-desktop.yml': 'dist/VERSION',
+                'ci-filesystem.yml': 'crates/system/fs/src/lib.rs',
+                'ci-legacy-apps.yml': 'scripts/legacy-app-caret-e2e.py',
+                'release-desktop.yml': 'dist/VERSION',
             }
             self.git('checkout', '-qb', 'candidate')
             self.write('docs/change.md', 'candidate')
@@ -287,8 +287,8 @@ jobs:
         with self.subTest(phase='actual declared paths and unsupported shapes'):
             self.doCleanups()
             self.setUp()
-            for name in ('build-kernel.yml', 'release-relay.yml', 'fs-fuse.yml',
-                         'legacy-app-e2e.yml', 'package-desktop.yml'):
+            for name in ('build-kernel.yml', 'release-relay.yml', 'ci-filesystem.yml',
+                         'ci-legacy-apps.yml', 'release-desktop.yml'):
                 path = ROOT/'.forgejo/workflows'/name
                 declared = gate.declared_paths(path)
                 self.assertIn('tools/ci/workflow_applicability.py', declared)
@@ -332,9 +332,9 @@ jobs:
             jobs = {
                 'build-kernel.yml': ('build-and-push-kernel',),
                 'release-relay.yml': ('build-and-push',),
-                'fs-fuse.yml': ('real-fuse', 'files-ux'),
-                'legacy-app-e2e.yml': ('caret',),
-                'package-desktop.yml': ('validate',),
+                'ci-filesystem.yml': ('real-fuse', 'files-ux'),
+                'ci-legacy-apps.yml': ('caret',),
+                'release-desktop.yml': ('validate',),
             }
             shared = (ROOT/'.forgejo/workflows/applicability.yml').read_text(encoding='utf-8')
             gate_job = job(shared, '  compare:')

@@ -115,7 +115,7 @@ fi
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
   "$repo/.forgejo/workflows/build-kernel.yml"
-  "$repo/.forgejo/workflows/snapshot-rpms.yml"
+  "$repo/.forgejo/workflows/build-rpms.yml"
   "$repo/os/dev/build-image.sh"
 )
 attestation_shape_safe=1
