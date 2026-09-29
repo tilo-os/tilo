@@ -314,6 +314,7 @@ COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-
 COPY \
     os/scripts/cargo-freshness.sh \
     os/scripts/build-thin-apps.sh \
+    os/scripts/cargo-timings-summary.py \
     os/scripts/verify-elf-hardening.sh \
     os/scripts/pack-apps.sh \
     os/scripts/browser-runtime-launcher.c \
@@ -580,6 +581,8 @@ ARG TILO_CARGO_BUILD_JOBS=4
 # either way): the profile's line tables by default; 0 skips them, which only
 # makes a dev build compile faster.
 ARG TILO_RUST_DEBUGINFO=line-tables-only
+# 1 prints where each cargo build spent its time (cargo --timings).
+ARG TILO_CARGO_TIMINGS=
 ARG TILO_REQUIRE_COMPILER_CACHE=0
 # `shared` compiles through sccache: CI's runner cache when the build passes
 # the actions_cache_url and actions_runtime_token secrets (the Actions cache
@@ -681,7 +684,8 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
        CARGO_PROFILE_RELEASE_DEBUG="$TILO_RUST_DEBUGINFO" \
-       cargo build --release ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+       cargo build --release ${TILO_CARGO_TIMINGS:+--timings} ${RELEASE_ARGS} -p tilo-relay ${RELEASE_BINS} ${BROWSER_PKG} \
+    && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
     && build_phase rust-windows-vm \
     && CARGO_PROFILE_RELEASE_LTO="$TILO_RUST_LTO" \
        CARGO_PROFILE_RELEASE_CODEGEN_UNITS=8 \
@@ -777,7 +781,9 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
+         EXTRA_CARGO_ARGS="${TILO_CARGO_TIMINGS:+--timings}" \
            /build/os/scripts/build-thin-apps.sh \
+         && { [ -z "$TILO_CARGO_TIMINGS" ] || python3 os/scripts/cargo-timings-summary.py target/cargo-timings/cargo-timing.html; } \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \
               b="$(basename "$(sed -n 's/^bin  *= *"\([^"]*\)".*/\1/p' "$m" | head -1)")"; \
