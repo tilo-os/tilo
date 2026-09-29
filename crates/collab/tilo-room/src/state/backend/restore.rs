@@ -65,12 +65,8 @@ pub(in crate::state) fn restore(
                 durable::DurableDecodeError::Pending(_) => invalid(BoundedPeerInvalid::Pending),
             }
         })?;
-    let durable::DecodedDurable {
-        wire,
-        exact,
-        version,
-        held,
-    } = decoded;
+    let durable::DecodedDurable { wire, exact } = decoded;
+    let held = wire.held;
     let stored_room = wire.base.room;
     let stored_authority = wire.base.authority;
     let room_bytes = wire.base.room_bytes;
@@ -158,7 +154,7 @@ pub(in crate::state) fn restore(
         pending,
         pending_bytes,
         checkpoint_times: BTreeMap::new(),
-        admission_v5: version >= 5 && exact.is_some(),
+        admission_v5: exact.is_some(),
         exact_admissions: exact,
         held,
         native_cut_publisher: None,

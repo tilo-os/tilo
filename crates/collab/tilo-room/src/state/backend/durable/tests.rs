@@ -12,17 +12,16 @@ fn limits() -> OuterLimits {
 }
 
 #[test]
-fn retained_durable_v4_decodes_without_migration_copy() {
+fn retained_durable_state_decodes_without_a_copy() {
     let (peer, _, _, _, _) = crate::admission_tests::seeded();
     let bytes = peer.durable().unwrap();
     let holder = DecodedDurable::decode(&bytes, limits(), limits()).unwrap();
-    assert_eq!(holder.version, 4);
     assert!(holder.exact.is_none());
     assert_eq!(postcard::to_allocvec(&holder.wire).unwrap(), bytes);
 }
 
 #[test]
-fn retained_durable_v5_decodes_the_borrowed_exact_index_into_owned_storage() {
+fn retained_durable_state_decodes_its_exact_index_into_owned_storage() {
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     peer.select_admission_v5().unwrap();
     let NeighbourMsg::AppDocument { envelope, .. } = peer
@@ -43,7 +42,6 @@ fn retained_durable_v5_decodes_the_borrowed_exact_index_into_owned_storage() {
         .unwrap();
     let bytes = peer.durable().unwrap();
     let holder = DecodedDurable::decode(&bytes, limits(), limits()).unwrap();
-    assert_eq!(holder.version, 5);
     drop(bytes);
     drop(peer);
     assert_eq!(
@@ -67,7 +65,7 @@ fn retained_durable_rejects_outer_and_exact_limits_bad_envelopes_and_pending_acc
         ),
         Err(DurableDecodeError::Resource(PeerResourceError::Capacity))
     ));
-    let mut wrong: DurableV4 = postcard::from_bytes(&v4).unwrap();
+    let mut wrong: DurableState = postcard::from_bytes(&v4).unwrap();
     wrong.pending_bytes = 1;
     let badpending = postcard::to_allocvec(&wrong).unwrap();
     assert!(matches!(
@@ -89,12 +87,12 @@ fn retained_durable_rejects_outer_and_exact_limits_bad_envelopes_and_pending_acc
         ),
         Err(DurableDecodeError::Resource(PeerResourceError::Capacity))
     ));
-    let mut decoded: DurableV5<'_> = postcard::from_bytes(&v5).unwrap();
-    decoded.base.version = 3;
+    let mut decoded: DurableState = postcard::from_bytes(&v5).unwrap();
+    decoded.version = 7;
     let bad = postcard::to_allocvec(&decoded).unwrap();
     assert!(matches!(
         DecodedDurable::decode(&bad, limits(), limits()),
-        Err(DurableDecodeError::Envelope)
+        Err(DurableDecodeError::UnsupportedVersion)
     ));
     let mut trailing = v4;
     trailing.push(0);
@@ -140,7 +138,7 @@ fn retained_durable_keeps_real_pending_input_after_the_original_is_dropped() {
     assert_eq!(value.pending.len(), 1);
     assert_eq!(value.pending[0].1, descendant);
     assert!(matches!(
-        DecodedDurable::decode(&[4], limits(), limits()),
+        DecodedDurable::decode(&[8], limits(), limits()),
         Err(DurableDecodeError::Resource(_))
     ));
 }

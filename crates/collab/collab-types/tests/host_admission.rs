@@ -34,12 +34,10 @@ fn delegation_spec(host: Ed25519PublicKey, role: Role, caps: &[Verb]) -> InviteS
 
 fn admission(role: Role, delegation: Vec<InviteToken>) -> HostAdmissionSpec {
     let (_, member_user) = generate_keypair();
-    let (_, member_device) = generate_keypair();
     HostAdmissionSpec {
         room: ROOM.into(),
         workspace: WORKSPACE,
         member_user,
-        member_device,
         role,
         invite: [9; 32],
         admitted_at_unix_seconds: 5,

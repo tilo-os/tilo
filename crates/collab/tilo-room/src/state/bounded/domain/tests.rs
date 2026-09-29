@@ -44,7 +44,7 @@ fn peer_domain_reads_empty_and_nonempty_restored_peers() {
 fn peer_domain_document_bytes_share_one_restore_limit() {
     let (source, _, _, _, now) = crate::admission_tests::seeded();
     let bytes = source.durable().unwrap();
-    let durable: super::super::super::DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let durable: super::super::super::DurableState = postcard::from_bytes(&bytes).unwrap();
     let total: usize = durable
         .base
         .room_bytes

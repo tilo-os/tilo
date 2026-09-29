@@ -7,8 +7,7 @@ use crate::StatePeer;
 use crate::TransportOrigin;
 use crate::seed_room;
 use crate::state::DurableDocument;
-use crate::state::DurableV4;
-use crate::state::DurableV5;
+use crate::state::DurableState;
 use crate::state::GovernedIdentity;
 use automerge::AutoCommit;
 use automerge::ObjType;
@@ -212,12 +211,12 @@ fn complete_bounded_restore_validates_present_media_and_exact_chat_without_requi
     let good = checked(&bytes, &peer, now).unwrap();
     assert_eq!(good.core.documents.len(), 1);
     // A valid room-first snapshot can restore data before its Chat arrives.
-    let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
     durable.base.documents.clear();
     checked(&postcard::to_allocvec(&durable).unwrap(), &peer, now).unwrap();
     // Existing lazy checkpoints remain original, even when the live Chat is
     // changed. Replacing the actual selected channel object must still fail.
-    let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
     let mut chat = AutoCommit::load(&durable.base.documents[0].bytes).unwrap();
     let channels = chat.get(ROOT, "channels").unwrap().unwrap().1;
     chat.delete(&channels, "voice").unwrap();
@@ -230,7 +229,7 @@ fn complete_bounded_restore_validates_present_media_and_exact_chat_without_requi
         Err(BoundedPeerError::Invalid(BoundedPeerInvalid::Media))
     ));
     for mode in 0..3 {
-        let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+        let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
         let mut room = AutoCommit::load(durable.base.room_bytes.as_ref().unwrap()).unwrap();
         if mode == 0 {
             room.put(ROOT, media::FIELD, "not policy").unwrap();
@@ -257,7 +256,7 @@ fn complete_bounded_restore_rejects_namespace_certificates_pending_coverage_and_
     let (mut peer, key, _, _, now) = crate::admission_tests::seeded();
     let bytes = peer.durable().unwrap();
     for mode in 0..5 {
-        let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+        let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
         match mode {
             0 => durable.base.room = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb".into(),
             1 => durable.base.certificates[0].signature[0] ^= 1,
@@ -277,8 +276,8 @@ fn complete_bounded_restore_rejects_namespace_certificates_pending_coverage_and_
     )
     .unwrap();
     let bytes = peer.durable().unwrap();
-    let mut durable: DurableV5<'_> = postcard::from_bytes(&bytes).unwrap();
-    for doc in &mut durable.base.base.documents {
+    let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
+    for doc in &mut durable.base.documents {
         doc.watermarks.clear();
     }
     assert!(matches!(
@@ -289,7 +288,7 @@ fn complete_bounded_restore_rejects_namespace_certificates_pending_coverage_and_
 #[test]
 fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_expiry() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
     let mut room = AutoCommit::load(durable.base.room_bytes.as_ref().unwrap()).unwrap();
     room.delete(ROOT, crate::coverage::FIELD_V2).unwrap();
     durable.base.room_bytes = Some(room.save());
@@ -311,7 +310,7 @@ fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_
     );
     // Restore uses historical signed certificates; actual current access will
     // independently recheck expiry. A bound does not silently rewrite that rule.
-    let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
     for cert in &mut durable.base.certificates {
         if cert.device_public_key != peer.authority().device_public_key {
             cert.expires_at_ns = Some(now_ns(now));
@@ -323,7 +322,7 @@ fn complete_bounded_restore_keeps_original_lazy_checkpoint_bytes_and_historical_
 #[test]
 fn complete_bounded_restore_document_byte_limit_spans_room_and_all_documents() {
     let (peer, _, _, _, now) = crate::admission_tests::seeded();
-    let mut durable: DurableV4 = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&peer.durable().unwrap()).unwrap();
     let first = &durable.base.documents[0];
     durable.base.documents.push(DurableDocument {
         route: Route {
@@ -394,7 +393,7 @@ fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governe
         signature: [0; 64],
     };
     tilo_user_identity::sign_revocation_entry(&mut entry, &root).unwrap();
-    let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
     durable.base.revocations.push(entry.clone());
     let local_bytes = postcard::to_allocvec(&durable).unwrap();
     let restored = checked(&local_bytes, &peer, now).unwrap();
@@ -417,7 +416,7 @@ fn complete_bounded_restore_preserves_local_revocation_union_and_rejects_governe
         legacy.validated_media_policy().is_err(),
         "local union restores data but requires real media reconciliation"
     );
-    let mut durable: DurableV4 = postcard::from_bytes(&bytes).unwrap();
+    let mut durable: DurableState = postcard::from_bytes(&bytes).unwrap();
     let mut room = AutoCommit::load(durable.base.room_bytes.as_ref().unwrap()).unwrap();
     let identities = room.get(ROOT, "peer_identities_v1").unwrap().unwrap().1;
     let id = hex::encode(peer.authority().device_public_key);

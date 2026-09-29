@@ -1,7 +1,7 @@
 //! Native governance transactions. Public policy data is never an authority proof.
 use super::{
-    Actor, BTreeMap, CapDecision, DeviceCert, DurableV4, DurableV5, GovernedIdentity, NeighbourMsg,
-    ROOT, ReadDoc, ResourceRef, RevocationList, Role, Route, SigningKey, StatePeer, SystemTime,
+    Actor, BTreeMap, CapDecision, DeviceCert, DurableState, GovernedIdentity, NeighbourMsg, ROOT,
+    ReadDoc, ResourceRef, RevocationList, Role, Route, SigningKey, StatePeer, SystemTime,
     Transactable, TransportOrigin, Verb, decide_capability, err, now_ns, now_secs, room,
 };
 use room::media::{self, RoomMediaV1};
@@ -34,20 +34,11 @@ impl StatePeer {
     /// fields remain byte-for-byte inputs. This is never a storage export.
     fn canonical_security_metadata_state(&self) -> Result<Vec<u8>, String> {
         let bytes = self.durable()?;
-        let sort_watermarks = |value: &mut DurableV4| {
-            for document in &mut value.base.documents {
-                document.watermarks.sort_unstable_by_key(|entry| entry.0);
-            }
-        };
-        if self.core.admission_v5 {
-            let mut value: DurableV5<'_> = postcard::from_bytes(&bytes).map_err(err)?;
-            sort_watermarks(&mut value.base);
-            postcard::to_allocvec(&value).map_err(err)
-        } else {
-            let mut value: DurableV4 = postcard::from_bytes(&bytes).map_err(err)?;
-            sort_watermarks(&mut value);
-            postcard::to_allocvec(&value).map_err(err)
+        let mut value: DurableState = postcard::from_bytes(&bytes).map_err(err)?;
+        for document in &mut value.base.documents {
+            document.watermarks.sort_unstable_by_key(|entry| entry.0);
         }
+        postcard::to_allocvec(&value).map_err(err)
     }
 
     /// Project independently observed verified revocations onto this committed

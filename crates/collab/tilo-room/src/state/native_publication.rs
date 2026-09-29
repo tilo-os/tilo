@@ -192,6 +192,13 @@ impl StatePeer {
                     // retained packet does not change its signed authorship.
                     NeighbourMsg::AppDocument { envelope, .. } => *envelope.author.as_bytes(),
                     NeighbourMsg::IdentityHello { cert, .. } => cert.device_public_key,
+                    // Self-authenticating memberships: each verifies against
+                    // its own signer (the admitting host, the delegating
+                    // device), whoever carried it.
+                    NeighbourMsg::RoomAdmission { admission, .. } => *admission.host.as_bytes(),
+                    NeighbourMsg::RecordingDelegation { delegation, .. } => {
+                        *delegation.device.as_bytes()
+                    }
                     _ => return Err("unsupported native publication family".into()),
                 };
                 Ok((source, true))

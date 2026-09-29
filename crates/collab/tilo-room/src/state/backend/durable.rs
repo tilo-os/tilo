@@ -1,5 +1,5 @@
 //! Guarded original durable DTO storage, before semantic peer restoration.
-use super::{DurableV4, DurableV5, DurableV6, DurableV7};
+use super::DurableState;
 use crate::admission::BoundedExactAdmissions;
 use crate::resources::{OuterLimits, PeerResourceError};
 
@@ -13,10 +13,8 @@ pub(super) enum DurableDecodeError {
 
 // The decoded outer schema, before any identity authority is applied.
 pub(super) struct DecodedDurable {
-    pub(super) wire: DurableV4,
+    pub(super) wire: DurableState,
     pub(super) exact: Option<BoundedExactAdmissions>,
-    pub(super) version: u32,
-    pub(super) held: crate::room::held::HeldRecords,
 }
 impl DecodedDurable {
     pub(super) fn decode(
@@ -26,72 +24,25 @@ impl DecodedDurable {
     ) -> Result<Self, DurableDecodeError> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes)
             .map_err(|_| DurableDecodeError::Resource(PeerResourceError::Malformed))?;
-        if !matches!(version, 4..=7) {
+        if version != super::DURABLE_VERSION {
             return Err(DurableDecodeError::UnsupportedVersion);
         }
-        // Every path below is one of the closed schemas.
-        macro_rules! decode {
-            ($ty:ty) => {
-                crate::resources::decode::<$ty>(bytes, outer)
-                    .map_err(DurableDecodeError::Resource)?
-            };
-        }
-        let mut held = crate::room::held::HeldRecords::default();
-        let (wire, exact) = match version {
-            4 => (decode!(DurableV4), None),
-            5 => {
-                let value = decode!(DurableV5<'_>);
-                if value.version != 5 || value.base.version != 4 {
-                    return Err(DurableDecodeError::Envelope);
-                }
-                // The input borrow cannot escape: decode the canonical exact
-                // index now, then move the owned V4 base.
-                let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
-                    .map_err(DurableDecodeError::Resource)?;
-                (value.base, Some(exact))
-            }
-            // Bounded reads refuse encrypted records, so the sealed history
-            // is only bounded here, never kept.
-            6 => {
-                let value = decode!(DurableV6<'_>);
-                if value.version != 6 || value.base.version != 4 || value.sealed.is_empty() {
-                    return Err(DurableDecodeError::Envelope);
-                }
-                let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
-                    .map_err(DurableDecodeError::Resource)?;
-                (value.base, Some(exact))
-            }
-            7 => {
-                let value = decode!(DurableV7);
-                if value.version != 7
-                    || value.base.version != 4
-                    || value.held.is_empty()
-                    || (value.exact.is_none() && !value.sealed.is_empty())
-                {
-                    return Err(DurableDecodeError::Envelope);
-                }
-                let exact = value
-                    .exact
-                    .as_deref()
-                    .map(|exact| BoundedExactAdmissions::decode(exact, exact_limits))
-                    .transpose()
-                    .map_err(DurableDecodeError::Resource)?;
-                held = value.held;
-                (value.base, exact)
-            }
-            _ => return Err(DurableDecodeError::UnsupportedVersion),
-        };
-        if wire.version != 4 || wire.base.version != 3 {
+        let wire = crate::resources::decode::<DurableState>(bytes, outer)
+            .map_err(DurableDecodeError::Resource)?;
+        // Bounded reads refuse encrypted records, so the sealed history is
+        // only bounded here, never kept.
+        if wire.exact.is_none() && !wire.sealed.is_empty() {
             return Err(DurableDecodeError::Envelope);
         }
+        let exact = wire
+            .exact
+            .as_deref()
+            .map(|exact| BoundedExactAdmissions::decode(exact, exact_limits))
+            .transpose()
+            .map_err(DurableDecodeError::Resource)?;
         super::pending::validate(&wire.pending, wire.pending_bytes)
             .map_err(DurableDecodeError::Pending)?;
-        Ok(Self {
-            wire,
-            exact,
-            version,
-            held,
-        })
+        Ok(Self { wire, exact })
     }
 }
 

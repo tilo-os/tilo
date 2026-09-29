@@ -1081,9 +1081,12 @@ fn sealed_write(owner: &SessionOwner) -> NeighbourMsg {
         unreachable!()
     };
     envelope.seq += 1;
-    envelope.encryption = Some(collab_types::EncryptionMetadata::mls_application(
+    // Documents are sealed under the channel's content key, which a host
+    // retains without reading (`channel_crypto::content`).
+    envelope.encryption = Some(collab_types::EncryptionMetadata::content_key(
         1,
         collab_types::document_channel_id(app_id, cluster_id, record_id),
+        collab_types::ContentRetention::Delta,
     ));
     envelope.payload = vec![1, 2, 3];
     collab_types::sign_op(envelope, &owner.identity.native).unwrap();

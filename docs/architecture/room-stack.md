@@ -183,7 +183,10 @@ stored state is not migrated.
    admission, direct rooms, comment signing, recording delegations, identity
    announcements, one retention classifier, one `extract_governed_fields`.
    Memberships held outside governance (host admissions, recording
-   delegations) are persisted with the room.
+   delegations) are persisted with the room. A host admission admits a
+   person: every device their root certifies joins by its hello. A room's
+   stored state has one current shape; state of any other version is
+   refused and fetched again.
 4. **The shell on the core**: every room through the core; `room_docs`,
    `room_authority`, `apply_room_changes`, `document_role`,
    `peer_room_allows`, the admission and delegation code in `network.rs`

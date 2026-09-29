@@ -451,19 +451,20 @@ mod tests {
         }
     }
 
-    /// Mirrors tilo-room's frozen v4 envelope that `durable()` writes
-    /// around the v3 base (without selected exact admission evidence).
+    /// Mirrors the one stored shape tilo-room's `durable()` writes.
     #[derive(Serialize, Deserialize)]
-    struct DurableV4Fixture {
+    struct DurableStateFixture {
         version: u32,
+        exact: Option<Vec<u8>>,
         base: DurableFixture,
         pending: std::collections::VecDeque<([u8; 32], tilo_room::NeighbourMsg, bool)>,
         pending_bytes: usize,
+        sealed: Vec<(RouteFixture, Vec<collab_types::SignedOp>)>,
+        held: tilo_room::room::held::HeldRecords,
     }
 
     #[derive(Serialize, Deserialize)]
     struct DurableFixture {
-        version: u32,
         room: String,
         authority: DeviceCert,
         room_bytes: Option<Vec<u8>>,
@@ -838,12 +839,10 @@ mod tests {
         assert!(!admitted.rows().is_empty());
         assert_eq!(super::admission_phase(&admitted, true, None), "ready");
 
-        let mut envelope: DurableV4Fixture =
+        let mut envelope: DurableStateFixture =
             postcard::from_bytes(&admitted.durable().unwrap()).unwrap();
-        assert_eq!(envelope.version, 4);
         assert!(envelope.pending.is_empty());
         let durable = &mut envelope.base;
-        assert_eq!(durable.version, 3);
         durable.room_bytes = None;
         let restored = StatePeer::restore(
             &postcard::to_allocvec(&envelope).unwrap(),
