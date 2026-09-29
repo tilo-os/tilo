@@ -16,8 +16,6 @@
 //! stranger keeps the same colour across sessions.
 
 use std::collections::HashMap;
-#[cfg(unix)]
-use std::path::PathBuf;
 
 use crate::widget::history::HistoryAuthor;
 
@@ -141,42 +139,26 @@ pub fn agent_display_label(name: &str) -> String {
     crate::i18n::widget_format("participant-agent", &[("name", name.into())])
 }
 
-/// Build a [`HistoryAuthor`] from the Tilo identity on disk, if there is one.
+/// Build a [`HistoryAuthor`] from the local identity
+/// ([`crate::local_identity`]), if there is one.
 /// Public because the shell wants the same answer for its own chrome without
 /// having to own an [`AuthorDirectory`].
 pub fn local_identity_author() -> Option<HistoryAuthor> {
-    #[cfg(not(unix))]
-    return None;
-    #[cfg(unix)]
-    {
-        let id = runtime_identity::load().ok().or_else(|| {
-            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
-        })?;
-        let key_hex = hex::encode(id.group_public_key());
-        let name = if id.display_name().is_empty() {
-            // First boot writes an empty display name and the user names
-            // themselves later. An empty string would render as a blank row, so
-            // fall back to the stable label rather than to a guess.
-            UNKNOWN_AUTHOR_NAME.to_string()
-        } else {
-            id.display_name().to_string()
-        };
-        Some(HistoryAuthor::new(
-            name,
-            rgb_to_hue(id.avatar_color()),
-            short_id(&key_hex),
-        ))
-    }
-}
-
-/// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
-/// `$HOME/.config/tilo/identity/primary.json`. Mirrors the resolution in
-/// `shell::firstboot::resolve_identity_dir`, which is what writes the file.
-#[cfg(unix)]
-fn config_identity_path() -> Option<PathBuf> {
-    let base = crate::host::environment().paths.config_dir()?;
-    let p = base.join("tilo").join("identity").join("primary.json");
-    p.is_file().then_some(p)
+    let id = crate::local_identity::load()?;
+    let key_hex = hex::encode(id.group_public_key);
+    let name = if id.display_name.is_empty() {
+        // First boot writes an empty display name and the user names
+        // themselves later. An empty string would render as a blank row, so
+        // fall back to the stable label rather than to a guess.
+        UNKNOWN_AUTHOR_NAME.to_string()
+    } else {
+        id.display_name
+    };
+    Some(HistoryAuthor::new(
+        name,
+        rgb_to_hue(id.avatar_color),
+        short_id(&key_hex),
+    ))
 }
 
 /// Decode an actor id back to the handle the authoring process chose for
@@ -223,7 +205,6 @@ pub fn stable_hue(actor_hex: &str) -> f32 {
 /// RGB → hue in degrees. Saturation/value are fixed by
 /// `crate::widget::history::hue_to_rgb`, so only the hue survives —
 /// deliberate, it keeps the dots a coherent family.
-#[cfg(any(unix, test))]
 fn rgb_to_hue(rgb: [u8; 3]) -> f32 {
     let red = f32::from(rgb[0]) / 255.0;
     let green = f32::from(rgb[1]) / 255.0;

@@ -12,7 +12,6 @@
 //! forks/execs and blocks for the child's lifetime; outcomes come back
 //! through [`drain_events`], drained once per frame.
 
-#[cfg(any(test, target_os = "linux"))]
 use crate::shell::state::WorkspaceAuthority as _;
 use std::collections::VecDeque;
 #[cfg(any(test, target_os = "linux"))]
@@ -2207,6 +2206,13 @@ fn execute_installed_inner(
         "TILO_STARTUP_METRICS_PATH".to_string(),
         format!("/run/tilo/app/.local/state/startup-{continuity_instance}.json"),
     ));
+    // An unattended session's apps save where it was told to.
+    if let Some(directory) = std::env::var_os(ui::portal::SAVE_DIRECTORY_ENV) {
+        command.env.push((
+            ui::portal::SAVE_DIRECTORY_ENV.to_string(),
+            directory.to_string_lossy().into_owned(),
+        ));
+    }
     attach_continuity_instance(&app.package_id, continuity_instance);
     tracing::info!(target: "tilo::launch_probe", package_id = %app.package_id, "continuity staged");
     if let Some((Some((schema, resume)), _)) = staged_resume {

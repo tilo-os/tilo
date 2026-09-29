@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The per-user runtime as a launchd agent, shipped at
+     Tilo.app/Contents/Library/LaunchAgents/so.tilo.runtime.plist.
+
+     SMAppService.agent(plistName: "so.tilo.runtime.plist") (macOS 13+) runs
+     BundleProgram, resolved inside the bundle wherever it is installed.
+     `launchctl bootstrap` refuses BundleProgram, so a manually installed copy
+     drops that key and runs ProgramArguments[0], the /Applications install
+     (dist/macos/README.md).
+
+     KeepAlive restarts only a crashed daemon: a clean exit, or a second
+     daemon refused because an app already started one for this profile,
+     must not be respawned every ThrottleInterval. -->
+<plist version="1.0"><dict>
+  <key>Label</key><string>so.tilo.runtime</string>
+  <key>BundleProgram</key><string>Contents/MacOS/tilo-runtime</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Applications/Tilo.app/Contents/MacOS/tilo-runtime</string>
+    <string>--daemon</string>
+  </array>
+  <key>AssociatedBundleIdentifiers</key>
+  <array><string>so.tilo.runtime</string></array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key>
+  <dict><key>Crashed</key><true/></dict>
+</dict></plist>

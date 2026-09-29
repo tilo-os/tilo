@@ -259,11 +259,11 @@ has "$snapshot" 'dnf upgrade -y --best --store=/tmp/tilo-upgrade' \
   'snapshot includes upgrades of installed direct specs and their reverse dependencies'
 has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
-has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
+has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
 has "$resolve_script" 'registry.tilo.so/tilo/rpms@$digest' \
   'fingerprint resolve returns a digest-pinned RPM registry path'
-has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
+has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'

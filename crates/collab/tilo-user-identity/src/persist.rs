@@ -73,18 +73,18 @@ fn protect_secret_process() -> io::Result<()> {
     Ok(())
 }
 
-#[cfg(target_os = "linux")]
-fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
-    // Fedora Atomic deliberately exposes /home as a symlink to /var/home.
-    // Resolving an absolute path with RESOLVE_NO_SYMLINKS therefore rejects a
-    // perfectly normal login before it ever reaches Tilo's identity tree.
-    // Managed IdentityPaths can sit below that distribution-owned symlink.
-    // Anchor them at the parent of the nearest canonical identity directory;
-    // resolving the remainder beneath this descriptor preserves symlink
-    // rejection inside Tilo's storage. Explicit CLI paths have no such managed
-    // boundary, so retain the strict absolute-path behavior for them.
-    let managed = path
-        .ancestors()
+/// Distributions and platforms put ordinary directories behind symlinks they
+/// own: Fedora Atomic exposes /home as a symlink to /var/home, and macOS puts
+/// /tmp and /var (so every `$TMPDIR`) behind /private. Resolving an absolute
+/// path while rejecting every symlink would refuse a perfectly normal login
+/// before it reaches Tilo's identity tree. Managed `IdentityPaths` are
+/// therefore anchored at the parent of the nearest identity directory, and
+/// the remainder is resolved beneath that canonical directory, which keeps
+/// symlink rejection inside Tilo's storage. Explicit CLI paths have no such
+/// managed boundary and keep the strict absolute-path behavior.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+fn managed_root(path: &Path) -> Option<(&Path, &Path)> {
+    path.ancestors()
         .zip(path.ancestors().skip(1))
         .find_map(|(child, parent)| {
             let name = child.file_name()?.to_str()?;
@@ -92,8 +92,12 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
                 return None;
             }
             Some((parent, path.strip_prefix(parent).ok()?))
-        });
-    let (root, candidate, beneath) = if let Some((root, relative)) = managed {
+        })
+}
+
+#[cfg(target_os = "linux")]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    let (root, candidate, beneath) = if let Some((root, relative)) = managed_root(path) {
         let canonical_root = fs::canonicalize(root)?;
         let root_path = CString::new(canonical_root.as_os_str().as_bytes()).map_err(|_| {
             io::Error::new(
@@ -134,19 +138,48 @@ fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     )
 }
 
-#[cfg(not(target_os = "linux"))]
+/// Darwin rejects symlinks in every component of the path it resolves
+/// (`O_NOFOLLOW_ANY`), matching Linux openat2 `RESOLVE_NO_SYMLINKS`; managed
+/// paths resolve beneath their canonical root descriptor (see
+/// [`managed_root`]).
+#[cfg(target_os = "macos")]
+fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
+    use std::ffi::CString;
+    use std::os::fd::FromRawFd as _;
+    use std::os::unix::ffi::OsStrExt as _;
+
+    let (root, candidate) = match managed_root(path) {
+        Some((root, relative)) => (Some(fs::File::open(fs::canonicalize(root)?)?), relative),
+        None => (None, path),
+    };
+    let candidate = CString::new(candidate.as_os_str().as_bytes()).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "identity artifact path contains an embedded NUL byte",
+        )
+    })?;
+    let directory = root
+        .as_ref()
+        .map_or(libc::AT_FDCWD, std::os::fd::AsRawFd::as_raw_fd);
+    let flags = libc::O_RDONLY | libc::O_CLOEXEC | libc::O_NONBLOCK | libc::O_NOFOLLOW_ANY;
+    // SAFETY: `candidate` is NUL-terminated and `directory` is AT_FDCWD or a
+    // descriptor `root` keeps open for this call.
+    let descriptor = unsafe { libc::openat(directory, candidate.as_ptr(), flags) };
+    if descriptor < 0 {
+        return Err(io::Error::last_os_error());
+    }
+    // SAFETY: openat returned this owned descriptor and no other File owns it.
+    Ok(unsafe { fs::File::from_raw_fd(descriptor) })
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
 fn open_regular_without_symlinks(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt as _;
-        let flags = libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK;
-        // Darwin can reject symlinks in every path component atomically,
-        // matching Linux openat2 RESOLVE_NO_SYMLINKS.
-        #[cfg(target_os = "macos")]
-        let flags = (flags & !libc::O_NOFOLLOW) | libc::O_NOFOLLOW_ANY;
-        options.custom_flags(flags);
+        options.custom_flags(libc::O_CLOEXEC | libc::O_NOFOLLOW | libc::O_NONBLOCK);
     }
     #[cfg(windows)]
     {
@@ -192,6 +225,21 @@ pub struct IdentityPaths {
     pub device_privkey: std::path::PathBuf,
     /// `<root>/device/cert.bin`
     pub device_cert: std::path::PathBuf,
+    /// Where the device key itself is kept.
+    pub device_key_custody: DeviceKeyCustody,
+}
+
+/// Where a layout keeps this device's private key.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum DeviceKeyCustody {
+    /// A group-private file at [`IdentityPaths::device_privkey`]: the Tilo OS
+    /// layout, where the root filesystem daemon and the session share it.
+    #[default]
+    File,
+    /// The user's login Keychain. A key file an earlier build left at
+    /// [`IdentityPaths::device_privkey`] moves into it once, on first use.
+    #[cfg(target_os = "macos")]
+    Keychain,
 }
 
 impl IdentityPaths {
@@ -209,7 +257,15 @@ impl IdentityPaths {
             user_privkey: root.join("user-identity/privkey.bin"),
             device_privkey: root.join("device-private/keypair.bin"),
             device_cert: root.join("device/cert.bin"),
+            device_key_custody: DeviceKeyCustody::File,
         }
+    }
+
+    /// This layout with its device key kept in `custody`.
+    #[must_use]
+    pub fn with_device_key_custody(mut self, custody: DeviceKeyCustody) -> Self {
+        self.device_key_custody = custody;
+        self
     }
 
     /// Ensure the two subdirectories exist (best-effort). Does not
@@ -225,7 +281,11 @@ impl IdentityPaths {
             #[cfg(not(windows))]
             fs::create_dir_all(parent)?;
         }
-        if let Some(parent) = self.device_privkey.parent() {
+        if let Some(parent) = self
+            .device_privkey
+            .parent()
+            .filter(|_| self.device_key_custody == DeviceKeyCustody::File)
+        {
             #[cfg(windows)]
             private_fs::directory(parent)?;
             #[cfg(not(windows))]
@@ -534,6 +594,26 @@ pub fn read_device_key(path: &Path) -> Result<SigningKey, PersistError> {
     signing_key_from_file(path, 0o007, SecretOwner::RootOrReader)
 }
 
+/// Read this device's key from wherever `paths` keeps it.
+///
+/// # Errors
+///
+/// As [`read_device_key`] for a key file. A Keychain that holds no key, or
+/// refuses or fails to answer, is an error: a missing device key is never
+/// replaced here.
+pub fn load_device_key(paths: &IdentityPaths) -> Result<SigningKey, PersistError> {
+    match paths.device_key_custody {
+        DeviceKeyCustody::File => read_device_key(&paths.device_privkey),
+        #[cfg(target_os = "macos")]
+        DeviceKeyCustody::Keychain => crate::keychain::load(paths)?.ok_or_else(|| {
+            PersistError::Io(io::Error::new(
+                io::ErrorKind::NotFound,
+                "the login Keychain holds no Tilo device key",
+            ))
+        }),
+    }
+}
+
 /// Write the device key with [`DEVICE_KEY_MODE`], atomically.
 ///
 /// # Errors
@@ -588,6 +668,10 @@ pub fn load_or_create_device_key(
     paths: &IdentityPaths,
 ) -> Result<(SigningKey, DeviceKeyOutcome), PersistError> {
     protect_secret_process()?;
+    #[cfg(target_os = "macos")]
+    if paths.device_key_custody == DeviceKeyCustody::Keychain {
+        return crate::keychain::load_or_create(paths);
+    }
     let path = paths.device_privkey.as_path();
     match fs::metadata(path) {
         Ok(_) => Ok((read_device_key(path)?, DeviceKeyOutcome::Loaded)),
@@ -833,6 +917,12 @@ pub fn adopt_device_key(
     seed: &[u8; 32],
 ) -> Result<SigningKey, PersistError> {
     protect_secret_process()?;
+    if paths.device_key_custody != DeviceKeyCustody::File {
+        return Err(PersistError::Io(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "only a device key file adopts an earlier subsystem key",
+        )));
+    }
     let path = paths.device_privkey.as_path();
     paths.ensure_directories()?;
     let sk = SigningKey::from_bytes(seed);

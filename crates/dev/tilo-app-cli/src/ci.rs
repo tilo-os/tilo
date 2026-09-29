@@ -120,6 +120,16 @@ const GITHUB_BUILDS: &[Build] = &[
         runner: "ubuntu-latest",
         builder: true,
     },
+    // Cross-compiled on Linux x86_64 in the builder, which carries the NDK
+    // (the NDK ships x86_64 host tools only). The Android SDK and a JDK are
+    // not in the image: the job installs them with `tilo-app setup android`
+    // and caches the SDK, so the image stays the size Tilo's own CI needs.
+    Build {
+        platform: "android",
+        arch: "aarch64",
+        runner: "ubuntu-latest",
+        builder: true,
+    },
 ];
 
 /// Closes a Forgejo or Gitea matrix, which lists only the builder's builds.
@@ -132,7 +142,7 @@ const OTHER_RUNNERS_NOTE: &str = "          \
 impl Build {
     /// Built on the forge's Linux `x86_64` runner, the one every forge has.
     fn on_default_runner(&self) -> bool {
-        self.builder && self.arch != "aarch64"
+        self.builder && self.runner == "ubuntu-latest"
     }
 }
 
@@ -312,22 +322,17 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
     }
     out.push_str("    steps:\n");
     steps_prelude(&mut out, lock);
+    android_steps(&mut out);
     out.push_str(
         "      - name: Package\n        \
            env:\n          \
-             TILO_PUBLISHER_KEY: ${{ secrets.TILO_PUBLISHER_KEY }}\n        \
+             TILO_PUBLISHER_KEY: ${{ secrets.TILO_PUBLISHER_KEY }}\n          \
+             TILO_ANDROID_KEYSTORE_PASS: ${{ secrets.TILO_ANDROID_KEYSTORE_PASS }}\n        \
            run: >-\n          \
              tilo-app package --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}\n          \
              --output dist/${{ matrix.platform }}-${{ matrix.arch }}.tapp\n",
     );
-    let _ = write!(
-        out,
-        "      - uses: {upload}\n        \
-           with:\n          \
-             name: tapp-${{{{ matrix.platform }}}}-${{{{ matrix.arch }}}}\n          \
-             path: {dist}/${{{{ matrix.platform }}}}-${{{{ matrix.arch }}}}.tapp\n          \
-             if-no-files-found: error\n\n"
-    );
+    upload_steps(&mut out, upload, &dist);
 
     out.push_str("  publish:\n    needs: package\n    if: startsWith(github.ref, 'refs/tags/v')\n");
     let _ = writeln!(out, "    runs-on: {runner}");
@@ -348,6 +353,58 @@ fn workflow(forge: Forge, runner: &str, working_directory: &str, lock: &str) -> 
            run: tilo-app publish dist/*.tapp\n"
     );
     out
+}
+
+/// The package job's artifacts: every build's `.tapp`, and Android's `.apk`
+/// and `.aab` for sideloading and Play.
+fn upload_steps(out: &mut String, upload: &str, dist: &str) {
+    let _ = write!(
+        out,
+        "      - uses: {upload}\n        \
+           with:\n          \
+             name: tapp-${{{{ matrix.platform }}}}-${{{{ matrix.arch }}}}\n          \
+             path: {dist}/${{{{ matrix.platform }}}}-${{{{ matrix.arch }}}}.tapp\n          \
+             if-no-files-found: error\n\
+         \x20     - if: matrix.platform == 'android'\n        \
+           uses: {upload}\n        \
+           with:\n          \
+             name: android-${{{{ matrix.arch }}}}\n          \
+             path: |\n            \
+               {dist}/android-${{{{ matrix.arch }}}}.apk\n            \
+               {dist}/android-${{{{ matrix.arch }}}}.aab\n          \
+             if-no-files-found: error\n\n"
+    );
+}
+
+/// The Android SDK, build-tools and a JDK for the builder, which carries
+/// only the NDK, and the release keystore from the `TILO_ANDROID_KEYSTORE`
+/// secret (base64). Without that secret the release is signed with a key
+/// kept beside the publisher key, which differs from run to run.
+fn android_steps(out: &mut String) {
+    out.push_str(
+        "      - name: Install a JDK and zip for Android\n        \
+           if: matrix.platform == 'android'\n        \
+           run: |\n          \
+             dnf install -y --setopt=install_weak_deps=False java-21-openjdk-devel zip unzip\n          \
+             echo \"ANDROID_HOME=$GITHUB_WORKSPACE/.android-sdk\" >> \"$GITHUB_ENV\"\n\
+         \x20     - if: matrix.platform == 'android'\n        \
+           uses: actions/cache@v4\n        \
+           with:\n          \
+             path: .android-sdk\n          \
+             key: android-sdk-${{ runner.os }}-${{ hashFiles('.tilo-cli/bin/tilo-app') }}\n\
+         \x20     - name: Install the Android SDK\n        \
+           if: matrix.platform == 'android'\n        \
+           run: tilo-app setup android --accept-licenses\n\
+         \x20     - name: Release keystore\n        \
+           if: matrix.platform == 'android'\n        \
+           env:\n          \
+             KEYSTORE: ${{ secrets.TILO_ANDROID_KEYSTORE }}\n        \
+           run: |\n          \
+             if [ -n \"$KEYSTORE\" ]; then\n            \
+               printf '%s' \"$KEYSTORE\" | base64 -d > \"$RUNNER_TEMP/release.keystore\"\n            \
+               echo \"TILO_ANDROID_KEYSTORE=$RUNNER_TEMP/release.keystore\" >> \"$GITHUB_ENV\"\n          \
+             fi\n",
+    );
 }
 
 fn runner_for<'a>(build: &'a Build, linux_x86: &'a str) -> &'a str {
@@ -427,7 +484,8 @@ mod tests {
                 "windows-aarch64",
                 "macos-aarch64",
                 "macos-x86_64",
-                "web-wasm32"
+                "web-wasm32",
+                "android-aarch64"
             ]
         );
         assert_eq!(
@@ -472,7 +530,11 @@ mod tests {
             .collect();
         assert_eq!(
             builds,
-            [("tilo", "codeberg-small"), ("web", "codeberg-small")],
+            [
+                ("tilo", "codeberg-small"),
+                ("web", "codeberg-small"),
+                ("android", "codeberg-small")
+            ],
             "the Linux x86_64 builds are on"
         );
         assert!(text.contains("# - { platform: tilo, arch: aarch64"));
@@ -482,6 +544,59 @@ mod tests {
         assert_eq!(
             yaml["jobs"]["check"]["runs-on"].as_str(),
             Some("codeberg-small")
+        );
+    }
+
+    #[test]
+    fn android_builds_in_the_builder_with_the_sdk_it_installs_and_ships_the_apk() {
+        let text = workflow(Forge::Github, "ubuntu-latest", ".", "Cargo.lock");
+        let yaml: serde_yaml::Value = serde_yaml::from_str(&text).expect("valid YAML");
+        let android = yaml["jobs"]["package"]["strategy"]["matrix"]["include"]
+            .as_sequence()
+            .expect("matrix")
+            .iter()
+            .find(|entry| entry["platform"].as_str() == Some("android"))
+            .expect("an android build");
+        assert_eq!(android["runner"].as_str(), Some("ubuntu-latest"));
+        assert_eq!(android["container"].as_str(), Some(BUILDER_IMAGE));
+        let steps = yaml["jobs"]["package"]["steps"]
+            .as_sequence()
+            .expect("steps");
+        let android_only: Vec<&serde_yaml::Value> = steps
+            .iter()
+            .filter(|step| step["if"].as_str() == Some("matrix.platform == 'android'"))
+            .collect();
+        let runs: Vec<&str> = android_only
+            .iter()
+            .filter_map(|step| step["run"].as_str())
+            .collect();
+        assert!(runs.iter().any(|run| run.contains("java-21-openjdk-devel")));
+        assert!(runs.contains(&"tilo-app setup android --accept-licenses"));
+        assert!(
+            runs.iter()
+                .any(|run| run.contains("TILO_ANDROID_KEYSTORE="))
+        );
+        let setup = steps
+            .iter()
+            .position(|step| {
+                step["run"].as_str() == Some("tilo-app setup android --accept-licenses")
+            })
+            .expect("setup step");
+        let package = steps
+            .iter()
+            .position(|step| step["name"].as_str() == Some("Package"))
+            .expect("package step");
+        assert!(setup < package, "the SDK is installed before packaging");
+        let uploads: Vec<&str> = android_only
+            .iter()
+            .filter_map(|step| step["with"]["path"].as_str())
+            .collect();
+        assert!(
+            uploads
+                .iter()
+                .any(|path| path.contains("dist/android-${{ matrix.arch }}.apk")
+                    && path.contains("dist/android-${{ matrix.arch }}.aab")),
+            "{uploads:?}"
         );
     }
 

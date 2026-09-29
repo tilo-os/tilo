@@ -1195,7 +1195,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
             } if self.focused && ctx.modifiers.state().alt_key() => {
                 *ctx.handled = self.nudge_with_keyboard(*key, ctx.modifiers.state().shift_key());
             }
-            WindowEvent::KeyboardInput { .. } => {
+            // Text arrives from an input method (and in a browser page only
+            // from one), not only as key presses.
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_) => {
                 self.forward_to_content(
                     event,
                     ctx.scale_factor,

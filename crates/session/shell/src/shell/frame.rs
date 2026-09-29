@@ -1949,10 +1949,22 @@ impl FrameBuilder {
                 .as_ref()
                 .and_then(Widget::next_wake_deadline),
             self.chrome.borrow().window_transfers.next_poll(),
+            self.peer_windows_poll(),
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// A round soon while a peer's window waits to be opened here: its room's
+    /// update may land after this round's decision, with nothing left to wake
+    /// an idle session for it (a window waiting on its record, too).
+    fn peer_windows_poll(&self) -> Option<Instant> {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        crate::shell::peer_windows::any_pending(&tree)
+            .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
+            .flatten()
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn

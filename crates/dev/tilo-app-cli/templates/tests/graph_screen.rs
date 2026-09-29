@@ -26,7 +26,7 @@ fn serialized_graph_edits_have_shared_undo_history() {
     assert!(matches!(
         graph.node("graph-introduction"),
         Ok(UiNode::Text { text: ui::UiTextSource::Static { value }, .. })
-            if value.contains("read-only screen")
+            if value == "graph-introduction"
     ));
     assert!(!graph.can_undo(), "continuous typing created one undo step");
     assert!(graph.redo().expect("the undone edit can be reapplied"));

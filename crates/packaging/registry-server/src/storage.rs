@@ -430,6 +430,19 @@ impl Storage {
         Ok(bytes)
     }
 
+    /// Load package bytes previously staged under `blake3_hex`, if any.
+    ///
+    /// # Errors
+    /// Returns an error for an invalid digest, unreadable bytes, or content
+    /// mismatch.
+    pub fn find_staged_artifact(&self, blake3_hex: &str) -> Result<Option<Vec<u8>>, StorageError> {
+        match std::fs::metadata(self.staged_artifact_path(blake3_hex)?) {
+            Ok(_) => self.load_staged_artifact(blake3_hex).map(Some),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(StorageError::Io(format!("stat staged artifact: {error}"))),
+        }
+    }
+
     /// Acquire the registry-wide mutation lock. Promotion selection, pending
     /// changes, moderation, and snapshot publication all use this one lock in
     /// that order. The retained lock file and kernel `flock` make this safe
