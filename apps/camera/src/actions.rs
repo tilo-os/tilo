@@ -426,18 +426,18 @@ pub(crate) fn capture_resource(it: &CaptureItem) -> Resource {
     child
 }
 
-/// Build Camera's contextual resource tree: one recent capture with a typed
-/// handoff action when verified and portable. Photos owns still-media
-/// library operations; Video Player owns recorded-video operations.
-#[allow(
-    clippy::too_many_lines,
-    reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
-)]
-pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    // This app root is semantic discovery, not a visual destination rail.
-    // Ctrl+K, a screen reader, and an agent use these local reveal operations
-    // while the on-screen app stays entirely on the edge-to-edge capture stage.
-    let mut camera = Resource::new("camera", "camera", "Camera");
+pub(crate) fn capture_item_from_shared(shared: &doc::SharedCapture) -> CaptureItem {
+    CaptureItem {
+        id: shared.id.clone(),
+        label: shared.label.clone(),
+        is_video: matches!(shared.kind, CaptureKind::Video),
+        media_id: Some(shared.media_id.clone()).filter(|id| !id.is_empty()),
+    }
+}
+
+/// Screen reveal Views for [`crate::resource::Camera::local_operations`].
+pub(crate) fn screen_view_specs() -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
     for screen in Screen::ALL {
         if let Ok(spec) = ActionSpec::operation(
             format!("open-{}", screen.as_str()),
@@ -446,13 +446,183 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             CAMERA_OPERATION_TYPE,
             &CameraOperation::Reveal { screen },
         ) {
-            camera = camera.with_action(spec);
+            specs.push(spec);
         }
     }
+    specs
+}
+
+/// Mode / lens Document actions bound from live capture state.
+pub(crate) fn bound_mode_facing_actions(facing: Facing, recording: bool) -> Vec<ActionSpec> {
+    let mut specs = Vec::new();
+    for (id, label, mode) in [
+        ("photo-mode", "Use photo mode", CaptureMode::Photo),
+        ("video-mode", "Use video mode", CaptureMode::Video),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
+            specs.push(if recording {
+                spec.unavailable("recording_active", "Stop recording before changing mode")
+            } else {
+                spec
+            });
+        }
+    }
+    for next in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("lens-{}", next.as_str()),
+            &format!("Use {} lens", next.label()),
+            &CameraAction::SetFacing { facing: next },
+        ) {
+            specs.push(if next == facing {
+                spec.unavailable("already_selected", "This lens is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    specs
+}
+
+/// Capture-settings Document child for [`tilo_resource::publish`].
+pub(crate) fn settings_document_resource(settings: &Settings) -> Resource {
+    let mut node = Resource::new("camera.settings", "camera.settings", "Capture settings");
+    for resolution in Resolution::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("resolution-{}", resolution.as_str()),
+            &format!("Use {} resolution", resolution.label()),
+            &CameraAction::SetResolution { resolution },
+        ) {
+            node = node.with_action(if resolution == settings.resolution {
+                spec.unavailable("already_selected", "This resolution is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for photo_format in PhotoFormat::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("format-{}", photo_format.as_str()),
+            &format!("Use {} photos", photo_format.label()),
+            &CameraAction::SetPhotoFormat { photo_format },
+        ) {
+            node = node.with_action(if photo_format == settings.photo_format {
+                spec.unavailable("already_selected", "This photo format is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for timer in Timer::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("timer-{}", timer.seconds()),
+            &format!("Use {} timer", timer.label()),
+            &CameraAction::SetTimer { timer },
+        ) {
+            node = node.with_action(if timer == settings.timer {
+                spec.unavailable("already_selected", "This timer is already selected")
+            } else {
+                spec
+            });
+        }
+    }
+    for (id, label, action) in [
+        (
+            "grid",
+            if settings.grid {
+                "Turn off composition grid"
+            } else {
+                "Turn on composition grid"
+            },
+            CameraAction::SetGrid { on: !settings.grid },
+        ),
+        (
+            "level",
+            if settings.level {
+                "Turn off level guide"
+            } else {
+                "Turn on level guide"
+            },
+            CameraAction::SetLevel {
+                on: !settings.level,
+            },
+        ),
+        (
+            "mirror-front",
+            if settings.mirror_front {
+                "Turn off front-camera mirroring"
+            } else {
+                "Turn on front-camera mirroring"
+            },
+            CameraAction::SetMirrorFront {
+                on: !settings.mirror_front,
+            },
+        ),
+        (
+            "geotag",
+            if settings.geotag {
+                "Turn off photo location"
+            } else {
+                "Turn on photo location"
+            },
+            CameraAction::SetGeotag {
+                on: !settings.geotag,
+            },
+        ),
+        (
+            "hdr",
+            if settings.hdr {
+                "Turn off HDR"
+            } else {
+                "Turn on HDR"
+            },
+            CameraAction::SetHdr { on: !settings.hdr },
+        ),
+    ] {
+        if let Some(spec) = immediate_spec(id, label, &action) {
+            node = node.with_action(spec);
+        }
+    }
+    for next in Facing::ALL {
+        if let Some(spec) = immediate_spec(
+            &format!("default-lens-{}", next.as_str()),
+            &format!("Use {} as the default camera", next.label()),
+            &CameraAction::SetDefaultFacing { facing: next },
+        ) {
+            node = node.with_action(if next == settings.default_facing {
+                spec.unavailable(
+                    "already_selected",
+                    "This default camera is already selected",
+                )
+            } else {
+                spec
+            });
+        }
+    }
+    node
+}
+
+/// Document-derived children: settings, recent handoff, scan history rows.
+pub(crate) fn publish_document_children(
+    settings: &Settings,
+    recent: Option<&CaptureItem>,
+    scans: &[crate::model::ScanEntry],
+) -> Vec<Resource> {
+    let mut children = vec![settings_document_resource(settings)];
+    if let Some(it) = recent {
+        children.push(capture_resource(it));
+    }
+    for scan in scans.iter().take(32) {
+        children.push(Resource::new(
+            format!("camera.scan:{}", scan.ts),
+            "camera.scan",
+            scan.raw.clone(),
+        ));
+    }
+    children
+}
+
+fn capture_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut root = Resource::new("camera.capture", "camera.capture", "Capture");
-    // A focused capture app can always hand people to the single owner of
-    // photo browsing. This is intentionally an action, rather than a Camera
-    // gallery resource, so it creates no local collection state to drift.
     root = root.with_action(open_photos_action());
     if let Ok(spec) = ActionSpec::operation(
         "capture",
@@ -548,151 +718,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             )
         });
     }
-    for (id, label, mode) in [
-        ("photo-mode", "Use photo mode", CaptureMode::Photo),
-        ("video-mode", "Use video mode", CaptureMode::Video),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &CameraAction::SetMode { mode }) {
-            root = root.with_action(if ctx.recording {
-                spec.unavailable("recording_active", "Stop recording before changing mode")
-            } else {
-                spec
-            });
-        }
-    }
-    for facing in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("lens-{}", facing.as_str()),
-            &format!("Use {} lens", facing.label()),
-            &CameraAction::SetFacing { facing },
-        ) {
-            root = root.with_action(if facing == ctx.facing {
-                spec.unavailable("already_selected", "This lens is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    if let Some(it) = &ctx.recent {
-        root = root.with_child(capture_resource(it));
-    }
-    let mut settings = Resource::new("camera.settings", "camera.settings", "Capture settings");
-    for resolution in Resolution::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("resolution-{}", resolution.as_str()),
-            &format!("Use {} resolution", resolution.label()),
-            &CameraAction::SetResolution { resolution },
-        ) {
-            settings = settings.with_action(if resolution == ctx.settings.resolution {
-                spec.unavailable("already_selected", "This resolution is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for photo_format in PhotoFormat::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("format-{}", photo_format.as_str()),
-            &format!("Use {} photos", photo_format.label()),
-            &CameraAction::SetPhotoFormat { photo_format },
-        ) {
-            settings = settings.with_action(if photo_format == ctx.settings.photo_format {
-                spec.unavailable("already_selected", "This photo format is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for timer in Timer::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("timer-{}", timer.seconds()),
-            &format!("Use {} timer", timer.label()),
-            &CameraAction::SetTimer { timer },
-        ) {
-            settings = settings.with_action(if timer == ctx.settings.timer {
-                spec.unavailable("already_selected", "This timer is already selected")
-            } else {
-                spec
-            });
-        }
-    }
-    for (id, label, action) in [
-        (
-            "grid",
-            if ctx.settings.grid {
-                "Turn off composition grid"
-            } else {
-                "Turn on composition grid"
-            },
-            CameraAction::SetGrid {
-                on: !ctx.settings.grid,
-            },
-        ),
-        (
-            "level",
-            if ctx.settings.level {
-                "Turn off level guide"
-            } else {
-                "Turn on level guide"
-            },
-            CameraAction::SetLevel {
-                on: !ctx.settings.level,
-            },
-        ),
-        (
-            "mirror-front",
-            if ctx.settings.mirror_front {
-                "Turn off front-camera mirroring"
-            } else {
-                "Turn on front-camera mirroring"
-            },
-            CameraAction::SetMirrorFront {
-                on: !ctx.settings.mirror_front,
-            },
-        ),
-        (
-            "geotag",
-            if ctx.settings.geotag {
-                "Turn off photo location"
-            } else {
-                "Turn on photo location"
-            },
-            CameraAction::SetGeotag {
-                on: !ctx.settings.geotag,
-            },
-        ),
-        (
-            "hdr",
-            if ctx.settings.hdr {
-                "Turn off HDR"
-            } else {
-                "Turn on HDR"
-            },
-            CameraAction::SetHdr {
-                on: !ctx.settings.hdr,
-            },
-        ),
-    ] {
-        if let Some(spec) = immediate_spec(id, label, &action) {
-            settings = settings.with_action(spec);
-        }
-    }
-    for facing in Facing::ALL {
-        if let Some(spec) = immediate_spec(
-            &format!("default-lens-{}", facing.as_str()),
-            &format!("Use {} as the default camera", facing.label()),
-            &CameraAction::SetDefaultFacing { facing },
-        ) {
-            settings = settings.with_action(if facing == ctx.settings.default_facing {
-                spec.unavailable(
-                    "already_selected",
-                    "This default camera is already selected",
-                )
-            } else {
-                spec
-            });
-        }
-    }
+    root
+}
+
+fn scanner_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut scanner = Resource::new("camera.scanner", "camera.scanner", "Code scanner");
     if let Ok(spec) = ActionSpec::operation(
         "import-image",
@@ -707,7 +736,10 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
             spec
         });
     }
+    scanner
+}
 
+fn document_effect_root(ctx: &CameraResourceCtx) -> Resource {
     let mut document = Resource::new(
         "camera.document-scanner",
         "camera.document-scanner",
@@ -787,6 +819,42 @@ pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Reso
                 spec.unavailable("no_selected_page", "Capture and select a page first")
             });
         }
+    }
+    document
+}
+
+/// Hosted-only extras that are not document state: shutter / record / device
+/// chooser, code-scanner import, and document-scanner Effects. Mode, lens and
+/// settings Document ops live on [`tilo_resource::publish`].
+pub(crate) fn live_effect_extras(ctx: &CameraResourceCtx) -> Vec<Resource> {
+    vec![
+        capture_effect_root(ctx),
+        scanner_effect_root(ctx),
+        document_effect_root(ctx),
+    ]
+}
+
+/// Capture, scanner, document, settings, and screen-reveal roots. Standalone /
+/// `--shots` / unit tests use this door; when hosted, Document ops ride
+/// [`tilo_resource::publish`] and only [`live_effect_extras`] remain on the widget.
+#[allow(
+    clippy::too_many_lines,
+    reason = "capture, scanner, document, and settings are Camera's bounded resource roots; keeping their complete typed inventory together makes the contract auditable"
+)]
+pub fn provide_resources(ctx: &CameraResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
+    let mut root = capture_effect_root(ctx);
+    for spec in bound_mode_facing_actions(ctx.facing, ctx.recording) {
+        root = root.with_action(spec);
+    }
+    if let Some(it) = &ctx.recent {
+        root = root.with_child(capture_resource(it));
+    }
+    let settings = settings_document_resource(&ctx.settings);
+    let scanner = scanner_effect_root(ctx);
+    let document = document_effect_root(ctx);
+    let mut camera = Resource::new("camera", "camera", "Camera");
+    for spec in screen_view_specs() {
+        camera = camera.with_action(spec);
     }
     vec![root, scanner, document, settings, camera]
 }

@@ -1317,6 +1317,21 @@ impl CameraApp {
         self.actions.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn scan_count_for_test(&self) -> usize {
+        self.scans.len()
+    }
+
     /// Dispatch one Camera [`CameraAction`](crate::actions::CameraAction) — the
     /// single mutation path shared with the Ctrl+K palette. The action is applied
     /// through the Tilo action executor (a pinned actor + committed change, so it
@@ -3466,12 +3481,12 @@ impl ui::search::capability::SearchSource for CameraApp {
 
 impl ui::resources::PublishesResources for CameraApp {
     /// Publish capture resources so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns Document prefs / mode / lens;
+    /// only live Effect extras (shutter, devices, scanners) remain here.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
         // Photos and Video Player are destinations, not Camera resources.
         // Their typed launch operation is attached only to the one current
