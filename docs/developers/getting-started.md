@@ -41,9 +41,15 @@ own it. Without `--id` the app is named `local.dev.reading-list`, which works
 locally but cannot be published.
 
 `tilo-app new` with no arguments asks for the name, title, id and starting
-template instead. `--template` picks one directly: `starter` (the default),
-`document`, `list`, `data`, `tree`, `graph`, `async`, `qr` or `workspace`.
-[Build an app](../app-development.md) describes what each one begins with.
+template instead. `--template` picks one directly: `starter` (the default,
+the smallest correct app), `document`, `collection` or `graph`;
+`tilo-app new --list-templates` describes them.
+
+To learn one idea at a time, start from an example instead: a complete,
+tested program such as `counter`, `shared-checklist`, `data-table` or
+`localized`. `tilo-app examples` lists them, and
+`tilo-app new my-list --from-example shared-checklist` copies one and renames
+it to your app. [Templates and examples](../examples.md) describes each.
 
 The new directory is a complete Cargo project with its own git repository:
 
@@ -158,6 +164,8 @@ Nothing is public until the registry's owner approves it.
 
 ## Where to go next
 
+- [Templates and examples](../examples.md): what each template starts you
+  with and what each example teaches.
 - [Build an app](../app-development.md): templates, screens, localization,
   text, large collections, testing and every `tilo-app` command.
 - [Interface guidelines](../../crates/sdk/ui-core/HIG.md): layout, navigation
