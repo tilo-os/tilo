@@ -88,6 +88,7 @@ async fn writer_boundary(
             tx: state_tx.clone(),
             live: live.clone(),
             replay: None,
+            lag: None,
         },
     );
     let store = runtime.store.clone();
@@ -125,6 +126,7 @@ async fn writer_boundary(
         agents: Box::leak(Box::default()),
         positions: None,
         resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     let source_session = SessionCtx {
         outbound: &source_tx,
@@ -361,6 +363,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
             tx: state_tx.clone(),
             live: Arc::new(AtomicBool::new(true)),
             replay: None,
+            lag: None,
         },
     );
     let store = runtime.store.clone();
@@ -398,6 +401,7 @@ async fn replay_catchup_keeps_selected_activation_pair_without_repeating_baselin
         agents: Box::leak(Box::default()),
         positions: None,
         resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     let source_session = SessionCtx {
         outbound: &source_tx,
