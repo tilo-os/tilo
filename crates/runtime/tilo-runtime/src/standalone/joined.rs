@@ -314,6 +314,7 @@ impl Joined {
                 cluster_id: cluster_id.clone(),
                 record_id: record_id.clone(),
                 role,
+                replayed: input.retained(),
                 envelope: (**envelope).clone(),
             },
             |_| format!("peer@{}", hex::encode(author)),

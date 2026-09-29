@@ -477,6 +477,7 @@ impl DrainQueues {
                 cluster_id: entry.cluster_id,
                 record_id: entry.record_id,
                 role: entry.role,
+                replayed: entry.replayed,
                 envelope: *entry.envelope,
             };
             // Same id and room lookup the peer's presence arrives under, so

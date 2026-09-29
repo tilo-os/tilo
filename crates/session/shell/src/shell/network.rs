@@ -1324,6 +1324,9 @@ pub struct InboundDocument {
     /// Live workspace role established from the authenticated peer's user
     /// certificate before this entry was queued.
     pub role: collab_types::Role,
+    /// A workspace host replayed it from retained, host-ordered history, so
+    /// its age says nothing about freshness.
+    pub replayed: bool,
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
@@ -2338,6 +2341,7 @@ impl ShellNetwork {
         cluster_id: String,
         record_id: String,
         role: collab_types::Role,
+        replayed: bool,
         envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_documents.lock() {
@@ -2347,6 +2351,7 @@ impl ShellNetwork {
                 cluster_id,
                 record_id,
                 role,
+                replayed,
                 envelope: Box::new(envelope),
             });
         }
@@ -4512,8 +4517,9 @@ impl ShellNetwork {
                 ws,
                 peer,
                 membership_epoch,
+                replayed,
                 msg,
-            } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, msg),
+            } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, replayed, msg),
             NetEvent::PersonalFabric {
                 ws,
                 peer,
@@ -5113,6 +5119,7 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        replayed: bool,
         msg: NeighbourMsg,
     ) {
         if let Some(expected) = Self::explicit_topic_for_message(&msg)
@@ -5277,7 +5284,7 @@ impl ShellNetwork {
                     && let Some(role) = role
                 {
                     self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, role, replayed, *envelope,
                     );
                 }
             }
@@ -6929,6 +6936,7 @@ mod tests {
                 DEFAULT_WS_TOPIC,
                 stranger.public(),
                 None,
+                false,
                 NeighbourMsg::RemoteAction { frame },
             );
             assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
@@ -7095,6 +7103,7 @@ mod tests {
             topic,
             device.public(),
             Some(membership_epoch),
+            false,
             NeighbourMsg::IdentityHello {
                 cert: Box::new(cert),
                 revocations: Vec::new(),
@@ -7230,6 +7239,7 @@ mod tests {
                 personal_continuity_topic_id(&user),
                 peer.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: user,
                     publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
@@ -8316,6 +8326,7 @@ mod tests {
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
             None,
+            false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8401,6 +8412,7 @@ mod tests {
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
             None,
+            false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8460,6 +8472,7 @@ mod tests {
                 personal_continuity_topic_id(&local_user),
                 foreign_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: local_user,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8510,6 +8523,7 @@ mod tests {
                 personal_continuity_topic_id(&user_public_key),
                 peer_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8578,6 +8592,7 @@ mod tests {
                 personal_continuity_topic_id(&user_public_key),
                 peer_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -9121,6 +9136,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::IdentityHello {
                         cert: Box::new(cert.clone()),
                         revocations: Vec::new(),
@@ -9142,6 +9158,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::SyncReq {
                         since: Vec::new(),
                         room: room.to_string(),
@@ -9164,6 +9181,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::SyncReq {
                         since: Vec::new(),
                         room: room.to_string(),
@@ -10168,6 +10186,7 @@ mod tests {
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
             peer,
             membership_epoch: None,
+            replayed: false,
             msg: NeighbourMsg::AppDocument {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
@@ -10229,6 +10248,7 @@ mod tests {
                 ws: room_topic_id(our_room),
                 peer: device.public(),
                 membership_epoch: None,
+                replayed: false,
                 msg: NeighbourMsg::IdentityHello {
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
@@ -10261,6 +10281,7 @@ mod tests {
                     ws,
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: message.clone(),
                 })
                 .expect("queue governance");
@@ -10640,6 +10661,7 @@ mod tests {
                 "cluster-7".to_string(),
                 "uuid:9f".to_string(),
                 collab_types::Role::Editor,
+                false,
                 envelope.clone(),
             );
             let buf = buf_handle.lock().unwrap().clone();
@@ -10896,6 +10918,6 @@ mod tests {
             })
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
-        to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+        to.dispatch_neighbour_msg(ws, from.public(), None, false, msg);
     }
 }

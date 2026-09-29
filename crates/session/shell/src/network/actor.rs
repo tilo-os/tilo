@@ -296,6 +296,9 @@ pub enum NetEvent {
         ws: WorkspaceId,
         peer: PeerId,
         membership_epoch: Option<MembershipEpoch>,
+        /// A workspace host replayed it from its retained, host-ordered
+        /// history before answering the subscription: old by nature.
+        replayed: bool,
         msg: NeighbourMsg,
     },
     PersonalFabric {
@@ -445,6 +448,8 @@ enum HostEvent {
     Message {
         author: EndpointId,
         fingerprint: [u8; 32],
+        /// Sent before the host's `Ready`: part of its replay.
+        replayed: bool,
         msg: NeighbourMsg,
     },
     Closed,
@@ -1984,6 +1989,7 @@ impl ActorState {
                     ws,
                     peer,
                     membership_epoch: Some(membership_epoch),
+                    replayed: false,
                     msg,
                 })
                 .await;
@@ -2159,6 +2165,7 @@ impl ActorState {
                         ws,
                         peer,
                         membership_epoch: Some(membership_epoch),
+                        replayed: false,
                         msg,
                     }),
                     Err(error) => {
@@ -2283,6 +2290,7 @@ impl ActorState {
             HostEvent::Message {
                 author,
                 fingerprint,
+                replayed,
                 msg,
             } => {
                 if matches!(
@@ -2309,6 +2317,7 @@ impl ActorState {
                     ws,
                     peer: author,
                     membership_epoch: None,
+                    replayed,
                     msg,
                 })
             }
@@ -3439,6 +3448,7 @@ fn spawn_host_pump(
                         author,
                         // Never deduplicated; see `handle_host_event`.
                         fingerprint: [0; 32],
+                        replayed: false,
                         msg: NeighbourMsg::RemoteAction { frame },
                     }
                 }
@@ -3466,6 +3476,7 @@ fn spawn_host_pump(
                     HostEvent::Message {
                         author,
                         fingerprint,
+                        replayed: replay,
                         msg,
                     }
                 }
@@ -5049,6 +5060,118 @@ mod tests {
         }
         assert!(hellos.contains(&a_device), "A's certificate is replayed");
         assert!(!hellos.contains(&b_device), "B's own certificate is not");
+    }
+
+    /// What a host writes before answering a subscription is its replay of
+    /// retained history and is marked so (receivers exempt it from their
+    /// freshness window); what it fans out afterwards is live.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn host_replay_is_marked_until_the_host_answers_ready() {
+        let root = ed25519_dalek::SigningKey::generate(&mut UnwrapErr(SysRng));
+        let (a_key, a_cert) = enrol(&root, DeviceCapabilities::primary(), "a");
+        let (b_key, b_cert) = enrol(&root, DeviceCapabilities::member(), "b");
+        let (relay, _state, _host_cert) = spawn_pinned_relay_for_two_members(
+            &root,
+            a_key.verifying_key().to_bytes(),
+            b_key.verifying_key().to_bytes(),
+        )
+        .await;
+        let a_device = a_key.verifying_key().to_bytes();
+        let (a, lookup_a) = identified_endpoint(&a_key).await;
+        let (b, lookup_b) = identified_endpoint(&b_key).await;
+        let b_restart_key = b_key.clone();
+        let b_restart_cert = b_cert.clone();
+        let identity = |key, cert| HostIdentity {
+            device_cert: cert,
+            device_signing_key: key,
+            workspace_device_certs: HashMap::new(),
+            workspace_revocations: HashMap::new(),
+            identity_paths: None,
+        };
+        let (cmd_a, _rx_a, cmd_b, _rx_b) = join_workspace_and_await_host_ready(
+            a,
+            lookup_a,
+            identity(a_key, a_cert),
+            b,
+            lookup_b,
+            identity(b_key, b_cert),
+            &relay,
+            HEARTBEAT_INTERVAL,
+        )
+        .await;
+        drop(cmd_b);
+
+        let (b_restarted, lookup_restarted) = identified_endpoint(&b_restart_key).await;
+        let (cmd_restarted, _task_restarted) = Actor::spawn_reporting_addrs(
+            b_restarted,
+            lookup_restarted,
+            Some(identity(b_restart_key, b_restart_cert)),
+            Arc::new(Mutex::new(Vec::new())),
+        );
+        let (events, mut rx) = mpsc::channel(64);
+        cmd_restarted
+            .send(NetCmd::JoinWorkspace {
+                ws: 42,
+                on_event: events,
+            })
+            .await
+            .unwrap();
+        cmd_restarted
+            .send(NetCmd::ConnectHost {
+                addr: relay.node_addr(),
+                expectation: None,
+            })
+            .await
+            .unwrap();
+        let mut replayed_hello = None;
+        loop {
+            match timeout(Duration::from_secs(15), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                NetEvent::Msg {
+                    msg: NeighbourMsg::IdentityHello { cert, .. },
+                    replayed,
+                    membership_epoch: None,
+                    ..
+                } if cert.device_public_key == a_device => replayed_hello = Some(replayed),
+                NetEvent::HostReady { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            replayed_hello,
+            Some(true),
+            "A's retained certificate is replay"
+        );
+
+        cmd_a
+            .send(NetCmd::Publish {
+                ws: 42,
+                msg: NeighbourMsg::SyncReq {
+                    since: vec![],
+                    room: "after-ready".into(),
+                    invite_id: None,
+                },
+            })
+            .await
+            .unwrap();
+        loop {
+            if let NetEvent::Msg {
+                msg: NeighbourMsg::SyncReq { room, .. },
+                replayed,
+                ..
+            } = timeout(Duration::from_secs(15), rx.recv())
+                .await
+                .unwrap()
+                .unwrap()
+                && room == "after-ready"
+            {
+                assert!(!replayed, "a fan-out after Ready is live");
+                break;
+            }
+        }
     }
 
     /// The room's governance transport of one device, over its real actor:
