@@ -2,7 +2,8 @@
 //!
 //! The daemon is where resources are known, so it keeps the one index per
 //! user: GNOME Shell and `KRunner` ask it over the session bus, Spotlight is
-//! handed each change, and it walks the catalogue again every [`REFRESH`] so
+//! handed each change (and a chosen result comes back over the native
+//! socket), and it walks the catalogue again every [`REFRESH`] so
 //! what the owner may no longer see leaves every host search.
 
 use std::{io, sync::Arc, time::Duration};
@@ -60,23 +61,4 @@ fn publish(changes: &Changes) {
     tilo_os_search::spotlight::apply(changes);
     #[cfg(not(target_os = "macos"))]
     let _ = changes;
-}
-
-/// Open every Spotlight result the person chooses, running the app on this,
-/// the main, thread for as long as it runs.
-///
-/// # Errors
-///
-/// Returns an error off the main thread or when the app runtime is gone.
-#[cfg(target_os = "macos")]
-pub(crate) fn serve_spotlight_continuations(search: Arc<OsSearch>) -> io::Result<()> {
-    let runtime = tilo_rt::try_app().map_err(io::Error::other)?;
-    tilo_os_search::spotlight::run_continuations(move |entry| {
-        let search = Arc::clone(&search);
-        runtime.handle().spawn(async move {
-            if let Err(error) = search.open(&entry.to_string()).await {
-                tracing::info!(?error, "a Spotlight result did not open");
-            }
-        });
-    })
 }
