@@ -1258,6 +1258,38 @@ impl PlayerApp {
         self.framework_hosted = hosted;
     }
 
+    /// Whether [`PublishesResources`](ui::resources::PublishesResources) is
+    /// publishing only live track extras beside the framework door.
+    pub(crate) fn is_framework_hosted(&self) -> bool {
+        self.framework_hosted
+    }
+
+    /// Test-only: drop staged decoder metadata so hosted extras go empty.
+    #[cfg(test)]
+    pub(crate) fn clear_shot_metadata_for_test(&mut self) {
+        self.shot_metadata = Some(DecoderMetadata::default());
+    }
+
+    /// Test-only: seed a playlist that has not been published through the
+    /// framework resource yet.
+    #[cfg(test)]
+    pub(crate) fn seed_unpublished_playlist_for_test(&mut self, id: &str, name: &str) {
+        self.shared_library.playlists.push(crate::shared::Playlist {
+            id: id.into(),
+            name: name.into(),
+        });
+    }
+
+    /// Test-only: shared-library playlist ids currently held on the surface.
+    #[cfg(test)]
+    pub(crate) fn shared_playlist_ids_for_test(&self) -> Vec<String> {
+        self.shared_library
+            .playlists
+            .iter()
+            .map(|playlist| playlist.id.clone())
+            .collect()
+    }
+
     /// Show the playlists and annotations the framework resource holds.
     /// An empty projection does not wipe a library that has not been published yet.
     pub(crate) fn adopt_shared_library(&mut self, state: &crate::shared::SharedLibrary) {
@@ -4181,14 +4213,16 @@ impl ui::search::capability::SearchSource for PlayerApp {
 
 impl ui::resources::PublishesResources for PlayerApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.framework_hosted {
-            return Vec::new();
-        }
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resources(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-        )
+        let ctx = self.action_context(&audio_tracks, &subtitle_tracks, &chapters);
+        // Framework [`tilo_resource::publish`] owns the application root,
+        // transport/library Views, and shared-library document children.
+        // Audio/subtitle/chapter rows are live decoder presentation only —
+        // keep that same standalone slice when hosted, never a second root.
+        if self.framework_hosted {
+            return crate::actions::live_track_resources(&ctx, doc);
+        }
+        crate::actions::resources(&ctx, doc)
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();

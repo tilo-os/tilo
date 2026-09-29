@@ -1,5 +1,8 @@
 //! Video Player as a [`tilo_resource::Resource`]: shared playlists and
 //! annotations in the document; transport and open are View/Effect operations.
+//! Live decoder audio/subtitle/chapter rows stay on the surface — hosted
+//! [`PublishesResources`](ui::resources::PublishesResources) returns only that
+//! slice beside the framework door.
 
 use std::rc::Rc;
 
@@ -186,4 +189,169 @@ pub fn launch_spec() -> ui::launch::LaunchSpec {
     ui::framework::launch_spec::<VideoPlayerShell>()
         .allowed_live_options(&["--data-dir", "--open"])
         .max_positionals(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ui::resources::PublishesResources;
+    use ui::tilo_actions::OperationKind;
+    use ui::widget::Widget;
+
+    #[test]
+    fn hosted_resources_keep_track_extras_without_library_root() {
+        let published = ui::tilo_resource::publish::<VideoPlayer>(
+            "video-player.application",
+            "Video Player",
+            &SharedLibrary::default(),
+        );
+        assert_eq!(published.kind, "video-player.application");
+        let ids: Vec<&str> = published.actions.iter().map(|a| a.id.as_str()).collect();
+        for expected in ["open", "show-library", "hide-library", "apply", "group"] {
+            assert!(
+                ids.contains(&expected),
+                "palette `{expected}` must ride publish: {ids:?}"
+            );
+        }
+        let open = published
+            .actions
+            .iter()
+            .find(|action| action.id == "open")
+            .expect("open");
+        assert_eq!(open.kind, OperationKind::Effect);
+        assert!(
+            published
+                .children
+                .iter()
+                .any(|child| child.id.0 == "video-player.shared-library"
+                    || child.kind == "media.shared-library"),
+            "shared library document door must ride Resource children: {:?}",
+            published
+                .children
+                .iter()
+                .map(|child| child.id.as_str())
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            published.children.iter().any(|child| {
+                child.kind == "media.video"
+                    && child.children.iter().any(|nested| {
+                        nested.kind == "media.transport"
+                            && nested
+                                .actions
+                                .iter()
+                                .any(|action| action.id == "play-pause")
+                    })
+            }),
+            "play/pause must ride media children via publish, not a second hosted root"
+        );
+
+        let mut app = PlayerApp::history_test_root();
+        let mut state = ui::State::new();
+        Widget::sync(&mut app, &mut state.doc, &state.root);
+        assert!(
+            !app.is_framework_hosted(),
+            "standalone stays on the full action tree"
+        );
+
+        let standalone = app.resources(&state.doc);
+        assert_eq!(standalone.len(), 1);
+        assert_eq!(standalone[0].kind, "video-player.application");
+        let media = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "media.video")
+            .expect("standalone nests media under the application");
+        let standalone_tracks = media
+            .children
+            .iter()
+            .find(|child| child.kind == "media.tracks")
+            .expect("standalone nests decoder tracks under media");
+        assert!(
+            !standalone_tracks.children.is_empty(),
+            "history fixture must yield audio track rows for the hosted extras contract"
+        );
+        assert!(
+            standalone_tracks
+                .children
+                .iter()
+                .all(|track| track.kind == "media.audio-track"
+                    && track
+                        .actions
+                        .iter()
+                        .any(|action| action.id.starts_with("select-audio-"))),
+            "each audio track is a selectable media.audio-track row"
+        );
+        assert!(
+            standalone[0]
+                .children
+                .iter()
+                .any(|child| child.id.0 == "video-player.shared-library"),
+            "standalone still publishes the shared library under the application root"
+        );
+
+        app.set_framework_hosted(true);
+        assert!(app.is_framework_hosted());
+        let extras = app.resources(&state.doc);
+        assert!(
+            extras.iter().all(|resource| {
+                resource.kind != "video-player.application"
+                    && resource.id.0 != "video-player.shared-library"
+                    && resource.kind != "media.shared-library"
+                    && resource.kind != "media.queue"
+                    && resource.kind != "media.history"
+            }),
+            "hosted must not republish the application or library beside ResourceRoot: {:?}",
+            extras
+                .iter()
+                .map(|resource| format!("{}:{}", resource.kind, resource.id.0))
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            !extras.is_empty(),
+            "hosted must keep live track extras when the decoder reported streams"
+        );
+        assert!(
+            extras.iter().all(
+                |resource| resource.kind == "media.tracks" || resource.kind == "media.chapters"
+            ),
+            "hosted extras are track/chapter slices only: {:?}",
+            extras
+                .iter()
+                .map(|resource| resource.kind.as_str())
+                .collect::<Vec<_>>()
+        );
+        let hosted_tracks = extras
+            .iter()
+            .find(|resource| resource.kind == "media.tracks")
+            .expect("hosted returns the tracks slice");
+        assert_eq!(
+            hosted_tracks.id, standalone_tracks.id,
+            "hosted tracks tree matches the standalone nested slice"
+        );
+        assert_eq!(
+            hosted_tracks.children.len(),
+            standalone_tracks.children.len(),
+            "hosted keeps the same bounded track rows"
+        );
+
+        app.clear_shot_metadata_for_test();
+        assert!(
+            app.resources(&state.doc).is_empty(),
+            "hosted publishes no track extras when the decoder reported none"
+        );
+    }
+
+    #[test]
+    fn present_empty_does_not_wipe_unpublished_local_library() {
+        let mut app = PlayerApp::new();
+        app.seed_unpublished_playlist_for_test("local-only", "Not published yet");
+        let empty = Rc::new(SharedLibrary::default());
+        ResourceSurface::<VideoPlayer>::present(&mut app, &empty);
+        assert_eq!(
+            app.shared_playlist_ids_for_test(),
+            vec!["local-only".to_owned()],
+            "empty present must not wipe an unpublished local library"
+        );
+    }
 }
