@@ -17,9 +17,17 @@
 //!
 //! A native build without a capability's feature answers
 //! [`CaptureError::Unsupported`] for it; the web serves every capability
-//! whatever the features.
+//! whatever the features. An app its sandbox confines (macOS Seatbelt) is
+//! served by the host that launched it instead ([`broker`]), whatever the
+//! features: the host holds the device permission and the person's consent
+//! ([`grants`]).
 
 pub mod scanner;
+
+#[cfg(all(unix, not(web_page)))]
+pub mod broker;
+#[cfg(all(unix, not(web_page)))]
+pub mod grants;
 
 #[cfg(gst)]
 mod gst_backend;
@@ -354,6 +362,10 @@ mod backend {
     pub(super) fn open_camera(
         request: &CameraRequest,
     ) -> Result<Box<dyn VideoSource>, CaptureError> {
+        #[cfg(unix)]
+        if let Some(broker) = super::broker::from_env() {
+            return broker.camera(request).map(|capture| capture.inner);
+        }
         #[cfg(gst_camera)]
         return super::gst_backend::camera(request);
         #[cfg(not(gst_camera))]
@@ -386,6 +398,10 @@ mod backend {
     pub(super) fn open_microphone(
         request: &MicrophoneRequest,
     ) -> Result<Box<dyn AudioSource>, CaptureError> {
+        #[cfg(unix)]
+        if let Some(broker) = super::broker::from_env() {
+            return broker.microphone(request).map(|capture| capture.inner);
+        }
         #[cfg(gst_microphone)]
         return super::gst_backend::microphone(request);
         #[cfg(not(gst_microphone))]

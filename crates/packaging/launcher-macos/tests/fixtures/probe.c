@@ -73,6 +73,60 @@ int main(int argc, char **argv) {
         }
         return open(other, O_WRONLY | O_CREAT, 0644) >= 0 ? 5 : 0;
     }
+    if (strcmp(op, "capture") == 0) {
+        /* Ask the capture broker on $TILO_SVC_CAPTURE_FD for arg ("camera
+         * W H"): send one end of a fresh socket pair with the request, then
+         * expect a grant and one picture on it. Exit 1 when refused. */
+        const char *control = getenv("TILO_SVC_CAPTURE_FD");
+        int pair[2];
+        if (control == NULL || socketpair(AF_UNIX, SOCK_STREAM, 0, pair) != 0) {
+            return 2;
+        }
+        char space[CMSG_SPACE(sizeof(int))];
+        memset(space, 0, sizeof space);
+        struct iovec iov = {(void *)arg, strlen(arg)};
+        struct msghdr msg;
+        memset(&msg, 0, sizeof msg);
+        msg.msg_iov = &iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = space;
+        msg.msg_controllen = sizeof space;
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg);
+        cmsg->cmsg_level = SOL_SOCKET;
+        cmsg->cmsg_type = SCM_RIGHTS;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(int));
+        memcpy(CMSG_DATA(cmsg), &pair[1], sizeof(int));
+        if (sendmsg(atoi(control), &msg, 0) < 0) {
+            return 2;
+        }
+        close(pair[1]);
+        for (int expected = 1; expected <= 3; expected += 2) {
+            unsigned char head[13];
+            size_t got = 0;
+            while (got < sizeof head) {
+                ssize_t n = read(pair[0], head + got, sizeof head - got);
+                if (n <= 0) {
+                    return 2;
+                }
+                got += (size_t)n;
+            }
+            if (head[0] == 2) {
+                return 1;
+            }
+            if (head[0] != expected) {
+                return 2;
+            }
+            unsigned len = head[9] | head[10] << 8 | head[11] << 16 | (unsigned)head[12] << 24;
+            for (char sink[4096]; len > 0;) {
+                ssize_t n = read(pair[0], sink, len < sizeof sink ? len : sizeof sink);
+                if (n <= 0) {
+                    return 2;
+                }
+                len -= (unsigned)n;
+            }
+        }
+        return 0;
+    }
     if (strcmp(op, "exec") == 0) {
         execl(arg, arg, (char *)NULL);
         return 1;

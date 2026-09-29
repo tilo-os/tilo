@@ -334,6 +334,7 @@ static int fd_of(const char *name) {
 int main(void) {
     int collab = fd_of("TILO_SVC_COLLAB_FD");
     if (collab < 0 || fd_of("TILO_SVC_IDENTITY_FD") < 0) return 3;
+    if (fd_of("TILO_SVC_CAPTURE_FD") < 0) return 5;
     if (fd_of("TILO_FILE_PICKER_FD") < 0) return 4;
     char byte;
     (void)read(collab, &byte, 1);

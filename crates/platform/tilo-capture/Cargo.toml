@@ -19,6 +19,8 @@ camera = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
 microphone = ["dep:gstreamer", "dep:gstreamer-app"]
 screen = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video", "dep:ashpd", "dep:tilo-rt"]
 scanner = ["dep:os-actions"]
+# Synthetic devices (`broker::synthetic`), for dependents' tests.
+test-support = []
 
 [dependencies]
 thiserror.workspace = true
@@ -31,6 +33,10 @@ gstreamer-app = { workspace = true, optional = true }
 gstreamer-video = { workspace = true, optional = true }
 tilo-rt = { path = "../tilo-rt", optional = true }
 
+# Capture descriptors pass between an app and its host.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 # The ScreenCast portal picks the monitor or window; SANE scans documents.
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, optional = true, features = ["screencast"] }
@@ -39,6 +45,9 @@ os-actions = { path = "../../system/os-actions", optional = true }
 # The page's media devices, pinned to the versions the browser runtime links.
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.108"
+
+[dev-dependencies]
+tempfile.workspace = true
 
 [lints]
 workspace = true
