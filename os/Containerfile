@@ -1147,6 +1147,16 @@ COPY os/usr/share/doc/tilo/codec-pack.md /usr/share/doc/tilo/codec-pack.md
 FROM ${BASE_REF} AS rootfs-base
 ARG SOURCE_DATE_EPOCH=0
 
+# ---- Directory times independent of the builder ------------------------------
+# The base's chunked layers carry entries for few parent directories, so an
+# unpacked base has most directory times from when the builder unpacked it. A
+# later layer that touches such a directory's metadata copies it up with that
+# time, and a time older than SOURCE_DATE_EPOCH escapes the export's clamp: a
+# builder that unpacked the base before the commit (a seeded one) produced
+# different layers than a fresh one (run 49265). Pin every directory to the
+# epoch before anything else runs.
+RUN find / -xdev -type d -exec touch -h -d "@${SOURCE_DATE_EPOCH}" {} +
+
 # ---- Finalize SQLite's rpmdb after every rpm transaction --------------------
 # rpm's sqlite backend persists `rpmdb.sqlite-wal` and `rpmdb.sqlite-shm` rather
 # than letting SQLite delete them when the last connection closes. `-shm` is the
