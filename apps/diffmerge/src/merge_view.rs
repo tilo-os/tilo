@@ -24,7 +24,7 @@ use ui::theme::Theme;
 use ui::widget::{CodeEditor, Language, Widget};
 
 use crate::actions::{self, DiffmergeAction, HunkChoice, MergeResourceCtx};
-use crate::doc::MergeDoc;
+use crate::doc::{MergeDoc, SharedMerge};
 use crate::highlight;
 use crate::model::{MergeHunk, MergeModel, Resolution};
 use ui::paint::{PaintCtx, with_alpha};
@@ -181,6 +181,8 @@ struct ActionHit {
 /// The three-way merge panel.
 pub struct MergeView {
     model: MergeModel,
+    /// Last three-way inputs loaded locally (projected into the document).
+    shared: Option<SharedMerge>,
     base_label: String,
     ours_label: String,
     theirs_label: String,
@@ -231,6 +233,7 @@ impl MergeView {
     pub fn new() -> Self {
         Self {
             model: MergeModel::default(),
+            shared: None,
             base_label: String::new(),
             ours_label: String::new(),
             theirs_label: String::new(),
@@ -285,19 +288,66 @@ impl MergeView {
     /// Historical/remote content cannot identify the unsaved original input hunks.
     pub(crate) fn reconcile_content(&mut self, doc: &AutoCommit) {
         if !self.pending_seed && !self.context_matches(doc) {
-            self.model = MergeModel::default();
-            self.base_label.clear();
-            self.ours_label.clear();
-            self.theirs_label.clear();
-            self.source_spans.clear();
-            self.pending_action = None;
-            self.action_hits.clear();
-            self.hunk_spans.clear();
-            self.active_hunk = None;
-            self.expected_content = None;
-            self.dirty = true;
+            if let Some(shared) = SharedMerge::read(doc) {
+                self.adopt_shared(shared, doc);
+            } else {
+                self.model = MergeModel::default();
+                self.shared = None;
+                self.base_label.clear();
+                self.ours_label.clear();
+                self.theirs_label.clear();
+                self.source_spans.clear();
+                self.pending_action = None;
+                self.action_hits.clear();
+                self.hunk_spans.clear();
+                self.active_hunk = None;
+                self.expected_content = None;
+                self.dirty = true;
+            }
         }
         self.merged_output = MergeDoc::merged_text(doc);
+    }
+
+    /// Adopt a shared three-way projection from the document (or present).
+    pub(crate) fn adopt_shared_model(&mut self, title: &str, model: &MergeModel) {
+        let _ = title;
+        if self.model.hunks.is_empty() && !model.hunks.is_empty() {
+            self.model = model.clone();
+            self.source_spans = HunkSpans::for_model(
+                &self.model,
+                [&self.base_label, &self.ours_label, &self.theirs_label],
+            );
+            self.recompute_spans();
+            self.active_hunk = self
+                .first_conflict()
+                .or_else(|| self.model.change_indices().first().copied());
+            self.dirty = true;
+        }
+    }
+
+    fn adopt_shared(&mut self, shared: SharedMerge, doc: &AutoCommit) {
+        self.base_label = shared.base_label.clone();
+        self.ours_label = shared.ours_label.clone();
+        self.theirs_label = shared.theirs_label.clone();
+        self.shared = Some(shared.clone());
+        self.model = shared.into_model();
+        crate::doc::apply_resolutions(&mut self.model, doc);
+        self.source_spans = HunkSpans::for_model(
+            &self.model,
+            [&self.base_label, &self.ours_label, &self.theirs_label],
+        );
+        self.recompute_spans();
+        self.active_hunk = self
+            .first_conflict()
+            .or_else(|| self.model.change_indices().first().copied());
+        self.expected_content = Some(crate::doc::authored_snapshot(doc));
+        self.pending_action = None;
+        self.action_hits.clear();
+        self.dirty = true;
+    }
+
+    pub(crate) fn shared_merge(&self) -> Option<&SharedMerge> {
+        self.shared.as_ref()
     }
 
     /// Place the panel at `rect` directly (the parent app owns the toolbar
@@ -336,6 +386,14 @@ impl MergeView {
         theirs_label: &str,
         theirs: &str,
     ) {
+        self.shared = Some(SharedMerge {
+            base: base.to_string(),
+            ours: ours.to_string(),
+            theirs: theirs.to_string(),
+            base_label: base_label.to_string(),
+            ours_label: ours_label.to_string(),
+            theirs_label: theirs_label.to_string(),
+        });
         self.model = MergeModel::compute(base, ours, theirs);
         self.base_label = base_label.to_string();
         self.ours_label = ours_label.to_string();

@@ -155,6 +155,8 @@ pub struct DiffMergeApp {
     /// Measured toolbar band height from the last draw (see
     /// [`Self::measure_toolbar`]); the content rect starts below it.
     toolbar_h: f64,
+    /// Fingerprint of the last shared three-way projection written to the doc.
+    shared_merge_fingerprint: Option<String>,
 }
 
 impl DiffMergeApp {
@@ -249,6 +251,7 @@ impl DiffMergeApp {
             shots_status: false,
             toolbar_focus: None,
             toolbar_h: TOOLBAR_H,
+            shared_merge_fingerprint: None,
         }
     }
 
@@ -377,8 +380,11 @@ impl DiffMergeApp {
     }
 
     /// Show the merged buffer the framework resource already holds.
-    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::MergeState) {
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::doc::MergeState) {
         self.merge.adopt_merged(&state.merged);
+        if !state.model.hunks.is_empty() {
+            self.merge.adopt_shared_model(&state.title, &state.model);
+        }
     }
 
     /// Attach the framework dispatcher when hosted as a [`ResourceSurface`].
@@ -388,6 +394,62 @@ impl DiffMergeApp {
     ) {
         self.actions.attach(dispatcher);
         self.merge.set_framework_hosted(true);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn set_mode_for_test(&mut self, mode: Mode) {
+        if self.mode != mode {
+            self.mode = mode;
+            self.structure_dirty = true;
+        }
+    }
+
+    /// Label for an in-flight open-files job, when one is running.
+    pub(crate) fn open_job_label(&self) -> Option<String> {
+        if self.portal_rx.is_some()
+            || self.pending_resource_paths.is_some()
+            || self.resource_invocation.is_some()
+        {
+            Some("Opening files…".into())
+        } else {
+            None
+        }
+    }
+
+    /// Write the shared three-way projection when merge inputs move.
+    fn publish_shared_merge_if_needed(&mut self, doc: &mut AutoCommit) {
+        let Some(shared) = self.merge.shared_merge().cloned() else {
+            return;
+        };
+        let fingerprint = shared.fingerprint();
+        if self.shared_merge_fingerprint.as_deref() == Some(fingerprint.as_str()) {
+            return;
+        }
+        if self.actions.is_hosted() {
+            let json = serde_json::to_string(&shared).unwrap_or_else(|_| "{}".into());
+            let action = crate::actions::DiffmergeAction::WriteSharedMerge { json };
+            self.actions.dispatch_with_context(
+                doc,
+                crate::actions::DIFFMERGE_ACTION_TYPE,
+                &action,
+                tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+            );
+        } else {
+            // Standalone seeds write the projection beside the direct merged
+            // buffer so ActionHost's undo bracket stays free for user actions.
+            crate::doc::SharedMerge::write(doc, &shared);
+        }
+        self.shared_merge_fingerprint = Some(fingerprint);
+        self.merge.acknowledge_content(doc);
     }
 
     /// The last action dispatched, for the `affordance == ActionSpec` covenant
@@ -1109,17 +1171,25 @@ impl Widget for DiffMergeApp {
         // Only the active mode owns the shared merged buffer; sync the merge
         // panel always so its CRDT mirror stays seeded.
         self.merge.sync(state, path);
-        if self.actions.is_hosted()
-            && let Some(merged) = self.merge.take_seed_request()
+        let mut seeded = false;
         {
-            let action = crate::actions::DiffmergeAction::SeedMerge { merged };
-            self.actions.dispatch_with_context(
-                state,
-                crate::actions::DIFFMERGE_ACTION_TYPE,
-                &action,
-                tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
-            );
-            self.merge.acknowledge_content(state);
+            let (doc, _) = ui::doc::document(state, path);
+            self.publish_shared_merge_if_needed(doc);
+            if self.actions.is_hosted()
+                && let Some(merged) = self.merge.take_seed_request()
+            {
+                let action = crate::actions::DiffmergeAction::SeedMerge { merged };
+                self.actions.dispatch_with_context(
+                    doc,
+                    crate::actions::DIFFMERGE_ACTION_TYPE,
+                    &action,
+                    tilo_actions::ActionContext::for_action("so.tilo.diffmerge", "Diff", &action),
+                );
+                self.merge.acknowledge_content(doc);
+                seeded = true;
+            }
+        }
+        if seeded {
             self.merge.sync(state, path);
         }
         self.diff.sync(state, path);
@@ -1514,12 +1584,24 @@ impl Widget for DiffMergeApp {
 }
 
 impl ui::resources::PublishesResources for DiffMergeApp {
-    /// Publish the open merge + its hunks so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only local two-way comparisons and in-flight
+    /// open jobs.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
+        }
         self.publish_resources(doc)
+    }
+
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id);
+        }
+        self.publish_resource(doc, id)
     }
 }
 
