@@ -1805,7 +1805,26 @@ pub fn document_root(ctx: &PdfResourceCtx) -> Resource {
     reason = "one resource projection keeps the document, page, annotation, comment, signature, outline, and search subtrees in one auditable traversal"
 )]
 pub fn provide_resources(ctx: &PdfResourceCtx, doc: &AutoCommit) -> Vec<Resource> {
-    let mut root = document_root(ctx);
+    let state =
+        <crate::resource::PdfViewer as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+    let mut root = ui::tilo_resource::publish::<crate::resource::PdfViewer>(
+        &format!("pdf.document:{}", ctx.doc_id),
+        &ctx.title,
+        &state,
+    );
+    // Page, outline, annotation, and search rows are the live document. The
+    // markup stubs from `children` do not carry their operations.
+    root.children.clear();
+    for action in &mut root.actions {
+        if action.id == "previous-page" && ctx.page <= 1 {
+            let current = action.clone();
+            *action = current.unavailable("first_page", "Already at the first page");
+        }
+        if action.id == "next-page" && ctx.page >= ctx.page_count {
+            let current = action.clone();
+            *action = current.unavailable("last_page", "Already at the last page");
+        }
+    }
     for (page, page_id) in contextual_pages(ctx) {
         root = root.with_child(page_resource(ctx, page, page_id));
     }
