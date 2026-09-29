@@ -92,6 +92,7 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
 
 /// Write `bytes` beside `destination`, then rename them over it, so a reader
 /// never sees a partial file.
+#[cfg(any(feature = "native", test))]
 fn replace_file(destination: &Path, bytes: &[u8]) -> bool {
     let mut temporary = destination.as_os_str().to_os_string();
     temporary.push(".partial");
