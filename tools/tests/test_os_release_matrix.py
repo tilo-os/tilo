@@ -91,7 +91,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
                     {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
                 ],
             )
         with self.subTest(phase='manual nonpublication builds both native integration lanes'):
@@ -111,7 +111,7 @@ class OsReleaseMatrixTests(unittest.TestCase):
                     {"arch": "x86_64", "runner": "runner-release"},
                     {"arch": "aarch64", "runner": "runner-release-arm64"},
                     {"arch": "x86_64", "runner": "runner-release", "role": "reproduce"},
-                    {"arch": "aarch64", "runner": "runner-release-arm64", "role": "reproduce"},
+                    {"arch": "aarch64", "runner": "runner-large-arm64", "role": "reproduce"},
                 ],
             )
 
