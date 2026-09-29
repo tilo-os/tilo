@@ -333,7 +333,10 @@ impl Service {
             (&Method::GET, ["healthz"]) => {
                 Self::json(StatusCode::OK, &serde_json::json!({"ok": true}))
             }
-            (&Method::GET, ["app", ..]) => self.asset(path.trim_start_matches("/app")).await,
+            (&Method::GET, ["app", ..]) => {
+                self.asset(path.strip_prefix("/app").unwrap_or_default())
+                    .await
+            }
             (&Method::POST, ["rooms"]) => match self.create().await {
                 Ok(value) => Self::json(StatusCode::CREATED, &value),
                 Err((status, message)) => Self::error(status, &message),
