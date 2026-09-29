@@ -245,6 +245,31 @@ pub(crate) async fn admit_member(
     .map_err(|error| io_error(error.to_string()))?
 }
 
+/// Persist that the person `root` redeemed this room's standing invitation,
+/// then admit them: any device their root certifies is a member from then on.
+pub(crate) async fn admit_person(
+    workspace: &SharedWorkspace,
+    root: [u8; 32],
+) -> Result<(), StoreError> {
+    let slot = admit_work()?;
+    let workspace = workspace.clone();
+    tokio::spawn(async move {
+        let _slot = slot;
+        let (store, lane) = authority_handles(&workspace).await;
+        let _lane = lane.lock_owned().await;
+        let reader = store.clone();
+        let mut people = authorization_io(move || reader.load_admitted_people(), None).await?;
+        if !people.contains(&root) {
+            people.push(root);
+            authorization_io(move || store.save_admitted_people(&people), None).await?;
+        }
+        workspace.lock().await.admitted_users.insert(root);
+        Ok(())
+    })
+    .await
+    .map_err(|error| io_error(error.to_string()))?
+}
+
 /// Serialize admin replacement with fresh reads/admissions. Removals deny as
 /// soon as this operation obtains the lane; additions grant only after commit.
 /// A failed write keeps removals denied in this process until a successful

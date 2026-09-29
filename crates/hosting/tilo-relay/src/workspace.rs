@@ -135,6 +135,10 @@ pub struct WorkspaceRuntime {
     pub subscribers: HashMap<[u8; 32], Subscriber>,
     pub(crate) outbound_federation: HashMap<[u8; 32], Arc<std::sync::atomic::AtomicBool>>,
     pub(crate) state_sessions: HashMap<[u8; 32], crate::peer::StateSession>,
+    /// Devices an admitted person's own member connection publishes for (a
+    /// Cloud host carrying its person's browser), by device key, with the
+    /// root that certified them, as their forwarded hello stated.
+    pub(crate) forwarded_devices: HashMap<[u8; 32], [u8; 32]>,
     pub(crate) action_targets: HashMap<[u8; 32], crate::peer::ActionTarget>,
     /// Device pubkeys of peer relays this workspace has federated
     /// with at least once since the daemon started. Ops arriving
@@ -252,6 +256,7 @@ impl WorkspaceRuntime {
             checkpoint_asked: HashMap::new(),
             action_targets: HashMap::new(),
             state_sessions: HashMap::new(),
+            forwarded_devices: HashMap::new(),
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             sync_refresh: None,

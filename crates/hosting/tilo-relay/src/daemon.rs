@@ -1264,6 +1264,8 @@ fn build_workspace_registry(
             .map_err(|error| RelayError::Io(std::io::Error::other(error.to_string())))?;
         if let Some(hosting) = hosting {
             rt.admitted_users.insert(hosting.owner);
+            // And so does every person who redeemed its standing invitation.
+            rt.admitted_users.extend(rt.store.load_admitted_people()?);
         }
         wsmap.insert(binding.id, Arc::new(AsyncMutex::new(rt)));
     }

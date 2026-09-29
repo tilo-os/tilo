@@ -358,3 +358,147 @@ async fn a_member_cannot_publish_presence_as_another_endpoint() {
         "the forged presence never reaches another member"
     );
 }
+
+/// Redeem the community's invitation from `client` and subscribe, draining
+/// the replay.
+async fn redeem_and_subscribe(community: &Community, client: &RelayClient) {
+    client
+        .send(Envelope::Redeem {
+            workspace_id: community.workspace,
+            invite_id: community.invite_id,
+        })
+        .unwrap();
+    let answer = next(client).await;
+    assert!(
+        matches!(answer, Envelope::Admitted { .. }),
+        "the redemption is admitted: {answer:?}"
+    );
+    client
+        .send(Envelope::Subscribe {
+            workspace_id: community.workspace,
+        })
+        .unwrap();
+    admissions_until_ready(client).await;
+}
+
+/// `message`, as a retained delta authored by `author`.
+fn retained(
+    community: &Community,
+    author: [u8; 32],
+    message: &neighbour_wire::NeighbourMsg,
+) -> Envelope {
+    let body = postcard::to_allocvec(message).unwrap();
+    Envelope::Delta {
+        workspace_id: community.workspace,
+        author_device_public_key: author,
+        authored_at_ns: 1,
+        delta: CoeditPayload::retained_of([0x5A; 32], body)
+            .encode()
+            .unwrap(),
+        signature: [0; 64],
+    }
+}
+
+fn hello(cert: &tilo_user_identity::DeviceCert) -> neighbour_wire::NeighbourMsg {
+    neighbour_wire::NeighbourMsg::IdentityHello {
+        cert: Box::new(cert.clone()),
+        revocations: Vec::new(),
+    }
+}
+
+/// The next delta `client` receives, with its author.
+async fn next_delta(client: &RelayClient) -> ([u8; 32], Vec<u8>) {
+    loop {
+        if let Envelope::Delta {
+            author_device_public_key,
+            delta,
+            ..
+        } = next(client).await
+        {
+            return (author_device_public_key, delta);
+        }
+    }
+}
+
+/// Admission is by person: a device of an admitted person that cannot reach
+/// the relay (a browser) publishes through another device of the same
+/// person (its Cloud host), attributed to itself, once its certified hello
+/// went that way. A device of anyone the room never admitted cannot.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn an_admitted_persons_other_device_publishes_through_their_member_connection() {
+    let community = community().await;
+    let ada = TestUser::fresh("Ada");
+    let ada_host = ada.enrol("Ada's Cloud host", DeviceCapabilities::host());
+    let ada_browser = ada.enrol("Ada's browser", DeviceCapabilities::member());
+    let ada_client = RelayClient::connect_to_pinned_host(
+        client_endpoint().await,
+        community.relay.node_addr(),
+        ada_host.cert.clone(),
+        ada_host.sk.clone(),
+        RevocationList::new(),
+    )
+    .await
+    .unwrap();
+    redeem_and_subscribe(&community, &ada_client).await;
+    let (_bea, bea_client, _) = stranger(&community, "Bea").await;
+    redeem_and_subscribe(&community, &bea_client).await;
+
+    ada_client
+        .send(retained(
+            &community,
+            ada_browser.device_pubkey(),
+            &hello(&ada_browser.cert),
+        ))
+        .unwrap();
+    let (author, delta) =
+        tilo_test_env::within("the forwarded hello", next_delta(&bea_client)).await;
+    assert_eq!(
+        author,
+        ada_browser.device_pubkey(),
+        "members receive the hello as the browser's own"
+    );
+    let Some(CoeditPayload::RetainedDelta { body, .. }) = CoeditPayload::decode(&delta) else {
+        panic!("the forwarded hello is retained as sent")
+    };
+    assert_eq!(
+        postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body).unwrap(),
+        hello(&ada_browser.cert)
+    );
+
+    // A later publication of the browser's goes the same way.
+    let announcement = neighbour_wire::NeighbourMsg::IdentityAnnouncement {
+        room: community.room.clone(),
+        device_cert: Box::new(ada_browser.cert.clone()),
+    };
+    ada_client
+        .send(retained(
+            &community,
+            ada_browser.device_pubkey(),
+            &announcement,
+        ))
+        .unwrap();
+    let (author, _) = tilo_test_env::within("the forwarded delta", next_delta(&bea_client)).await;
+    assert_eq!(author, ada_browser.device_pubkey());
+
+    // A device the room never admitted, another person's, is refused, and
+    // the connection that tried to speak for it ends.
+    let cyd = TestUser::fresh("Cyd");
+    let cyd_device = cyd.enrol("Cyd's laptop", DeviceCapabilities::primary());
+    ada_client
+        .send(retained(
+            &community,
+            cyd_device.device_pubkey(),
+            &hello(&cyd_device.cert),
+        ))
+        .unwrap();
+    tilo_test_env::within("the forging connection ending", async {
+        while ada_client.recv().await.is_some() {}
+    })
+    .await;
+    assert!(
+        tokio::time::timeout(Duration::from_millis(500), next_delta(&bea_client))
+            .await
+            .is_err(),
+        "nothing attributed to a non-member reaches the room"
+    );
+}

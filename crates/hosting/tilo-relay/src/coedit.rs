@@ -559,12 +559,40 @@ impl RelayCoeditSession {
         })
     }
 
+    /// [`Self::publish_retained_delta`] on behalf of `author`, a device of
+    /// this session's own person that cannot reach the relay itself (a
+    /// browser its Cloud host carries). The relay takes it once `author`'s
+    /// certified hello went this way first and the person is admitted; every
+    /// member attributes it to `author` and verifies it as theirs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CoeditError::Disconnected`] if the relay connection is
+    /// gone, or [`CoeditError::Encode`] if the payload can't be
+    /// postcard-encoded.
+    pub fn forward_retained_delta(
+        &self,
+        author: [u8; 32],
+        channel: [u8; 32],
+        body: Vec<u8>,
+    ) -> Result<(), CoeditError> {
+        self.publish_payload_as(author, &CoeditPayload::retained_of(channel, body))
+    }
+
     fn publish_payload(&self, payload: &CoeditPayload) -> Result<(), CoeditError> {
+        self.publish_payload_as(self.author, payload)
+    }
+
+    fn publish_payload_as(
+        &self,
+        author: [u8; 32],
+        payload: &CoeditPayload,
+    ) -> Result<(), CoeditError> {
         let delta = payload.encode().map_err(CoeditError::Encode)?;
         self.client
             .send(Envelope::Delta {
                 workspace_id: self.workspace_id,
-                author_device_public_key: self.author,
+                author_device_public_key: author,
                 authored_at_ns: now_ns(),
                 delta,
                 // The op-level signature (for the signed variant) lives

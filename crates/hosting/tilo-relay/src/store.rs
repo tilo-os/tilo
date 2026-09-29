@@ -58,6 +58,8 @@ pub const LOG_FILE: &str = "log.jsonl";
 
 /// Durable device membership for offline store-and-forward.
 pub const MEMBERSHIP_FILE: &str = "membership.json";
+/// People (user roots) a hosted public room admitted by their redemption.
+pub const ADMITTED_PEOPLE_FILE: &str = "admitted-people.json";
 /// Atomic native-governance projection: exact room devices plus handshake roots.
 pub const GOVERNED_ACCESS_FILE: &str = "governed-access-v1.json";
 
@@ -543,6 +545,44 @@ impl WorkspaceStore {
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
         atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        Ok(())
+    }
+
+    /// The people (user roots) this workspace admitted by redeeming its
+    /// standing invitation. Any device a listed root certifies is a member.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if an existing record can't be read or decoded.
+    pub fn load_admitted_people(&self) -> Result<Vec<[u8; 32]>, StoreError> {
+        let path = self.root.join(ADMITTED_PEOPLE_FILE);
+        if !path.exists() {
+            return Ok(Vec::new());
+        }
+        let encoded: Vec<String> = serde_json::from_slice(&fs::read(path)?)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        encoded
+            .into_iter()
+            .map(|value| {
+                hex::decode(&value)
+                    .ok()
+                    .and_then(|bytes| bytes.try_into().ok())
+                    .ok_or_else(|| StoreError::Json(format!("invalid admitted person {value:?}")))
+            })
+            .collect()
+    }
+
+    /// Atomically replace the people this workspace admitted.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if the record can't be encoded or the atomic write
+    /// fails.
+    pub fn save_admitted_people(&self, people: &[[u8; 32]]) -> Result<(), StoreError> {
+        let encoded: Vec<_> = people.iter().map(hex::encode).collect();
+        let bytes = serde_json::to_vec_pretty(&encoded)
+            .map_err(|error| StoreError::Json(error.to_string()))?;
+        atomic_file::write(&self.root.join(ADMITTED_PEOPLE_FILE), &bytes)?;
         Ok(())
     }
 

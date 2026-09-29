@@ -171,8 +171,17 @@ pub fn accept_hello(
     if !policy.admits(&hello.cert, own_user_public_key) {
         return Err(AuthError::PolicyReject);
     }
+    // Relays federate only with their own user's relays, so another
+    // person's full host (a Cloud host joining a public room) is a device
+    // here, gated by room membership like any other.
+    let role = match PeerRole::from_cert(&hello.cert) {
+        PeerRole::PeerRelay if hello.cert.user_public_key != *own_user_public_key => {
+            PeerRole::Device
+        }
+        role => role,
+    };
     Ok(AuthenticatedPeer {
-        role: PeerRole::from_cert(&hello.cert),
+        role,
         cert: hello.cert.clone(),
         user_public_key: hello.cert.user_public_key,
         device_public_key: hello.cert.device_public_key,

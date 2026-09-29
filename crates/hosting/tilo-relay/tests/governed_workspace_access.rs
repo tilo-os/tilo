@@ -136,10 +136,12 @@ async fn governed_access_removes_a_live_person_without_widening_other_rooms() {
         subscribe(&bob_client, 701).await,
         Some(Envelope::Ready { .. })
     ));
+    // Another person's full host (their Cloud host) is a member device like
+    // any other, never a federating relay.
     let charlie_client = connect(&relay, charlie_device).await.unwrap();
     assert!(matches!(
         subscribe(&charlie_client, 701).await,
-        Some(Envelope::NotAuthorised { .. })
+        Some(Envelope::Ready { .. })
     ));
     assert!(connect(&relay, diana_device).await.is_err());
 

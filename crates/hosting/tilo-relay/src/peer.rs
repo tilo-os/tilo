@@ -1599,10 +1599,12 @@ async fn handle_envelope(
     }
 }
 
-/// Handle `Redeem`: admit this connection's authenticated device into a
-/// public room this relay was delegated admission for, when it presents a
-/// registered standing invitation, and publish the signed admission into the
-/// room. Every refusal is a `NotAuthorised` naming why; nothing is admitted.
+/// Handle `Redeem`: admit the person behind this connection's authenticated
+/// device into a public room this relay was delegated admission for, when it
+/// presents a registered standing invitation, and publish the signed
+/// admission into the room. Every device the person's root certifies is a
+/// member from then on. Every refusal is a `NotAuthorised` naming why;
+/// nothing is admitted.
 async fn handle_redeem(
     peer: &AuthenticatedPeer,
     session: &SessionCtx<'_>,
@@ -1671,9 +1673,10 @@ async fn redeem(
                 "room admission is governed by its owner, not delegated".into(),
             ));
         }
-        // Already admitted: its admission is retained in the room, so a
-        // reconnecting member costs no re-signing and no fan-out.
-        if wr.membership.contains(&peer.device_public_key) {
+        // Already admitted: the person's admission is retained in the room,
+        // so a reconnecting member, or another device of theirs, costs no
+        // re-signing and no fan-out.
+        if wr.admitted_users.contains(&peer.user_public_key) {
             return Ok(());
         }
         (wr.store.clone(), wr.membership_revision)
@@ -1709,6 +1712,10 @@ async fn redeem(
     )
     .await
     .map_err(|error| busy(&error))?;
+    crate::workspace_io::admit_person(ws, peer.user_public_key)
+        .await
+        .map_err(|error| busy(&error))?;
+    // The redeeming device also keeps a store-and-forward queue while away.
     crate::workspace_io::admit_member(ws, peer.device_public_key, revision)
         .await
         .map_err(|error| busy(&error))
@@ -4782,6 +4789,7 @@ async fn handle_delta(
     let Envelope::Delta {
         workspace_id,
         author_device_public_key,
+        delta,
         ..
     } = &env
     else {
@@ -4805,9 +4813,17 @@ async fn handle_delta(
     if peer.role == crate::auth::PeerRole::Device
         && author_device_public_key != &peer.device_public_key
     {
-        return Err(PeerError::Protocol(
-            "author does not match authenticated device".into(),
-        ));
+        let forwarded = forwarded_author(
+            &mut *ws.lock().await,
+            peer,
+            *author_device_public_key,
+            delta,
+        );
+        if !forwarded {
+            return Err(PeerError::Protocol(
+                "author does not match authenticated device".into(),
+            ));
+        }
     }
     bound_declared_coverage(&env)?;
     let Some(source) = authorized_state_source(&ws, peer, session).await? else {
@@ -4820,6 +4836,55 @@ async fn handle_delta(
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
 
     Ok(None)
+}
+
+/// Whether `author`, a device other than the connection's own, may publish
+/// `delta` through it: a member host carrying a device of its own person
+/// that cannot reach the relay itself (the Cloud host and its person's
+/// browser). The person must be admitted to the room, and the device is
+/// known by the hello it forwarded first: a certificate its person's root
+/// signed. Every member still verifies what arrives against the room's
+/// governance; this only decides which authors a connection may speak for.
+fn forwarded_author(
+    runtime: &mut crate::workspace::WorkspaceRuntime,
+    peer: &AuthenticatedPeer,
+    author: [u8; 32],
+    delta: &[u8],
+) -> bool {
+    if !runtime.admitted_users.contains(&peer.user_public_key) {
+        return false;
+    }
+    let Some(
+        crate::coedit::CoeditPayload::Checkpoint { body, .. }
+        | crate::coedit::CoeditPayload::RetainedDelta { body, .. },
+    ) = crate::coedit::CoeditPayload::decode(delta)
+    else {
+        return false;
+    };
+    let hello = match postcard::from_bytes::<neighbour_wire::NeighbourMsg>(&body) {
+        Ok(neighbour_wire::NeighbourMsg::IdentityHello { cert, .. }) => Some(cert),
+        Ok(
+            neighbour_wire::NeighbourMsg::IdentityAnnouncement { device_cert, .. }
+            | neighbour_wire::NeighbourMsg::IdentityAnnouncementV2 { device_cert, .. },
+        ) => Some(device_cert),
+        Ok(_) => None,
+        Err(_) => return false,
+    };
+    match hello {
+        Some(cert) => {
+            if cert.device_public_key != author
+                || cert.user_public_key != peer.user_public_key
+                || tilo_user_identity::verify_device_cert(&cert).is_err()
+            {
+                return false;
+            }
+            runtime
+                .forwarded_devices
+                .insert(author, cert.user_public_key);
+            true
+        }
+        None => runtime.forwarded_devices.get(&author) == Some(&peer.user_public_key),
+    }
 }
 
 /// Refuse a checkpoint naming more covered entries than
@@ -4872,9 +4937,21 @@ async fn handle_delta_prefix(
     if peer.role == crate::auth::PeerRole::Device
         && author_device_public_key != &peer.device_public_key
     {
-        return Err(PeerError::Protocol(
-            "author does not match authenticated device".into(),
-        ));
+        let mut runtime = workspace.lock().await;
+        let forwarded = envelopes.iter().all(|envelope| match envelope {
+            Envelope::Delta {
+                delta,
+                author_device_public_key: author,
+                ..
+            } => forwarded_author(&mut runtime, peer, *author, delta),
+            _ => false,
+        });
+        drop(runtime);
+        if !forwarded {
+            return Err(PeerError::Protocol(
+                "author does not match authenticated device".into(),
+            ));
+        }
     }
     for envelope in &envelopes {
         bound_declared_coverage(envelope)?;
