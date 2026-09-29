@@ -54,7 +54,7 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    release-relay.yml|registry-server-image.yml|build-image.yml) continue ;;
+    release-relay.yml|registry-server-image.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
@@ -62,8 +62,7 @@ for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   fi
 done
 grep -Fq "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}" "$workflows/release-relay.yml" \
-  && grep -Fq "persistent: \${{ github.event_name == 'workflow_call' }}" "$workflows/build-image.yml" \
-  && grep -Fq "TRUST: \${{ (github.event_name == 'push' || github.event_name == 'workflow_call') && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
+  && grep -Fq "TRUST: \${{ github.event_name == 'push' && github.ref == 'refs/heads/main' && 'trusted' || 'untrusted' }}" "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'name="tilo-$TRUST-$digest"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   && grep -Fq 'default: "false"' "$repo/.forgejo/actions/setup-buildx/action.yml" \
   || persistent_ok=0
@@ -313,7 +312,7 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
 
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
-  && grep -Fq 'max-parallelism: "1"' "$os" \
+  && grep -Fq 'max-parallelism = 1' "$os" \
   && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 4 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
