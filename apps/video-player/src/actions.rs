@@ -1043,6 +1043,31 @@ pub fn resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource>
     vec![app]
 }
 
+/// Live decoder track/chapter projection for the palette — not CRDT.
+///
+/// Standalone [`resources`] nests these under `media.video`. Hosted
+/// [`PublishesResources`](ui::resources::PublishesResources) returns the same
+/// slices alone so agents keep audio/subtitle/chapter rows without a second
+/// application or shared-library root beside [`crate::resource::VideoPlayer`].
+pub fn live_track_resources(ctx: &PlayerResourceCtx<'_>, doc: &AutoCommit) -> Vec<Resource> {
+    let Some(root) = resources(ctx, doc).into_iter().next() else {
+        return Vec::new();
+    };
+    let Some(media) = root
+        .children
+        .into_iter()
+        .find(|child| child.kind == "media.video")
+    else {
+        return Vec::new();
+    };
+    media
+        .children
+        .into_iter()
+        .filter(|child| child.kind == "media.tracks" || child.kind == "media.chapters")
+        .filter(|child| !child.children.is_empty() || !child.actions.is_empty())
+        .collect()
+}
+
 fn encode_shared(action: &SharedAction) -> EncodedAction {
     EncodedAction::encode(crate::shared::ACTION_TYPE, action).unwrap_or_else(|_| EncodedAction {
         type_id: crate::shared::ACTION_TYPE.into(),
