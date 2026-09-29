@@ -13421,6 +13421,7 @@ dependencies = [
  "wire-frame",
  "word-processor",
  "workspace-hack",
+ "x11rb",
  "xattr",
  "xdg-paths",
  "xkeysym",
