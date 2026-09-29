@@ -361,7 +361,7 @@ impl Room {
                 if let Some(checkout) = store
                     .open_records()
                     .into_iter()
-                    .find(|checkout| checkout.id.as_str() == route.record)
+                    .find(|checkout| wire_record(&checkout.id) == route.record)
                 {
                     return store
                         .replication_snapshot(&checkout.id)
@@ -370,10 +370,9 @@ impl Room {
                 }
             }
         }
-        let Some(id) = ui::record::RecordId::parse(&route.record) else {
+        let Ok(key) = storage_key(&route.app_id, &self.uuid, &route.record) else {
             return Ok(None);
         };
-        let key = StorageKey::record(&route.app_id, self.uuid.clone(), id.storage_key());
         Ok(self
             .store
             .read(&key)
