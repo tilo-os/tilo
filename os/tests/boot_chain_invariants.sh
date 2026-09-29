@@ -175,7 +175,7 @@ else
   [ "$ours" = "ConditionPathIsMountPoint=/sysroot" ] \
     && ok "tilo growfs is gated on /sysroot" \
     || bad "tilo growfs does not require /sysroot (${ours:-none})"
-  [ "$exec_line" = "ExecStart=/usr/lib/systemd/systemd-growfs /sysroot" ] \
+  [ "$exec_line" = "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'" ] \
     && ok "tilo growfs targets the block-backed /sysroot" \
     || bad "tilo growfs targets the wrong path (${exec_line:-none})"
 fi
