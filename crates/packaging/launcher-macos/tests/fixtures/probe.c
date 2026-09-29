@@ -5,6 +5,7 @@
 #include <arpa/inet.h>
 #include <fcntl.h>
 #include <netinet/in.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -13,6 +14,8 @@
 #include <unistd.h>
 
 static const char marker[] = "TILO_SEATBELT_PROBE_MARKER";
+
+int64_t sandbox_extension_consume(const char *token);
 
 int main(int argc, char **argv) {
     if (argc != 3) {
@@ -27,6 +30,15 @@ int main(int argc, char **argv) {
     }
     if (strcmp(op, "write") == 0) {
         int fd = open(arg, O_WRONLY | O_CREAT | O_TRUNC, 0600);
+        return fd >= 0 && write(fd, marker, sizeof marker) == sizeof marker ? 0 : 1;
+    }
+    if (strcmp(op, "picked") == 0) {
+        /* Consume $TILO_PROBE_TOKEN, if any, then open arg for writing. */
+        const char *token = getenv("TILO_PROBE_TOKEN");
+        if (token != NULL && sandbox_extension_consume(token) < 0) {
+            return 3;
+        }
+        int fd = open(arg, O_RDWR);
         return fd >= 0 && write(fd, marker, sizeof marker) == sizeof marker ? 0 : 1;
     }
     if (strcmp(op, "exec") == 0) {

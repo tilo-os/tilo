@@ -312,7 +312,8 @@ fn a_process_start_time_is_stable_and_absent_for_no_process() {
 }
 
 /// A real launch through `launcher-macos`: a signed, verified package whose
-/// probe checks it inherited its service descriptors, then waits on the
+/// probe checks it inherited its service descriptors and its file chooser,
+/// then waits on the
 /// collaboration connection until the host goes away.
 #[cfg(target_os = "macos")]
 #[test]
@@ -333,6 +334,7 @@ static int fd_of(const char *name) {
 int main(void) {
     int collab = fd_of("TILO_SVC_COLLAB_FD");
     if (collab < 0 || fd_of("TILO_SVC_IDENTITY_FD") < 0) return 3;
+    if (fd_of("TILO_FILE_PICKER_FD") < 0) return 4;
     char byte;
     (void)read(collab, &byte, 1);
     return 0;
