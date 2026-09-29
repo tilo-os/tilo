@@ -2451,6 +2451,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-clock",
+ "tilo-test-env",
  "windows-vm",
  "wire-frame",
  "workspace-hack",
