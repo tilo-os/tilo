@@ -76,6 +76,9 @@ pub struct SettingsApp {
     structure_dirty: bool,
     /// Framework dispatcher, cloned onto a preference pane when that pane is built.
     framework: Option<ui::framework::Dispatcher<crate::resource::Settings>>,
+    /// Set when hosted as a [`ui::framework::ResourceSurface`]; tests may flip
+    /// it without constructing a real dispatcher.
+    hosted: bool,
     /// Which narrow screen a `--shots` / headless capture pins the shell to —
     /// the live `ui::App` event loop that would otherwise drive the navigation
     /// is absent. `None` (the runtime default) collapses to the CONTENT screen,
@@ -163,6 +166,7 @@ impl SettingsApp {
             selected: Category::DEFAULT,
             structure_dirty: false,
             framework: None,
+            hosted: false,
             narrow_shot_screen: None,
             width_hint: None,
             search_query: String::new(),
@@ -447,10 +451,26 @@ impl SettingsApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::Settings>,
     ) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
     }
 
-    /// Preference panes read the document in their own sync, which is this projection.
-    pub(crate) fn adopt_resource_state(&mut self, _state: &crate::resource::SettingsState) {}
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted
+    }
+
+    /// Preference panes read the document in their own sync. An empty
+    /// projection must not wipe unsynced local pane state.
+    pub(crate) fn adopt_resource_state(&mut self, state: &crate::resource::SettingsState) {
+        if state.values.is_empty() {
+            return;
+        }
+    }
+
+    /// Test-only: mark the surface hosted without a real framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
+    }
 
     /// Dispatch to the per-category pane body.
     #[expect(
@@ -2189,11 +2209,13 @@ impl ui::search::capability::SearchSource for SettingsApp {
 }
 
 impl ui::resources::PublishesResources for SettingsApp {
-    /// Publish the settings resource tree to the shell's one Ctrl+K palette,
-    /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
-    /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
-    /// shared document.
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns the
+    /// SettingsAction preference door — keep only live device extras.
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        if self.is_hosted() {
+            return crate::actions::live_device_resources(doc, self.account_resource_inventory());
+        }
         self.publish_resources(doc)
     }
     /// Resolve canonical Settings resources at activation time as well as

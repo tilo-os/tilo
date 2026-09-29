@@ -3,19 +3,40 @@
 
 use std::rc::Rc;
 
+use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue, Value};
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
 use ui::tilo_actions::EncodedAction;
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource};
 use ui::widget::Element;
 
-use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, register};
+use crate::actions::{
+    SETTINGS_ACTION_TYPE, SettingValue, SettingsAction, document_children, register,
+};
 use crate::settings_app::SettingsApp;
 
 /// Projection of portable preference keys stored at the document root.
 #[derive(Clone, Debug, Default)]
 pub struct SettingsState {
-    pub keys: Vec<(String, String)>,
+    /// Typed root scalars so publish can rebuild flip targets without losing
+    /// bool / number / text distinctions.
+    pub values: Vec<(String, SettingValue)>,
+}
+
+impl SettingsState {
+    /// Project the collaborative preference keys from `doc`.
+    pub(crate) fn from_doc(doc: &Doc) -> Self {
+        Settings::read(doc).unwrap_or_default()
+    }
+
+    /// Rebuild a document carrying only the projected preference keys.
+    pub(crate) fn to_doc(&self) -> AutoCommit {
+        let mut doc = AutoCommit::new();
+        for (key, value) in &self.values {
+            let _ = doc.put(&ROOT, key.as_str(), value.scalar());
+        }
+        doc
+    }
 }
 
 /// The settings workspace resource.
@@ -34,33 +55,39 @@ impl Resource for Settings {
     }
 
     fn read(doc: &Doc) -> Result<SettingsState, ModelError> {
-        let mut keys = Vec::new();
+        let mut values = Vec::new();
         for key in doc.keys(&ROOT) {
             let Ok(Some((value, _))) = doc.get(&ROOT, key.as_str()) else {
                 continue;
             };
-            let rendered = match value {
+            let typed = match value {
                 Value::Scalar(scalar) => match scalar.as_ref() {
-                    ScalarValue::Str(text) => text.to_string(),
-                    ScalarValue::Boolean(flag) => flag.to_string(),
-                    ScalarValue::Int(n) => n.to_string(),
-                    ScalarValue::Uint(n) => n.to_string(),
-                    ScalarValue::F64(n) => n.to_string(),
+                    ScalarValue::Str(text) => SettingValue::Text(text.to_string()),
+                    ScalarValue::Boolean(flag) => SettingValue::Bool(*flag),
+                    ScalarValue::Int(n) => SettingValue::Int(*n),
+                    ScalarValue::Uint(n) => {
+                        SettingValue::Int(i64::try_from(*n).unwrap_or(i64::MAX))
+                    }
+                    ScalarValue::F64(n) => SettingValue::Float(*n),
                     _ => continue,
                 },
                 _ => continue,
             };
-            keys.push((key, rendered));
+            values.push((key, typed));
         }
-        keys.sort_by(|left, right| left.0.cmp(&right.0));
-        Ok(SettingsState { keys })
+        values.sort_by(|left, right| left.0.cmp(&right.0));
+        Ok(SettingsState { values })
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Named setting rows stay prompted ActionSpecs on the published tree
-        // (param names and device-local effects). Stub declarations here would
-        // shadow those prompts.
+        // Named setting rows are prompted ActionSpecs on section children
+        // (param names, flip targets). Stub declarations here would shadow
+        // those prompts — see [`document_children`].
         Vec::new()
+    }
+
+    fn children(state: &SettingsState) -> Vec<tilo_actions::Resource> {
+        document_children(state)
     }
 }
 
@@ -91,9 +118,9 @@ impl ResourceSurface<Settings> for SettingsApp {
 
 /// Framework dispatcher shared by the preference panes.
 pub(crate) struct ActionSink {
-    local: ui::ActionHost,
-    framework: Option<Dispatcher<Settings>>,
-    last: Option<EncodedAction>,
+    pub(crate) local: ui::ActionHost,
+    pub(crate) framework: Option<Dispatcher<Settings>>,
+    pub(crate) last: Option<EncodedAction>,
 }
 
 impl Default for ActionSink {
