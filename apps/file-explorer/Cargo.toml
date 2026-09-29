@@ -68,7 +68,7 @@ zip.workspace = true
 tar.workspace = true
 flate2.workspace = true
 # Home, config, cache and the localized user folders.
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 serde.workspace = true

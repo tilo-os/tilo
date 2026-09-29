@@ -4,7 +4,7 @@
 //! [`crate::engine_pg::PostgresEngine`] so the session can hold any engine
 //! behind one enum.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use mysql::consts::ColumnType;
 use mysql::prelude::Queryable;
@@ -221,7 +221,7 @@ impl MySqlEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         let mut result = self.conn.query_iter(trimmed).map_err(|e| e.to_string())?;
         // Capture the column names + server types. The text protocol returns

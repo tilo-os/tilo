@@ -56,7 +56,7 @@ fn overlay_stack_orders_layers_and_traps_focus() {
 // and the light preset. A Panel's edge is derived against the ground and has
 // to visibly move against the panel's own fill; the declared `border_standard`
 // both used to stroke sat within rounding distance of `raised` on the dark
-// preset and read as no edge at all. `QUICK_UI_SCREENSHOT_DIR` dumps
+// preset and read as no edge at all. `TILO_UI_SCREENSHOT_DIR` dumps
 // `modal_dialog_{dark,light}.png` and `popover_widget_{dark,light}.png`.
 // ---------------------------------------------------------------------------
 
@@ -68,7 +68,7 @@ fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
 }
 
 fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();
@@ -253,7 +253,7 @@ fn overlay_panels_register_their_edge_in_both_themes() {
     // Case `permission_prompt_panel_edge_registers_in_both_themes`.
     // The permission prompt is a Panel too (HIG §9.5): its edge derives against
     // the ground and has to register against the prompt's `surfaces.overlay`
-    // fill in both themes. `QUICK_UI_SCREENSHOT_DIR` dumps
+    // fill in both themes. `TILO_UI_SCREENSHOT_DIR` dumps
     // `permission_prompt_{dark,light}.png`.
     {
         // Wide enough for the label and both consent buttons; the height is the

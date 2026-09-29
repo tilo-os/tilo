@@ -203,10 +203,10 @@ pub fn resolve_rangeable(video_id: &str) -> Option<ResolvedStream> {
         .user_agent(BROWSER_UA)
         .build()
         .ok()?;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(5);
     for instance in instances() {
         for &(itag, mime, codec, format, bitrate) in KNOWN_AUDIO_ITAGS {
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 tracing::debug!(target: "music::proxy", "resolve_rangeable: deadline reached, no working instance");
                 return None;
             }

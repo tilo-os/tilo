@@ -19,7 +19,7 @@
 //! ```
 //! cargo run -p ui-examples --release --example ui-perf -- widget_perf_bench
 //! ```
-//! Iterations override: `QUICK_UI_PERF_ITERS=50`.
+//! Iterations override: `TILO_UI_PERF_ITERS=50`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -286,7 +286,7 @@ pub fn run(_args: &[String]) {
         .join("\n"),
     );
 
-    let iters: usize = std::env::var("QUICK_UI_PERF_ITERS")
+    let iters: usize = tilo_ui::env::var("TILO_UI_PERF_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);

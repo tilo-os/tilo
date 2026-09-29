@@ -647,7 +647,7 @@ pub struct MouseKeyboardPane {
     /// Whether the sections come from a live compositor snapshot; a pane
     /// built without one (tests, headless renders) never polls for one.
     poll_devices: bool,
-    next_device_poll: Option<std::time::Instant>,
+    next_device_poll: Option<ui::time::Instant>,
     needs_seed: bool,
     structure_dirty: bool,
     commit_context_pending: bool,
@@ -811,7 +811,7 @@ impl MouseKeyboardPane {
         if !self.poll_devices {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         if self.next_device_poll.is_some_and(|next| now < next) {
             return;
         }

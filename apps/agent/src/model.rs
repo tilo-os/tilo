@@ -24,7 +24,7 @@ use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use serde_json::Value;
 
@@ -340,7 +340,7 @@ impl Chooser {
         live: &mut dyn FnMut(StreamSignal<'_>),
     ) -> Result<tools::Answer, AskError> {
         let dialect = Dialect::of(provider.selection.protocol);
-        let began = Instant::now();
+        let began = ui::time::now();
         let remaining = || self.timeout.checked_sub(began.elapsed());
         let trace_id = uuid::Uuid::new_v4().as_u64_pair().0.max(1);
         self.trace.store(trace_id, Ordering::Relaxed);
@@ -348,7 +348,7 @@ impl Chooser {
         let mut messages = dialect.first_messages(&action_user_turn(rest, blocks));
         for turn in 0..MAX_ACTION_TURNS {
             let body = dialect.body(&provider.selection, &messages, &revealed, most_steps);
-            let turn_began = Instant::now();
+            let turn_began = ui::time::now();
             let trace = tilo_model_gateway::PlanTrace {
                 id: trace_id,
                 turn: u32::try_from(turn).unwrap_or(u32::MAX),
@@ -732,7 +732,7 @@ fn post_action_turn(
     if dialect == Dialect::Anthropic {
         return post_provider(provider, &body, &|| Some(timeout));
     }
-    let began = Instant::now();
+    let began = ui::time::now();
     let mut scanners: BTreeMap<u64, plan_stream::PlanArgumentsScanner> = BTreeMap::new();
     tilo_model_gateway::plan_streaming_deltas(
         &provider.selection.profile_id,
@@ -820,7 +820,11 @@ impl MarkGate {
         };
         if state.busy {
             if state.pending.len() < 256 {
-                let at = tilo_clock::unix_now_ms();
+                let at = ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
+                    .map_or(0, |elapsed| {
+                        u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+                    });
                 state.pending.push((trace, event, at));
             }
             return;
