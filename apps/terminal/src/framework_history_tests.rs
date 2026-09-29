@@ -127,15 +127,20 @@ fn history_round_trip_preserves_exact_live_view_selection_focus_title_mode_and_t
     widget.sync(&mut doc, &automerge::ROOT);
     assert!(widget.modes().app_cursor_keys);
     assert_eq!(widget.title(), "Retained Session");
-    widget.scroll_to_top();
-    assert!(widget.scroll_offset() > 0);
-    widget.set_selection_cells(
-        crate::GridPos { row: 2, col: 1 },
-        crate::GridPos { row: 2, col: 4 },
-    );
     widget.set_focus(true);
 
     let mut driver = managed_driver(widget, doc);
+    // Scroll and select once the host has sized the grid, so the view does
+    // not depend on how tall the host's History chrome is.
+    let scrolled = driver.with_widget_mut(|terminal: &mut crate::TerminalWidget| {
+        terminal.scroll_to_top();
+        terminal.set_selection_cells(
+            crate::GridPos { row: 0, col: 1 },
+            crate::GridPos { row: 0, col: 4 },
+        );
+        terminal.scroll_offset()
+    });
+    assert!(scrolled.is_some_and(|offset| offset > 0));
     let before_terminal = terminal_semantics(&driver);
     let before_resources = resource_snapshot(&driver);
     assert_eq!(before_terminal.name.as_deref(), Some("Retained Session"));
@@ -146,7 +151,7 @@ fn history_round_trip_preserves_exact_live_view_selection_focus_title_mode_and_t
         before_terminal
             .value
             .as_deref()
-            .is_some_and(|value| value.contains("HISTORY-LINE-002"))
+            .is_some_and(|value| value.starts_with("HISTORY-LINE-000"))
     );
     assert!(crate::tests::drain_writes(&writes).is_empty());
 

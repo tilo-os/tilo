@@ -116,7 +116,8 @@ pub(crate) struct HostHistoryLayout {
     /// The in-window History button, on hosts with no native chrome.
     pub toolbar: Option<NodeId>,
     pub search: Option<NodeId>,
-    toolbar_group: Option<NodeId>,
+    /// The strip holding the in-window buttons, when there are any.
+    bar: Option<NodeId>,
     pub pane: Option<NodeId>,
     /// The selected version, drawn by the app's own root, tiled where the
     /// live app would be.
@@ -138,6 +139,7 @@ pub(crate) struct StandaloneHistoryHost {
     content_focus: Option<CompositionFocus>,
     restore_focus: Option<CompositionFocus>,
     content_rect: Rect,
+    bar_rect: Rect,
     revision: u64,
     review: Option<RestoreReview>,
     confirmed_restore: Option<ConfirmedHistoryRestore>,
@@ -186,6 +188,7 @@ impl StandaloneHistoryHost {
             content_focus: None,
             restore_focus: None,
             content_rect: Rect::ZERO,
+            bar_rect: Rect::ZERO,
             revision: 0,
             review: None,
             confirmed_restore: None,
@@ -721,20 +724,16 @@ impl StandaloneHistoryHost {
             .chain(self.search.iter())
             .map(|button| button as &dyn Widget)
             .collect();
-        let services = layout.toolbar_group.map(|group| PresentationRoots {
-            rect: buttons
-                .iter()
-                .map(|button| button.get_rect())
-                .reduce(|a, b| a.union(b))
-                .unwrap_or_default(),
-            children: buttons.clone(),
-            layout_root: group,
+        let services = layout.bar.map(|bar| PresentationRoots {
+            rect: self.bar_rect,
+            children: buttons,
+            layout_root: bar,
             id: "standalone-services",
         });
-        let mut children: Vec<&dyn Widget> = match &services {
-            Some(services) => vec![services],
-            None => buttons,
-        };
+        let mut children: Vec<&dyn Widget> = Vec::new();
+        if let Some(services) = &services {
+            children.push(services);
+        }
         children.push(&content);
         let roots = PresentationRoots {
             children,
@@ -804,16 +803,23 @@ impl StandaloneHistoryHost {
             .search
             .as_mut()
             .map(|button| button.build_layout(taffy, theme, nodes));
-        let toolbar_group = toolbar.zip(search).map(|(toolbar, search)| {
+        let buttons: Vec<NodeId> = toolbar.into_iter().chain(search).collect();
+        let bar = (!buttons.is_empty()).then(|| {
             taffy.parent_node(
                 Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::auto(),
+                    },
+                    padding: crate::chrome::bar_padding(theme),
                     gap: Size {
                         width: taffy::LengthPercentage::length(theme.gap_standard),
                         height: taffy::LengthPercentage::length(0.0),
                     },
+                    align_items: Some(taffy::AlignItems::Center),
                     ..Default::default()
                 },
-                &[toolbar, search],
+                &buttons,
             )
         });
         let pane = self
@@ -893,18 +899,14 @@ impl StandaloneHistoryHost {
                 align_items: Some(taffy::AlignItems::FlexStart),
                 ..Default::default()
             },
-            &toolbar_group
-                .or(toolbar)
-                .into_iter()
-                .chain([content])
-                .collect::<Vec<_>>(),
+            &bar.into_iter().chain([content]).collect::<Vec<_>>(),
         );
         HostHistoryLayout {
             root,
             app,
             toolbar,
             search,
-            toolbar_group,
+            bar,
             pane,
             preview,
             app_visible,
@@ -922,12 +924,16 @@ impl StandaloneHistoryHost {
     ) -> Point {
         let outer = taffy.layout(layout.root).copied().unwrap_or_default();
         let origin = origin + (f64::from(outer.location.x), f64::from(outer.location.y));
-        let toolbar_origin = layout
-            .toolbar_group
+        let bar = layout
+            .bar
             .and_then(|node| taffy.layout(node).ok())
-            .map_or(origin, |layout| {
-                origin + (f64::from(layout.location.x), f64::from(layout.location.y))
-            });
+            .copied()
+            .unwrap_or_default();
+        let toolbar_origin = origin + (f64::from(bar.location.x), f64::from(bar.location.y));
+        self.bar_rect = Rect::from_origin_size(
+            toolbar_origin,
+            (f64::from(bar.size.width), f64::from(bar.size.height)),
+        );
         if let (Some(toolbar), Some(node)) = (&mut self.toolbar, layout.toolbar) {
             toolbar.apply_layout(taffy, node, toolbar_origin);
         }
@@ -972,6 +978,9 @@ impl StandaloneHistoryHost {
         presence: &PresenceCtx,
     ) -> Result<(), HistoryHostError> {
         self.refresh(context)?;
+        if self.toolbar.is_some() {
+            crate::chrome::paint_bar(scene, transform, theme, self.bar_rect);
+        }
         for button in self.in_window_controls_mut() {
             button.draw(scene, transform, text, theme, presence);
         }
@@ -1328,7 +1337,7 @@ mod tests {
                     assert_ne!(layout.app, layout.pane.unwrap());
                     assert_eq!(
                         tree.children(layout.root).unwrap(),
-                        vec![layout.toolbar_group.unwrap_or(toolbar), layout.content]
+                        vec![layout.bar.unwrap(), layout.content]
                     );
                     host.with_presentation(&context, &app, layout, Rect::ZERO, |presentation| {
                         fn check_pairing(
@@ -1386,11 +1395,17 @@ mod tests {
                             usize::from(search_enabled)
                         );
                         assert_eq!(layout.search.is_some(), search_enabled);
-                        assert_eq!(layout.toolbar_group.is_some(), search_enabled);
+                        assert_eq!(
+                            tree.children(layout.bar.unwrap()).unwrap(),
+                            std::iter::once(toolbar)
+                                .chain(layout.search)
+                                .collect::<Vec<_>>(),
+                            "the bar holds exactly the in-window buttons"
+                        );
                         if let Some(search) = layout.search {
                             assert!(nodes.contains_key(&search));
                             assert_eq!(
-                                tree.children(layout.toolbar_group.unwrap()).unwrap(),
+                                tree.children(layout.bar.unwrap()).unwrap(),
                                 vec![toolbar, search]
                             );
                         }

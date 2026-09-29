@@ -20,7 +20,7 @@ use std::process::Command;
 #[cfg(any(test, target_os = "linux"))]
 use std::process::Stdio;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
 #[cfg(any(test, target_os = "linux"))]
 use std::io::{self, Read, Write};
@@ -749,12 +749,8 @@ pub(crate) struct SessionLaunches {
     launched: Mutex<Vec<(String, Vec<String>, String)>>,
     /// The launch key each mapped surface was attributed to.
     surfaces: Mutex<HashMap<u64, String>>,
-    /// The launch (by `launch_metric_id`) each claimed surface belongs to,
-    /// until that surface presents its first frame.
-    claimed_surfaces: Mutex<HashMap<u64, u64>>,
-    /// Launches whose window has presented a frame. A launch that got this
-    /// far opened; how its process exits later is the app's business.
-    presented_launches: Mutex<HashSet<u64>>,
+    /// Launch keys whose app has shown a window since it last started.
+    presented: Mutex<std::collections::HashSet<String>>,
     /// The "Opening…" notification of each package still on its way, so the
     /// frame thread can retire it when the app starts.
     pub(crate) opening_notices: Mutex<Vec<(String, u64)>>,
@@ -772,8 +768,7 @@ impl Default for SessionLaunches {
             pending: Mutex::default(),
             launched: Mutex::default(),
             surfaces: Mutex::default(),
-            claimed_surfaces: Mutex::default(),
-            presented_launches: Mutex::default(),
+            presented: Mutex::default(),
             opening_notices: Mutex::default(),
             open_documents: Mutex::default(),
             #[cfg(any(test, target_os = "linux"))]
@@ -2642,7 +2637,7 @@ fn start_launch(
             workspace_id,
             command.service_identity.is_some(),
         );
-        let launch = mark_launch_spawned(&app.package_id, child.id());
+        mark_launch_spawned(&app.package_id, child.id());
         // Recorded before the gate opens, so the session learns of the start
         // before the app can do anything a start explains.
         events.push(LaunchEvent {
@@ -2699,20 +2694,8 @@ fn start_launch(
             .and_then(|drain| drain.join().ok())
             .unwrap_or_default();
         unregister_launched_process(launcher_pid);
-        let opened = launch.is_some_and(take_presented_launch);
         let kind = match status {
             Ok(status) if status.success() => LaunchEventKind::Exited,
-            // Only a launch that never showed a window failed to open. A
-            // terminal that exits 1 when its window is closed ran fine.
-            Ok(status) if opened => {
-                tracing::info!(
-                    target: "shell::launcher",
-                    package_id = %app.package_id,
-                    code = ?status.code(),
-                    "application exited with a failure status after it opened"
-                );
-                LaunchEventKind::Exited
-            }
             Ok(status) => LaunchEventKind::Failed {
                 code: status.code(),
                 stderr_tail: tail.iter().cloned().collect::<Vec<_>>().join("\n"),
@@ -2752,34 +2735,23 @@ pub(crate) fn push_event(event: LaunchEvent) {
     LaunchSession::current().push(event);
 }
 
-/// The id of the launch `pid` was spawned for: the oldest launch of
-/// `package_id` not yet spawned.
-fn mark_launch_spawned(package_id: &str, pid: u32) -> Option<u64> {
+fn mark_launch_spawned(package_id: &str, pid: u32) {
     let session = LaunchSession::current();
     let mut pending = lock(&session.pending);
-    let note = pending
+    if let Some(note) = pending
         .iter_mut()
-        .find(|note| note.key == package_id && !note.metric_spawned)?;
-    note.metric_spawned = true;
-    let launch_id = note.launch_metric_id;
-    drop(pending);
-    tilo_startup_metrics::launch_spawned(launch_id, pid);
-    Some(launch_id)
+        .find(|note| note.key == package_id && !note.metric_spawned)
+    {
+        note.metric_spawned = true;
+        tilo_startup_metrics::launch_spawned(note.launch_metric_id, pid);
+    }
 }
 
 /// Finish every launch-bound surface that has captured its first frame.
 /// The compositor calls this once per tick; `frame_seq` reads the capture
 /// store, and the scan is over launches still waiting for a first frame.
 pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
-    let mut surfaces = tilo_startup_metrics::launches_awaiting_first_present();
-    surfaces.extend(
-        lock(&LaunchSession::current().claimed_surfaces)
-            .keys()
-            .copied(),
-    );
-    surfaces.sort_unstable();
-    surfaces.dedup();
-    for surface_id in surfaces {
+    for surface_id in tilo_startup_metrics::launches_awaiting_first_present() {
         record_first_present(surface_id, frame_seq(surface_id));
     }
 }
@@ -2787,22 +2759,6 @@ pub(crate) fn record_presented_launches(frame_seq: impl Fn(u64) -> u64) {
 /// Record the first captured frame for a launch-bound surface exactly once.
 pub(crate) fn record_first_present(surface_id: u64, frame_seq: u64) {
     tilo_startup_metrics::launch_first_present(surface_id, frame_seq);
-    if frame_seq == 0 {
-        return;
-    }
-    let session = LaunchSession::current();
-    let claimed = lock(&session.claimed_surfaces).remove(&surface_id);
-    if let Some(launch) = claimed {
-        lock(&session.presented_launches).insert(launch);
-    }
-}
-
-/// Whether launch `launch` presented a window, forgetting it: its process
-/// has exited.
-fn take_presented_launch(launch: u64) -> bool {
-    let session = LaunchSession::current();
-    lock(&session.claimed_surfaces).retain(|_, claimed| *claimed != launch);
-    lock(&session.presented_launches).remove(&launch)
 }
 
 /// Take every launch event queued since the last call. Called once per
@@ -2877,6 +2833,19 @@ pub(crate) fn launch_key_for_surface(surface_id: u64) -> Option<String> {
 /// strings and pending-placement matching.
 pub(crate) fn attribute_surface_launch(surface_id: u64, launch_key: &str) {
     lock(&LaunchSession::current().surfaces).insert(surface_id, launch_key.to_string());
+}
+
+/// A window of launch `key` is on screen: if that launch later exits with
+/// an error, the app ran and then stopped (killed, crashed, quit with a
+/// status) rather than failing to open.
+pub(crate) fn note_launch_presented(key: &str) {
+    lock(&LaunchSession::current().presented).insert(key.to_string());
+}
+
+/// Whether launch `key` has shown a window since it last started, clearing
+/// the mark: a later launch of the same app starts unproven.
+pub(crate) fn take_launch_presented(key: &str) -> bool {
+    lock(&LaunchSession::current().presented).remove(key)
 }
 
 pub(crate) fn forget_surface_launch(surface_id: u64) {
@@ -3002,7 +2971,6 @@ pub fn placement_and_instance_for_toplevel(
                 if let Some(entry) = pending.get_mut(idx) {
                     entry.claimed_by = Some(surface_id);
                     tilo_startup_metrics::launch_mapped(entry.launch_metric_id, surface_id);
-                    lock(&session.claimed_surfaces).insert(surface_id, entry.launch_metric_id);
                     // Both compositor trees ask for the same launch note,
                     // so keep a claimed answer briefly rather than consume
                     // it on the first lookup. Bound that duplication window
@@ -4976,56 +4944,6 @@ mod tests {
         fn drop(&mut self) {
             self.stop();
         }
-    }
-
-    /// A process that exits non-zero after its window presented ran and
-    /// closed (a terminal exits 1 on hang-up); only one that never showed a
-    /// window failed to open.
-    #[test]
-    fn only_a_launch_that_never_opened_reports_a_failure_to_open() {
-        fn run(key: &str, present: bool) -> LaunchEventKind {
-            let _ = drain_events();
-            set_pending_placement(key, crate::shell::tab_binding::Placement::NewGroup);
-            let command = LaunchCommand {
-                program: PathBuf::from("/bin/sh"),
-                args: vec!["-c".into(), "sleep 0.5; exit 1".into()],
-                env: Vec::new(),
-                service_identity: None,
-                portal_workspace_id: None,
-                managed_agent_id: None,
-            };
-            spawn_launch(key.into(), "Foot".into(), command).expect("launch worker");
-            let surface = 5151;
-            let trailing = key.rsplit('.').next().expect("a trailing component");
-            let mut presented = !present;
-            let deadline = tilo_test_env::hang_deadline();
-            loop {
-                if let Some(kind) = drain_events()
-                    .into_iter()
-                    .filter(|event| event.package_id == key)
-                    .map(|event| event.kind)
-                    .find(|kind| !matches!(kind, LaunchEventKind::Started { .. }))
-                {
-                    return kind;
-                }
-                if !presented && placement_for_toplevel(trailing, surface).is_some() {
-                    record_first_present(surface, 1);
-                    presented = true;
-                }
-                assert!(Instant::now() < deadline, "{key}: the launch never ended");
-                std::thread::sleep(Duration::from_millis(10));
-            }
-        }
-        clear_pending_placements();
-        let opened = run("org.example.opened", true);
-        assert_eq!(opened, LaunchEventKind::Exited, "it opened, then closed");
-        clear_pending_placements();
-        let never = run("org.example.never-opened", false);
-        assert!(
-            matches!(never, LaunchEventKind::Failed { code: Some(1), .. }),
-            "it stopped before opening: {never:?}"
-        );
-        clear_pending_placements();
     }
 
     #[test]

@@ -10,7 +10,12 @@
  *   into the page's own mounts: `peer.mountDesktop(target, options)` is
  *   `host.mjs`'s `mountDesktop` in the peer's room, so apps, the local
  *   desktop, `open`, `actions` and `invokeAction` behave as in any mount,
- *   with the core's and the registry's side modules.
+ *   with the core's and the registry's side modules;
+ * - the room's live plane (`relay-live.mjs`): the mounts publish this
+ *   device's pointer, caret and selection and draw the other members'.
+ *
+ * A room on a loopback `http:` origin (local review, `tilo-relay room
+ * --web-plain`) is accepted: the page then needs no certificate exception.
  *
  * The certificate is kept as the JSON text the core wrote: its u64
  * nanosecond times exceed a JS number's precision, and a re-encoded
@@ -18,12 +23,16 @@
  */
 import {coreRuntime, mountDesktop} from './host.mjs';
 import {idbStorage, openDeviceCustody} from './device-custody.mjs';
+import {colorOf, createRelayLive, relayLiveCarriers} from './relay-live.mjs';
+
+const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]']);
 
 /** `post(path, session, body)` over `fetch` to the host origin. */
 export function httpsPost(origin, fetcher = (...args) => globalThis.fetch(...args)) {
   const base = new URL(origin);
-  if (base.protocol !== 'https:' || base.pathname !== '/' || base.search || base.hash) {
-    throw new TypeError('host origin must be an https origin');
+  const secure = base.protocol === 'https:' || (base.protocol === 'http:' && LOOPBACK.has(base.hostname));
+  if (!secure || base.pathname !== '/' || base.search || base.hash) {
+    throw new TypeError('host origin must be an https (or loopback http) origin');
   }
   return async (path, session, body) => {
     const headers = {'content-type': 'application/octet-stream'};
@@ -73,7 +82,7 @@ const PEER_RECORD = 'peer-record';
  */
 export async function connectRelayPeer({
   origin, userPublicKey, room, label = 'Browser', profile = `tilo-relay:${room}`, device = 'relay',
-  onPairingCode, onStatus, signal, fetch: fetcher,
+  onPairingCode, onStatus, signal, fetch: fetcher, live: liveEnabled = true,
 }) {
   if (!origin || !userPublicKey || !room) throw new TypeError('origin, userPublicKey and room are required');
   signal?.throwIfAborted();
@@ -96,16 +105,25 @@ export async function connectRelayPeer({
     bytes => { values.put(PEER_RECORD, bytes).catch(() => {}); }, post);
   const listeners = new Set();
   let snapshot = {phase: 'authenticating'};
+  let live;
   const publish = () => {
     snapshot = JSON.parse(peer.snapshot());
+    live?.pump();
     for (const listener of [...listeners]) listener(snapshot);
     onStatus?.(snapshot);
   };
   peer.subscribe(publish);
   peer.joinRoom(room);
+  if (liveEnabled) {
+    const {endpoint, carriers} = relayLiveCarriers(origin, JSON.parse(await runtime.hostInfo(post)), {fetch: fetcher});
+    const key = [...(custodyForWasm.publicKey ?? [])].map(byte => byte.toString(16).padStart(2, '0')).join('');
+    live = createRelayLive(peer, runtime, room, {
+      endpoint, carriers, participant: {label: label.slice(0, 32), color: colorOf(key || label)},
+    });
+  }
   publish();
   let disposed = false;
-  const dispose = () => { if (disposed) return; disposed = true; listeners.clear(); peer.dispose(); };
+  const dispose = () => { if (disposed) return; disposed = true; listeners.clear(); live?.stop(); peer.dispose(); };
   signal?.addEventListener('abort', dispose, {once: true});
   const relay = {
     id: peer.id,
@@ -138,12 +156,18 @@ export async function connectRelayPeer({
       });
     },
     /** `host.mjs`'s `mountDesktop` in this room: the mount's records
-     * replicate through the peer. */
-    mountDesktop: (target, options = {}) => mountDesktop(target, {...options, profile, device, room, relay: peer.id}),
+     * replicate through the peer, and it shows the room's live presence. */
+    mountDesktop: (target, options = {}) => mountDesktop(target, {
+      ...options, profile, device, room, relay: peer.id,
+      ...(live ? {live: () => live.api, liveMembers: () => JSON.stringify(live.members())} : {}),
+    }),
     /** Resolves once every published change is durable on the host. */
     flush: () => peer.flush(),
     reconnect: () => peer.reconnect(),
-    /** The runtime's `WasmPeer`, for the live plane (`liveGrant`, codec). */
+    /** The room's live plane (`liveV1`: `state`, `memberCount`,
+     * `remoteState()`, `onMember`, …), or `undefined` with `live: false`. */
+    get live() { return live?.api; },
+    /** The runtime's `WasmPeer`. */
     get peer() { return peer; },
     dispose,
   };

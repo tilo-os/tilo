@@ -75,8 +75,6 @@ on:
   #     - "scripts/ci-run.sh"
   #     - "tools/ci/focused_test.py"
   #     - "tools/ci/native-stores.sh"
-  #     - "tools/ci/prepare_pr_history.py"
-  #     - "tools/ci/workflow_applicability.py"
   #     - "tools/native-tier1.sh"
   #     - ".forgejo/workflows/build-image.yml"
   #     - ".forgejo/workflows/ci-filesystem.yml"
@@ -84,8 +82,6 @@ on:
     branches: ["main"]
     paths:
       - ".cargo/**"
-      - "Cargo.lock"
-      - "Cargo.toml"
       - "crates/collab/**"
       - "crates/collab/tilo-user-identity/**"
       - "crates/dev/test-env/**"
@@ -153,8 +149,6 @@ on:
       - "scripts/ci-run.sh"
       - "tools/ci/focused_test.py"
       - "tools/ci/native-stores.sh"
-      - "tools/ci/prepare_pr_history.py"
-      - "tools/ci/workflow_applicability.py"
       - "tools/native-tier1.sh"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/workflows/ci-filesystem.yml"
@@ -185,33 +179,12 @@ env:
   TILO_REQUIRE_FUSE: "1"
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/ci-filesystem.yml
-      event: ${{ github.event_name }}
-
   builder:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     uses: ./.forgejo/workflows/resolve-builder.yml
     secrets: inherit
 
   real-fuse:
-    needs: [applicability, builder]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.builder.result == 'success'
-      }}
+    needs: builder
     runs-on: runner
     timeout-minutes: 60
     container:
@@ -310,14 +283,7 @@ jobs:
   # same suite runs against in-process fakes in every affected-package test
   # shard, and against live accounts in `cloud-live`.
   cloud-servers:
-    needs: [applicability, builder]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.builder.result == 'success'
-      }}
+    needs: builder
     runs-on: runner
     timeout-minutes: 30
     env:
@@ -342,10 +308,21 @@ jobs:
           AUTH_TYPE: Basic
           USERNAME: ada
           PASSWORD: conformance-password
+      # Nextcloud on SQLite answers 503 once a write waits 60 s for the
+      # database lock, which the suite's parallel clients reach on a slow disk.
+      nextcloud-db:
+        image: docker.io/library/postgres:17-alpine
+        env:
+          POSTGRES_DB: nextcloud
+          POSTGRES_USER: nextcloud
+          POSTGRES_PASSWORD: conformance-password
       nextcloud:
         image: docker.io/library/nextcloud:31-apache
         env:
-          SQLITE_DATABASE: nextcloud
+          POSTGRES_HOST: nextcloud-db
+          POSTGRES_DB: nextcloud
+          POSTGRES_USER: nextcloud
+          POSTGRES_PASSWORD: conformance-password
           NEXTCLOUD_ADMIN_USER: ada
           NEXTCLOUD_ADMIN_PASSWORD: conformance-password
           NEXTCLOUD_TRUSTED_DOMAINS: nextcloud
@@ -411,14 +388,8 @@ jobs:
   # queueing forever, until a `runner-native-storage` pool exists and
   # TILO_NATIVE_STORAGE_RUNNER is set to true.
   native-tier1:
-    needs: [applicability, builder]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.builder.result == 'success' && vars.TILO_NATIVE_STORAGE_RUNNER == 'true'
-      }}
+    needs: builder
+    if: vars.TILO_NATIVE_STORAGE_RUNNER == 'true'
     runs-on: runner-native-storage
     timeout-minutes: 60
     env:
@@ -469,14 +440,7 @@ jobs:
           tools/native-tier1.sh --nocapture
 
   files-ux:
-    needs: [applicability, builder]
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        needs.builder.result == 'success'
-      }}
+    needs: builder
     runs-on: runner
     timeout-minutes: 30
     env:

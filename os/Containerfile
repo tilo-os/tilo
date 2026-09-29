@@ -462,6 +462,7 @@ ENV CARGO_HOME=/build/.cargo-home \
     SCCACHE_S3_KEY_PREFIX=${SCCACHE_S3_KEY_PREFIX} \
     SCCACHE_S3_USE_SSL=${SCCACHE_S3_USE_SSL} \
     SCCACHE_IGNORE_SERVER_IO_ERROR=1 \
+    SCCACHE_IDLE_TIMEOUT=0 \
     RUSTC_WRAPPER=sccache \
     CARGO_INCREMENTAL=0 \
     SOURCE_DATE_EPOCH=0 \
@@ -593,8 +594,12 @@ ARG TILO_REQUIRE_COMPILER_CACHE=0
 ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
+# Names the target cache, so builds that compile differently (os/dev/build-image.sh
+# hashes the settings into it) keep separate target directories instead of
+# rebuilding each other's artifacts. The cargo home and sccache are shared.
+ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
@@ -756,6 +761,10 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     # Files stays a standalone /usr/bin binary for recovery; its package is the
     # thin build like every other app, matching the release collection.
     && build_phase rust-thin-apps \
+    # The thin-app profile compiles each crate as one codegen unit, for tapp
+    # size. Built in the image without LTO (a dev build) the runtime and its
+    # dependencies take 16: one unit made fs alone compile for ten minutes.
+    # The wrapper still builds each app binary as one unit.
     && if [ "${TILO_PREBUILT_APPS}" = 1 ]; then \
          mkdir -p /out/prebuilt-apps /out/browser-app \
          && cp /build/os/app-artifacts/*.tapp /out/prebuilt-apps/ \
@@ -767,6 +776,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
          APP_FEATURES="${APP_FEATURES}" \
+         CARGO_PROFILE_THIN_APP_CODEGEN_UNITS="$([ "$TILO_RUST_LTO" = off ] && echo 16 || echo 1)" \
            /build/os/scripts/build-thin-apps.sh \
          && for m in /build/apps/*/tilo-app.toml; do \
               p="$(sed -n 's/^name *= *"\([^"]*\)".*/\1/p' "$(dirname "$m")/Cargo.toml" | head -1)"; \

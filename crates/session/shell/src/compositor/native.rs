@@ -7164,6 +7164,22 @@ pub fn run() {
     // Pointer/keyboard preferences are read once at startup; this notices a
     // new Settings write so changes take effect this session, not the next.
     let mut settings_watch = crate::compositor::backend::drm::input_config::SettingsWatch::new();
+    // The poll runs only on a loop tick, and an idle desktop parks with no
+    // deadline, so a write from Settings or a display transaction staged by
+    // another process wakes the loop and is looked at on that tick.
+    let settings_written = Arc::new(AtomicBool::new(false));
+    let _settings_file_watch = {
+        let written = Arc::clone(&settings_written);
+        let wake = Arc::clone(&session_wake);
+        settings_store::watch::watch_settings(move || {
+            written.store(true, Ordering::Release);
+            wake();
+        })
+        .map_err(|error| {
+            tracing::warn!(%error, "settings file watch unavailable; an idle desktop applies Settings changes on its next wake");
+        })
+        .ok()
+    };
     let mut switch_control = SwitchControlRuntime::new(Instant::now());
     // Local game controllers drive the desktop through the same input
     // funnel; their evdev descriptors wake this loop like hardware input.
@@ -8154,6 +8170,9 @@ pub fn run() {
 
         // The Settings app writes to a file with no notification, so poll cheaply
         // (once/sec) to reach input devices and display scale.
+        if settings_written.swap(false, Ordering::AcqRel) {
+            settings_watch.check_now();
+        }
         if settings_watch.changed(Instant::now()) {
             tracing::info!("compositor: settings changed on disk; re-applying");
             state.reload_keyboard_settings();

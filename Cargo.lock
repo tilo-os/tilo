@@ -2451,6 +2451,7 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-clock",
+ "tilo-test-env",
  "windows-vm",
  "wire-frame",
  "workspace-hack",
@@ -15729,6 +15730,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-room-service"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bytes",
+ "futures",
+ "hex",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "rand 0.10.1",
+ "rcgen",
+ "rustls",
+ "serde_json",
+ "tokio",
+ "tokio-rustls",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-rt"
 version = "0.1.0"
 dependencies = [
@@ -19185,6 +19206,7 @@ dependencies = [
  "ashpd",
  "base16ct 0.2.0",
  "base16ct 1.0.0",
+ "base64",
  "base64ct",
  "bit-set 0.8.0",
  "bit-vec 0.8.0",
