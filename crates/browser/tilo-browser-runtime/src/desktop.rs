@@ -144,12 +144,16 @@ impl Tiles {
             .ok_or_else(|| format!("{app_id} is not available in the browser"))?;
         let store = self.store(definition)?;
         let saved = self.shared.records.borrow().get(&tab.id).cloned();
-        let target = match saved {
-            Some(checkout) => LaunchTarget::Record {
-                checkout,
-                reveal: None,
-            },
-            None => definition.unsaved_target(&store),
+        let (target, named_new) = match saved {
+            Some(checkout) => (
+                LaunchTarget::Record {
+                    checkout,
+                    reveal: None,
+                },
+                None,
+            ),
+            None if definition.keeps_room_record() => (definition.unsaved_target(&store), None),
+            None => self.unbound_target(definition, &store, tab.id)?,
         };
         let restore = self
             .inputs
@@ -157,19 +161,19 @@ impl Tiles {
             .load(tab.id)
             .map_err(|error| error.to_string())?
             .map_or(RestoreInput::None, RestoreInput::Local);
-        let context = HostContext::prepare(
-            definition,
-            HostContextInputs {
-                records: store,
-                views: Rc::clone(&self.inputs.views),
-                device_id: self.inputs.device.clone(),
-                instance_id: tab.id,
-                permissions: Rc::clone(&self.inputs.permissions),
-                author: UserId(self.inputs.author.clone()),
-                action_context: tilo_actions::ActionContext::default(),
-            },
-            &target,
-        )
+        let inputs = HostContextInputs {
+            records: store,
+            views: Rc::clone(&self.inputs.views),
+            device_id: self.inputs.device.clone(),
+            instance_id: tab.id,
+            permissions: Rc::clone(&self.inputs.permissions),
+            author: UserId(self.inputs.author.clone()),
+            action_context: tilo_actions::ActionContext::default(),
+        };
+        let context = match named_new {
+            Some(id) => HostContext::prepare_new_record(definition, inputs, id),
+            None => HostContext::prepare(definition, inputs, &target),
+        }
         .map_err(|error| error.to_string())?;
         let destination = Rc::clone(&self.shared.images);
         let mut component = ui::ImageStore::with_host_factory_with_max_dimension(
@@ -199,6 +203,43 @@ impl Tiles {
             self.shared.records_changed.set(true);
         }
         Ok(component)
+    }
+}
+
+impl Tiles {
+    /// What a tab no record is bound to opens: the room's default record
+    /// while no other window of the app shows it (the record a native
+    /// launch into the room opens too), otherwise a new one. The second
+    /// value names the default record when it has to be created.
+    fn unbound_target(
+        &self,
+        definition: &'static ApplicationDefinition,
+        store: &RecordStore,
+        tab: TabId,
+    ) -> Result<(LaunchTarget, Option<RecordId>), String> {
+        let default = RecordCheckout::new(RecordId::room_default(), definition.record_kind.clone());
+        let taken = self
+            .shared
+            .records
+            .borrow()
+            .iter()
+            .any(|(other, checkout)| *other != tab && checkout.id == default.id);
+        if taken {
+            return Ok((LaunchTarget::New, None));
+        }
+        match store.try_open_record(&default) {
+            Ok(_) => Ok((
+                LaunchTarget::Record {
+                    checkout: default,
+                    reveal: None,
+                },
+                None,
+            )),
+            Err(ui::record::RecordOpenError::MissingRecord) => {
+                Ok((LaunchTarget::New, Some(default.id)))
+            }
+            Err(error) => Err(error.to_string()),
+        }
     }
 }
 
