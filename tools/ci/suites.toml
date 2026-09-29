@@ -388,6 +388,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
