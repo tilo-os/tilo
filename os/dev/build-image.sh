@@ -510,7 +510,20 @@ build_image() {
   [ -z "$image_tag" ] || tag_args=(-t "$image_tag")
   [ "$#" -eq 0 ] || shift
   [ "$#" -eq 0 ] || shift
-  local layer_epoch="$SOURCE_DATE_EPOCH"
+  local layer_epoch="$SOURCE_DATE_EPOCH" build_epoch="$SOURCE_DATE_EPOCH"
+  # TILO_LAYER_EPOCH=base (local builds, os/dev/local-inputs.sh): layers and the
+  # build's SOURCE_DATE_EPOCH take the base image's creation time instead of the
+  # commit's. podman keys every cached layer on its epoch, so the commit time
+  # rebuilt the whole image after every commit; the base's time changes only
+  # with the base. The commit time stays in the org.tilo.source-date-epoch label.
+  case "${TILO_LAYER_EPOCH:-commit}" in
+    commit) ;;
+    base)
+      [ "${TILO_REQUIRE_PCR_PREDICTION:-0}" != 1 ] || die "a publication dates its layers by its commit (TILO_LAYER_EPOCH=commit)"
+      layer_epoch="$(tilo_image_epoch "$BASE_REF")" || die "could not read the creation time of $BASE_REF"
+      build_epoch="$layer_epoch" ;;
+    *) die "TILO_LAYER_EPOCH must be commit or base, not '${TILO_LAYER_EPOCH}'" ;;
+  esac
   if [ -n "${TILO_RAW_LAYER_EPOCH:-}" ]; then
     # Normalize only raw assembly layers; source inputs and signing keep their epoch.
     [ "${TILO_RAW_ROOTFS_ONLY:-0}" = 1 ] &&
@@ -535,7 +548,8 @@ build_image() {
     --label "org.tilo.kernel.trust=$TILO_KERNEL_TRUST" \
     --label "org.tilo.rpms.trust=$TILO_RPMS_TRUST" \
     --label "org.tilo.rpms.ref=$RPMS_REF" \
-    --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH" \
+    --label "org.tilo.source-date-epoch=$SOURCE_DATE_EPOCH" \
+    --build-arg "SOURCE_DATE_EPOCH=$build_epoch" \
     --build-arg "BASE_REF=$BASE_REF" \
     --build-arg "RPMS_REF=$RPMS_REF" \
     --build-arg "KERNEL_RPMS_REF=$KERNEL_RPMS_REF" \
