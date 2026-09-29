@@ -776,6 +776,12 @@ lto = false
 # crate; this keeps their dependencies on the same size-oriented setting.
 codegen-units = 1
 
+# tilo-ui is one crate on the critical path of every thin build: at one unit
+# its codegen alone takes about 4.5 of a full collection's 10 minutes. Sixteen
+# cost the shared runtime 1.8% in size; tapp crates stay at one unit.
+[profile.thin-app.package.tilo-ui]
+codegen-units = 16
+
 # The demo profile keeps release optimisation while enabling shell's
 # debug-only test-control surface for recordings.
 [profile.demo]
