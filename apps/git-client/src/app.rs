@@ -1192,8 +1192,8 @@ impl GitClientApp {
         self.shared_repo_fingerprint = Some(fingerprint);
     }
 
-    fn publish_settings(&mut self, doc: &mut AutoCommit) {
-        let actions = [
+    fn preference_actions(&self) -> [crate::actions::GitClientAction; 4] {
+        [
             crate::actions::set_diff_layout_action(self.settings.diff_layout),
             crate::actions::GitClientAction::SetShowWhitespace {
                 on: self.settings.show_whitespace,
@@ -1204,8 +1204,11 @@ impl GitClientApp {
             crate::actions::GitClientAction::SetWrapLines {
                 on: self.settings.wrap_lines,
             },
-        ];
-        for action in actions {
+        ]
+    }
+
+    fn publish_settings(&mut self, doc: &mut AutoCommit) {
+        for action in self.preference_actions() {
             self.actions.dispatch_with_context(
                 doc,
                 crate::actions::GIT_CLIENT_ACTION_TYPE,
@@ -2757,7 +2760,9 @@ impl Widget for GitClientApp {
             if self.actions.is_hosted() {
                 self.publish_settings(state);
             } else {
-                self.settings.write(state);
+                for action in self.preference_actions() {
+                    let _ = ui::tilo_actions::Action::apply(&action, state);
+                }
             }
             self.settings_seeded = true;
         }
