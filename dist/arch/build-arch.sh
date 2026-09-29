@@ -9,7 +9,11 @@ work=$out/work
 mkdir -p "$out" "$work/tilo-$version"
 trap 'rm -rf -- "$work"' EXIT
 
-git -C "$repo_root" archive HEAD | tar -x -C "$work/tilo-$version"
+# The tracked files from the index and working tree, not `git archive`: the
+# package container's checkout copy need not carry the object store.
+git -C "$repo_root" ls-files -z \
+    | tar --create --file=- --directory="$repo_root" --null --files-from=- \
+    | tar -x -C "$work/tilo-$version"
 # Include the small set of working-tree inputs needed to validate packaging
 # before commit, without copying dist/*/build back into its own source archive.
 mkdir -p "$work/tilo-$version/dist/session" "$work/tilo-$version/.cargo"

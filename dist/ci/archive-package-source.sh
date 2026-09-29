@@ -6,7 +6,7 @@ set -euo pipefail
     exit 2
 }
 
-# Keep Git metadata (Arch uses git archive and Nix reads the flake checkout),
+# Keep Git metadata (Arch lists the tracked files and Nix reads the flake checkout),
 # modified/untracked source, and the checksum-pinned external input cache.
 # Exclude only these root-level generated trees. In particular, a nested source
 # directory named target remains an input. Never delete the original artifacts.
