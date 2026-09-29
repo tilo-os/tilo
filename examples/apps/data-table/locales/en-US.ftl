@@ -1,0 +1,10 @@
+data-accessible-name = Results
+data-name-column = Name
+data-status-column = Status
+data-actions-column = Actions
+data-row = Row { $id }
+data-status-open = Open
+data-status-closed = Closed
+data-open = Open
+data-none-opened = No rows opened yet
+data-recent = Recently opened: { $rows }

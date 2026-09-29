@@ -1,6 +1,6 @@
 use automerge::{AutoCommit, ChangeHash};
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeSet, HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap};
 use tilo_automerge::ApplyIncoming;
 use tilo_clock::unix_now_i64;
 
@@ -3985,104 +3985,18 @@ impl WorkspaceTree {
         strip_id: StripId,
         topology: &[ui::widget::GroupTopology],
     ) -> bool {
-        let Some((ws_idx, strip_idx)) = self.desktop.strip_position(strip_id) else {
+        let shape: Vec<tilo_desktop_model::GroupShape> = topology
+            .iter()
+            .map(|group| tilo_desktop_model::GroupShape {
+                id: group.id,
+                tab_ids: group.tab_ids.clone(),
+                active_tab: group.active_tab,
+                width: group.width,
+            })
+            .collect();
+        let Some(persisted) = self.desktop.reconcile_strip_topology(strip_id, &shape) else {
             return false;
         };
-        let Some(strip) = self
-            .desktop
-            .workspaces
-            .get(ws_idx)
-            .and_then(|ws| ws.strips.get(strip_idx))
-        else {
-            return false;
-        };
-
-        let old_tab_ids: HashSet<u64> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().map(|tab| tab.id))
-            .collect();
-        let new_tab_ids: Vec<u64> = topology
-            .iter()
-            .flat_map(|group| group.tab_ids.iter().copied())
-            .collect();
-        let new_tab_set: HashSet<u64> = new_tab_ids.iter().copied().collect();
-        let group_ids: HashSet<u64> = topology.iter().map(|group| group.id).collect();
-        if topology
-            .iter()
-            .any(|group| group.tab_ids.is_empty() || !group.tab_ids.contains(&group.active_tab))
-            || new_tab_ids.len() != new_tab_set.len()
-            || topology.len() != group_ids.len()
-            || old_tab_ids != new_tab_set
-        {
-            return false;
-        }
-
-        let mut tabs: HashMap<u64, Tab> = strip
-            .window_groups
-            .iter()
-            .flat_map(|group| group.tabs.iter().cloned())
-            .map(|tab| (tab.id, tab))
-            .collect();
-        let old_groups: HashMap<u64, &WindowGroup> = strip
-            .window_groups
-            .iter()
-            .map(|group| (group.id, group))
-            .collect();
-        let mut rebuilt = Vec::with_capacity(topology.len());
-        for live in topology {
-            let group_tabs: Vec<Tab> = live
-                .tab_ids
-                .iter()
-                .filter_map(|tab_id| tabs.remove(tab_id))
-                .collect();
-            if group_tabs.len() != live.tab_ids.len() {
-                return false;
-            }
-            rebuilt.push(WindowGroup {
-                id: live.id,
-                tabs: group_tabs,
-                active_tab: live.active_tab,
-                width: live.width,
-                maximized: old_groups
-                    .get(&live.id)
-                    .is_some_and(|group| group.maximized),
-            });
-        }
-        let unchanged = rebuilt.len() == strip.window_groups.len()
-            && rebuilt.iter().zip(&strip.window_groups).all(|(new, old)| {
-                new.id == old.id
-                    && new.active_tab == old.active_tab
-                    && new.width == old.width
-                    && new.maximized == old.maximized
-                    && new
-                        .tabs
-                        .iter()
-                        .map(|tab| tab.id)
-                        .eq(old.tabs.iter().map(|tab| tab.id))
-            });
-        if unchanged {
-            return false;
-        }
-        let Some(target) = self
-            .desktop
-            .workspaces
-            .get_mut(ws_idx)
-            .and_then(|ws| ws.strips.get_mut(strip_idx))
-        else {
-            return false;
-        };
-        target.window_groups = rebuilt;
-        let persisted = target.window_groups.clone();
-        if self
-            .desktop
-            .active_group
-            .get(&strip_id)
-            .is_none_or(|active| !group_ids.contains(active))
-            && let Some(first) = persisted.first()
-        {
-            self.desktop.active_group.insert(strip_id, first.id);
-        }
         self.doc_rewrite_strip_groups(strip_id, &persisted);
         // Same-strip drag/split changes are user-visible layout state. Keep
         // the local restart snapshot in step with the cache and room doc;

@@ -31,7 +31,7 @@ lyrics = ["dep:reqwest", "dep:tilo-net"]
 
 [dependencies]
 fnv.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
 atomic-file = { path = "../../crates/system/atomic-file" }
@@ -43,7 +43,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Ctrl+K palette and the on-screen affordances both dispatch — one source of
 # truth, one replay path.
 tilo-actions = { path = "../../crates/collab/actions" }
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 serde.workspace = true
@@ -66,7 +66,7 @@ taffy.workspace = true
 # features above. Versions pinned to match the workspace lock so no extra
 # copies resolve (tokio mirrors the `chat` app + `fs` submodule pins).
 reqwest = { workspace = true, optional = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
 gstreamer = { workspace = true, optional = true }
 tokio = { workspace = true, optional = true, features = ["rt", "macros", "time"] }
 # Pure-Rust InnerTube (YouTube / YouTube Music) client: search + stream

@@ -89,7 +89,7 @@ fn original_with_length(
             match &cap.scope {
                 Scope::Workspace => (),
                 Scope::Room(room) if room == peer.room() => (),
-                Scope::FsPath(_) => continue,
+                Scope::FsPath(_) | Scope::Action { .. } => continue,
                 _ => return Err(Failure::UnsupportedPolicy),
             }
             if !super::consumer_subject(&cap.subject, &person) {

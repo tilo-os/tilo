@@ -72,7 +72,8 @@ unset CARGO_PROFILE_RELEASE_CODEGEN_UNITS CARGO_PROFILE_RELEASE_LTO \
 cd "$REPO"
 TILO_THIN_BIN_CRATES="$thin_crates" \
 RUSTC_WORKSPACE_WRAPPER="$REPO/tools/ci/rustc-thin-app-wrapper.sh" \
-cargo build --locked --profile "$PROFILE" --features "$feature_csv" \
+read -r -a extra_cargo_args <<< "${EXTRA_CARGO_ARGS:-}"
+cargo build --locked --profile "$PROFILE" --features "$feature_csv" "${extra_cargo_args[@]}" \
     -p runtime-dylib "${packages[@]}" "${build_targets[@]}"
 
 # A Rust dylib mismatch is not reliably rejected by the ELF linker: symbol

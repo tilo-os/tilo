@@ -29,7 +29,7 @@ containerfile_copy_contract() {
   file="$1" wanted_stage="${2:-}"
   containerfile_instructions "$file" | awk -v wanted="$wanted_stage" '
     $1 == "FROM" { current = $NF; next }
-    $1 == "COPY" && (wanted == "" || current == wanted) {
+    $1 == "COPY" && (wanted == "" || current == wanted || current == wanted "-base") {
       stage = "context"; first = 2
       while (first <= NF && substr($first, 1, 2) == "--") {
         if ($first ~ /^--from=/) { stage = $first; sub(/^--from=/, "", stage) }

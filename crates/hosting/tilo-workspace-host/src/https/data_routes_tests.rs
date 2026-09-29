@@ -141,6 +141,7 @@ fn queued(
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         (cancel, _received),
     )

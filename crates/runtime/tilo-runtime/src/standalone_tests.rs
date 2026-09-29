@@ -44,6 +44,7 @@ pub(super) fn isolated_root(test: &str) -> Option<PathBuf> {
         .env("XDG_CACHE_HOME", environment.join("cache"))
         .env("XDG_STATE_HOME", environment.join("state"))
         .env("TILO_IDENTITY_ROOT", environment.join("identity"))
+        .env(tilo_identity_host::provisioning::FILE_SECRETS_ENV, "1")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD")
         .stdout(std::fs::File::create(&log).unwrap())

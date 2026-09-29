@@ -26,8 +26,8 @@ from pathlib import Path
 
 REPO = Path(__file__).resolve().parents[2]
 CONF = REPO / "os/usr/share/pipewire/tilo-echo-cancel.conf"
-AUDIO_RS = REPO / "crates/media/core/src/audio.rs"
-RUNTIME_RS = REPO / "crates/media/core/src/audio_runtime.rs"
+AUDIO_RS = REPO / "crates/platform/tilo-media/src/audio.rs"
+RUNTIME_RS = REPO / "crates/platform/tilo-media/src/audio_runtime.rs"
 CONTAINERFILE = REPO / "os/Containerfile"
 
 

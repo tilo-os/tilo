@@ -1412,6 +1412,10 @@ search-action-quick-settings-power-profile-set = Energieprofil festlegen
 search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung für dieses Gerät wählen
 search-action-quick-settings-vpn-set-enabled = VPN ein- oder ausschalten
 search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbindung auf diesem Gerät ein- oder ausschalten
+search-action-quick-settings-bluetooth-set-enabled = Bluetooth ein- oder ausschalten
+search-action-quick-settings-bluetooth-set-enabled-subtitle = Das Bluetooth-Funkmodul dieses Geräts ein- oder ausschalten
+search-action-quick-settings-airplane-mode-set-enabled = Flugmodus ein- oder ausschalten
+search-action-quick-settings-airplane-mode-set-enabled-subtitle = Alle Funkverbindungen dieses Geräts aus- oder wieder einschalten
 
 # Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
