@@ -97,6 +97,11 @@ export async function mountDesktop(target,options={}) {
     const guarded=event=>{inputScope.capture();if(event.currentTarget!==editor){event.preventDefault();return;}fn(event);};
     editorListeners.push([type,guarded,opts]);on(editor,type,guarded,opts);
   }
+  // Focus passing from the canvas to its own IME editor stays in the surface.
+  // Winit reads every canvas blur as the window's: stopped before its listener
+  // (registered at mount), so a press's IME handoff keeps the pointer gesture
+  // the press began, such as a block drag.
+  on(canvas,'blur',event=>{if(event.relatedTarget===editor)event.stopImmediatePropagation();},{capture:true});
   function newComposition(){return createCompositionSession({scope:inputScope,send:(kind,text)=>runtime.ime(id,kind,text),clear:()=>{editor.value='';composing=false;}});}
   function replaceEditor(restoreFocus=true){
     const old=editor,focused=restoreFocus&&document.activeElement===old;
@@ -323,10 +328,10 @@ export async function mountDesktop(target,options={}) {
     onEditor('input',()=>{if(!composition.composing)editor.value='';});
     let editorFocusScope,canvasFocusScope;
     onEditor('focus',()=>{editorFocusScope=inputScope.capture();if(!editorFocusScope)return;canvas.dispatchEvent(new FocusEvent('focus'));runtime.ime(id,'start','');});
-    onEditor('blur',()=>{
+    onEditor('blur',event=>{
       if(!inputScope.valid(editorFocusScope))return;
       if(composition.composing){runtime.ime(id,'preedit','');composition.cancel();composing=false;replaceEditor(false);report({lastInput:'compositioncancel'});}
-      hiddenKeys.blur(hiddenKeyOwner);runtime.ime(id,'end','');canvas.dispatchEvent(new FocusEvent('blur'));
+      hiddenKeys.blur(hiddenKeyOwner);runtime.ime(id,'end','');if(event.relatedTarget!==canvas)canvas.dispatchEvent(new FocusEvent('blur'));
     });
     on(canvas,'focus',()=>{canvasFocusScope=inputScope.capture();});
     on(canvas,'blur',()=>{if(inputScope.valid(canvasFocusScope))clearModifiers();});
