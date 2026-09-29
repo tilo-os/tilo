@@ -76,9 +76,7 @@ pub(crate) fn report(panic: &std::panic::PanicHookInfo<'_>) -> bool {
         return false;
     }
     let tab = ui::widget::panic_scope::current();
-    let message = panic
-        .payload_as_str()
-        .unwrap_or("the application panicked");
+    let message = panic.payload_as_str().unwrap_or("the application panicked");
     let report = serde_json::json!({
         "tab": tab.map(|tab| tab.to_string()),
         "message": message,
