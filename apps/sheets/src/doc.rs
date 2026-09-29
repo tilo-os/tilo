@@ -12,7 +12,8 @@
 //!              └── "cells" (Map)      # key "col,row" -> Map
 //!                   └── "<c>,<r>" (Map)
 //!                        ├── "raw" (Str)   # raw input: "=SUM(A1:A3)" or "42"
-//!                        └── "fmt" (Str)   # CellFormat::as_str()
+//!                        ├── "fmt" (Str)   # CellFormat::as_str()
+//!                        └── "b"   (Bool)  # bold text; absent means regular
 //! ```
 //!
 //! Cells are keyed by a `"col,row"` string (zero-based) rather than A1 so
@@ -33,6 +34,8 @@ pub struct SheetSnapshot {
     pub raw: std::collections::HashMap<Addr, String>,
     /// per-cell format (only present when not General)
     pub fmt: std::collections::HashMap<Addr, CellFormat>,
+    /// cells whose text is bold
+    pub bold: std::collections::HashSet<Addr>,
 }
 
 /// The first chart set deliberately stays compact: it is sufficient for the
@@ -370,6 +373,9 @@ impl SheetsDoc {
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, new_idx, *addr, *fmt);
         }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, new_idx, *addr, true);
+        }
         Self::copy_annotations(doc, idx, new_idx);
         if let Some(c) = color {
             Self::set_sheet_color(doc, new_idx, Some(c));
@@ -403,6 +409,9 @@ impl SheetsDoc {
         }
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, insert_at, *addr, *fmt);
+        }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, insert_at, *addr, true);
         }
         for chart in charts {
             Self::put_chart(doc, insert_at, &chart);
@@ -472,7 +481,8 @@ impl SheetsDoc {
         if raw.is_empty() {
             // Keep any format but clear the value; if both gone, delete.
             if let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) {
-                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)));
+                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)))
+                    || matches!(doc.get(&cell, "b"), Ok(Some(_)));
                 if has_fmt {
                     let _ = doc.put(&cell, "raw", "");
                 } else {
@@ -499,6 +509,33 @@ impl SheetsDoc {
             _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
         };
         let _ = doc.put(&cell, "fmt", fmt.as_str());
+    }
+
+    /// Make a cell's text bold, or regular again. A regular cell stores no
+    /// flag, and one left with neither value nor format disappears.
+    pub fn set_cell_bold(doc: &mut AutoCommit, idx: usize, addr: Addr, bold: bool) {
+        let Some(cells) = Self::cells_map(doc, idx) else {
+            return;
+        };
+        let key = Self::cell_key(addr);
+        if bold {
+            let cell = match doc.get(&cells, key.as_str()) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
+            };
+            let _ = doc.put(&cell, "b", true);
+            return;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) else {
+            return;
+        };
+        if matches!(doc.get(&cell, "b"), Ok(Some(_))) {
+            let _ = doc.delete(&cell, "b");
+        }
+        let empty_raw = read_str(doc, &cell, "raw").is_none_or(|raw| raw.is_empty());
+        if empty_raw && !matches!(doc.get(&cell, "fmt"), Ok(Some(_))) {
+            let _ = doc.delete(&cells, key.as_str());
+        }
     }
 
     /// Get-or-create the per-document `settings` Map under `wb`.
@@ -876,6 +913,9 @@ impl SheetsDoc {
                 if f != CellFormat::General {
                     snap.fmt.insert(addr, f);
                 }
+            }
+            if read_bool(doc, &cell, "b") == Some(true) {
+                snap.bold.insert(addr);
             }
         }
         snap
