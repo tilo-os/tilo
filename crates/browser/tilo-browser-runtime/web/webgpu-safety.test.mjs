@@ -23,14 +23,16 @@ test('Safari and every iOS browser are WebKit; Chrome, Edge and Firefox are not'
 
 // Catches a guard keyed on navigator.vendor alone, which a spoofed Safari
 // user agent in Chrome (the only safe way to test this) would bypass.
-test('a Safari user agent is refused even where the vendor says Google', () => {
-  assert.equal(webgpuRefusal(env(SAFARI_MAC, {vendor: 'Google Inc.'})), WEBKIT_WEBGPU_REFUSAL);
-  assert.equal(webgpuRefusal(env(CHROME_MAC, {vendor: 'Google Inc.'})), undefined);
+test('the fallback flag refuses a Safari user agent even where the vendor says Google', () => {
+  assert.equal(webgpuRefusal(env(SAFARI_MAC, {vendor: 'Google Inc.', search: '?unsafeWebKitGPU=0'})), WEBKIT_WEBGPU_REFUSAL);
+  assert.equal(webgpuRefusal(env(CHROME_MAC, {vendor: 'Google Inc.', search: '?unsafeWebKitGPU=0'})), undefined);
 });
 
-test('only the explicit query flag lets WebKit start the renderer', () => {
+test('WebKit renders by default; only ?unsafeWebKitGPU=0 refuses it', () => {
+  assert.equal(webgpuRefusal(env(SAFARI_MAC, {vendor: 'Apple Computer, Inc.'})), undefined);
+  assert.equal(webgpuRefusal(env(CHROME_IOS, {vendor: 'Apple Computer, Inc.'})), undefined);
   assert.equal(webgpuRefusal(env(SAFARI_MAC, {search: '?unsafeWebKitGPU=1'})), undefined);
+  assert.equal(webgpuRefusal(env(SAFARI_MAC, {search: '?unsafeWebKitGPU'})), undefined);
   assert.equal(webgpuRefusal(env(SAFARI_MAC, {search: '?unsafeWebKitGPU=0'})), WEBKIT_WEBGPU_REFUSAL);
-  assert.equal(webgpuRefusal(env(SAFARI_MAC, {search: '?unsafeWebKitGPU'})), WEBKIT_WEBGPU_REFUSAL);
-  assert.match(WEBKIT_WEBGPU_REFUSAL, /Safari isn't supported yet — use Chrome or Firefox/);
+  assert.match(WEBKIT_WEBGPU_REFUSAL, /unsafeWebKitGPU=0/);
 });

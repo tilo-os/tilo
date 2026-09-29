@@ -1,18 +1,17 @@
-// WebKit's WebGPU (Safari, and every browser on iOS/iPadOS) ran the desktop's
-// vello compute frames into a GPU hang that froze macOS's WindowServer until
-// the watchdog rebooted the machine. Until that is shown to be fixed, the
-// runtime refuses to start the renderer there: a refusal loses nothing, a
-// reboot loses the user's work in every application.
+// WebKit's WebGPU (Safari, and every browser on iOS/iPadOS) once ran the
+// desktop's vello compute frames into a GPU hang: Safari's GPU process passed
+// its 600 MB limit, was killed mid-frame, and froze macOS's WindowServer until
+// the watchdog rebooted the machine. The renderer now bounds its GPU memory
+// and work (canvas cap, total vello budget, WebKit's conservative profile,
+// terminating fine shader); in real Safari the desktop peaked at 448 MB with
+// eleven windows open, so WebKit renders by default.
 //
-// This is a temporary safety net, not the fix: the renderer now bounds its
-// GPU memory and work (canvas cap, total vello budget, terminating fine
-// shader). Flip WEBKIT_GUARD_DEFAULT to false once a WebKit run of the
-// desktop has passed. `?unsafeWebKitGPU=1` on the page URL opts in before
-// then, for controlled testing; `?unsafeWebKitGPU=0` refuses after.
+// `?unsafeWebKitGPU=0` on the page URL refuses WebGPU on WebKit again, as a
+// fallback; `?unsafeWebKitGPU=1` forces it on if the default is flipped back.
 
-export const WEBKIT_GUARD_DEFAULT = true;
+export const WEBKIT_GUARD_DEFAULT = false;
 export const WEBKIT_WEBGPU_OVERRIDE = 'unsafeWebKitGPU';
-export const WEBKIT_WEBGPU_REFUSAL = "Safari isn't supported yet — use Chrome or Firefox. Its WebGPU can freeze and restart your Mac with this desktop.";
+export const WEBKIT_WEBGPU_REFUSAL = "The desktop's renderer is turned off for Safari on this page (?unsafeWebKitGPU=0). Remove that from the address to use it, or use Chrome or Firefox.";
 
 /** Whether the user agent is WebKit: Safari on macOS, or any browser on iOS/iPadOS. */
 export function isWebKit({userAgent = '', vendor = '', maxTouchPoints = 0} = {}) {
