@@ -37,6 +37,8 @@ struct Handoff {
 struct State {
     pending: Vec<Handoff>,
     failure: Option<String>,
+    /// Every recorded failure was a started owner turn that stalled.
+    only_stalls: bool,
     admission_closed: bool,
 }
 #[derive(Clone)]
@@ -138,12 +140,37 @@ impl HostDocuments {
         self.check_admission(&state)
     }
     pub fn fail(&self, reason: impl Into<String>) -> String {
-        let reason = reason.into();
+        self.record_failure(reason.into(), false)
+    }
+    /// Fail closed because a started owner turn stopped making progress.
+    fn fail_stalled(&self, reason: impl Into<String>) -> String {
+        self.record_failure(reason.into(), true)
+    }
+    fn record_failure(&self, reason: String, stalled: bool) -> String {
         if let Ok(mut state) = self.state.lock() {
+            state.only_stalls = if state.failure.is_none() {
+                stalled
+            } else {
+                state.only_stalls && stalled
+            };
             state.failure.get_or_insert_with(|| reason.clone());
         }
         self.permits.close();
         reason
+    }
+    /// This service's own latched failure, and whether it came only from
+    /// stalled owner turns. A stall is resolved once the serialized owner is
+    /// running again: the stalled turn has then finished.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the handoff state is unavailable.
+    pub fn own_failure(&self) -> Result<Option<(String, bool)>, String> {
+        let state = self.state.lock().map_err(|_| "host handoff unavailable")?;
+        Ok(state
+            .failure
+            .clone()
+            .map(|reason| (reason, state.only_stalls)))
     }
     pub fn outstanding_handoffs(&self) -> usize {
         LIMIT.saturating_sub(self.permits.available_permits())
@@ -250,7 +277,7 @@ impl BoundSigner {
                     Err(service.fail("host signing reply lost; outcome unknown"))
                 }
                 crate::owner_turn::TurnWait::Stalled => {
-                    Err(service.fail("host signing turn stalled; outcome unknown"))
+                    Err(service.fail_stalled("host signing turn stalled; outcome unknown"))
                 }
             }
         })
