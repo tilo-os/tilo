@@ -4,27 +4,26 @@
 //! [`Changes`] and [`reset`] clears what a previous run left. Items belong to
 //! the app bundle that indexed them: a process without a bundle identifier
 //! (a binary run from `target/`) cannot index, and [`bundled`] says so.
-//! Choosing a result starts or wakes that bundle with a `CSSearchableItem`
-//! user activity naming the entry, which [`run_continuations`] hands over.
+//! Choosing a result starts or wakes that bundle's app with a
+//! `CSSearchableItem` user activity naming the entry. The app is not the
+//! daemon (in `Tilo.app` it is the Store), so [`continue_with`] takes the
+//! activity there and [`crate::native::open`] hands the entry to the daemon, which
+//! re-resolves and opens it as it does a GNOME Shell or `KRunner` result.
 
-use std::ptr::NonNull;
+use std::ffi::CString;
+use std::sync::OnceLock;
 
-use block2::{DynBlock, RcBlock};
+use block2::RcBlock;
+use objc2::encode::Encode;
 use objc2::rc::Retained;
-use objc2::runtime::ProtocolObject;
-use objc2::{
-    AllocAnyThread, DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send,
-};
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSApplicationDelegate, NSUserActivityRestoring,
-};
+use objc2::runtime::{AnyObject, Bool, Imp, NSObjectProtocol, Sel};
+use objc2::{AllocAnyThread, MainThreadMarker, sel};
+use objc2_app_kit::NSApplication;
 use objc2_core_spotlight::{
     CSSearchableIndex, CSSearchableItem, CSSearchableItemActionType,
     CSSearchableItemActivityIdentifier, CSSearchableItemAttributeSet,
 };
-use objc2_foundation::{
-    NSArray, NSBundle, NSError, NSObject, NSObjectProtocol, NSString, NSUserActivity,
-};
+use objc2_foundation::{NSArray, NSBundle, NSError, NSString, NSUserActivity};
 use objc2_uniform_type_identifiers::UTTypeItem;
 
 use crate::{Changes, EntryId, SearchEntry};
@@ -135,59 +134,71 @@ pub fn activity_entry(activity: &NSUserActivity) -> Option<EntryId> {
     id.to_string().parse().ok()
 }
 
-define_class!(
-    // SAFETY: NSObject has no subclassing requirements, and `Continuation`
-    // does not implement `Drop`.
-    #[unsafe(super = NSObject)]
-    #[thread_kind = MainThreadOnly]
-    #[name = "TiloSpotlightContinuation"]
-    #[ivars = Box<dyn Fn(EntryId)>]
-    struct Continuation;
+/// Where [`continue_with`] hands chosen results.
+static OPEN: OnceLock<Box<dyn Fn(EntryId) + Send + Sync>> = OnceLock::new();
 
-    // SAFETY: NSObjectProtocol has no safety requirements.
-    unsafe impl NSObjectProtocol for Continuation {}
-
-    // SAFETY: the method signature matches the protocol's.
-    unsafe impl NSApplicationDelegate for Continuation {
-        #[unsafe(method(application:continueUserActivity:restorationHandler:))]
-        fn continue_activity(
-            &self,
-            _application: &NSApplication,
-            activity: &NSUserActivity,
-            _restore: &DynBlock<dyn Fn(NonNull<NSArray<ProtocolObject<dyn NSUserActivityRestoring>>>)>,
-        ) -> bool {
-            match activity_entry(activity) {
-                Some(entry) => {
-                    (self.ivars())(entry);
-                    true
-                }
-                None => false,
-            }
+/// `application:continueUserActivity:restorationHandler:`, added to the
+/// application delegate's class.
+unsafe extern "C-unwind" fn continue_activity(
+    _delegate: *mut AnyObject,
+    _selector: Sel,
+    _application: *mut AnyObject,
+    activity: *mut NSUserActivity,
+    _restore: *mut AnyObject,
+) -> Bool {
+    // SAFETY: AppKit passes a valid user activity or null.
+    let entry = unsafe { activity.as_ref() }.and_then(activity_entry);
+    match (entry, OPEN.get()) {
+        (Some(entry), Some(open)) => {
+            open(entry);
+            Bool::YES
         }
+        _ => Bool::NO,
     }
-);
+}
 
-/// Run the app on the main thread, handing every Spotlight result the person
-/// chooses to `open`. Returns only once the app terminates.
+/// Hand every Spotlight result the person chooses to `open`. Call once, on
+/// the main thread, after the event loop has made the application's
+/// delegate and before the app finishes launching, so the result that
+/// launched it arrives too.
 ///
-/// # Errors
-///
-/// Refuses to run off the main thread, where `AppKit` cannot.
-pub fn run_continuations(open: impl Fn(EntryId) + 'static) -> std::io::Result<()> {
-    let mtm = MainThreadMarker::new().ok_or_else(|| {
-        std::io::Error::other("Spotlight results are continued on the main thread")
-    })?;
-    let app = NSApplication::sharedApplication(mtm);
-    // A background service: no Dock icon, no menu bar.
-    app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
-    let delegate = Continuation::alloc(mtm).set_ivars(Box::new(open) as Box<dyn Fn(EntryId)>);
-    // SAFETY: NSObject's `init` has this signature.
-    let delegate: Retained<Continuation> = unsafe { msg_send![super(delegate), init] };
-    // The application holds its delegate weakly; `delegate` lives as long as
-    // this frame, which is as long as the app runs.
-    app.setDelegate(Some(ProtocolObject::from_ref(&*delegate)));
-    app.run();
-    Ok(())
+/// The delegate is the windowing library's, which must stay the delegate, so
+/// the continuation is added to its class rather than set as a new delegate.
+/// Returns whether it was added: not without a delegate, a second time, or
+/// when the delegate already continues activities itself.
+pub fn continue_with(
+    mtm: MainThreadMarker,
+    open: impl Fn(EntryId) + Send + Sync + 'static,
+) -> bool {
+    let Some(delegate) = NSApplication::sharedApplication(mtm).delegate() else {
+        return false;
+    };
+    let selector = sel!(application:continueUserActivity:restorationHandler:);
+    if delegate.respondsToSelector(selector) || OPEN.set(Box::new(open)).is_err() {
+        return false;
+    }
+    let types = format!("{}@:@@@?", Bool::ENCODING);
+    let Ok(types) = CString::new(types) else {
+        return false;
+    };
+    // SAFETY: `continue_activity` has the method's ABI: the receiver, the
+    // selector, then the three object arguments, answering a BOOL, as the
+    // type string says. Adding a method the class lacks changes nothing it
+    // already does.
+    unsafe {
+        let imp: Imp = std::mem::transmute::<
+            unsafe extern "C-unwind" fn(
+                *mut AnyObject,
+                Sel,
+                *mut AnyObject,
+                *mut NSUserActivity,
+                *mut AnyObject,
+            ) -> Bool,
+            Imp,
+        >(continue_activity);
+        let class = objc2::ffi::object_getClass(Retained::as_ptr(&delegate).cast::<AnyObject>());
+        objc2::ffi::class_addMethod(class.cast_mut(), selector, imp, types.as_ptr()).as_bool()
+    }
 }
 
 #[cfg(test)]

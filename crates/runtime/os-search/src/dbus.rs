@@ -29,11 +29,7 @@ const POSSIBLE_MATCH: i32 = 30;
 type Properties = HashMap<&'static str, Value<'static>>;
 
 /// Serve both providers over `builder`'s connection.
-///
-/// # Errors
-///
-/// Returns zbus errors registering either object.
-pub fn serve<'a>(
+fn serve<'a>(
     builder: zbus::connection::Builder<'a>,
     search: &Arc<OsSearch>,
 ) -> zbus::Result<zbus::connection::Builder<'a>> {
@@ -58,10 +54,15 @@ pub fn serve<'a>(
 ///
 /// Returns zbus errors: no session bus, or the name already owned.
 pub async fn serve_on_session_bus(search: &Arc<OsSearch>) -> zbus::Result<zbus::Connection> {
-    serve(zbus::connection::Builder::session()?, search)?
-        .name(BUS_NAME)?
-        .build()
-        .await
+    serve_on(zbus::connection::Builder::session()?, search).await
+}
+
+/// Serve both providers under [`BUS_NAME`] on the bus `builder` connects to.
+async fn serve_on(
+    builder: zbus::connection::Builder<'_>,
+    search: &Arc<OsSearch>,
+) -> zbus::Result<zbus::Connection> {
+    serve(builder, search)?.name(BUS_NAME)?.build().await
 }
 
 async fn open_quietly(search: &OsSearch, id: &str) {
