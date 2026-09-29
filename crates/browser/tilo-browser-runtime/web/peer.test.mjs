@@ -8,6 +8,26 @@ const SELF = 'dd'.repeat(32);
 const OTHER = 'cc'.repeat(32);
 const AGENT = 'ee'.repeat(32);
 const tick = () => new Promise(resolve => setTimeout(resolve, 5));
+/** Resolves once `check()` holds; a loaded runner takes longer, not forever. */
+async function until(check, what, timeoutMs = 10_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+    await tick();
+  }
+}
+// A test that fails before disposing its peer must not leave the live
+// layer's retry timers holding the process open until the suite times out.
+const opened = new Set();
+test.afterEach(async () => {
+  for (const peer of opened) await peer.dispose();
+  opened.clear();
+});
+async function connect(options) {
+  const peer = await connectPeer(options);
+  opened.add(peer);
+  return peer;
+}
 
 function memoryStore() {
   const rows = new Map();
@@ -132,7 +152,7 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   const runtime = fakeRuntime();
   const store = memoryStore();
   const codes = [];
-  const peer = await connectPeer(options(runtime, store, {onPairingCode: code => codes.push(code)}));
+  const peer = await connect(options(runtime, store, {onPairingCode: code => codes.push(code)}));
   assert.deepEqual(codes, ['123456']);
   assert.equal(runtime.calls.certify.length, 1);
   assert.equal(runtime.peer.room, ROOM);
@@ -141,7 +161,7 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
   assert.equal(peer.host.certificateSha256, 'ab'.repeat(32));
   await peer.dispose();
 
-  const second = await connectPeer(options(runtime, store));
+  const second = await connect(options(runtime, store));
   assert.equal(runtime.calls.certify.length, 1, 'the stored certificate is reused');
   await second.dispose();
   assert.equal(runtime.peer.disposed, true);
@@ -150,8 +170,8 @@ test('first connect certifies over HTTPS once, shows the pairing code and keeps 
 test('the live layer joins over the carrier with the session grant and interpolates members', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
-  await tick();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
   const [session] = liveCarriers.connects;
   assert.equal(session.options.endpoint, 'https://host.example:8443/moq/live');
   assert.deepEqual([...session.options.authorization], [1, 2]);
@@ -178,9 +198,11 @@ test('the live layer joins over the carrier with the session grant and interpola
   assert.equal(Object.keys(peer.live.remoteState()[0].previews).length, 0, 'the durable change supersedes previews');
 
   peer.live.publishPresence({pointer: [5, 6]});
-  await tick();
-  const sent = JSON.parse(new TextDecoder().decode(session.presence.at(-1)));
-  assert.deepEqual(sent.pointer, [5, 6]);
+  // The publisher sends at most 120 frames/s: the pointer may wait out the
+  // interval after the participant frame.
+  const lastSent = () => JSON.parse(new TextDecoder().decode(session.presence.at(-1)));
+  await until(() => lastSent().pointer !== null, 'the pointer frame');
+  assert.deepEqual(lastSent().pointer, [5, 6]);
   assert.ok(peer.live.publishPreview(record, [{kind: 'insert', at: '01', text: 'y'}]));
   assert.equal(session.ops.at(-1).name, track);
   await peer.dispose();
@@ -190,8 +212,8 @@ test('the live layer joins over the carrier with the session grant and interpola
 test('a lost live session reconnects with a fresh grant', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
-  await tick();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
   liveCarriers.connects[0].close();
   await new Promise(resolve => setTimeout(resolve, 400));
   assert.equal(liveCarriers.connects.length, 2);
@@ -202,7 +224,7 @@ test('a lost live session reconnects with a fresh grant', async () => {
 test('reauthentication forgets the certificate and certifies again', async () => {
   const runtime = fakeRuntime();
   const store = memoryStore();
-  const peer = await connectPeer(options(runtime, store));
+  const peer = await connect(options(runtime, store));
   runtime.peer.emit('failed');
   assert.equal(peer.getSnapshot().phase, 'failed');
   runtime.hostInfo = async () => JSON.stringify({hostCert: {host: 'new'}, webtransportPort: 443, certificateSha256: 'cd'.repeat(32)});
@@ -219,7 +241,7 @@ test('a sealed seed is unsealed straight into the runtime', async () => {
   const runtime = fakeRuntime();
   const seed = new Uint8Array(32).fill(7);
   const sealed = {kind: 'sealed-seed', unseal: async () => ({seed})};
-  const peer = await connectPeer(options(runtime, memoryStore(), {custody: sealed}));
+  const peer = await connect(options(runtime, memoryStore(), {custody: sealed}));
   assert.equal(runtime.calls.certify[0].custody.seed, seed);
   assert.equal(runtime.peer.custody.seed, seed);
   await peer.dispose();
@@ -244,7 +266,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
     },
     async mountDesktop(target, mountOptions) { mounts.push(mountOptions); return {target}; },
   };
-  const peer = await connectPeer(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop}));
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', displayName: 'Ada', desktop}));
   assert.equal(opened.length, 1);
   assert.equal(runtime.peer.namespace, JSON.stringify({profile: 'work', device: 'laptop'}));
   assert.equal(runtime.peer.save, undefined, 'the outbox is saved by the runtime into the profile');
@@ -262,7 +284,7 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
   await peer.dispose();
   assert.equal(opened[0].released, 1);
 
-  const again = await connectPeer(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
+  const again = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
   assert.equal(runtime.calls.certify.length, 1, 'the profile certificate is reused');
   await again.dispose();
 });
@@ -270,8 +292,8 @@ test('with a profile the peer keeps its state in the profile storage and mounts 
 test('a presence subscription that ends while the member stays is retried', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
-  await tick();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
   const [session] = liveCarriers.connects;
   session.memberWatcher(OTHER, true);
   assert.equal(session.presenceEnds.length, 1);
@@ -324,7 +346,7 @@ test('failure codes follow the mount and store errors', () => {
 test('retry-desktop recreates a lost renderer and resolves on a frame of the new GPU generation', async () => {
   const runtime = fakeRuntime();
   const desktop = fakeDesktop();
-  const peer = await connectPeer(options(runtime, memoryStore(), {desktop}));
+  const peer = await connect(options(runtime, memoryStore(), {desktop}));
   const seen = [];
   const mount = await peer.mountDesktop('target', {surfaceId: 'tilo-desktop-1', onStatus: status => seen.push(status.phase)});
   assert.equal(mount.surfaceId, 'tilo-desktop-1');
@@ -358,7 +380,7 @@ test('retry-desktop recreates a lost renderer and resolves on a frame of the new
 test('retry-asset fetches an image, font or data file again and clears its failure', async () => {
   const runtime = fakeRuntime();
   const desktop = fakeDesktop();
-  const peer = await connectPeer(options(runtime, memoryStore(), {desktop}));
+  const peer = await connect(options(runtime, memoryStore(), {desktop}));
   const mount = await peer.mountDesktop('target');
   assert.equal(mount.surfaceId, 'surface-1');
   mount.status({asset: 'unavailable', assetId: '4', assetUrl: 'https://example.com/a.png', error: 'asset HTTP 404'});
@@ -391,7 +413,7 @@ test('retry-saving commits the store again, then every mount, and clears the sto
     async flush() { storage.flushed++; if (flushFails) throw new Error('AbortError: commit aborted'); },
     async release() {}};
   desktop.openProfileStorage = async () => storage;
-  const peer = await connectPeer(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
+  const peer = await connect(options(runtime, undefined, {profile: 'work', device: 'laptop', desktop}));
   const mount = await peer.mountDesktop('target');
 
   storageListener({persistence: 'failed', pendingWrites: 2, error: 'QuotaExceededError: the quota has been exceeded'});
@@ -411,7 +433,7 @@ test('retry-saving commits the store again, then every mount, and clears the sto
 
 test('refresh-checkpoint subscribes the room again and resolves once the host admitted it', async () => {
   const runtime = fakeRuntime();
-  const peer = await connectPeer(options(runtime, memoryStore()));
+  const peer = await connect(options(runtime, memoryStore()));
   runtime.peer.emit('ready');
   runtime.peer.onRefresh = () => setTimeout(() => {
     runtime.peer.admission = 'syncing';
@@ -442,14 +464,14 @@ test('httpsPost and the live plane accept a loopback http room for local review'
 test('the live grant waits until the room admitted the device', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
   await tick();
   assert.equal(runtime.calls.grants, 0, 'the relay refuses a grant before admission');
   assert.equal(peer.live.available, false);
   const ready = peer.whenReady();
   runtime.peer.emit('ready');
   assert.equal((await ready).phase, 'ready');
-  await tick();
+  await until(() => peer.live.state === 'live', 'the live layer');
   assert.equal(runtime.calls.grants, 1);
   assert.equal(peer.live.state, 'live');
   assert.equal(peer.live.publisherId, SELF);
@@ -460,7 +482,7 @@ test('the live grant waits until the room admitted the device', async () => {
 
 test('whenReady rejects when the host refuses the device', async () => {
   const runtime = fakeRuntime({phase: 'admitting'});
-  const peer = await connectPeer(options(runtime, memoryStore()));
+  const peer = await connect(options(runtime, memoryStore()));
   const ready = peer.whenReady();
   runtime.peer.emit('failed');
   await assert.rejects(ready, /refused/);
@@ -470,17 +492,18 @@ test('whenReady rejects when the host refuses the device', async () => {
 test('an agent layer publishes under the agent grant, and agents are told apart from people', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
   const agent = peer.agentLive('Reading agent');
   assert.equal(peer.agentLive('Reading agent'), agent, 'one layer per agent');
-  await tick();
+  await until(() => peer.live.state === 'live' && agent.state === 'live', 'both live layers');
   assert.deepEqual(runtime.calls.grantAgents, [[], ['Reading agent']]);
   const agentSession = liveCarriers.connects.find(session => session.options.namespace[2] === AGENT);
   assert.ok(agentSession, 'the agent layer joins under its own namespace');
   assert.equal(agent.agent, 'Reading agent');
   agent.publishPresence({selection: {anchor: '03', head: '03'}});
-  await tick();
-  const sent = JSON.parse(new TextDecoder().decode(agentSession.presence.at(-1)));
+  const lastSent = () => JSON.parse(new TextDecoder().decode(agentSession.presence.at(-1)));
+  await until(() => lastSent().selection, 'the agent caret');
+  const sent = lastSent();
   assert.deepEqual(sent.participant, {kind: 'agent', activity: null, label: 'Reading agent', color: sent.participant.color});
 
   // The person's layer names the agent as an agent, and people by their label.
@@ -507,8 +530,8 @@ test('an agent layer publishes under the agent grant, and agents are told apart 
 test('a member focusing a record subscribes its typing previews there', async () => {
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers}));
-  await tick();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers}));
+  await until(() => peer.live.state === 'live', 'the live layer');
   const [session] = liveCarriers.connects;
   session.memberWatcher(OTHER, true);
   const record = {app: 'so.tilo.word-processor', record: 'main'};
@@ -523,8 +546,8 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   const runtime = fakeRuntime();
   const liveCarriers = fakeCarriers();
   const desktop = fakeDesktop();
-  const peer = await connectPeer(options(runtime, memoryStore(), {liveCarriers, desktop}));
-  await tick();
+  const peer = await connect(options(runtime, memoryStore(), {liveCarriers, desktop}));
+  await until(() => peer.live.state === 'live', 'the live layer');
   const target = () => {
     const handlers = new Map();
     return {handlers, addEventListener: (type, handler) => handlers.set(type, handler), fire: type => handlers.get(type)()};
@@ -537,20 +560,20 @@ test('mounts publish through their own view: the one acted in speaks, and an age
   await tick();
   const [session] = liveCarriers.connects;
   const selections = () => session.presence.map(bytes => JSON.parse(new TextDecoder().decode(bytes)).selection?.anchor ?? null);
+  const sent = anchor => until(() => selections().at(-1) === anchor, `the caret ${anchor}`);
   writer.options.live().publishPresence({selection: {anchor: 'w1', head: 'w1'}});
-  await tick();
+  await sent('w1');
   // A hidden helper's caret never overwrites the person's.
   helper.options.live().publishPresence({selection: {anchor: 'h1', head: 'h1'}});
-  await tick();
+  await new Promise(resolve => setTimeout(resolve, 50));
   assert.equal(selections().at(-1), 'w1');
+  assert.ok(!selections().includes('h1'));
   helperTarget.fire('pointerdown');
   helper.options.live().publishPresence({selection: {anchor: 'h2', head: 'h2'}});
-  await tick();
-  assert.equal(selections().at(-1), 'h2');
+  await sent('h2');
   // Back in the writer: its unchanged caret is said again.
   writerTarget.fire('keydown');
-  await tick();
-  assert.equal(selections().at(-1), 'w1');
+  await sent('w1');
   // The agent's mount publishes on the agent's own layer.
   assert.equal(agentMount.options.live().agent, 'Reading agent');
   assert.equal(writer.options.live().agent, undefined);
@@ -560,7 +583,7 @@ test('mounts publish through their own view: the one acted in speaks, and an age
 
 test('the room\'s records this page holds, and waiting for one', async () => {
   const runtime = fakeRuntime();
-  const peer = await connectPeer(options(runtime, memoryStore()));
+  const peer = await connect(options(runtime, memoryStore()));
   assert.deepEqual(peer.records(), []);
   const arrived = peer.whenRecord('so.tilo.word-processor', 'derived:default@tab:0000000000000000', {timeoutMs: 1000});
   runtime.peer.records.push({app: 'so.tilo.word-processor', record: 'derived:default@tab:0000000000000000'});
