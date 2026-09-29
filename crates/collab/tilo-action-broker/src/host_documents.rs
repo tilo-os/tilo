@@ -52,7 +52,7 @@ pub struct PendingHostDocument {
     certificate: DeviceCert,
     mutation: DocumentMutation,
     authorization: Option<ui::invocation_scope::DocumentAuthorization>,
-    started: response::Sender<std::time::Instant>,
+    started: response::Sender<crate::owner_turn::TurnWatch>,
     reply: response::Sender<Result<SignedOp, String>>,
     service: HostDocuments,
     permit: OwnedSemaphorePermit,
@@ -240,19 +240,17 @@ impl BoundSigner {
                 return Err(service.fail("host signer unavailable; outcome unknown"));
             }
             // Reconnect/replay may leave this bounded request queued indefinitely.
-            // Only the ready serialized owner turn starts its execution deadline.
-            let deadline = start
+            // Only the ready serialized owner turn starts, and bounds, its turn.
+            let turn = start
                 .await
                 .map_err(|_| service.fail("host signing reply lost; outcome unknown"))?;
-            let response = tokio::time::timeout(
-                deadline.saturating_duration_since(std::time::Instant::now()),
-                receiver,
-            )
-            .await;
-            match response {
-                Ok(Ok(result)) => result,
-                Ok(Err(_)) | Err(_) => {
+            match turn.wait(receiver).await {
+                crate::owner_turn::TurnWait::Answered(result) => result,
+                crate::owner_turn::TurnWait::Lost => {
                     Err(service.fail("host signing reply lost; outcome unknown"))
+                }
+                crate::owner_turn::TurnWait::Stalled => {
+                    Err(service.fail("host signing turn stalled; outcome unknown"))
                 }
             }
         })
@@ -317,15 +315,13 @@ impl PendingHostDocument {
     /// # Errors
     ///
     /// Returns the latched service failure, which then replaces `reason` in the reply.
-    pub fn reject_unstarted(
-        self,
-        deadline: std::time::Instant,
-        reason: String,
-    ) -> Result<(), String> {
+    pub fn reject_unstarted(self, reason: String) -> Result<(), String> {
         let health = self.service.health();
         let reason = health.as_ref().err().cloned().unwrap_or(reason);
-        let _ = self.started.send(deadline);
+        // The refusal is the whole turn: answer, then end it.
         let _ = self.reply.send(Err(reason));
+        let (_ended, turn) = crate::owner_turn::start(crate::owner_turn::STALL_BUDGET);
+        let _ = self.started.send(turn);
         // A refused, never-started handoff owns no receipt or owner effect.
         // Its existing permit is released; prior service failure stays latched.
         drop(self.permit);
@@ -339,27 +335,27 @@ impl PendingHostDocument {
     /// Invoke completion after refreshing committed authority and publication.
     pub fn apply(
         self,
-        deadline: std::time::Instant,
+        budget: std::time::Duration,
         commit: impl FnOnce(
             &RouteSpec,
             &DeviceCert,
             DocumentMutation,
         ) -> Result<(SignedOp, OwnerCommitReceipt), String>,
     ) -> (Box<dyn FnOnce() + Send>, Result<(), String>) {
-        self.apply_fenced(deadline, |route, certificate, mutation| {
+        self.apply_fenced(budget, |route, certificate, mutation| {
             commit(route, certificate, mutation).map_err(HostDocumentTurnError::Uncertain)
         })
     }
     pub fn apply_fenced(
         self,
-        deadline: std::time::Instant,
+        budget: std::time::Duration,
         commit: impl FnOnce(
             &RouteSpec,
             &DeviceCert,
             DocumentMutation,
         ) -> Result<(SignedOp, OwnerCommitReceipt), HostDocumentTurnError>,
     ) -> (Box<dyn FnOnce() + Send>, Result<(), String>) {
-        self.apply_scoped_fenced(deadline, |route, certificate, mutation, authorization| {
+        self.apply_scoped_fenced(budget, |route, certificate, mutation, authorization| {
             if authorization.is_some() {
                 return Err(HostDocumentTurnError::Refused(
                     "host has no final scoped document evaluator".into(),
@@ -372,7 +368,7 @@ impl PendingHostDocument {
     /// Merely carrying this metadata never authorizes mutation or replay.
     pub fn apply_scoped_fenced(
         self,
-        deadline: std::time::Instant,
+        budget: std::time::Duration,
         commit: impl FnOnce(
             &RouteSpec,
             &DeviceCert,
@@ -391,11 +387,14 @@ impl PendingHostDocument {
             permit,
         } = self;
         // Losing the waiting caller does not cancel an admitted owner turn.
-        let _ = started.send(deadline);
+        // The owner bounds its own turn: each completed step renews `budget`.
+        let (progress, turn) = crate::owner_turn::start(budget);
+        let _ = started.send(turn);
         let result: Result<SignedOp, HostDocumentTurnError> = (|| {
             service.health()?;
             let (envelope, receipt) =
                 commit(&route, &certificate, mutation, authorization.as_ref())?;
+            progress.advance();
             let request = OwnerCommitRequest {
                 room: route.cluster_id.to_string(),
                 operation: CommitOperation::Document {
@@ -437,6 +436,8 @@ impl PendingHostDocument {
                     "host signer response dropped after admission; owner outcome retained"
                 );
             }
+            // The turn ends only once it has answered.
+            drop(progress);
         };
         (Box::new(complete), outcome)
     }
