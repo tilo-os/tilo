@@ -202,6 +202,7 @@ members = [
     "examples/packaging/notes-cli",
 
     # Platform
+    "crates/platform/tilo-appearance",
     "crates/platform/tilo-capture",
     "crates/platform/tilo-clipboard",
     "crates/platform/tilo-clock",

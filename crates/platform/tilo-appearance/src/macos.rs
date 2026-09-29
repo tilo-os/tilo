@@ -1,41 +1,31 @@
 //! The accent colour and accessibility display options macOS reports on
-//! request. They are read at start and again whenever the window regains
-//! focus or the system appearance changes — the moments right after a
-//! visit to System Settings.
+//! request. Light or dark comes from the window system.
 
 use objc2::msg_send;
 use objc2_app_kit::{NSColor, NSColorSpace, NSWorkspace};
 use objc2_foundation::{NSString, NSUserDefaults};
 
-use super::HostAppearance;
+use crate::Appearance;
 
 #[derive(Default)]
-pub(super) struct Platform {
-    reading: HostAppearance,
+pub(crate) struct Reading(Appearance);
+
+pub(crate) fn follow(_changed: impl Fn() + Send + 'static) -> Reading {
+    read()
 }
 
-impl Platform {
-    pub(super) fn start() -> Self {
-        Self { reading: read() }
-    }
-
-    pub(super) fn refresh(&mut self) {
-        self.reading = read();
-    }
-
-    pub(super) fn current(&self) -> HostAppearance {
-        self.reading
-    }
+pub(crate) fn current(reading: &Reading) -> Appearance {
+    reading.0
 }
 
-fn read() -> HostAppearance {
+pub(crate) fn read() -> Reading {
     let workspace = NSWorkspace::sharedWorkspace();
-    HostAppearance {
+    Reading(Appearance {
         scheme: None,
         accent: accent(),
         high_contrast: workspace.accessibilityDisplayShouldIncreaseContrast(),
         reduce_motion: workspace.accessibilityDisplayShouldReduceMotion(),
-    }
+    })
 }
 
 /// The user's chosen accent, or `None` for "Multicolor" — the default,

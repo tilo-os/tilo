@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 
 use zbus::zvariant::{OwnedValue, Value};
 
-use super::{HostAppearance, Scheme};
+use crate::{Appearance, Scheme};
 
 const NAMESPACE: &str = "org.freedesktop.appearance";
 
@@ -28,52 +28,44 @@ trait Settings {
     fn setting_changed(&self, namespace: &str, key: &str, value: Value<'_>) -> zbus::Result<()>;
 }
 
-#[derive(Default)]
-pub(super) struct Platform {
-    reading: Arc<Mutex<HostAppearance>>,
+pub(crate) type Reading = Arc<Mutex<Appearance>>;
+
+pub(crate) fn follow(changed: impl Fn() + Send + 'static) -> Reading {
+    let reading = Reading::default();
+    let shared = Arc::clone(&reading);
+    let spawned = std::thread::Builder::new()
+        .name("tilo-appearance".into())
+        .spawn(move || {
+            let followed = zbus::blocking::Connection::session().and_then(|connection| {
+                watch(&connection, |appearance| {
+                    *shared.lock().unwrap_or_else(PoisonError::into_inner) = appearance;
+                    changed();
+                })
+            });
+            if let Err(error) = followed {
+                tracing::debug!(%error, "no appearance from the Settings portal");
+            }
+        });
+    if let Err(error) = spawned {
+        tracing::warn!(%error, "cannot follow the desktop appearance");
+    }
+    reading
 }
 
-impl Platform {
-    pub(super) fn start() -> Self {
-        let platform = Self::default();
-        let reading = Arc::clone(&platform.reading);
-        let wake = crate::wake::WakeHandle::new();
-        let spawned = std::thread::Builder::new()
-            .name("tilo-host-appearance".into())
-            .spawn(move || {
-                let followed = zbus::blocking::Connection::session().and_then(|connection| {
-                    follow(&connection, |appearance| {
-                        *reading.lock().unwrap_or_else(PoisonError::into_inner) = appearance;
-                        wake.wake();
-                    })
-                });
-                if let Err(error) = followed {
-                    tracing::debug!(%error, "no appearance from the Settings portal");
-                }
-            });
-        if let Err(error) = spawned {
-            tracing::warn!(%error, "cannot follow the desktop appearance");
-        }
-        platform
-    }
-
-    pub(super) fn refresh(&mut self) {}
-
-    pub(super) fn current(&self) -> HostAppearance {
-        *self.reading.lock().unwrap_or_else(PoisonError::into_inner)
-    }
+pub(crate) fn current(reading: &Reading) -> Appearance {
+    *reading.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 /// Publishes the portal's appearance, then the appearance after each change
 /// to it, until the connection closes.
-fn follow(
+fn watch(
     connection: &zbus::blocking::Connection,
-    mut publish: impl FnMut(HostAppearance),
+    mut publish: impl FnMut(Appearance),
 ) -> zbus::Result<()> {
     let settings = SettingsProxy::new(connection)?;
     // Subscribed before the read, so a change in between is not lost.
     let changes = settings.receive_setting_changed()?;
-    let mut appearance = HostAppearance::default();
+    let mut appearance = Appearance::default();
     if let Some(values) = settings.read_all(&[NAMESPACE])?.get(NAMESPACE) {
         for (key, value) in values {
             apply(&mut appearance, key, value);
@@ -91,7 +83,7 @@ fn follow(
 
 /// Folds one appearance setting into `appearance`, returning whether it is
 /// one this reads. Unknown and out-of-range values mean "no preference".
-fn apply(appearance: &mut HostAppearance, key: &str, value: &Value<'_>) -> bool {
+fn apply(appearance: &mut Appearance, key: &str, value: &Value<'_>) -> bool {
     let value = unwrap_variant(value);
     let flag = || u32::try_from(value).ok();
     match key {
@@ -141,11 +133,11 @@ fn accent(value: &Value<'_>) -> Option<[u8; 3]> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::os::unix::net::UnixStream;
     use std::sync::mpsc;
+    use std::time::Duration;
 
-    fn applied(key: &str, value: Value<'_>) -> HostAppearance {
-        let mut appearance = HostAppearance::default();
+    fn applied(key: &str, value: Value<'_>) -> Appearance {
+        let mut appearance = Appearance::default();
         assert!(apply(&mut appearance, key, &value), "{key} is read");
         appearance
     }
@@ -187,9 +179,9 @@ mod tests {
         assert!(!applied("contrast", Value::U32(0)).high_contrast);
         assert!(applied("reduced-motion", Value::U32(1)).reduce_motion);
         assert!(!applied("reduced-motion", Value::U32(0)).reduce_motion);
-        let mut appearance = HostAppearance::default();
+        let mut appearance = Appearance::default();
         assert!(!apply(&mut appearance, "wallpaper", &Value::U32(1)));
-        assert_eq!(appearance, HostAppearance::default());
+        assert_eq!(appearance, Appearance::default());
     }
 
     /// A stand-in for `xdg-desktop-portal` serving one appearance.
@@ -226,7 +218,7 @@ mod tests {
     fn follows_a_fake_portal_over_dbus() {
         const GUID: &str = "0123456789abcdef0123456789abcdef";
         const PATH: &str = "/org/freedesktop/portal/desktop";
-        let (server_socket, client_socket) = UnixStream::pair().expect("socket pair");
+        const HANG_BOUND: Duration = Duration::from_secs(30);
         let portal = FakePortal {
             appearance: HashMap::from([
                 ("color-scheme".to_owned(), owned(Value::U32(2))),
@@ -237,33 +229,46 @@ mod tests {
                 ("contrast".to_owned(), owned(Value::U32(0))),
             ]),
         };
-        let server = std::thread::spawn(move || {
-            zbus::blocking::connection::Builder::unix_stream(server_socket)
+        // The runtime's workers drive both connections; `watch` blocks on
+        // its own thread as it does in the app.
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        let (server, client) = runtime.block_on(async {
+            let (server, client) = tokio::net::UnixStream::pair().expect("socket pair");
+            let server = zbus::connection::Builder::unix_stream(server)
                 .server(GUID)
                 .expect("guid")
                 .p2p()
                 .serve_at(PATH, portal)
                 .expect("serve")
-                .build()
-                .expect("server connection")
+                .build();
+            let client = zbus::connection::Builder::unix_stream(client).p2p().build();
+            let (server, client) = tokio::join!(server, client);
+            (server.expect("server"), client.expect("client"))
         });
-        let client = zbus::blocking::connection::Builder::unix_stream(client_socket)
-            .p2p()
-            .build()
-            .expect("client connection");
-        let server = server.join().expect("server thread");
+        let client = zbus::blocking::Connection::from(client);
 
         let (published, readings) = mpsc::channel();
-        let follower = std::thread::spawn(move || {
-            follow(&client, |appearance| {
+        std::thread::spawn(move || {
+            watch(&client, |appearance| {
                 let _ = published.send(appearance);
             })
         });
-        let next = || readings.recv_timeout(crate::HANG_BOUND).expect("a reading");
+        let next = || readings.recv_timeout(HANG_BOUND).expect("a reading");
+        let emit = |namespace: &str, key: &str, value: Value<'_>| {
+            runtime
+                .block_on(server.emit_signal(
+                    None::<zbus::names::BusName<'_>>,
+                    PATH,
+                    "org.freedesktop.portal.Settings",
+                    "SettingChanged",
+                    &(namespace, key, value),
+                ))
+                .expect("emit");
+        };
 
         assert_eq!(
             next(),
-            HostAppearance {
+            Appearance {
                 scheme: Some(Scheme::Light),
                 accent: Some([0, 128, 255]),
                 high_contrast: false,
@@ -271,38 +276,25 @@ mod tests {
             },
             "the initial read"
         );
-
-        let emit = |namespace: &str, key: &str, value: Value<'_>| {
-            server
-                .emit_signal(
-                    None::<zbus::names::BusName<'_>>,
-                    PATH,
-                    "org.freedesktop.portal.Settings",
-                    "SettingChanged",
-                    &(namespace, key, value),
-                )
-                .expect("emit");
-        };
-        emit("org.gnome.desktop.interface", "color-scheme", Value::U32(1));
-        emit(NAMESPACE, "color-scheme", Value::U32(1));
-        let dark = next();
-        assert_eq!(
-            dark.scheme,
-            Some(Scheme::Dark),
-            "another namespace is ignored"
+        emit(
+            "org.gnome.desktop.a11y.interface",
+            "contrast",
+            Value::U32(1),
         );
-        assert_eq!(dark.accent, Some([0, 128, 255]));
+        emit(NAMESPACE, "color-scheme", Value::U32(1));
+        assert_eq!(
+            next(),
+            Appearance {
+                scheme: Some(Scheme::Dark),
+                accent: Some([0, 128, 255]),
+                high_contrast: false,
+                reduce_motion: false,
+            },
+            "a change in another namespace is not an appearance change"
+        );
         emit(NAMESPACE, "contrast", Value::U32(1));
         assert!(next().high_contrast);
         emit(NAMESPACE, "accent-color", Value::from((1.0, 0.0, 0.0)));
         assert_eq!(next().accent, Some([255, 0, 0]));
-
-        drop(server);
-        assert_eq!(
-            readings.recv_timeout(crate::HANG_BOUND),
-            Err(mpsc::RecvTimeoutError::Disconnected),
-            "the follower ends with the connection"
-        );
-        let _ = follower.join().expect("follower thread");
     }
 }

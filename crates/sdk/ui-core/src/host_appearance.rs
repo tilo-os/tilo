@@ -5,58 +5,29 @@
 //! without choosing a colour of its own.
 //!
 //! Light/dark comes from winit (`Window::theme`, `ThemeChanged`) where it
-//! reports one. macOS adds its accent and accessibility display options;
-//! Linux reads everything from the XDG Settings portal, whose scheme wins
-//! because winit reports none there.
+//! reports one; `tilo_appearance` adds what the desktop itself reports, and
+//! its scheme wins because winit reports none where the desktop has one.
 
 use crate::theme::Theme;
 
-#[cfg(target_os = "macos")]
-mod macos;
-#[cfg(target_os = "linux")]
-mod portal;
+pub(crate) use tilo_appearance::{Appearance as HostAppearance, Scheme};
 
-#[cfg(target_os = "macos")]
-use macos::Platform;
-#[cfg(target_os = "linux")]
-use portal::Platform;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum Scheme {
-    Light,
-    Dark,
-}
-
-impl From<winit::window::Theme> for Scheme {
-    fn from(theme: winit::window::Theme) -> Self {
-        match theme {
-            winit::window::Theme::Light => Self::Light,
-            winit::window::Theme::Dark => Self::Dark,
-        }
+/// The colour theme only; the App layers contrast and motion on top.
+pub(crate) fn theme(host: HostAppearance) -> Theme {
+    let base = match host.scheme {
+        Some(Scheme::Light) => Theme::light(),
+        Some(Scheme::Dark) | None => Theme::dark(),
+    };
+    match host.accent {
+        Some(accent) => base.with_accent(accent),
+        None => base,
     }
 }
 
-/// One reading of the host's appearance preferences. `None` means the host
-/// states no preference, which keeps Tilo's own default.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct HostAppearance {
-    pub scheme: Option<Scheme>,
-    pub accent: Option<[u8; 3]>,
-    pub high_contrast: bool,
-    pub reduce_motion: bool,
-}
-
-impl HostAppearance {
-    /// The colour theme only; the App layers contrast and motion on top.
-    pub fn theme(&self) -> Theme {
-        let base = match self.scheme {
-            Some(Scheme::Light) => Theme::light(),
-            Some(Scheme::Dark) | None => Theme::dark(),
-        };
-        match self.accent {
-            Some(accent) => base.with_accent(accent),
-            None => base,
-        }
+fn scheme(theme: winit::window::Theme) -> Scheme {
+    match theme {
+        winit::window::Theme::Light => Scheme::Light,
+        winit::window::Theme::Dark => Scheme::Dark,
     }
 }
 
@@ -74,7 +45,7 @@ pub(crate) fn host_owns_appearance(desktop: Option<&str>) -> bool {
 /// once.
 pub(crate) struct Source {
     window_scheme: Option<Scheme>,
-    platform: Platform,
+    system: tilo_appearance::System,
     /// Accessibility the launcher requested; the host can add to it, never
     /// take it away.
     requested: crate::host::AccessibilityInputs,
@@ -88,28 +59,31 @@ impl Source {
         let environment = crate::host::environment();
         host_owns_appearance(environment.desktop.as_deref()).then(|| Self {
             window_scheme: None,
-            platform: Platform::start(),
+            system: tilo_appearance::System::follow({
+                let wake = crate::wake::WakeHandle::new();
+                move || wake.wake()
+            }),
             requested: environment.accessibility,
             applied: None,
         })
     }
 
     pub fn note_window_theme(&mut self, theme: Option<winit::window::Theme>) {
-        self.window_scheme = theme.map(Scheme::from);
+        self.window_scheme = theme.map(scheme);
     }
 
     /// Re-read what the platform reports only when asked.
     pub fn refresh(&mut self) {
-        self.platform.refresh();
+        self.system.refresh();
     }
 
     fn current(&self) -> HostAppearance {
-        let platform = self.platform.current();
+        let desktop = self.system.current();
         HostAppearance {
-            scheme: platform.scheme.or(self.window_scheme),
-            high_contrast: platform.high_contrast || self.requested.high_contrast,
-            reduce_motion: platform.reduce_motion || self.requested.reduce_motion,
-            ..platform
+            scheme: desktop.scheme.or(self.window_scheme),
+            high_contrast: desktop.high_contrast || self.requested.high_contrast,
+            reduce_motion: desktop.reduce_motion || self.requested.reduce_motion,
+            ..desktop
         }
     }
 
@@ -125,28 +99,6 @@ impl Source {
     }
 }
 
-/// A host whose only appearance signal is winit's light/dark.
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-#[derive(Default)]
-struct Platform;
-
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
-impl Platform {
-    fn start() -> Self {
-        Self
-    }
-
-    fn refresh(&mut self) {}
-
-    #[allow(
-        clippy::unused_self,
-        reason = "the same shape as the platforms that do read something"
-    )]
-    fn current(&self) -> HostAppearance {
-        HostAppearance::default()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,11 +108,10 @@ mod tests {
     #[test]
     fn scheme_picks_the_matching_base_and_no_preference_is_dark() {
         let theme = |scheme| {
-            HostAppearance {
+            theme(HostAppearance {
                 scheme,
                 ..HostAppearance::default()
-            }
-            .theme()
+            })
         };
         assert_eq!(theme(Some(Scheme::Light)).name, Theme::light().name);
         assert_eq!(theme(Some(Scheme::Light)).bg_app, Theme::light().bg_app);
@@ -175,12 +126,11 @@ mod tests {
 
     #[test]
     fn host_accent_recolours_every_accent_token() {
-        let theme = HostAppearance {
+        let theme = theme(HostAppearance {
             scheme: Some(Scheme::Light),
             accent: Some([0xE0, 0x40, 0x80]),
             ..HostAppearance::default()
-        }
-        .theme();
+        });
         let accent = Color::from_rgb8(0xE0, 0x40, 0x80);
         assert_eq!(theme.accent_primary, accent);
         assert_eq!(theme.border_focus, accent);
@@ -207,11 +157,11 @@ mod tests {
         assert!(host_owns_appearance(None));
     }
 
-    /// A source with no platform reading: winit and the launcher only.
+    /// A source with no desktop reading: winit and the launcher only.
     fn source(requested: crate::host::AccessibilityInputs) -> Source {
         Source {
             window_scheme: None,
-            platform: Platform::default(),
+            system: tilo_appearance::System::default(),
             requested,
             applied: None,
         }
