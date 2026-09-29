@@ -12,6 +12,16 @@ use crate::tests::{Host, owner, row, search};
 const GNOME: &str = "org.gnome.Shell.SearchProvider2";
 const KRUNNER: &str = "org.kde.krunner1";
 
+/// One `org.kde.krunner1` match: id, text, icon, category, relevance, properties.
+type Match = (
+    String,
+    String,
+    String,
+    i32,
+    f64,
+    HashMap<String, OwnedValue>,
+);
+
 /// A client connected to the providers, peer to peer, over a socket pair.
 async fn client(host: &Host) -> (zbus::Connection, zbus::Connection) {
     let search = Arc::new(search(host));
@@ -32,7 +42,7 @@ async fn client(host: &Host) -> (zbus::Connection, zbus::Connection) {
 
 async fn call<B, R>(client: &zbus::Connection, path: &str, iface: &str, method: &str, body: &B) -> R
 where
-    B: serde::Serialize + zbus::zvariant::DynamicType,
+    B: serde::Serialize + zbus::zvariant::DynamicType + Sync,
     R: for<'d> serde::Deserialize<'d> + zbus::zvariant::Type,
 {
     client
@@ -150,14 +160,7 @@ async fn krunner_matches_and_runs_through_the_action_host() {
     let actions: Vec<(String, String, String)> =
         call(&client, KRUNNER_PATH, KRUNNER, "Actions", &()).await;
     assert!(actions.is_empty());
-    let matches: Vec<(
-        String,
-        String,
-        String,
-        i32,
-        f64,
-        HashMap<String, OwnedValue>,
-    )> = call(&client, KRUNNER_PATH, KRUNNER, "Match", &("tax",)).await;
+    let matches: Vec<Match> = call(&client, KRUNNER_PATH, KRUNNER, "Match", &("tax",)).await;
     assert_eq!(matches.len(), 1, "{matches:?}");
     let (id, text, _icon, _category, relevance, _properties) = &matches[0];
     assert_eq!(text, "Tax return");
@@ -170,13 +173,6 @@ async fn krunner_matches_and_runs_through_the_action_host() {
         invoked[0].1.target.address,
         tilo_actions::ActionAddress::new("page:2", "open")
     );
-    let none: Vec<(
-        String,
-        String,
-        String,
-        i32,
-        f64,
-        HashMap<String, OwnedValue>,
-    )> = call(&client, KRUNNER_PATH, KRUNNER, "Match", &("groceries",)).await;
+    let none: Vec<Match> = call(&client, KRUNNER_PATH, KRUNNER, "Match", &("groceries",)).await;
     assert!(none.is_empty());
 }
