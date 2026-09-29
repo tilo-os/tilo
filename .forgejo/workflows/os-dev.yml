@@ -17,8 +17,6 @@ on:
     branches: [main]
     paths:
       - "os/**"
-      - "!os/docs/**"
-      - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"
       - ".forgejo/workflows/build-image.yml"
       - ".forgejo/actions/setup-buildx/**"
@@ -30,5 +28,10 @@ concurrency:
 
 jobs:
   image:
+    # Pull requests from forks get no registry credentials.
+    if: github.event_name == 'push' || github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.forgejo/workflows/build-image.yml
     secrets: inherit
+    # The app collection download and the package registry authenticate
+    # with the job's OIDC token, which a called workflow gets only from here.
+    enable-openid-connect: true

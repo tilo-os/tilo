@@ -443,8 +443,6 @@ export async function mountDesktop(target,options={}) {
 }
 /** Every application this build can mount standalone. */
 export async function applications(){await ready();return JSON.parse(runtime.applications());}
-/** The loaded core's wasm-bindgen glue (loads the core if needed): what page modules such as relay.mjs call. */
-export async function coreRuntime(){await ready();return runtime;}
 export function pendingComponentCloseCount(){return runtime?.component_close_count()??0;}
 export function pendingRecoveryCount(){return recoveryJobs.size;}
 export async function retryPendingRecovery(){for(const retry of [...recoveryJobs])await retry();}
