@@ -11,6 +11,7 @@
 use crate::shell::state::WorkspaceAuthority as _;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use settings_store::display_mode::DisplayLayoutMode;
+use settings_store::hardware::ShortcutAction;
 use std::rc::Rc;
 use tilo_clock::unix_now;
 use ui::search::{FieldWeight, ListIndex};
@@ -215,6 +216,18 @@ pub(crate) fn shell_action_contract(id: &str) -> tilo_actions::ActionContract {
             contract.permission = PermissionRequirement::Write;
             contract.retry = RetryPolicy::AtMostOnce;
         }
+        // Each is one step: repeating it steps again.
+        id if WINDOW_FOCUS_ACTION_IDS.contains(&id) => {
+            contract = ActionContract::view();
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
+        // Layout, undone by the opposite move.
+        id if WINDOW_LAYOUT_ACTION_IDS.contains(&id) => {
+            contract.permission = PermissionRequirement::Write;
+            contract.retry = RetryPolicy::AtMostOnce;
+            contract.reversible = true;
+        }
         _ => {}
     }
     contract
@@ -244,6 +257,7 @@ pub(crate) fn shell_action_kind(id: &str) -> tilo_actions::OperationKind {
             tilo_actions::OperationKind::Document
         }
         _ if id.contains("#ownership.") => tilo_actions::OperationKind::Document,
+        _ if WINDOW_FOCUS_ACTION_IDS.contains(&id) => tilo_actions::OperationKind::View,
         _ => tilo_actions::OperationKind::Effect,
     }
 }
@@ -758,6 +772,53 @@ const PEER_INVITE_NAMED_PARAMS: &[ActionParam] = &[
         "What to call them in this workspace. Shown beside their cursor and caret.",
     ),
 ];
+
+/// Parameters of `window.focus-nth`.
+const WINDOW_FOCUS_NTH_PARAMS: &[ActionParam] = &[ActionParam::required(
+    "index",
+    ParamType::Integer,
+    "Which window group of the focused strip, counting from 1 (1 to 9).",
+)];
+
+/// Relative window-management actions that move focus or the view.
+const WINDOW_FOCUS_ACTION_IDS: &[&str] = &[
+    "window.focus-previous",
+    "window.focus-next",
+    "strip.focus-previous",
+    "strip.focus-next",
+    "workspace.previous",
+    "workspace.next",
+    "tab.previous",
+    "tab.next",
+    "window.focus-nth",
+];
+
+/// Relative window-management actions that rearrange the desk.
+const WINDOW_LAYOUT_ACTION_IDS: &[&str] = &[
+    "group.move-left",
+    "group.move-right",
+    "group.move-to-strip-previous",
+    "group.move-to-strip-next",
+    "group.move-to-display-previous",
+    "group.move-to-display-next",
+    "group.maximize",
+    "group.fullscreen",
+    "group.narrower",
+    "group.wider",
+    "tab.move-to-group-previous",
+    "tab.move-to-group-next",
+];
+
+/// Queue `action` for the overlay host, which runs it on the focused group
+/// exactly as its chord does.
+fn request_window_shortcut(
+    st: &mut ChromeState,
+    action: ShortcutAction,
+) -> Result<(), ActionError> {
+    active_workspace_id(st)?;
+    st.request_shortcut_action(action);
+    Ok(())
+}
 
 /// One action row. `id` is the palette command id (`overview.toggle`,
 /// `settings.open`, …); `apply` runs it when the user picks the row (or an
@@ -1494,6 +1555,144 @@ impl Action {
                 })
             },
         ),
+        chrome(
+            "window.focus-previous",
+            "search-action-window-focus-previous",
+            "search-action-window-focus-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::FocusPreviousWindow),
+        ),
+        chrome(
+            "window.focus-next",
+            "search-action-window-focus-next",
+            "search-action-window-focus-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::FocusNextWindow),
+        ),
+        chrome(
+            "strip.focus-previous",
+            "search-action-strip-focus-previous",
+            "search-action-strip-focus-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousStrip),
+        ),
+        chrome(
+            "strip.focus-next",
+            "search-action-strip-focus-next",
+            "search-action-strip-focus-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextStrip),
+        ),
+        chrome(
+            "workspace.previous",
+            "search-action-workspace-previous",
+            "search-action-workspace-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousWorkspace),
+        ),
+        chrome(
+            "workspace.next",
+            "search-action-workspace-next",
+            "search-action-workspace-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextWorkspace),
+        ),
+        chrome(
+            "tab.previous",
+            "search-action-tab-previous",
+            "search-action-tab-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::PreviousTab),
+        ),
+        chrome(
+            "tab.next",
+            "search-action-tab-next",
+            "search-action-tab-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::NextTab),
+        ),
+        chrome(
+            "group.move-left",
+            "search-action-group-move-left",
+            "search-action-group-move-left-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupLeft),
+        ),
+        chrome(
+            "group.move-right",
+            "search-action-group-move-right",
+            "search-action-group-move-right-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupRight),
+        ),
+        chrome(
+            "group.move-to-strip-previous",
+            "search-action-group-move-to-strip-previous",
+            "search-action-group-move-to-strip-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousStrip),
+        ),
+        chrome(
+            "group.move-to-strip-next",
+            "search-action-group-move-to-strip-next",
+            "search-action-group-move-to-strip-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextStrip),
+        ),
+        chrome(
+            "group.move-to-display-previous",
+            "search-action-group-move-to-display-previous",
+            "search-action-group-move-to-display-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToPreviousDisplay),
+        ),
+        chrome(
+            "group.move-to-display-next",
+            "search-action-group-move-to-display-next",
+            "search-action-group-move-to-display-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::MoveGroupToNextDisplay),
+        ),
+        chrome(
+            "group.maximize",
+            "search-action-group-maximize",
+            "search-action-group-maximize-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleMaximize),
+        ),
+        chrome(
+            "group.fullscreen",
+            "search-action-group-fullscreen",
+            "search-action-group-fullscreen-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ToggleFullscreen),
+        ),
+        chrome(
+            "group.narrower",
+            "search-action-group-narrower",
+            "search-action-group-narrower-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ResizeNarrower),
+        ),
+        chrome(
+            "group.wider",
+            "search-action-group-wider",
+            "search-action-group-wider-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::ResizeWider),
+        ),
+        chrome(
+            "tab.move-to-group-previous",
+            "search-action-tab-move-to-group-previous",
+            "search-action-tab-move-to-group-previous-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabLeft),
+        ),
+        chrome(
+            "tab.move-to-group-next",
+            "search-action-tab-move-to-group-next",
+            "search-action-tab-move-to-group-next-subtitle",
+            |st, _| request_window_shortcut(st, ShortcutAction::AttachTabRight),
+        ),
+        Action {
+            id: "window.focus-nth",
+            label: "search-action-window-focus-nth",
+            subtitle: "search-action-window-focus-nth-subtitle",
+            params: WINDOW_FOCUS_NTH_PARAMS,
+            apply: |st, args| {
+                let action = args
+                    .integer("index")
+                    .and_then(|index| usize::try_from(index).ok()?.checked_sub(1))
+                    .and_then(|index| {
+                        ShortcutAction::ALL
+                            .into_iter()
+                            .find(|action| action.focus_group_index() == Some(index))
+                    })
+                    .ok_or_else(|| ActionError::Refused("index must be 1 to 9".into()))?;
+                request_window_shortcut(st, action)
+            },
+        },
         chrome(
             "tab.move-to-new-group",
             "search-action-tab-move-to-new-group",
@@ -3947,6 +4146,40 @@ mod tests {
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
     )]
     fn shell_action_contracts_match_availability_risk_and_mechanism() {
+        // Phase `window_actions_are_published_with_focus_and_layout_contracts`.
+        {
+            for id in WINDOW_FOCUS_ACTION_IDS
+                .iter()
+                .chain(WINDOW_LAYOUT_ACTION_IDS)
+            {
+                assert!(
+                    Action::ALL.iter().any(|action| action.id == *id),
+                    "{id} is listed but not published"
+                );
+            }
+            for id in WINDOW_FOCUS_ACTION_IDS {
+                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::View);
+                let contract = shell_action_contract(id);
+                assert_eq!(
+                    contract.permission,
+                    tilo_actions::PermissionRequirement::Read,
+                    "{id} only moves focus"
+                );
+                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+            }
+            for id in WINDOW_LAYOUT_ACTION_IDS {
+                assert_eq!(shell_action_kind(id), tilo_actions::OperationKind::Effect);
+                let contract = shell_action_contract(id);
+                assert_eq!(
+                    contract.permission,
+                    tilo_actions::PermissionRequirement::Write,
+                    "{id} rearranges the shared desk"
+                );
+                assert!(contract.reversible);
+                assert_eq!(contract.retry, tilo_actions::RetryPolicy::AtMostOnce);
+            }
+        }
+
         // Phase `every_shell_action_exposes_a_valid_operational_contract`.
         {
             let chrome = chrome_with_room();
