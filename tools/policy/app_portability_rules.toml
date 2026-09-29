@@ -146,7 +146,9 @@ constructors = ["Command::new", "CommandSpec::new"]
 summary = "depends on a platform or SDK-internal crate"
 help = "depend on the platform crate (crates/platform/*) that wraps it, or reach it through `ui`"
 applies = "always"
-severity = "error"
+# The repository's apps still hold baselined dependencies of both kinds; the
+# gate's baseline shrinks them, so the lint reports them without failing.
+severity = "warn"
 # A trailing `*` matches any suffix.
 crates = [
     "libc",
@@ -186,7 +188,7 @@ crates = [
 summary = "depends on a Tilo crate outside the app SDK and the platform crates"
 help = "use `ui` or a platform crate (crates/platform/*); other Tilo crates are SDK internals"
 applies = "always"
-severity = "error"
+severity = "warn"
 # Direct path dependencies (or workspace dependencies with a path) count
 # unless the package or its directory is listed here.
 # `runtime-dylib` is the optional backend of the app-level `thin` feature
