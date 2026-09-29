@@ -106,29 +106,14 @@ the immutable hardware metadata. The installer uses that reference, permits an
 identical override, and rejects a conflicting override before any disk work.
 Generic images retain the official `latest` default and trusted overrides.
 
-### Development CI firmware input
-
-The manual `development-compile.yml` workflow accepts `hardware_profile`,
-`firmware_candidate` and `firmware_manifest_sha256`. Non-generic full builds
-require an immutable `code.tilo.so/tilo/NAME@sha256:DIGEST` firmware artifact
-and an independently reviewed SHA-256 of its exact `manifest.json` bytes.
-The artifact is a native Linux OCI image containing only `/firmware/`, with the
-manifest and exactly the files named by the selected hardware definition.
-Package those data files with a `FROM scratch` / `COPY` image; no executable
-image content is needed.
-
-The importer never executes the artifact. It checks the native image identity,
-manifest pin, profile and every file hash before staging data into the ignored
-firmware directory. Different existing firmware is rejected rather than
-overwritten. Import failures stop before cache probes, signing or compilation.
-The workflow retains a public `firmware-import.json` receipt.
-
 ### CI-built Lenovo install image
 
 `build-image.yml` accepts `hardware_profile=lenovo-83ed` on an explicit
-`main`-branch dispatch with `publish=true`. Supply the same independently
-reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256` as the
-development importer. CI imports those inert files on the native ARM64 runner,
+`main`-branch dispatch with `publish=true`. Supply an independently
+reviewed `firmware_candidate` OCI digest and `firmware_manifest_sha256`. The
+artifact is a native Linux OCI image containing only `/firmware/`: the manifest
+and exactly the files named by the selected hardware definition, packaged with
+a `FROM scratch` / `COPY` image. CI imports those inert files on the native ARM64 runner,
 builds and independently rebuilds the image, closes the composefs/UKI seal by
 installing it to a disposable disk, signs its target prediction, and publishes
 the signed ARM64 image at

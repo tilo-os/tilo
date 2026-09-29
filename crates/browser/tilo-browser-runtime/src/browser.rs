@@ -635,6 +635,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         .load(config.instance)
         .map_err(error)?
         .map_or(RestoreInput::None, RestoreInput::Local);
+    // A local mount shares its records with the page's other mounts of the
+    // profile and device, so it writes as its author's own actor.
+    let shares_records = config.peer.is_none();
     let permissions = Rc::new(RefCell::new(if let Some(peer) = config.peer {
         cloud_peer::permissions(peer).map_err(error)?
     } else {
@@ -657,6 +660,9 @@ fn begin(event_loop: &ActiveEventLoop, id: u64, request: Request) -> Result<(), 
         &target,
     )
     .map_err(error)?;
+    if shares_records {
+        context.write_as_author();
+    }
     context.provide_content(content_store(&config.profile, &config.device));
     let opening = match (config.open, open) {
         (Some(request), Some(bytes)) => {

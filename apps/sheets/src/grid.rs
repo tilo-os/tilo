@@ -9,7 +9,7 @@
 //! cell data each frame, forwards pointer/key events, and applies the
 //! [`GridCmd`]s the grid emits back into the CRDT.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
@@ -20,7 +20,7 @@ use winit::keyboard::{Key, NamedKey};
 use ui::ColorCompat;
 use ui::paint::PaintCtx;
 use ui::text_edit::{EditCore, Motion};
-use ui::text_render::{TextRenderer, TextStyle};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::model::{Addr, CellFormat, CellValue, addr_to_a1, format_value};
@@ -356,6 +356,7 @@ pub struct Grid {
     values: HashMap<Addr, CellValue>,
     raw: HashMap<Addr, String>,
     fmt: HashMap<Addr, CellFormat>,
+    bold: HashSet<Addr>,
     last_cursor: Point,
     resize: Option<ResizeDrag>,
     scroll_drag: Option<ScrollDrag>,
@@ -416,6 +417,7 @@ impl Grid {
             values: HashMap::new(),
             raw: HashMap::new(),
             fmt: HashMap::new(),
+            bold: HashSet::new(),
             last_cursor: Point::ZERO,
             resize: None,
             scroll_drag: None,
@@ -528,6 +530,14 @@ impl Grid {
         }
         // Content changed → refit columns to it on the next draw.
         self.needs_autofit = true;
+    }
+
+    /// Replace the set of cells drawn in bold.
+    pub fn set_bold(&mut self, bold: HashSet<Addr>) {
+        if self.bold != bold {
+            self.bold = bold;
+            self.needs_autofit = true;
+        }
         self.dirty = true;
     }
 
@@ -2206,7 +2216,7 @@ impl Grid {
                     } else {
                         colors.text_primary
                     };
-                    self.draw_cell_text(&mut ctx, raw, color, cell, false);
+                    self.draw_cell_text(&mut ctx, raw, color, cell, false, TextWeight::Regular);
                     continue;
                 }
                 if let Some(val) = self.values.get(&(c, r)) {
@@ -2224,7 +2234,12 @@ impl Grid {
                         colors.text_primary
                     };
                     let right_align = val.is_numeric() && fmt != CellFormat::Text;
-                    self.draw_cell_text(&mut ctx, &text, color, cell, right_align);
+                    let weight = if self.bold.contains(&(c, r)) {
+                        TextWeight::Bold
+                    } else {
+                        TextWeight::Regular
+                    };
+                    self.draw_cell_text(&mut ctx, &text, color, cell, right_align, weight);
                 }
             }
         }
@@ -2387,6 +2402,7 @@ impl Grid {
         color: Color,
         cell: Rect,
         right_align: bool,
+        weight: TextWeight,
     ) {
         let PaintCtx {
             scene,
@@ -2400,7 +2416,7 @@ impl Grid {
         if inner.width() <= 2.0 {
             return;
         }
-        let (tw, _) = tr.measure(text, size, None);
+        let (tw, _) = tr.measure_weighted(text, size, None, weight);
         // Centre the measured line box, not the nominal font size, so a cell
         // and its row header share one baseline at every text scale.
         let ty = cell.y0 + (cell.height() - line_h) / 2.0;
@@ -2410,13 +2426,14 @@ impl Grid {
             cell.x0 + CELL_PAD_X * self.text_scale
         };
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &inner);
-        tr.draw_text(
+        tr.draw_text_weighted(
             scene,
             text,
             size,
             color,
             transform * Affine::translate((tx, ty)),
             None,
+            weight,
         );
         scene.pop_layer();
     }

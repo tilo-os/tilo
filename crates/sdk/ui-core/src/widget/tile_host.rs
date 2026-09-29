@@ -279,7 +279,7 @@ struct Binding {
     /// changes for the life of the tab.
     tab: RecordCheckout,
     /// `tab.id` until the hosted app declares a file through
-    /// [`Widget::record_intent`](crate::widget::Widget::record_intent) —
+    /// [`Widget::record_intent`](crate::record::capability::record_intent) —
     /// opening a document *is* moving the tab onto that document's record;
     /// the scratch record it leaves behind is still its own document.
     live: RecordId,
@@ -935,7 +935,9 @@ impl TileHost {
             });
         }
         let release = match &mut self.content {
-            TileContent::App(root) => root.release_record_scope(),
+            TileContent::App(root) => {
+                crate::record::capability::release_record_scope(root.as_mut())
+            }
             TileContent::Stub { .. } | TileContent::Notice { .. } => Ok(()),
         };
         if let Err(error) = release {
@@ -1157,7 +1159,7 @@ impl TileHost {
             }
         }
         let want = match &self.content {
-            TileContent::App(w) => w.record_intent(),
+            TileContent::App(w) => crate::record::capability::record_intent(w.as_ref()),
             TileContent::Stub { .. } | TileContent::Notice { .. } => None,
         };
         let changing_owner = match (&self.binding, &want) {
@@ -1223,7 +1225,7 @@ impl TileHost {
             return;
         }
         if let TileContent::App(w) = &mut self.content {
-            w.set_record_scope(&live);
+            crate::record::capability::set_record_scope(w.as_mut(), &live);
         }
         self.announced = Some(live);
     }
@@ -1261,7 +1263,7 @@ impl TileHost {
         if let Some(history) = history {
             self.install_history_registration(history);
         }
-        self.take_component_close_reports()
+        crate::component_lifecycle::take_component_close_reports(self)
     }
     /// Used when a window announced before it existed (an opening card)
     /// becomes the app; replacing the tab instead would hand focus
@@ -1271,9 +1273,12 @@ impl TileHost {
     pub fn replace_content(&mut self, content: TileContent) {
         self.record_creation_refused = false;
         if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.close_components());
             self.close_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+            self.close_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root.as_mut(),
+                ));
         }
         self.settle_outgoing_record();
         self.renew_history_lifetime();
@@ -1593,32 +1598,12 @@ impl Widget for TileHost {
         dyn crate::widget::AudiencePresentationProvider,
         dyn crate::collaboration::participants::CollaborationTopology,
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
-        dyn crate::widget::controls::ActionControls
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::search::capability::SearchSource,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::view::capability::ViewState,
+        dyn crate::component_lifecycle::ComponentLifecycle
     );
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        if let Some(error) = &self.record_error {
-            return Some(Err(error.clone()));
-        }
-        if self.pending_binding.is_some() {
-            return Some(Err("Document binding has not completed".into()));
-        }
-        if let Some(binding) = &self.binding {
-            // This tile owns the admitted live record, not neighboring records
-            // that happen to share its store. Await its actual writer result.
-            let result = binding.store.try_flush_record(&binding.live);
-            return Some(result.and_then(|()| {
-                self.close_reports
-                    .iter()
-                    .find_map(|report| report.record_error.clone())
-                    .map_or(Ok(()), Err)
-            }));
-        }
-        match &mut self.content {
-            TileContent::App(widget) => widget.try_flush_owned_persistence(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
-        }
-    }
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
         if self
@@ -1760,32 +1745,10 @@ impl Widget for TileHost {
             _ => false,
         }
     }
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        match &self.content {
-            TileContent::App(app) => app.view_state(),
-            _ => None,
-        }
-    }
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        if let TileContent::App(app) = &mut self.content {
-            app.restore_view_state(view);
-        }
-    }
     fn needs_idle_sync(&self) -> bool {
         match &self.content {
             TileContent::App(app) => app.needs_idle_sync(),
             _ => false,
-        }
-    }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        match &self.content {
-            TileContent::App(app) => app.search_providers(),
-            _ => Vec::new(),
-        }
-    }
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
-        if let TileContent::App(app) = &mut self.content {
-            app.activate_search_result(action_id, doc, path);
         }
     }
 
@@ -1842,41 +1805,6 @@ impl Widget for TileHost {
         Ok(started)
     }
 
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        match &self.content {
-            TileContent::App(root) => {
-                if let Some(binding) = &self.binding {
-                    binding
-                        .store
-                        .read(&binding.live, |document| root.unsaved_documents(document))
-                        .unwrap_or_default()
-                } else {
-                    root.unsaved_documents(doc)
-                }
-            }
-            _ => Vec::new(),
-        }
-    }
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
-        errors.extend(self.record_error.iter().cloned());
-        if let Some(binding) = &self.binding {
-            if let Err(error) = binding.store.try_flush() {
-                errors.push(error);
-            }
-        }
-        if let TileContent::App(root) = &mut self.content {
-            errors.extend(root.checkpoint_components());
-        }
-        errors
-    }
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.finish_admitted_close());
-        }
-        self.take_component_close_reports()
-    }
-
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -1925,24 +1853,6 @@ impl Widget for TileHost {
             }
             _ => None,
         }
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.history_lifetime.control_domain.close();
-        if self.history_lifetime.active.replace(false) {
-            self.settle_outgoing_record();
-        }
-        if let TileContent::App(root) = &mut self.content {
-            self.close_reports.extend(root.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        if let TileContent::App(root) = &mut self.content {
-            reports.extend(root.take_component_close_reports());
-        }
-        reports
     }
 
     fn history_owner(&self) -> Option<crate::history_mode::HistoryOwner> {
@@ -2378,16 +2288,6 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
-    /// Presence identity is the record shown, not the tile — the only
-    /// thing that tells two tabs of one app apart, since a peer's caret is
-    /// a position in *a document*. Unbound tiles report nothing.
-    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
-        self.binding
-            .as_ref()
-            .map(|b| crate::presence::PresenceKey::Tab {
-                id: b.live.as_str().to_string(),
-            })
-    }
     /// A bound tile has already committed the app's burst against its own
     /// record in [`Widget::update`]; saying "yes" here would commit the
     /// host's own, unrelated document too.
@@ -2441,6 +2341,136 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::component_lifecycle::ComponentLifecycle for TileHost {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        match &self.content {
+            TileContent::App(root) => {
+                if let Some(binding) = &self.binding {
+                    binding
+                        .store
+                        .read(&binding.live, |document| {
+                            crate::component_lifecycle::unsaved_documents(root.as_ref(), document)
+                        })
+                        .unwrap_or_default()
+                } else {
+                    crate::component_lifecycle::unsaved_documents(root.as_ref(), doc)
+                }
+            }
+            _ => Vec::new(),
+        }
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        let mut errors = crate::close_admission::retry_reports(&mut self.close_reports);
+        errors.extend(self.record_error.iter().cloned());
+        if let Some(binding) = &self.binding {
+            if let Err(error) = binding.store.try_flush() {
+                errors.push(error);
+            }
+        }
+        if let TileContent::App(root) = &mut self.content {
+            errors.extend(crate::component_lifecycle::checkpoint_components(
+                root.as_mut(),
+            ));
+        }
+        errors
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports
+                .extend(crate::component_lifecycle::finish_admitted_close(
+                    root.as_mut(),
+                ));
+        }
+        self.take_component_close_reports()
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.history_lifetime.control_domain.close();
+        if self.history_lifetime.active.replace(false) {
+            self.settle_outgoing_record();
+        }
+        if let TileContent::App(root) = &mut self.content {
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(root.as_mut()));
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        if let TileContent::App(root) = &mut self.content {
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root.as_mut(),
+            ));
+        }
+        reports
+    }
+    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
+        if let Some(error) = &self.record_error {
+            return Some(Err(error.clone()));
+        }
+        if self.pending_binding.is_some() {
+            return Some(Err("Document binding has not completed".into()));
+        }
+        if let Some(binding) = &self.binding {
+            // This tile owns the admitted live record, not neighboring records
+            // that happen to share its store. Await its actual writer result.
+            let result = binding.store.try_flush_record(&binding.live);
+            return Some(result.and_then(|()| {
+                self.close_reports
+                    .iter()
+                    .find_map(|report| report.record_error.clone())
+                    .map_or(Ok(()), Err)
+            }));
+        }
+        match &mut self.content {
+            TileContent::App(widget) => {
+                crate::component_lifecycle::try_flush_owned_persistence(widget.as_mut())
+            }
+            TileContent::Stub { .. } | TileContent::Notice { .. } => None,
+        }
+    }
+}
+
+impl crate::view::capability::ViewState for TileHost {
+    fn view_state(&self) -> Option<crate::view::ViewContribution> {
+        match &self.content {
+            TileContent::App(app) => crate::view::capability::view_state(app.as_ref()),
+            _ => None,
+        }
+    }
+    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
+        if let TileContent::App(app) = &mut self.content {
+            crate::view::capability::restore_view_state(app.as_mut(), view);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for TileHost {
+    /// Presence identity is the record shown, not the tile — the only
+    /// thing that tells two tabs of one app apart, since a peer's caret is
+    /// a position in *a document*. Unbound tiles report nothing.
+    fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
+        self.binding
+            .as_ref()
+            .map(|b| crate::presence::PresenceKey::Tab {
+                id: b.live.as_str().to_string(),
+            })
+    }
+}
+
+impl crate::search::capability::SearchSource for TileHost {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        match &self.content {
+            TileContent::App(app) => crate::search::capability::search_providers(app.as_ref()),
+            _ => Vec::new(),
+        }
+    }
+    fn activate_search_result(&mut self, action_id: &str, doc: &mut AppModel, path: &ModelPath) {
+        if let TileContent::App(app) = &mut self.content {
+            crate::search::capability::activate_search_result(app.as_mut(), action_id, doc, path);
+        }
     }
 }
 
@@ -3198,6 +3228,8 @@ mod tests {
     }
 
     impl Widget for Scribe {
+        crate::provides!(dyn crate::record::capability::RecordScoped);
+
         fn sync(&mut self, state: &mut crate::widget::AppModel, path: &crate::widget::ModelPath) {
             use automerge::transaction::Transactable;
             let (state, path) = crate::doc::document(state, path);
@@ -3236,6 +3268,9 @@ mod tests {
                     .with_value(self.text.clone()),
             )
         }
+    }
+
+    impl crate::record::capability::RecordScoped for Scribe {
         fn record_intent(&self) -> Option<RecordCheckout> {
             self.opens.as_ref().map(|p| {
                 RecordCheckout::new(
@@ -3559,7 +3594,8 @@ mod tests {
                 assert_eq!(host.resolve_record().is_err(), reject);
                 assert!(old.validate().is_err());
                 drop(old);
-                let mut reports = host.take_component_close_reports();
+                let mut reports =
+                    crate::component_lifecycle::take_component_close_reports(&mut host);
                 assert_eq!(
                     reports.len(),
                     1,
@@ -3570,7 +3606,9 @@ mod tests {
                 assert!(report.record_retry.as_ref().unwrap().same_owner(&store));
                 assert_eq!(report.record_retry_target.as_ref(), Some(&a.id));
                 let _ = host.resolve_record();
-                assert!(host.take_component_close_reports().is_empty());
+                assert!(
+                    crate::component_lifecycle::take_component_close_reports(&mut host).is_empty()
+                );
                 drop(host);
                 drop(store);
                 std::fs::remove_dir(&path).unwrap();
@@ -3620,7 +3658,7 @@ mod tests {
                 })
                 .unwrap();
             host.replace_content(declared_probe(&DECLARED_HISTORY, false));
-            let reports = host.take_component_close_reports();
+            let reports = crate::component_lifecycle::take_component_close_reports(&mut host);
             assert_eq!(reports.len(), 1);
             assert!(reports[0].record_error.is_none());
             let settled = store
@@ -3628,8 +3666,8 @@ mod tests {
                 .unwrap();
             assert_eq!(settled.1, 0);
             host.bind_record(store.clone(), checkout.clone());
-            assert!(host.close_components().is_empty());
-            assert!(host.close_components().is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
             assert_eq!(
                 store
                     .read(&checkout.id, |doc| (doc.base_heads(), doc.pending_ops()))
@@ -3643,7 +3681,7 @@ mod tests {
                 })
                 .unwrap();
             assert!(store.read(&checkout.id, |doc| doc.pending_ops()).unwrap() > 0);
-            let reports = host.close_components();
+            let reports = crate::component_lifecycle::close_components(&mut host);
             assert_eq!(reports.len(), 1);
             assert!(reports[0].record_error.is_none());
             let later = store
@@ -3651,7 +3689,7 @@ mod tests {
                 .unwrap();
             assert_ne!(later.0, settled.0);
             assert_eq!(later.1, 0);
-            assert!(host.close_components().is_empty());
+            assert!(crate::component_lifecycle::close_components(&mut host).is_empty());
         }
     }
 
@@ -3955,7 +3993,7 @@ mod tests {
             host.replace_content(content());
             assert!(rebound.validate().is_err());
             let replacement = host.history_owner().unwrap();
-            let _ = host.close_components();
+            let _ = crate::component_lifecycle::close_components(&mut host);
             assert!(replacement.validate().is_err());
             assert!(host.history_owner().is_none());
             host.replace_content(content());

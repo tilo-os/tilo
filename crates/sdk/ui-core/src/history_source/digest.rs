@@ -111,8 +111,10 @@ impl ActivityDigest {
     }
 
     fn from_recent(recent: &[HistoryEntry], limit: usize, named_ranges: &[NamedRange]) -> Self {
+        // People are the participants history could name.
         let people = recent
             .iter()
+            .filter(|entry| entry.author.name != super::UNKNOWN_AUTHOR_NAME)
             .map(|entry| {
                 (
                     entry.author.name.clone(),
@@ -305,6 +307,20 @@ mod tests {
                 digest.headline().as_deref(),
                 Some("Xaver, Quinten + 2 · Prepare launch brief")
             );
+        }
+        // phase: a_participant_history_cannot_name_is_not_counted_as_a_person
+        {
+            let entries = vec![
+                entry(1, "Ada", 100),
+                entry(2, super::super::UNKNOWN_AUTHOR_NAME, 101),
+            ];
+            let digest = ActivityDigest::from_entries(
+                &entries,
+                SystemTime::UNIX_EPOCH + Duration::from_secs(90),
+                3,
+            );
+            assert_eq!(digest.total_changes, 2);
+            assert_eq!(digest.people, 1);
         }
         // phase: unnamed_aggregate_titles_describe_outcomes_instead_of_schema_counts
         {

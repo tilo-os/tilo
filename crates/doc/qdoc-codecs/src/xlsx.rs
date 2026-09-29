@@ -679,25 +679,65 @@ fn is_date_format_code(code: &str) -> bool {
 /// `codes[i]` (style `0` stays the default), for [`XlsxCodec::export_snapshot`]:
 /// set a cell's style to the index as a string.
 pub fn number_format_styles(codes: &[&str]) -> Vec<u8> {
+    let styles: Vec<CellStyle<'_>> = codes
+        .iter()
+        .map(|code| CellStyle {
+            number_format: Some(code),
+            bold: false,
+        })
+        .collect();
+    cell_styles(&styles)
+}
+
+/// One cell style for [`cell_styles`]: a number-format code, bold text, or both.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CellStyle<'a> {
+    pub number_format: Option<&'a str>,
+    pub bold: bool,
+}
+
+/// A `styles.xml` whose cell style `i + 1` applies `styles[i]` (style `0`
+/// stays the default); set a cell's style to the index as a string.
+pub fn cell_styles(styles: &[CellStyle<'_>]) -> Vec<u8> {
+    let mut codes: Vec<&str> = Vec::new();
     let mut num_fmts = String::new();
     let mut xfs = String::from(r#"<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>"#);
-    for (i, code) in codes.iter().enumerate() {
-        let id = i.saturating_add(164);
-        let _ = write!(
-            num_fmts,
-            r#"<numFmt numFmtId="{id}" formatCode="{}"/>"#,
-            escape_attr_quotes(code)
-        );
+    for style in styles {
+        let num_fmt = style.number_format.map_or(0, |code| {
+            let index = codes.iter().position(|c| *c == code).unwrap_or_else(|| {
+                codes.push(code);
+                let _ = write!(
+                    num_fmts,
+                    r#"<numFmt numFmtId="{}" formatCode="{}"/>"#,
+                    codes.len().saturating_add(163),
+                    escape_attr_quotes(code)
+                );
+                codes.len().saturating_sub(1)
+            });
+            index.saturating_add(164)
+        });
+        let font = u8::from(style.bold);
+        let apply_num = if num_fmt == 0 {
+            ""
+        } else {
+            r#" applyNumberFormat="1""#
+        };
+        let apply_font = if style.bold { r#" applyFont="1""# } else { "" };
         let _ = write!(
             xfs,
-            r#"<xf numFmtId="{id}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>"#
+            r#"<xf numFmtId="{num_fmt}" fontId="{font}" fillId="0" borderId="0" xfId="0"{apply_num}{apply_font}/>"#
         );
     }
+    let fonts = if styles.iter().any(|style| style.bold) {
+        r#"<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>"#
+    } else {
+        r#"<fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts>"#
+    };
     let count = codes.len();
-    let xf_count = count.saturating_add(1);
+    let xf_count = styles.len().saturating_add(1);
     format!(
         r#"<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<styleSheet xmlns="{NS_MAIN}"><numFmts count="{count}">{num_fmts}</numFmts><fonts count="1"><font><sz val="11"/><name val="Calibri"/></font></fonts><fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="{xf_count}">{xfs}</cellXfs></styleSheet>"#
+<styleSheet xmlns="{NS_MAIN}"><numFmts count="{count}">{num_fmts}</numFmts>{fonts}<fills count="1"><fill><patternFill patternType="none"/></fill></fills><borders count="1"><border/></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="{xf_count}">{xfs}</cellXfs></styleSheet>"#
     )
     .into_bytes()
 }

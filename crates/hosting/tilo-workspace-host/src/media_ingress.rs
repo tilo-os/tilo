@@ -373,8 +373,10 @@ impl InstalledIngress {
         }
         // No grant until the relay-retained room state has been merged: a
         // restored older state must not issue one to a since-revoked member.
-        if matches!(request.route(), Route::Media(_) | Route::LiveGrant)
-            && !self.current.governance_reconciled()
+        if matches!(
+            request.route(),
+            Route::Media(_) | Route::LiveGrant | Route::LegacyInput
+        ) && !self.current.governance_reconciled()
         {
             let _ = request.respond(
                 hyper::StatusCode::SERVICE_UNAVAILABLE,
@@ -402,7 +404,10 @@ impl InstalledIngress {
                 (hyper::StatusCode::CONFLICT, b"stale-participation".to_vec())
             }
             // LIVE_V1 clients fall back to the durable path on 404.
-            Err(_) if request.route() == Route::LiveGrant && self.live.is_none() => {
+            Err(_)
+                if matches!(request.route(), Route::LiveGrant | Route::LegacyInput)
+                    && self.live.is_none() =>
+            {
                 (hyper::StatusCode::NOT_FOUND, b"unsupported".to_vec())
             }
             Err(_) => (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec()),
@@ -553,6 +558,12 @@ impl InstalledIngress {
         if let Some(live) = &self.live {
             self.legacy.observe(&live.relay, author, message);
         }
+    }
+
+    /// Input from controlling viewers to forward to sessions, and whether
+    /// this host's governor identity must go first.
+    pub(crate) fn take_legacy_input(&mut self) -> (bool, Vec<tilo_peer_state::NeighbourMsg>) {
+        self.legacy.take_input(std::time::Instant::now())
     }
 
     /// The session devices whose legacy windows are streamed.
@@ -734,6 +745,30 @@ impl InstalledIngress {
                     },
                     &verified,
                 )
+            }
+            Route::LegacyInput => {
+                let live = &self
+                    .live
+                    .as_ref()
+                    .context("live relay not installed")?
+                    .service;
+                let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
+                let exact =
+                    Request::new(request.method().as_str(), request.target(), request.body())?;
+                let verified = self
+                    .sessions
+                    .admit_current(owner, &self.current, &proof, &exact)?;
+                {
+                    let guard = self.current.read().map_err(anyhow::Error::msg)?;
+                    let turn = crate::owner_turn::NativeTurn::held(guard, owner.workspace_id());
+                    live.check_control(&turn, &verified)?;
+                }
+                let input = tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::InputRequest::decode(request.body())
+                    .map_err(|error| anyhow::anyhow!("invalid legacy window input: {error}"))?;
+                self.legacy
+                    .queue_input(input, &owner.identity.native_cert.device_public_key)
+                    .map_err(anyhow::Error::msg)?;
+                Ok(b"{}".to_vec())
             }
             _ => anyhow::bail!("data handler not installed"),
         }

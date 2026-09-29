@@ -9,7 +9,7 @@ ROOT = Path(__file__).resolve().parents[2]
 class ReleaseToolsImageWorkflowTests(unittest.TestCase):
     def setUp(self) -> None:
         self.workflow = (
-            ROOT / ".forgejo/workflows/build-release-tools-image.yml"
+            ROOT / ".forgejo/workflows/build-release-tools.yml"
         ).read_text()
         self.release_workflow = (
             ROOT / ".forgejo/workflows/release-apps.yml"

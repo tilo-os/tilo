@@ -2204,7 +2204,7 @@ impl App {
     }
 
     /// `image disk`: the disk step of the build, for an image `image build`
-    /// wrote (here or on the rcargo builder): the layout into podman's storage,
+    /// wrote (here or on another machine): the layout into podman's storage,
     /// then `os/dev/build-image.sh` with `TILO_SKIP_BUILD=1`, as
     /// `build-dev-image.sh` runs it.
     fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
@@ -2219,7 +2219,9 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: layout.display().to_string(),
                 problem: "is not an OCI layout".into(),
-                fix: "build one: tilo-vm image build (tilo-vm image build --help for the rcargo builder)".into(),
+                fix:
+                    "build one: tilo-vm image build (tilo-vm image build --help to build elsewhere)"
+                        .into(),
             });
         }
         let facts_file = layout.with_extension("facts");
@@ -2303,7 +2305,7 @@ impl App {
         let scratch = build_scratch(&out);
         std::fs::create_dir_all(&out).map_err(CliError::io(format!("create {}", out.display())))?;
         if self.worktree.is_none() && std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
-            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) through rcargo)".into());
+            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct))".into());
         }
         let command = image_build_command(&script, disk, &scratch);
         eprintln!(
@@ -2379,7 +2381,7 @@ impl App {
     }
 
     /// `--image <dir>`: an OCI layout `tilo-vm image build` wrote, here or on
-    /// the rcargo builder, with its facts and digest beside it.
+    /// another machine, with its facts and digest beside it.
     fn vm_upgrade_layout(
         &mut self,
         vm: &Resolved,
@@ -2541,7 +2543,25 @@ impl App {
                     return Ok(Some(CiUpgrade::Base(base.clone())));
                 }
             }
-            Ok(None)
+            // Not a main build: a branch or pull request build of the commit.
+            let Some(sha) = imageup::ci_commit(tag) else {
+                return Ok(None);
+            };
+            let mut listing = |repository| -> Result<String, CliError> {
+                let output = runner.output(&imageup::list_tags_command(repository))?;
+                Ok(if output.success {
+                    output.stdout
+                } else {
+                    String::new()
+                })
+            };
+            let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
+            let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
+            let refs = imageup::ci_ref_candidates(sha, std::env::consts::ARCH, &vm_tags, &ci_tags);
+            if let Some(image) = refs.dev_images.first() {
+                return Ok(Some(CiUpgrade::Published(image.clone())));
+            }
+            Ok(refs.bases.first().cloned().map(CiUpgrade::Base))
         })?;
         let Some(found) = found else {
             let tried = candidates
@@ -2554,7 +2574,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   main and pull request builds are tagged <ref>-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {
@@ -4141,7 +4161,7 @@ fn local_image_facts(
 }
 
 /// The Tilo checkout `dir` is in, found by its dev image build script (for a
-/// copy of the tree without git, such as the one rcargo builds in).
+/// copy of the tree without git, such as a synced copy on a build machine).
 fn checkout_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())

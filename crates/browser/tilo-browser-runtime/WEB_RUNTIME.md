@@ -371,14 +371,20 @@ records, which go to the profile's storage like a standalone mount's.
   const notes = desktop.navigation.getSnapshot().entries.at(-1).record;
   const agent = await mountDesktop(hidden, {app: 'so.tilo.word-processor', record: notes, author: 'Reading agent', ...shared});
   ```
-- Activity names every change: each mount of the page notes its record
-  writer and its author, so edits another mount made (the phone's Books, the
-  agent's Writer) show under that mount's `author`, as an agent when the
-  mount is an agent mount (`agent`) or the author is one of the
-  workspace's agent `members`. Room changes carry the time the owner made
-  them; a record's genesis (made by an actor derived from its identity, at
-  time zero) is left out of Activity, as nobody made it (the document's own
-  history keeps it as the version to restore to).
+- Activity names every change: the page's mounts of one profile and device
+  share each record's document, and each writes its edits to it as its
+  `author`'s own actor, so edits another mount made (the phone's Books, the
+  agent's Writer and Chat) show under that mount's `author`, as an agent
+  when the mount is an agent mount (`agent`) or the author is one of the
+  workspace's agent `members`. Rows show the name; one author's changes
+  count as one person, and only people history can name are offered as
+  filters. Room changes carry the time the owner made them; a record's
+  genesis (made at time zero, before anyone edited it; a package-primary
+  document such as Chat's included) is left out of Activity, as nobody made
+  it (the document's own history keeps it as the version to restore to).
+  Housekeeping an app declares about a document, such as Chat's read marker
+  or Books' reading position, stays in the document's own history but is
+  not workspace activity.
 - `actions`/`invokeAction` take `{window}` (a tab id; the focused window by
   default) and go through that window's action door.
 - Permissions are the page author's, as for a standalone mount (`Owner`).

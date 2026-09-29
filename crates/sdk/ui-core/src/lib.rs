@@ -136,6 +136,7 @@ pub use runtime_collab::native_media;
 pub mod collection_transition;
 pub mod color;
 pub mod color_compat;
+pub mod component_lifecycle;
 pub mod content_layout;
 mod damage;
 pub mod date;
@@ -164,6 +165,8 @@ pub mod graph_editor;
 pub mod headless;
 pub mod history_mode;
 pub mod history_source;
+#[cfg(not(target_arch = "wasm32"))]
+mod host_chrome;
 #[cfg(all(windows, feature = "notifications"))]
 pub use native::host_notifications;
 #[cfg(not(all(windows, feature = "notifications")))]

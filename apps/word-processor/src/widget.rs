@@ -10175,43 +10175,14 @@ impl Widget for WordProcessorWidget {
         dyn ui::undo::LocalUndo,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::component_lifecycle::ComponentLifecycle
     );
 
     fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
         &crate::semantic_read::action::READERS
-    }
-
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
-        // A canonical or hosted document is saved as it is edited.
-        if self.canonical || self.hosted() {
-            return Vec::new();
-        }
-        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
-        if current
-            .as_ref()
-            .zip(self.saved_document.as_ref())
-            .is_some_and(|(current, saved)| current == saved)
-        {
-            return Vec::new();
-        }
-        if self.saved_document.is_none()
-            && self.inner.containers.is_none()
-            && doc.length(&automerge::ROOT) == 0
-        {
-            return Vec::new();
-        }
-        vec![ui::close_admission::UnsavedDocument {
-            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
-            // The host may discard only the exact document the user reviewed.
-            // Serializing a clone does not commit the live typing transaction.
-            revision: doc.clone().save(),
-            identity: self
-                .path
-                .as_ref()
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_default(),
-        }]
     }
 
     fn primary_vertical_scroll(&self) -> Option<ui::widget::PrimaryScrollRegion> {
@@ -10361,43 +10332,6 @@ impl Widget for WordProcessorWidget {
         } else {
             None
         }
-    }
-
-    /// The document being edited is a record; its identity is its path. Two
-    /// editors on two different files in one room announce two different
-    /// records, so they are never handed each other's text — "share this
-    /// document" means the record, not merely "share this app instance".
-    ///
-    /// An untitled document names no record until it is saved and has a path.
-    fn record_intent(&self) -> Option<ui::RecordCheckout> {
-        self.path.as_ref().map(|p| {
-            ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
-        })
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        if self.file_choice.is_some() {
-            return Err("Resolve the selected file choice before switching documents".into());
-        }
-        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
-            return Err(
-                "Finish or cancel the active document edit before switching documents".into(),
-            );
-        }
-        self.portal_rx = None;
-        self.portal_purpose = None;
-        self.pending_resource_open = None;
-        self.pending_replacement = None;
-        self.replace_after_save = false;
-        self.unsaved_changes.close();
-        self.resource_file_invocation = None;
-        self.resource_file_result = None;
-        for scope in self.file_job_scopes.values() {
-            scope.cancel();
-        }
-        self.file_job_scopes.clear();
-        self.scoped_file_results.clear();
-        Ok(())
     }
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
@@ -11083,48 +11017,6 @@ impl Widget for WordProcessorWidget {
         }
     }
 
-    /// Outbound collaboration presence: while focused, broadcast the local caret
-    /// (or selection range) keyed to its block. Polled by the App after each event
-    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
-    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
-    /// `selection_rects`.
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
-        if !self.lifecycle.focused {
-            return None;
-        }
-        let caret_block = &self.inner.caret.block;
-        if caret_block.is_empty() {
-            return None;
-        }
-        let key = block_presence_key(self.hosted(), caret_block);
-        // A selection within the caret's block takes priority over the bare
-        // caret. (v1 collab presence reports the caret-block portion of a
-        // multi-block selection, mirroring how the caret block is what the
-        // peer's caret lands in.)
-        if self.inner.has_selection()
-            && let Some((_, s, e)) = self
-                .selection_blocks_cached()
-                .into_iter()
-                .find(|(b, _, _)| b == caret_block)
-            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
-            && s < e
-        {
-            let start = char_to_byte(&block.text, s);
-            let end = char_to_byte(&block.text, e);
-            return Some((key, ui::PresencePayload::Selection { start, end }));
-        }
-        // Bare caret: convert the char offset to a byte offset against the
-        // caret block's text so it maps directly through the layout geometry.
-        let pos = self
-            .blocks
-            .iter()
-            .find(|b| &b.id == caret_block)
-            .map_or(self.inner.caret.offset, |b| {
-                char_to_byte(&b.text, self.inner.caret.offset)
-            });
-        Some((key, ui::PresencePayload::Caret { pos }))
-    }
-
     fn name(&self) -> &'static str {
         "WordProcessor"
     }
@@ -11366,6 +11258,122 @@ impl Widget for WordProcessorWidget {
     /// toolbars and panels are positioned inside `self.rect` by hand.
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
+    }
+}
+
+impl ui::component_lifecycle::ComponentLifecycle for WordProcessorWidget {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<ui::close_admission::UnsavedDocument> {
+        // A canonical or hosted document is saved as it is edited.
+        if self.canonical || self.hosted() {
+            return Vec::new();
+        }
+        let current = serde_json::to_value(automerge::AutoSerde::from(doc)).ok();
+        if current
+            .as_ref()
+            .zip(self.saved_document.as_ref())
+            .is_some_and(|(current, saved)| current == saved)
+        {
+            return Vec::new();
+        }
+        if self.saved_document.is_none()
+            && self.inner.containers.is_none()
+            && doc.length(&automerge::ROOT) == 0
+        {
+            return Vec::new();
+        }
+        vec![ui::close_admission::UnsavedDocument {
+            save: tilo_actions::ActionAddress::new("word-processor.document", "save"),
+            // The host may discard only the exact document the user reviewed.
+            // Serializing a clone does not commit the live typing transaction.
+            revision: doc.clone().save(),
+            identity: self
+                .path
+                .as_ref()
+                .map(|p| p.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+        }]
+    }
+}
+
+impl ui::record::capability::RecordScoped for WordProcessorWidget {
+    /// The document being edited is a record; its identity is its path. Two
+    /// editors on two different files in one room announce two different
+    /// records, so they are never handed each other's text — "share this
+    /// document" means the record, not merely "share this app instance".
+    ///
+    /// An untitled document names no record until it is saved and has a path.
+    fn record_intent(&self) -> Option<ui::RecordCheckout> {
+        self.path.as_ref().map(|p| {
+            ui::RecordCheckout::new(ui::RecordId::for_file(p), ui::RecordKind::new("document"))
+        })
+    }
+    fn release_record_scope(&mut self) -> Result<(), String> {
+        if self.file_choice.is_some() {
+            return Err("Resolve the selected file choice before switching documents".into());
+        }
+        if self.guide_drag.is_some() || self.scrub.is_some() || self.editing_field.is_some() {
+            return Err(
+                "Finish or cancel the active document edit before switching documents".into(),
+            );
+        }
+        self.portal_rx = None;
+        self.portal_purpose = None;
+        self.pending_resource_open = None;
+        self.pending_replacement = None;
+        self.replace_after_save = false;
+        self.unsaved_changes.close();
+        self.resource_file_invocation = None;
+        self.resource_file_result = None;
+        for scope in self.file_job_scopes.values() {
+            scope.cancel();
+        }
+        self.file_job_scopes.clear();
+        self.scoped_file_results.clear();
+        Ok(())
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for WordProcessorWidget {
+    /// Outbound collaboration presence: while focused, broadcast the local caret
+    /// (or selection range) keyed to its block. Polled by the App after each event
+    /// and fanned out as `CollabEvent::RemotePresenceUpdate`. Offsets are bytes, so
+    /// the receiver feeds them straight into `RichTextLayout::caret_geometry`/
+    /// `selection_rects`.
+    fn presence_payload(&self) -> Option<(PresenceKey, ui::PresencePayload)> {
+        if !self.lifecycle.focused {
+            return None;
+        }
+        let caret_block = &self.inner.caret.block;
+        if caret_block.is_empty() {
+            return None;
+        }
+        let key = block_presence_key(self.hosted(), caret_block);
+        // A selection within the caret's block takes priority over the bare
+        // caret. (v1 collab presence reports the caret-block portion of a
+        // multi-block selection, mirroring how the caret block is what the
+        // peer's caret lands in.)
+        if self.inner.has_selection()
+            && let Some((_, s, e)) = self
+                .selection_blocks_cached()
+                .into_iter()
+                .find(|(b, _, _)| b == caret_block)
+            && let Some(block) = self.blocks.iter().find(|b| &b.id == caret_block)
+            && s < e
+        {
+            let start = char_to_byte(&block.text, s);
+            let end = char_to_byte(&block.text, e);
+            return Some((key, ui::PresencePayload::Selection { start, end }));
+        }
+        // Bare caret: convert the char offset to a byte offset against the
+        // caret block's text so it maps directly through the layout geometry.
+        let pos = self
+            .blocks
+            .iter()
+            .find(|b| &b.id == caret_block)
+            .map_or(self.inner.caret.offset, |b| {
+                char_to_byte(&b.text, self.inner.caret.offset)
+            });
+        Some((key, ui::PresencePayload::Caret { pos }))
     }
 }
 

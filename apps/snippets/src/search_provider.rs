@@ -275,7 +275,7 @@ mod tests {
             app.sync(&mut doc, &ROOT);
 
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(
                     !providers.is_empty(),
                     "snippets publishes a search provider"
@@ -345,7 +345,7 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
             let (tag, expected_count) = seeded().tags().into_iter().next().expect("a seeded tag");
-            let hit = app.search_providers()[0]
+            let hit = ui::search::capability::search_providers(&app)[0]
                 .search(&tag)
                 .into_iter()
                 .find(|hit| hit.kind == TAG_KIND && hit.title == format!("#{tag}"))

@@ -1,0 +1,234 @@
+name: Build / release tools image
+
+# Pull requests build and exercise both native variants. Internal pull requests
+# also publish an immutable candidate so the consumer can pin the reviewed
+# multi-architecture digest before merge. Main publishes only a source-SHA tag
+# and retains the digest receipt; there is no moving latest tag.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "os/Containerfile.release-tools"
+      - "os/tests/release_tools_image.sh"
+      - ".forgejo/workflows/build-release-tools.yml"
+  push:
+    branches: [main]
+    paths:
+      - "os/Containerfile.release-tools"
+      - "os/tests/release_tools_image.sh"
+      - ".forgejo/workflows/build-release-tools.yml"
+
+concurrency:
+  group: release-tools-image-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: |
+            os/Containerfile.release-tools
+            os/tests/release_tools_image.sh
+            .forgejo/actions/setup-buildx
+          sparse-checkout-cone-mode: false
+
+      - name: Set up native BuildKit
+        uses: ./.forgejo/actions/setup-buildx
+
+      - name: Build the compiler-free publication environment
+        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
+        with:
+          context: .
+          file: os/Containerfile.release-tools
+          platforms: ${{ matrix.platform }}
+          load: true
+          push: false
+          provenance: false
+          tags: ${{ env.IMAGE_REPOSITORY }}:candidate-${{ env.SOURCE_REVISION }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}
+
+      - name: Reject compilers and exercise every publication tool
+        run: bash os/tests/release_tools_image.sh "$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+
+      - name: Log in only after the candidate passed
+        if: >-
+          ${{
+            github.event_name == 'push' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+          }}
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish the exact tested native image
+        if: >-
+          ${{
+            github.event_name == 'push' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+          }}
+        run: |
+          set -euo pipefail
+          image="$IMAGE_REPOSITORY:candidate-$SOURCE_REVISION-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.arch }}"
+          output=$(docker push "$image" 2>&1)
+          printf '%s\n' "$output"
+          digest=$(sed -n 's/^.*digest: \(sha256:[0-9a-f]\{64\}\).*$/\1/p' <<<"$output" | tail -1)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+          mkdir -p release-tools-child
+          jq -n --arg architecture '${{ matrix.arch }}' \
+            --arg platform '${{ matrix.platform }}' --arg digest "$digest" \
+            --arg sourceRevision "$SOURCE_REVISION" \
+            '{architecture:$architecture,platform:$platform,digest:$digest,sourceRevision:$sourceRevision}' \
+            > "release-tools-child/${{ matrix.arch }}.json"
+
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: >-
+          ${{
+            github.event_name == 'push' ||
+            github.event.pull_request.head.repo.full_name == github.repository
+          }}
+        with:
+          name: release-tools-child-${{ matrix.arch }}
+          path: release-tools-child/${{ matrix.arch }}.json
+          if-no-files-found: error
+
+  publish-index:
+    needs: build
+    if: >-
+      ${{
+        github.event_name == 'push' ||
+        github.event.pull_request.head.repo.full_name == github.repository
+      }}
+    runs-on: runner
+    timeout-minutes: 10
+    env:
+      IMAGE_REPOSITORY: registry.tilo.so/tilo/tilo-release-tools
+      SOURCE_REVISION: ${{ github.event.pull_request.head.sha || github.sha }}
+    steps:
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          path: release-tools-children
+      - name: Set up registry inspection
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Log in for index publication
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: registry.tilo.so
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish one immutable multi-architecture image and receipt
+        run: |
+          set -euo pipefail
+          mapfile -t receipts < <(find release-tools-children -type f -name '*.json' -print | LC_ALL=C sort)
+          [[ ${#receipts[@]} -eq 2 ]]
+          children=$(jq -sc --arg source "$SOURCE_REVISION" '
+            sort_by(.architecture)
+            | if map(.architecture) == ["aarch64","x86_64"]
+                 and map(.platform) == ["linux/arm64","linux/amd64"]
+                 and (map(.sourceRevision) | unique) == [$source]
+                 and all(.[]; .digest | test("^sha256:[0-9a-f]{64}$"))
+              then . else error("invalid release-tools child receipts") end
+          ' "${receipts[@]}")
+          if [[ $GITHUB_EVENT_NAME == push ]]; then
+            tag="sha-$SOURCE_REVISION"
+          else
+            tag="candidate-$SOURCE_REVISION"
+          fi
+          refs=()
+          while IFS= read -r digest; do refs+=("$IMAGE_REPOSITORY@$digest"); done \
+            < <(jq -r '.[].digest' <<<"$children")
+          # $tag is written again by a rerun, and the registry drops an index
+          # that loses its last tag; the run- and attempt-unique tag keeps
+          # every published index reachable by digest.
+          unique="$tag-$GITHUB_RUN_ID-${{ github.run_attempt }}"
+          docker buildx imagetools create --tag "$IMAGE_REPOSITORY:$unique" --tag "$IMAGE_REPOSITORY:$tag" "${refs[@]}"
+          inspection=$(docker buildx imagetools inspect "$IMAGE_REPOSITORY:$tag")
+          printf '%s\n' "$inspection"
+          digest=$(sed -n 's/^Digest:[[:space:]]*//p' <<<"$inspection" | head -1)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
+
+          # The publish job starts before any step can log in, so its reviewed
+          # tools image must be anonymously pullable: prove it with no
+          # credentials at all.
+          anonymous_config=$(mktemp -d)
+          trap 'rm -rf "$anonymous_config"' EXIT
+          anonymous_index=$(DOCKER_CONFIG="$anonymous_config" \
+            docker buildx imagetools inspect "$IMAGE_REPOSITORY@$digest" --raw)
+          expected_children=$(jq -c '
+            map({architecture:(if .architecture == "x86_64" then "amd64" else "arm64" end),digest})
+            | sort_by(.architecture)
+          ' <<<"$children")
+          actual_children=$(jq -c '
+            [.manifests[] | {architecture:.platform.architecture,digest}]
+            | sort_by(.architecture)
+          ' <<<"$anonymous_index")
+          [[ $actual_children == "$expected_children" ]]
+
+          mkdir -p release-tools-image-receipt
+          jq -n --arg repository "$IMAGE_REPOSITORY" --arg tag "$tag" \
+            --arg digest "$digest" --arg image "$IMAGE_REPOSITORY@$digest" \
+            --arg sourceRevision "$SOURCE_REVISION" --argjson children "$children" \
+            '{schemaVersion:1,repository:$repository,tag:$tag,digest:$digest,image:$image,sourceRevision:$sourceRevision,children:$children}' \
+            > release-tools-image-receipt/release-tools-image.json
+          printf '### Public release tools image\n\n`%s@%s`\n' \
+            "$IMAGE_REPOSITORY" "$digest" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: release-tools-image-receipt
+          path: release-tools-image-receipt/release-tools-image.json
+          if-no-files-found: error
+
+  verify-public:
+    needs: publish-index
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            platform: linux/amd64
+            runner: runner
+          - arch: aarch64
+            platform: linux/arm64
+            runner: runner-arm64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: os/tests/release_tools_image.sh
+          sparse-checkout-cone-mode: false
+      - uses: actions/download-artifact@9bc31d5ccc31df68ecc42ccf4149144866c47d8a # v3
+        with:
+          name: release-tools-image-receipt
+          path: release-tools-image-receipt
+      - name: Pull and test the public image without credentials
+        run: |
+          set -euo pipefail
+          image=$(jq -er '.image' release-tools-image-receipt/release-tools-image.json)
+          [[ $image == registry.tilo.so/tilo/tilo-release-tools@sha256:* ]]
+          anonymous_config="$RUNNER_TEMP/release-tools-anonymous-docker"
+          rm -rf "$anonymous_config"
+          mkdir -m 0700 "$anonymous_config"
+          export DOCKER_CONFIG="$anonymous_config"
+          docker pull --platform '${{ matrix.platform }}' "$image"
+          bash os/tests/release_tools_image.sh "$image"

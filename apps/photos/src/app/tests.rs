@@ -1937,7 +1937,7 @@ fn in_app_search_registers_pages_and_keeps_the_last_good_index() {
             "unchanged sync rebuilt search"
         );
 
-        let providers = Widget::search_providers(&app);
+        let providers = ui::search::capability::search_providers(&app);
         assert_eq!(providers.len(), 1);
         let hit = providers[0].search("夏").pop().unwrap();
         let address = hit.action_address().unwrap();

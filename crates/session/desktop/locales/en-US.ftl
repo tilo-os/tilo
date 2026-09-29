@@ -361,6 +361,9 @@ activity-event-revoked-capabilities = { $count ->
         [one] Revoked a capability
        *[other] Revoked { $count } capabilities
     }
+activity-event-created = Created the workspace
+activity-event-created-named = Created the workspace “{ $name }”
+activity-event-updated = Updated the workspace
 activity-event-owner = Set the workspace owner
 activity-event-identity = Assigned the workspace identity
 activity-event-renamed = Renamed the workspace

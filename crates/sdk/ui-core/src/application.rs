@@ -77,6 +77,8 @@ pub struct HostContext {
     permissions: Rc<RefCell<PermissionContext>>,
     author: UserId,
     action_context: tilo_actions::ActionContext,
+    /// See [`Self::write_as_author`].
+    writes_as_author: bool,
     wake_scope: WakeScope,
     construction: Rc<()>,
     lifetime_id: uuid::Uuid,
@@ -246,6 +248,7 @@ impl HostContext {
             permissions,
             author,
             action_context,
+            writes_as_author: false,
             wake_scope: WakeScope::new(),
             construction: Rc::new(()),
             lifetime_id: uuid::Uuid::new_v4(),
@@ -257,6 +260,16 @@ impl HostContext {
             content: None,
             open_file: None,
         })
+    }
+    /// Commit this instance's edits to its record under an actor of its
+    /// author's own ([`crate::record::author_writer`]) rather than the
+    /// record's writer, which every instance sharing the record's store
+    /// writes as. For a host that mounts several authors on one store (a
+    /// page's mounts of one profile and device), so history can tell whose
+    /// edit each change is. The record's writer, which the store persists,
+    /// is unchanged, as is everything written outside the instance.
+    pub fn write_as_author(&mut self) {
+        self.writes_as_author = true;
     }
     /// Lend the component the host's content store for this storage scope:
     /// opaque bytes addressed by hash that outlive the component and that
@@ -357,6 +370,7 @@ impl HostContext {
             permissions: self.permissions.clone(),
             author: self.author.clone(),
             operation_context: self.action_context.clone(),
+            writes_as_author: self.writes_as_author,
         }
     }
     fn envelope(&self, view: View, application: Option<ApplicationLocalView>) -> SavedInstanceView {
@@ -693,7 +707,7 @@ impl AppComponent {
         let Some(root) = self.root.as_deref() else {
             return vec![];
         };
-        root.search_providers()
+        crate::search::capability::search_providers(root)
             .into_iter()
             .filter_map(|provider| {
                 // The host independently collects nested component boundaries.
@@ -847,7 +861,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| root.unsaved_documents(doc))
+            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -877,9 +891,11 @@ impl AppComponent {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
-            errors.extend(root.checkpoint_components());
+            errors.extend(crate::component_lifecycle::checkpoint_components(root));
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         errors.extend(crate::close_admission::retry_reports(
             &mut self.pending_reports,
@@ -898,9 +914,12 @@ impl AppComponent {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.finish_admitted_close());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::finish_admitted_close(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         let mut report = ComponentCloseReport {
             recovery: Some(
@@ -975,9 +994,12 @@ impl AppComponent {
         // Parent View has already been captured. Each child still owns its live
         // tree and captures/closes exactly once before any parent root is dropped.
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.close_components());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         self.close_report = Some(report.clone());
         if let Err(error) = self.teardown() {
@@ -993,7 +1015,9 @@ impl AppComponent {
         // the parent here, and never consult a root after teardown removed it.
         if let Some(root) = self.root.as_deref_mut() {
             let _entry = self.context.wake_scope.enter();
-            reports.extend(root.take_component_close_reports());
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root,
+            ));
         }
         if !self.report_drained
             && let Some(report) = &self.close_report

@@ -780,7 +780,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         let mut ed = BlockEditor::new();
         ed.set_blocks(vec![Block::paragraph("hello world")]);
         ed.focus_block(0, CursorPlacement::Byte(3));
-        match ed.presence_payload() {
+        match crate::presence::capability::presence_payload(&ed) {
             Some((key, PresencePayload::Caret { pos })) => {
                 assert_eq!(key, block_presence_key(&ed.blocks[0].id));
                 assert_eq!(pos, 3);
@@ -804,7 +804,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         );
 
         assert_eq!(
-            ed.presence_payload(),
+            crate::presence::capability::presence_payload(&ed),
             Some((
                 document_selection_presence_key(&ed.blocks[0].id, 2),
                 PresencePayload::Selection { start: 2, end: 3 },
@@ -816,7 +816,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         let mut ed = BlockEditor::new();
         ed.set_blocks(vec![Block::paragraph("hi")]);
         // set_blocks leaves the editor unfocused.
-        assert!(ed.presence_payload().is_none());
+        assert!(crate::presence::capability::presence_payload(&ed).is_none());
     }
 
     presence_payload_reports_focused_block_caret();
@@ -2189,7 +2189,7 @@ fn remote_caret_follows_its_block_id_across_inserted_blocks() {
     ]);
     let target = ed.blocks[1].id.clone();
     ed.focus_block(1, CursorPlacement::Byte(4));
-    let Some((published, _)) = ed.presence_payload() else {
+    let Some((published, _)) = crate::presence::capability::presence_payload(&ed) else {
         panic!("focused block publishes a caret");
     };
     assert_eq!(published, block_presence_key(&target));

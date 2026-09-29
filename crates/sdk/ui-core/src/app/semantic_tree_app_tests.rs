@@ -324,7 +324,10 @@ impl CounterCard {
     }
 }
 impl Widget for CounterCard {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
+    );
 
     fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         let (s, p) = crate::doc::document(s, p);
@@ -393,12 +396,6 @@ impl Widget for CounterCard {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.directory_provider
-            .clone()
-            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
-            .unwrap_or_default()
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
@@ -456,6 +453,15 @@ impl Widget for CounterCard {
         } else {
             None
         }
+    }
+}
+
+impl crate::search::capability::SearchSource for CounterCard {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.directory_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
     }
 }
 

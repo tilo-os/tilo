@@ -96,7 +96,7 @@ class NextestPolicyTests(unittest.TestCase):
             for override in effective_overrides(config, profile)
             if override.get("test-group") == "gpu-golden"
         }
-        for name in ("check.yml", "nightly.yml", "refresh-visual-baselines.yml"):
+        for name in ("check.yml", "ci-nightly.yml", "dev-visual-baselines.yml"):
             values = folded_values((WORKFLOWS / name).read_text(encoding="utf-8"), "GOLDEN_FILTER")
             self.assertEqual(len(values), 1, name)
             filters[name] = values[0]

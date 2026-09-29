@@ -6750,6 +6750,9 @@ pub fn run() {
             std::process::exit(1);
         }
     };
+    if let Some(net) = peer_sync.as_ref() {
+        net.set_wake(Arc::clone(&session_wake));
+    }
     // An `app.<id>/close` action, from the broker's thread.
     let app_closes = crate::shell::app_close::install(Arc::clone(&session_wake));
     let mut network_start: Option<
@@ -7107,6 +7110,7 @@ pub fn run() {
     let mut pending_legacy_streams: HashMap<(u64, u64), crate::shell::peer_view::PeerStreamStart> =
         HashMap::new();
     let legacy_share_config = crate::config::load_config().flatpak_share;
+    let mut hosted_legacy_checked = Instant::now();
     // Optional paint-rate diagnostics (`TILO_PAINT_STATS=1`).
     let paint_stats = std::env::var("TILO_PAINT_STATS").is_ok();
     // Slow iterations are exceptional and always worth preserving in the
@@ -8925,7 +8929,16 @@ pub fn run() {
             );
             let desired = {
                 let viewer_hosts = if backend_kind == BackendKind::Headless {
-                    net.workspace_hosts(net.active_ws_for_publish())
+                    let active_room = {
+                        let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                        let tree = tree_handle.read();
+                        tree.desktop
+                            .active_workspace()
+                            .map(|workspace| workspace.room)
+                    };
+                    active_room.map_or_else(std::collections::HashSet::new, |room| {
+                        net.viewer_hosts(room)
+                    })
                 } else {
                     std::collections::HashSet::new()
                 };
@@ -8933,6 +8946,25 @@ pub fn run() {
                 let tree = tree_handle.read();
                 desired_legacy_shares(&tree, backend.watched(), &viewer_hosts)
             };
+            // This session's legacy windows, as its own tabs in the rooms
+            // other devices govern, so their members have a tab to show.
+            if hosted_legacy_checked.elapsed() >= std::time::Duration::from_millis(500) {
+                hosted_legacy_checked = Instant::now();
+                let (salt, rooms) = {
+                    let tree_handle = frame_builder.chrome_handle().borrow().tree_handle();
+                    let tree = tree_handle.read();
+                    let rooms = tree
+                        .desktop
+                        .workspaces
+                        .iter()
+                        .map(|workspace| (workspace.room, workspace.strips.clone()))
+                        .collect::<Vec<_>>();
+                    (tree.local_salt(), rooms)
+                };
+                for (room, strips) in rooms {
+                    net.publish_hosted_legacy_windows(room, &strips, salt);
+                }
+            }
             pump_phase!(
                 "legacy-share-reconcile",
                 state.reconcile_legacy_share_sessions(
@@ -9150,6 +9182,9 @@ pub fn run() {
                         tree_handle.clone(),
                         network,
                     ));
+                    if let Some(net) = peer_sync.as_ref() {
+                        net.set_wake(Arc::clone(&session_wake));
+                    }
                     None
                 }
                 Err(error) => {

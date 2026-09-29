@@ -1,16 +1,23 @@
 name: Release / OS
 
-# Two kinds of OS build. The plan job picks one and reports it as `mode`.
+# Two kinds of OS build run here. The plan job reports which as `mode`.
 #
-#   release  A v* tag, or a dispatch of main with `release` set. Each native
-#            primary lane is paired with an independent reproduction lane that
-#            compiles with no cache at all; the manifests must match byte for
-#            byte before the image is signed and tilo:latest / genN move.
-#   dev      Everything else: ordinary dispatches and the nightly main run.
-#            Fully cached (shared compiler and layer caches), no reproduction
-#            lane, no release channel. It publishes only dev-trust images:
-#            tilo-ci:<series>-<arch> and the tilo-vm dev disk.
+#   release  v* tags, the nightly main run and dispatches of main with
+#            `release` set. Each native lane is paired with an independent
+#            reproduction lane that compiles with no cache at all; the
+#            manifests must match byte for byte before the image is signed and
+#            tilo:latest / genN move. The nightly run builds nothing when
+#            latest already carries main.
+#   dev      Build / OS dev (os-dev.yml) calls this workflow for every main
+#            push and every pull request that touches the image. Fully cached
+#            (shared compiler and layer caches, no LTO), no reproduction lane,
+#            no signing, no disk install. It publishes
+#            tilo-ci:<ref>-<sha7>-<arch> and the dev image
+#            tilo-vm:<ref>-<sha7>-ci, which `tilo-vm vm upgrade --from sha:`
+#            finds. A dispatch without `release` is a dev build that also
+#            installs, boots and publishes a dev disk.
 on:
+  workflow_call:
   schedule:
     # Before the 03:00 UTC nightly checks, so a fresh image is ready by morning.
     - cron: "0 2 * * *"
@@ -74,17 +81,19 @@ on:
         default: ""
 
 concurrency:
-  # Generic generations are a single dense security series. Tag and manual
-  # main releases share its lock so concurrent runs cannot allocate the same
-  # generation. The one-off Lenovo image uses fixed generation 1 and an
+  # Generic generations are a single dense security series. Generic tag,
+  # manual main and nightly publications share its lock so concurrent runs
+  # cannot allocate the same generation; a scheduled run also holds it for its
+  # freshness check. The one-off Lenovo image uses fixed generation 1 and an
   # immutable source-specific tag, so it serializes only with Lenovo reruns of
-  # the same source. Dev builds allocate nothing and serialize per ref.
+  # the same source. Validation builds allocate nothing and serialize per ref.
   # Job outputs are unavailable here; this mirrors the plan job's rule.
   # Epoch 2 retires the lock held by cancelled run 36454. Forgejo left one
   # failed release's ARM worker active after cancellation and queued later
   # signed releases behind it. The old run cannot enter promotion.
-  group: ${{ (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
-  cancel-in-progress: false
+  group: ${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}
+  # A dev build is superseded by the next commit of its ref.
+  cancel-in-progress: ${{ github.event_name == 'workflow_call' }}
 
 env:
   TILO_ALLOW_PUBLIC_LENOVO_FIRMWARE: ${{ github.event.inputs.allow_public_lenovo_firmware || 'false' }}
@@ -100,10 +109,16 @@ jobs:
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
     steps:
-      # The nightly dev run exists to keep a fresh dev image available. It
-      # builds nothing when this commit's dev-trust integration image already
-      # exists; any failure to read it builds.
-      - name: Read the revision of this commit's integration image
+      # The nightly run exists to keep a fresh image available, not to spend a
+      # generation and two native lanes on a revision that is already out.
+      # Every published image carries its source commit as the OCI revision
+      # label, and `latest` moves only after a complete publication. Any
+      # failure to read it (no image yet, registry trouble) publishes rather
+      # than risking a stale channel; a redundant release costs runner time
+      # only. The same holds for this commit's dev-trust integration image,
+      # which is what a nightly run produces while publication is not
+      # configured.
+      - name: Read the revision of the latest published image
         id: published
         if: github.event_name == 'schedule' && github.ref == 'refs/heads/main'
         run: |
@@ -117,20 +132,38 @@ jobs:
               sudo -n dnf --setopt=retries=3 install -y skopeo || true
             fi
           fi
+          revision=""
+          if command -v skopeo >/dev/null; then
+            revision="$(skopeo inspect --retry-times 3 \
+              --override-os linux --override-arch amd64 \
+              docker://registry.tilo.so/tilo/tilo:latest 2>/dev/null \
+              | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || revision=""
+          else
+            echo '::warning::skopeo is unavailable; publishing without a freshness check'
+          fi
           integration=""
           if command -v skopeo >/dev/null; then
             integration="$(skopeo inspect --retry-times 3 \
               "docker://registry.tilo.so/tilo/tilo-ci:main-${GITHUB_SHA:0:7}-x86_64" 2>/dev/null \
               | jq -r '.Labels["org.opencontainers.image.revision"] // empty')" || integration=""
           fi
+          echo "revision=$revision" >> "$GITHUB_OUTPUT"
           echo "integration-revision=$integration" >> "$GITHUB_OUTPUT"
-          echo "::notice::integration image: ${integration:-none}; main: $GITHUB_SHA"
+          echo "::notice::latest published OS revision: ${revision:-unknown}; integration image: ${integration:-none}; main: $GITHUB_SHA"
 
-      - name: Select dev or release lanes
+      - name: Select validation or native publication lanes
         id: matrix
         env:
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
+          CONTINUOUS_RELEASE: "0"
           REQUESTED_RELEASE: ${{ github.event.inputs.release }}
+          PUBLISHED_REVISION: ${{ steps.published.outputs.revision }}
           INTEGRATION_REVISION: ${{ steps.published.outputs.integration-revision }}
+          # Publication refuses to start without these protected inputs. Until
+          # they are configured the nightly run is a main integration build, so
+          # dev VMs still get a same-commit image every night.
+          PUBLICATION_CONFIGURED: ${{ vars.TILO_PCR_PREDICTION_SIGNER != '' && vars.TILO_EFI_SIGNING_CERT_SHA256 != '' && vars.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY != '' }}
           HARDWARE_PROFILE: ${{ github.event.inputs.hardware_profile }}
           FIRMWARE_CANDIDATE: ${{ github.event.inputs.firmware_candidate }}
           FIRMWARE_MANIFEST_SHA256: ${{ github.event.inputs.firmware_manifest_sha256 }}
@@ -145,7 +178,7 @@ jobs:
             lenovo-83ed)
               [[ $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
                  && ${REQUESTED_RELEASE:-false} == true ]] || {
-                echo '::error::Lenovo image publication requires an explicit main-branch release dispatch'; exit 1;
+                echo '::error::Lenovo image publication requires an explicit main-branch publish dispatch'; exit 1;
               }
               [[ ${FIRMWARE_CANDIDATE:-} =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
                  && ${FIRMWARE_MANIFEST_SHA256:-} =~ ^[0-9a-f]{64}$ ]] || {
@@ -157,14 +190,30 @@ jobs:
           skip=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
-                     && ${REQUESTED_RELEASE:-false} == true ) ]]; then
+                     && ${REQUESTED_RELEASE:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
+                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
-          elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main \
-                  && -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
-            skip=true
-            echo "::notice::the dev image of $GITHUB_SHA already exists; skipping the nightly build"
+          elif [[ $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main ]]; then
+            # Nightly publication: the protected manual main path, unless main
+            # has not moved since the last published image.
+            if [[ -n ${PUBLISHED_REVISION:-} && $PUBLISHED_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::latest already publishes $GITHUB_SHA; skipping the nightly build"
+            elif [[ ${PUBLICATION_CONFIGURED:-false} == true ]]; then
+              publish=true
+            elif [[ -n ${INTEGRATION_REVISION:-} && $INTEGRATION_REVISION == "$GITHUB_SHA" ]]; then
+              skip=true
+              echo "::notice::the integration image of $GITHUB_SHA already exists and publication is not configured; skipping the nightly build"
+            else
+              echo '::warning::OS publication is not configured (TILO_PCR_PREDICTION_SIGNER, TILO_EFI_SIGNING_CERT_SHA256, TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY); running a main integration build for dev images instead'
+            fi
           fi
-          if [[ $profile == lenovo-83ed ]]; then
+          # Build / OS dev: both native lanes, no reproduction lane.
+          if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
+            [[ $profile == generic ]] || { echo '::error::dev builds are generic'; exit 1; }
+            matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"}]}'
+          elif [[ $profile == lenovo-83ed ]]; then
             # One ARM-only, immutable board image. It must not enter the generic
             # multiarch latest/genN channel or consume its rollback series.
             matrix='{"include":[{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
@@ -172,7 +221,7 @@ jobs:
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
             else
-              # A protected manual main release uses the same native
+              # A protected manual or nightly main publication uses the same native
               # runner-large fleet as the integration build below; its runner
               # image carries the release signer. The early KVM probe rejects
               # publishing if nested virtualization is unavailable. Tags retain
@@ -180,7 +229,7 @@ jobs:
               matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"x86_64","runner":"runner-large","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
             fi
           else
-            # Dev builds. Main feeds both native dev VM architectures.
+            # Main integration images feed both native dev VM architectures.
             # BuildKit layers and OCI export coexist, so these lanes need
             # 100 GiB of scratch. The general-class 4 CPU / 10 GiB envelope of
             # runner-disk-100g ran out of memory while four thin-LTO release
@@ -192,11 +241,12 @@ jobs:
               matrix='{"include":[{"arch":"x86_64","runner":"runner-large"}]}'
             fi
           fi
-          echo "mode=$([[ $publish == true ]] && echo release || echo dev)" >> "$GITHUB_OUTPUT"
+          mode=$([[ $publish == true ]] && echo release || echo dev)
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "skip=$skip" >> "$GITHUB_OUTPUT"
           echo "build-matrix=$matrix" >> "$GITHUB_OUTPUT"
-          echo "::notice::$([[ $publish == true ]] && echo release || echo dev) build"
+          echo "::notice::$mode build"
           echo "hardware-profile=$profile" >> "$GITHUB_OUTPUT"
 
   signing-preflight:
@@ -225,7 +275,7 @@ jobs:
     needs: plan
     if: needs.plan.outputs.skip != 'true'
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
-    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # build-rpms.yml owns all signing as a standalone main workflow. Resolve
     # only its exact content fingerprint here; never fall back to a stale tag.
     runs-on: runner-quality
     timeout-minutes: 10
@@ -256,7 +306,7 @@ jobs:
         run: |
           set -euo pipefail
           ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
+            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone build-rpms.yml main run, then retry this release.'
             exit 1
           }
 
@@ -356,6 +406,7 @@ jobs:
       - name: Materialize the pinned app collection
         env:
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
           COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
@@ -397,16 +448,24 @@ jobs:
           }
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
-            | jq -er .value)
-          echo "::add-mask::$jwt"
+          if [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
+            jwt=$(curl --fail --silent --show-error \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$COLLECTION_AUDIENCE" \
+              | jq -er .value)
+            echo "::add-mask::$jwt"
+            auth="Bearer $jwt"
+          else
+            # A called workflow (Build / OS dev) receives no OIDC token. Its
+            # package read uses the CI account; the SHA-256 pins the bytes.
+            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            auth="token $PACKAGE_TOKEN"
+          fi
           case "$COLLECTION_URL" in
             https://*)
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" \
+                --header "Authorization: $auth" \
                 "$COLLECTION_URL" -o "$work/apps.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
@@ -416,7 +475,7 @@ jobs:
               collection_public=${COLLECTION_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.tilo.so}
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" \
+                --header "Authorization: $auth" \
                 "$collection_public" -o "$work/apps.tar.gz"
               ;;
             *)
@@ -462,6 +521,7 @@ jobs:
       - name: Materialize the pinned desktop payload
         env:
           PAYLOAD_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
+          PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
           PAYLOAD_URL_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
@@ -494,23 +554,31 @@ jobs:
           [[ -n ${PAYLOAD_AUDIENCE:-} && $PAYLOAD_SHA256 =~ ^[0-9a-fA-F]{64}$ ]]
           work=$(mktemp -d)
           trap 'rm -rf "$work"' EXIT
-          jwt=$(curl --fail --silent --show-error \
-            --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
-            "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
-            | jq -er .value)
-          echo "::add-mask::$jwt"
+          if [[ -n ${ACTIONS_ID_TOKEN_REQUEST_URL:-} ]]; then
+            jwt=$(curl --fail --silent --show-error \
+              --header "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$PAYLOAD_AUDIENCE" \
+              | jq -er .value)
+            echo "::add-mask::$jwt"
+            auth="Bearer $jwt"
+          else
+            # A called workflow (Build / OS dev) receives no OIDC token. Its
+            # package read uses the CI account; the SHA-256 pins the bytes.
+            [[ -n ${PACKAGE_TOKEN:-} ]] || { echo '::error::no OIDC token and no package token'; exit 1; }
+            auth="token $PACKAGE_TOKEN"
+          fi
           case "$PAYLOAD_URL" in
             https://*)
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" "$PAYLOAD_URL" \
+                --header "Authorization: $auth" "$PAYLOAD_URL" \
                 --output "$work/desktop.tar.gz"
               ;;
             http://forgejo.forgejo.svc.cluster.local:3000/api/packages/tilo/generic/*)
               payload_public=${PAYLOAD_URL/http:\/\/forgejo.forgejo.svc.cluster.local:3000/https:\/\/code.tilo.so}
               curl --proto '=https' --proto-redir '=https' --tlsv1.2 \
                 --fail --location --retry 3 \
-                --header "Authorization: Bearer $jwt" "$payload_public" \
+                --header "Authorization: $auth" "$payload_public" \
                 --output "$work/desktop.tar.gz"
               ;;
             *)
@@ -658,17 +726,18 @@ jobs:
             *)
               if [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
                 with_browser=${REQUESTED_BROWSER:-1}
-              elif [[ "$GITHUB_EVENT_NAME" == schedule ]]; then
-                # The nightly dev image carries the same apps as a default
-                # release once both architectures have a promoted WPE
-                # buildroot. Until then it builds without the browser rather
-                # than failing every night; tags still require it.
+              elif [[ "$GITHUB_EVENT_NAME" == schedule || "$GITHUB_EVENT_NAME" == workflow_call ]]; then
+                # The nightly release, and every Build / OS dev image, ships the
+                # same full image as a default manual publication once both
+                # architectures have a promoted WPE buildroot, so they carry the
+                # same apps. Until then they build without the browser rather
+                # than failing; tags still require it.
                 . os/wpe-buildroot-snapshot.env
                 if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then
                   with_browser=1
                 else
                   with_browser=0
-                  echo '::warning::no promoted WPE buildroot for both architectures; the nightly image omits the browser until snapshot-wpe-buildroot promotes them'
+                  echo '::warning::no promoted WPE buildroot for both architectures; the nightly image omits the browser until build-buildroots promotes them'
                 fi
               else
                 with_browser=0
@@ -771,7 +840,7 @@ jobs:
           esac
           if [ "$WITH_BROWSER" = 1 ]; then
             [[ "$ref" =~ ^registry\.tilo\.so/tilo/tilo-wpe-buildroot@sha256:[0-9a-f]{64}$ ]] || {
-              printf 'no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot\n' "$(uname -m)" >&2
+              printf 'no digest-pinned WPE buildroot for %s; run build-buildroots\n' "$(uname -m)" >&2
               exit 1
             }
             cosign verify --key keys/cosign.pub "$ref" >/dev/null
@@ -816,15 +885,25 @@ jobs:
       - name: Select build, validation, or publication mode
         id: release-mode
         env:
+          # Per-push publication stays disabled; the nightly run keeps the
+          # channel fresh at bounded runner cost.
+          CONTINUOUS_RELEASE: "0"
           REQUESTED_RELEASE: ${{ github.event.inputs.release }}
-          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.release == 'true')) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
-          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.release == 'true')) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
+          # The plan job has already skipped a nightly run whose revision is
+          # published, so a scheduled main build that reaches here publishes.
+          PLANNED_PUBLISH: ${{ needs.plan.outputs.publish }}
+          PROTECTED_PCR_PREDICTION_SIGNER: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.release == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_PCR_PREDICTION_SIGNER || '' }}
+          PROTECTED_EFI_SIGNING_CERT_SHA256: ${{ (startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && github.event.inputs.release == 'true') || (github.event_name == 'schedule' && github.ref == 'refs/heads/main') || (github.event_name == 'push' && github.ref == 'refs/heads/main' && false)) && vars.TILO_EFI_SIGNING_CERT_SHA256 || '' }}
         run: |
           publish=false
           validate=false
           if [[ $GITHUB_REF == refs/tags/v* \
                 || ( $GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main \
-                     && ${REQUESTED_RELEASE:-false} == true ) ]]; then
+                     && ${REQUESTED_RELEASE:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == schedule && $GITHUB_REF == refs/heads/main \
+                     && ${PLANNED_PUBLISH:-false} == true ) \
+                || ( $GITHUB_EVENT_NAME == push && $GITHUB_REF == refs/heads/main \
+                     && ${CONTINUOUS_RELEASE:-0} == 1 ) ]]; then
             publish=true
           fi
           if [[ $GITHUB_EVENT_NAME != pull_request ]]; then
@@ -837,8 +916,15 @@ jobs:
             [[ $publish == true ]] || { echo '::error::a reproduction lane runs only for a publication'; exit 1; }
             validate=false
           fi
+          # Build / OS dev publishes images and nothing else: no disk install.
+          fast=false
+          if [[ $GITHUB_EVENT_NAME == workflow_call ]]; then
+            [[ $publish != true ]]
+            fast=true
+          fi
           echo "publish=$publish" >> "$GITHUB_OUTPUT"
           echo "validate=$validate" >> "$GITHUB_OUTPUT"
+          echo "dev-fast=$fast" >> "$GITHUB_OUTPUT"
           # A branch build that validates without publishing installs and
           # boots the dev image built FROM this image instead, and publishes
           # both as dev-trust artifacts: tilo-ci:<series>-<arch> and
@@ -851,9 +937,11 @@ jobs:
               branch=${GITHUB_REF_NAME//[^A-Za-z0-9_.-]/-}
               series="${branch:0:100}-${GITHUB_SHA:0:7}"
             fi
+          elif [[ $validate == true && $GITHUB_REF =~ ^refs/pull/([0-9]+)/ ]]; then
+            series="pr-${BASH_REMATCH[1]}-${GITHUB_SHA:0:7}"
           fi
           echo "dev-series=$series" >> "$GITHUB_OUTPUT"
-          echo "dev-gate=$([[ $validate == true && $publish != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "dev-gate=$([[ $validate == true && $publish != true && $fast != true ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "dev-channel=$([[ $GITHUB_REF == refs/heads/main ]] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           if [[ "$publish" == true ]]; then
             test -n "$PROTECTED_PCR_PREDICTION_SIGNER" || {
@@ -874,6 +962,8 @@ jobs:
           else
             echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> "$GITHUB_ENV"
             echo 'TILO_RUST_LTO=off' >> "$GITHUB_ENV"
+            # Without LTO nothing bounds link memory: every core compiles.
+            echo "TILO_DEV_CARGO_JOBS=$(nproc)" >> "$GITHUB_ENV"
           fi
           echo "::notice::OS integration validation: $validate; publication: $publish"
 
@@ -1172,7 +1262,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1247,7 +1338,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1341,7 +1433,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1413,9 +1506,9 @@ jobs:
       # Reproducibility is a release gate, not a statement inferred from pinned
       # inputs. Rebuild without the first build's layer cache and compare the
       # resulting OCI manifest before a candidate is installed or published.
-      # Only a release (tag or protected manual main release) pays for the
-      # second uncached build; dev images for tilo-ci and dev disks are never
-      # signed or published to the release channel and skip it.
+      # Only a publication (tag, nightly or protected manual main release)
+      # pays for the second uncached build; integration images for tilo-ci
+      # and dev disks are never signed or published and skip it.
       - name: Independently rebuild the release candidate
         if: matrix.role == 'reproduce' && steps.wpe-stage.outcome != 'failure'
         id: repro
@@ -1450,7 +1543,8 @@ jobs:
             TILO_TARGET_IMGREF=${{ needs.plan.outputs.hardware-profile == 'lenovo-83ed' && format('code.tilo.so/tilo/tilo:lenovo-83ed-{0}', github.sha) || '' }}
             TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}
             TILO_PREBUILT_DESKTOP=${{ env.TILO_PREBUILT_DESKTOP }}
-            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && '8' || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_CARGO_BUILD_JOBS=${{ env.TILO_RUST_LTO == 'off' && env.TILO_DEV_CARGO_JOBS || (env.TILO_PREBUILT_DESKTOP == '1' && '4' || '2') }}
+            TILO_RUST_DEBUGINFO=${{ env.TILO_RUST_LTO == 'off' && '0' || 'line-tables-only' }}
             TILO_RUST_LTO=${{ env.TILO_RUST_LTO }}
             TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=${{ env.TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY }}
             TILO_APP_COLLECTION_PUBLISHER=${{ env.TILO_APP_COLLECTION_PUBLISHER }}
@@ -1563,6 +1657,60 @@ jobs:
           docker buildx prune --builder "$BUILDER_NAME" --all --force
           df -h /var/tmp
 
+      # Build / OS dev: build the dev image FROM the tilo-ci image this lane
+      # just pushed and publish it as tilo-vm:<series>-ci, which
+      # `tilo-vm vm upgrade --from sha:` pulls. No disk install, no boot.
+      - name: Build and publish the dev image
+        if: steps.release-mode.outputs.dev-fast == 'true' && steps.dev-image.outcome == 'success'
+        env:
+          DEV_SERIES: ${{ steps.release-mode.outputs.dev-series }}
+          DEV_BASE_DIGEST: ${{ steps.dev-image.outputs.digest }}
+          BUILD_DIGEST: ${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}
+          ARCH: ${{ matrix.arch }}
+          CACHE_BUCKET: ${{ steps.compiler-cache.outputs.bucket }}
+          CACHE_ENDPOINT: ${{ steps.compiler-cache.outputs.endpoint }}
+          CACHE_REGION: ${{ steps.compiler-cache.outputs.region }}
+          CACHE_USE_SSL: ${{ steps.compiler-cache.outputs.use_ssl }}
+        run: |
+          set -euo pipefail
+          started=$(date +%s)
+          if ! command -v podman >/dev/null; then
+            if command -v apt-get >/dev/null; then
+              export DEBIAN_FRONTEND=noninteractive
+              sudo -n apt-get update
+              sudo -n apt-get install -y --no-install-recommends podman fuse-overlayfs uidmap slirp4netns jq skopeo
+            else
+              sudo -n dnf install -y podman fuse-overlayfs jq skopeo
+            fi
+          fi
+          if [[ '${{ matrix.runner }}' == runner-large* ]]; then
+            CONTAINERS_STORAGE_CONF="$(./os/dev/ci-native-podman-store.sh)"
+            export CONTAINERS_STORAGE_CONF
+          fi
+          first_tag="$(printf '%s\n' '${{ steps.meta.outputs.tags }}' | sed -n '1p')"
+          first_ref="$(python3 os/scripts/oci-archive-ref.py /var/tmp/tilo-image.tar "$first_tag" "$BUILD_DIGEST")"
+          dev_base="registry.tilo.so/tilo/tilo-ci:$DEV_SERIES-$ARCH"
+          skopeo copy "oci-archive:/var/tmp/tilo-image.tar:$first_ref" "containers-storage:$dev_base"
+          rm -f /var/tmp/tilo-image.tar
+          [[ "$(podman image inspect --format '{{.Digest}}' "$dev_base")" == "$DEV_BASE_DIGEST" ]] || {
+            echo "::error::the local base is not the published $dev_base ($DEV_BASE_DIGEST)"
+            exit 1
+          }
+          cache_args=""
+          if [[ -n $CACHE_BUCKET ]]; then
+            cache_args="--build-arg SCCACHE_BUCKET=$CACHE_BUCKET --build-arg SCCACHE_ENDPOINT=$CACHE_ENDPOINT --build-arg SCCACHE_REGION=$CACHE_REGION --build-arg SCCACHE_S3_USE_SSL=$CACHE_USE_SSL --secret id=aws_access_key_id,env=AWS_ACCESS_KEY_ID --secret id=aws_secret_access_key,env=AWS_SECRET_ACCESS_KEY"
+          fi
+          TILO_DEV_BASE="$dev_base" TILO_DEV_IMAGE=localhost/tilo-vm:ci TILO_DEV_DISK=0 \
+            TILO_CARGO_FRESHNESS=clean \
+            TILO_BUILD_ARGS="--build-arg TILO_DEV_RUST_LTO=off $cache_args --label org.opencontainers.image.version=$DEV_SERIES-ci --label org.opencontainers.image.revision=$GITHUB_SHA --label org.opencontainers.image.base.name=registry.tilo.so/tilo/tilo-ci@$DEV_BASE_DIGEST --label org.opencontainers.image.base.digest=$DEV_BASE_DIGEST --label sh.tilo.dev.base-trust=integration" \
+            ./os/dev/build-dev-image.sh
+          DEV_IMAGE=localhost/tilo-vm:ci DEV_TAG="$DEV_SERIES-ci" SOURCE_REVISION="$GITHUB_SHA" \
+            DISK_TOOLING_REVISION="$GITHUB_SHA" IMAGE_ONLY=1 \
+            BASE_REPOSITORY=registry.tilo.so/tilo/tilo-ci BASE_TRUST=integration \
+            BASE_INDEX_DIGEST="$DEV_BASE_DIGEST" BASE_CHILD_DIGEST="$DEV_BASE_DIGEST" \
+            ./os/dev/publish-dev-disk.sh
+          echo "::notice::dev image published in $(( $(date +%s) - started ))s: registry.tilo.so/tilo/tilo-vm:$DEV_SERIES-ci"
+
       # On a mismatch, retain both images under scratch tags and print which
       # layers and files differ before failing.
       - name: Compare with the independent rebuild
@@ -1604,10 +1752,10 @@ jobs:
       # and with the same os/Containerfile.dev recipe as any dev VM, and gates
       # that disk instead: it runs the same installed-desktop checks, then
       # proves tilo-vmd answers. The dev image is unsealed, so the sealed UKI
-      # path is exercised by releases only.
+      # path is exercised by publications (at least the nightly one) only.
       - name: Reseal, install, boot, and stage the verified image
         id: release
-        if: steps.release-mode.outputs.validate == 'true'
+        if: steps.release-mode.outputs.validate == 'true' && steps.release-mode.outputs.dev-fast != 'true'
         timeout-minutes: 180
         env:
           TILO_IMAGE: localhost/tilo:release-candidate
