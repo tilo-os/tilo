@@ -3802,74 +3802,72 @@ impl ui::resources::PublishesResources for VpnApp {
         if self.actions.is_hosted() {
             return Vec::new();
         }
-        let mut resources = actions::provide_resources(&self.vault);
-        if let Some(root) = resources.first_mut() {
-            for connection in &self.vault.connections {
-                let Some(resource) = root
-                    .children
-                    .iter_mut()
-                    .find(|resource| resource.id.0 == format!("vpn.connection:{}", connection.id))
-                else {
-                    continue;
-                };
-                let connecting = connection.status == ConnStatus::Connecting;
-                let locally_provisioned = self.local_credentials.contains(&connection.id)
-                    && self
-                        .local_details
-                        .get(&connection.id)
-                        .is_some_and(|details| !details.network_manager_uuid.is_empty());
-                let tunnel_availability = if connecting {
-                    tilo_actions::Availability::Unavailable {
-                        code: "transition_in_progress".into(),
-                        reason: "The tunnel is already changing state".into(),
-                    }
-                } else if !locally_provisioned {
-                    tilo_actions::Availability::Unavailable {
-                        code: "local_credentials_required".into(),
-                        reason: "Set up this shared profile on this device before connecting"
-                            .into(),
-                    }
-                } else {
-                    tilo_actions::Availability::Available
-                };
-                for action in &mut resource.actions {
-                    match action.id.as_str() {
-                        "delete" => {
-                            action.contract.availability = if locally_provisioned {
-                                tilo_actions::Availability::Available
-                            } else {
-                                tilo_actions::Availability::Unavailable {
+        let mut root =
+            ui::tilo_resource::publish::<crate::resource::Vpn>("vpn.vault", "VPN", &self.vault);
+        for connection in &self.vault.connections {
+            let Some(resource) = root
+                .children
+                .iter_mut()
+                .find(|resource| resource.id.0 == format!("vpn.connection:{}", connection.id))
+            else {
+                continue;
+            };
+            let connecting = connection.status == ConnStatus::Connecting;
+            let locally_provisioned = self.local_credentials.contains(&connection.id)
+                && self
+                    .local_details
+                    .get(&connection.id)
+                    .is_some_and(|details| !details.network_manager_uuid.is_empty());
+            let tunnel_availability = if connecting {
+                tilo_actions::Availability::Unavailable {
+                    code: "transition_in_progress".into(),
+                    reason: "The tunnel is already changing state".into(),
+                }
+            } else if !locally_provisioned {
+                tilo_actions::Availability::Unavailable {
+                    code: "local_credentials_required".into(),
+                    reason: "Set up this shared profile on this device before connecting".into(),
+                }
+            } else {
+                tilo_actions::Availability::Available
+            };
+            for action in &mut resource.actions {
+                match action.id.as_str() {
+                    "delete" => {
+                        action.contract.availability = if locally_provisioned {
+                            tilo_actions::Availability::Available
+                        } else {
+                            tilo_actions::Availability::Unavailable {
                                     code: "local_credentials_required".into(),
                                     reason: "No exact local NetworkManager profile is provisioned on this device".into(),
                                 }
-                            };
-                        }
-                        "connect" => {
-                            action.contract.availability = if connection.is_connected() {
-                                tilo_actions::Availability::Unavailable {
-                                    code: "already_connected".into(),
-                                    reason: "This tunnel is already up on this device".into(),
-                                }
-                            } else {
-                                tunnel_availability.clone()
-                            };
-                        }
-                        "disconnect" => {
-                            action.contract.availability = if connection.is_connected() {
-                                tunnel_availability.clone()
-                            } else {
-                                tilo_actions::Availability::Unavailable {
-                                    code: "not_connected".into(),
-                                    reason: "This tunnel is not up on this device".into(),
-                                }
-                            };
-                        }
-                        _ => {}
+                        };
                     }
+                    "connect" => {
+                        action.contract.availability = if connection.is_connected() {
+                            tilo_actions::Availability::Unavailable {
+                                code: "already_connected".into(),
+                                reason: "This tunnel is already up on this device".into(),
+                            }
+                        } else {
+                            tunnel_availability.clone()
+                        };
+                    }
+                    "disconnect" => {
+                        action.contract.availability = if connection.is_connected() {
+                            tunnel_availability.clone()
+                        } else {
+                            tilo_actions::Availability::Unavailable {
+                                code: "not_connected".into(),
+                                reason: "This tunnel is not up on this device".into(),
+                            }
+                        };
+                    }
+                    _ => {}
                 }
             }
         }
-        resources
+        vec![root]
     }
 }
 
