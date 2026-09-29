@@ -60,6 +60,7 @@ suites = [
   "os/tests/bootc_transient_state.sh",
   "os/tests/dnf_layer_repro.sh",
   "os/tests/test_oci_archive_layer_report.py",
+  "os/tests/test_esp_write.py",
   "os/tests/test_local_image_epoch.py",
   "os/tests/security_audit_kconfig.sh",
   "os/tests/boot_chain_source.sh",

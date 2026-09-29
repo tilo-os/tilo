@@ -1070,6 +1070,7 @@ FROM scratch AS recovery-files
 COPY --from=component-files /image/recovery-files/ /
 COPY --chmod=0755 \
     os/usr/libexec/tilo-deployment \
+    os/usr/libexec/tilo-esp-write \
     os/usr/libexec/tilo-system-extension-activate \
     os/usr/libexec/tilo-system-extension-dispatch \
     os/usr/libexec/tilo-boot-health \
@@ -1083,6 +1084,7 @@ COPY --chmod=0755 os/usr/lib/systemd/system-generators/tilo-boot-mode-generator 
 COPY \
     os/usr/lib/systemd/system/tilo-boot-entries.service \
     os/usr/lib/systemd/system/tilo-boot-entries.timer \
+    os/usr/lib/systemd/system/tilo-esp-write@.service \
     os/usr/lib/systemd/system/tilo-boot-health.service \
     os/usr/lib/systemd/system/tilo-repair.target \
     os/usr/lib/systemd/system/tilo-repair@.service \
