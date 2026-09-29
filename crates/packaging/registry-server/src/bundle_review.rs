@@ -400,7 +400,8 @@ pub fn inspect_bytes(
         registry_types::WEB_PLATFORM => check_web_target(version, &meta.manifest, bytes.len())?,
         registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
-        | registry_types::MACOS_PLATFORM => {
+        | registry_types::MACOS_PLATFORM
+        | registry_types::ANDROID_PLATFORM => {
             check_desktop_target(version, &meta.manifest, bytes.len())?;
         }
         _ => {
@@ -435,8 +436,9 @@ fn check_web_target(
     Ok(())
 }
 
-/// A Linux, Windows or macOS build is a self-contained executable: its signed
-/// `[target]` names the version exactly, under the desktop size limit.
+/// A Linux, Windows, macOS or Android build is a self-contained executable:
+/// its signed `[target]` names the version exactly, under the desktop size
+/// limit.
 fn check_desktop_target(
     version: &RegistryVersion,
     manifest: &tilo_app_package::Manifest,
@@ -784,6 +786,7 @@ mod tests {
         for other in [
             registry_types::WINDOWS_PLATFORM,
             registry_types::LINUX_PLATFORM,
+            registry_types::ANDROID_PLATFORM,
         ] {
             let mut relabelled = entry.versions[0].clone();
             relabelled.target.platform = other.into();
@@ -797,6 +800,69 @@ mod tests {
         as_intel.target.isa = "x86_64".into();
         assert!(matches!(
             inspect_bytes(&entry, &as_intel, &bytes),
+            Err(BundleReviewError::TargetMismatch { .. })
+        ));
+        let mut as_tilo_os = entry.versions[0].clone();
+        as_tilo_os.target.platform = registry_types::TILO_OS_PLATFORM.into();
+        as_tilo_os.target.isa = "aarch64-v8.2".into();
+        assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
+
+        let policy = InspectionPolicy::default();
+        assert_eq!(
+            policy.download_limit(&entry.versions[0]),
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
+        );
+    }
+
+    #[test]
+    fn android_artifact_inspection_binds_the_signed_android_target() {
+        let identity = SigningIdentity::generate();
+        let (native, _) = signed_tapp(&identity);
+        let mut authored = app_registry::tapp::load(&native).unwrap().manifest;
+        authored.package.runtime = Some("tilo-runtime/2026.07".into());
+        let manifest = tilo_app_package::desktop::desktop_manifest(
+            &authored,
+            registry_types::ANDROID_PLATFORM,
+            "aarch64",
+            "aarch64",
+            "editor.apk",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("editor.apk"), b"PK\x03\x04").unwrap();
+        let packed = pack(dir.path(), &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+
+        let mut entry = sample_entry("https://example.com/editor-android.tapp");
+        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+        let version = &mut entry.versions[0];
+        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
+        version.tapp_size_bytes = bytes.len() as u64;
+        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+        version.target = registry_types::RegistryTarget {
+            platform: registry_types::ANDROID_PLATFORM.into(),
+            architecture: "aarch64".into(),
+            isa: "aarch64".into(),
+            runtime: Some("tilo-runtime/2026.07".into()),
+        };
+        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+
+        for other in [
+            registry_types::LINUX_PLATFORM,
+            registry_types::MACOS_PLATFORM,
+        ] {
+            let mut relabelled = entry.versions[0].clone();
+            relabelled.target.platform = other.into();
+            assert!(matches!(
+                inspect_bytes(&entry, &relabelled, &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
+        let mut as_x86 = entry.versions[0].clone();
+        as_x86.target.architecture = "x86_64".into();
+        as_x86.target.isa = "x86_64".into();
+        assert!(matches!(
+            inspect_bytes(&entry, &as_x86, &bytes),
             Err(BundleReviewError::TargetMismatch { .. })
         ));
         let mut as_tilo_os = entry.versions[0].clone();
