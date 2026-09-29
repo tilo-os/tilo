@@ -6799,7 +6799,16 @@ fn collect_targets(
         out.entry(bare).or_insert_with(|| w.get_rect());
     }
     if let Some(id) = w.test_id() {
-        out.insert(id.to_string(), w.get_rect());
+        // A widget whose own node names narrower bounds (an empty state's
+        // button inside its panel) is operated where it says it is, as
+        // assistive technology would.
+        let rect = w
+            .accessibility()
+            .and_then(|node| node.bounds)
+            .map(crate::a11y::AccessBounds::to_rect)
+            .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
+            .unwrap_or_else(|| w.get_rect());
+        out.insert(id.to_string(), rect);
     }
     let mut child_counts: HashMap<String, usize> = HashMap::new();
     for child in w.children() {
@@ -8649,6 +8658,119 @@ mod tests {
         fn is_focused(&self) -> bool {
             self.focused
         }
+    }
+
+    /// A panel whose own node is a small button drawn inside it, the shape
+    /// of an empty state: only a press on the button counts.
+    struct PanelButton {
+        rect: Rect,
+        pointer: Point,
+        presses: std::rc::Rc<std::cell::Cell<usize>>,
+    }
+
+    impl PanelButton {
+        fn button(&self) -> Rect {
+            Rect::new(
+                self.rect.x0 + 10.0,
+                self.rect.y1 - 40.0,
+                self.rect.x0 + 90.0,
+                self.rect.y1 - 10.0,
+            )
+        }
+    }
+
+    impl Widget for PanelButton {
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let node = taffy
+                .new_leaf(Style {
+                    size: Size {
+                        width: Dimension::percent(1.0),
+                        height: Dimension::percent(1.0),
+                    },
+                    ..Default::default()
+                })
+                .unwrap();
+            node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
+            node
+        }
+
+        fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+            let layout = taffy.layout(node).unwrap();
+            self.rect = Rect::new(
+                origin.x,
+                origin.y,
+                origin.x + f64::from(layout.size.width),
+                origin.y + f64::from(layout.size.height),
+            );
+        }
+
+        fn draw(
+            &mut self,
+            _scene: &mut Scene,
+            _transform: Affine,
+            _text_renderer: &mut TextRenderer,
+            _theme: &Theme,
+            _presence: &PresenceCtx,
+        ) {
+        }
+
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+            match event {
+                WindowEvent::CursorMoved { position, .. } => {
+                    self.pointer =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                }
+                WindowEvent::MouseInput {
+                    state: ElementState::Pressed,
+                    ..
+                } if self.button().contains(self.pointer) => {
+                    self.presses.set(self.presses.get().saturating_add(1));
+                    *ctx.handled = true;
+                }
+                _ => {}
+            }
+        }
+
+        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+            Some(
+                crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    .with_name("Create")
+                    .with_bounds(self.button()),
+            )
+        }
+
+        fn name(&self) -> &'static str {
+            "PanelButton"
+        }
+
+        fn test_id(&self) -> Option<&str> {
+            Some("panel-button")
+        }
+
+        fn get_rect(&self) -> Rect {
+            self.rect
+        }
+    }
+
+    #[test]
+    fn a_named_click_lands_on_the_bounds_the_widget_names() {
+        let presses = std::rc::Rc::new(std::cell::Cell::new(0));
+        let mut driver = Driver::new(
+            State::new(),
+            Box::new(PanelButton {
+                rect: Rect::ZERO,
+                pointer: Point::ZERO,
+                presses: std::rc::Rc::clone(&presses),
+            }),
+            (400, 300),
+        );
+        driver.click_named("panel-button").unwrap();
+        assert_eq!(presses.get(), 1);
     }
 
     #[cfg(any(target_os = "macos", target_os = "linux"))]
