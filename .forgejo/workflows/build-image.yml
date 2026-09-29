@@ -1306,9 +1306,9 @@ jobs:
           provenance: false
           no-cache: ${{ matrix.role == 'reproduce' }}
           cache-from: |
-            ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
-            ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
-          cache-to: ${{ matrix.role != 'reproduce' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
+            ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1}', env.TILO_WPE_LEGACY_CACHE_KEY, matrix.arch) || '' }}
+          cache-to: ${{ matrix.role != 'reproduce' && steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-wpe-{0}-{1},mode=max,ignore-error=true', env.TILO_WPE_CACHE_KEY, matrix.arch) || '' }}
 
       # Build and export the compile stages (the Rust builder and its inputs)
       # before anything else. A registry cache is only written when its build
@@ -1365,9 +1365,14 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
+          # A publication neither imports nor writes layer caches. A cached
+          # layer keeps the file times of the build that made it; any older
+          # than this commit escape rewrite-timestamp's clamp, so the release
+          # differed from its uncached reproduction (run 48898). Its compiles
+          # still go through the compiler cache.
           cache-from: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }},mode=max,ignore-error=true
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # The rootfs up to the Tilo build outputs: RPMs, initramfs and every
       # slow step. It changes only with os/ inputs, packages and the kernel;
@@ -1433,11 +1438,11 @@ jobs:
           # compile step's local records before this step runs, and without
           # them it compiles the Rust workspace again (run 48581).
           cache-from: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
-          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }},mode=min,ignore-error=true
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       - name: Report the published rootfs
         if: steps.rootfs-stage.outputs.digest != ''
@@ -1495,10 +1500,10 @@ jobs:
             browser_app_identity=TAPP_PUBLISHER_IDENTITY
             ${{ steps.compiler-cache.outputs.secret-envs }}
           provenance: false
-          cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-tools-${{ matrix.arch }}
+          cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # A small graph: its intermediate steps are what the image build
           # reuses.
-          cache-to: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-tools-${{ matrix.arch }},mode=max,ignore-error=true
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
@@ -1577,9 +1582,9 @@ jobs:
           # (moby/buildkit#6008); they cover local records BuildKit's garbage
           # collection dropped since the steps above.
           cache-from: |
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-compile-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}
-            type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-tools-${{ matrix.arch }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-compile-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+            ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # No cache export: the rootfs and compile steps above wrote theirs.
 
       # Reached only when one of the three cached builds failed. A missing
