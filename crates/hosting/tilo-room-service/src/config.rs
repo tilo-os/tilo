@@ -32,7 +32,16 @@ pub struct Config {
     /// certificate) instead of behind the TLS front, so the live plane
     /// (WebTransport) reaches them.
     pub direct_ports: bool,
+    /// Local review in a plain browser: rooms serve pages on
+    /// `http://localhost:<port + 64>` (loopback only), so no certificate
+    /// exception or host mapping is needed; the live plane then runs over
+    /// the HTTPS stream fallback unless WebTransport reaches the room's
+    /// TLS port.
+    pub local: bool,
 }
+
+/// Offset of a local room's plain HTTP port from its TLS port.
+pub const LOCAL_PLAIN_OFFSET: u16 = 64;
 
 fn var(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|value| !value.is_empty())
@@ -82,7 +91,12 @@ impl Config {
                 .trim_end_matches('/')
                 .to_owned(),
             direct_ports: var("TILO_ROOMS_DIRECT_PORTS").is_some_and(|value| value == "1"),
+            local: var("TILO_ROOMS_LOCAL").is_some_and(|value| value == "1"),
         };
+        ensure!(
+            !(config.local && config.direct_ports),
+            "TILO_ROOMS_LOCAL and TILO_ROOMS_DIRECT_PORTS exclude each other"
+        );
         ensure!(
             config
                 .domain
@@ -104,8 +118,11 @@ impl Config {
             "TILO_ROOMS_TTL_SECS must be 60-86400"
         );
         ensure!(
-            config.port_base.checked_add(64).is_some(),
-            "TILO_ROOMS_PORT_BASE leaves no room for 64 ports"
+            config
+                .port_base
+                .checked_add(2 * LOCAL_PLAIN_OFFSET)
+                .is_some(),
+            "TILO_ROOMS_PORT_BASE leaves no room for 128 ports"
         );
         Ok(config)
     }
@@ -113,6 +130,12 @@ impl Config {
     /// `https://<room>.<domain>[:port]`; with direct ports, the room's own
     /// `port`.
     pub fn origin(&self, room: &str, port: u16) -> String {
+        if self.local {
+            return format!(
+                "http://localhost:{}",
+                port.saturating_add(LOCAL_PLAIN_OFFSET)
+            );
+        }
         if self.direct_ports {
             return format!("https://{room}.{}:{port}", self.domain);
         }

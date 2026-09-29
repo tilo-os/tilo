@@ -118,21 +118,29 @@ impl Room {
                 format!("127.0.0.1:{port}")
             })
             .arg("--tls")
-            .arg(match (config.direct_ports, &config.certificate) {
-                // Browsers reach the relay itself: the public certificate.
-                (true, Some((public_chain, public_key))) => {
-                    format!("files:{},{}", public_chain.display(), public_key.display())
-                }
-                // Local: the relay's development certificate, which the
-                // page's WebTransport pins by the hash the relay announces.
-                (true, None) => "dev".to_owned(),
-                // Behind the TLS front: the internal certificate it pins.
-                (false, _) => format!("files:{},{}", chain.display(), key.display()),
-            })
+            .arg(
+                match (config.direct_ports || config.local, &config.certificate) {
+                    // Browsers reach the relay itself: the public certificate.
+                    (true, Some((public_chain, public_key))) => {
+                        format!("files:{},{}", public_chain.display(), public_key.display())
+                    }
+                    // Local: the relay's development certificate, which the
+                    // page's WebTransport pins by the hash the relay announces.
+                    (true, None) => "dev".to_owned(),
+                    // Behind the TLS front: the internal certificate it pins.
+                    (false, _) => format!("files:{},{}", chain.display(), key.display()),
+                },
+            )
             .arg("--allowed-origin")
             .arg(config.api_origin());
         for origin in &config.site_origins {
             command.arg("--allowed-origin").arg(origin);
+        }
+        if config.local {
+            command.arg("--web-plain").arg(format!(
+                "127.0.0.1:{}",
+                port.saturating_add(crate::config::LOCAL_PLAIN_OFFSET)
+            ));
         }
         let mut child = command
             .stdin(Stdio::piped())

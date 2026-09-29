@@ -31,6 +31,7 @@ async function open(fake, publisher, directions = {publish: true, subscribe: tru
 test('endpoint and namespace validation', async () => {
   assert.throws(() => validateLiveEndpoint('https://host.test/moq/voice'));
   assert.throws(() => validateLiveEndpoint('http://host.test/moq/live'));
+  assert.equal(validateLiveEndpoint('http://localhost:9764/moq/live').port, '9764');
   assert.throws(() => validateLiveEndpoint('https://u:p@host.test/moq/live'));
   assert.equal(validateLiveEndpoint(ENDPOINT).pathname, '/moq/live');
   const fake = relay();
