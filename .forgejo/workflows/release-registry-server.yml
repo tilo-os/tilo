@@ -20,15 +20,11 @@ on:
       - "crates/system/atomic-file/**"
       - "crates/system/tilo-native-certs/**"
       - "vendor/genawaiter-proc-macro/**"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
       - ".forgejo/workflows/release-registry-server.yml"
   pull_request:
     branches: ["main"]
     paths:
       - ".cargo/**"
-      - "Cargo.toml"
-      - "Cargo.lock"
       - "rust-toolchain.toml"
       - "crates/packaging/registry-server/**"
       - "crates/packaging/registry-types/**"
@@ -39,8 +35,6 @@ on:
       - "crates/system/atomic-file/**"
       - "crates/system/tilo-native-certs/**"
       - "vendor/genawaiter-proc-macro/**"
-      - "tools/ci/workflow_applicability.py"
-      - "tools/ci/prepare_pr_history.py"
       - ".forgejo/workflows/release-registry-server.yml"
 
 concurrency:
@@ -48,22 +42,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  applicability:
-    uses: ./.forgejo/workflows/applicability.yml
-    with:
-      workflow: .forgejo/workflows/release-registry-server.yml
-      event: ${{ github.event_name }}
-      cargo-package: registry-server
-
   build-test-publish:
-    needs: applicability
-    if: >-
-      ${{
-        always() &&
-        (github.event_name != 'pull_request' ||
-         (needs.applicability.result == 'success' && needs.applicability.outputs.applicable == 'true')) &&
-        true
-      }}
     runs-on: runner
     timeout-minutes: 90
     env:

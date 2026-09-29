@@ -94,7 +94,7 @@ else
 fi
 
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$kernel_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability]' "$kernel_workflow" \
+   && grep -Fqx '    needs: signing-preflight' "$kernel_workflow" \
    && grep -Fq "(needs.signing-preflight.result == 'success' || needs.signing-preflight.result == 'skipped')" "$kernel_workflow"; then
   printf 'ok    release kernel compilation starts only after KMS identity preflight\n'
 else
@@ -115,7 +115,7 @@ fi
 
 relay_workflow="$workflows/release-relay.yml"
 if grep -Fqx '        run: os/dev/require-cosign-authority.sh' "$relay_workflow" \
-   && grep -Fq 'needs: [signing-preflight, applicability, ensure-rpms]' "$relay_workflow"; then
+   && grep -Fq 'needs: [signing-preflight, ensure-rpms]' "$relay_workflow"; then
   printf 'ok    release relay build starts only after KMS identity preflight\n'
 else
   printf 'release relay build can start before its signing authority is identity-bound\n' >&2
