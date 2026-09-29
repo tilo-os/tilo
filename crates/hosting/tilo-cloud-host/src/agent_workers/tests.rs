@@ -1547,6 +1547,7 @@ async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
     let (directory, owner) = selected();
     let guard = TestMountGuard::set(std::time::Duration::MAX, &[(WRITER, RECORD)]);
     let (outbound, _network) = mpsc::channel(32);
+    let started = std::time::Instant::now();
     let (mut workers, _documents) = AgentWorkers::start(directory.path(), owner, outbound)
         .expect("one refused worker must not fail the whole mount");
     let key = (WRITER.to_owned(), RECORD.to_owned());
@@ -1557,11 +1558,14 @@ async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
     );
     let (attempts, due) = workers.skipped[&key];
     assert_eq!(attempts, 1);
+    // Measured from before the mount, so a slow host cannot make the back-off
+    // look already spent.
     assert!(
-        due > std::time::Instant::now(),
+        due >= started + MOUNT_RETRY_MIN,
         "retried later, with back-off"
     );
     // Not due yet: a pump does not retry it.
+    workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now() + MOUNT_RETRY_MAX;
     workers.pump().unwrap();
     assert!(!mounted(&workers).contains(&key));
     // Accepted again and due: the next pump mounts it.
