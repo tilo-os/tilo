@@ -6221,7 +6221,10 @@ impl ShellOverlayHost {
             let before = anchor
                 .and_then(|i| destination.window_groups.get(i.saturating_add(1)))
                 .map(|g| g.id);
-            Some((source, heir, destination.id, group, before))
+            let plan = (source, heir, destination.id, group, before);
+            drop(tree);
+            drop(st);
+            Some(plan)
         })();
         let Some((source, heir, destination, group, before)) = planned else {
             return false;

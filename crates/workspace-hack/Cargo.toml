@@ -83,10 +83,12 @@ getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-f
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng", "wasm_js"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
-half = { version = "2", features = ["num-traits"] }
-harfrust = { version = "0.5" }
+half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
+hayro = { version = "0.7" }
+hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
+hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
 hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
@@ -104,7 +106,7 @@ icu_properties = { version = "2", features = ["serde"] }
 icu_provider = { version = "2", default-features = false, features = ["alloc", "baked", "deserialize_postcard_1", "sync"] }
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
-image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
@@ -148,6 +150,7 @@ rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = 
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
+raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
 regex = { version = "1" }
@@ -219,6 +222,7 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
+zune-jpeg = { version = "0.5" }
 
 [build-dependencies]
 adblock = { version = "0.12", default-features = false, features = ["content-blocking", "embedded-domain-resolver", "full-regex-handling"] }
@@ -292,10 +296,12 @@ getrandom-6f8ce4dd05d13bba = { package = "getrandom", version = "0.2", default-f
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng", "wasm_js"] }
 group = { version = "0.13", default-features = false, features = ["alloc"] }
 guillotiere = { version = "0.7", default-features = false, features = ["std"] }
-half = { version = "2", features = ["num-traits"] }
-harfrust = { version = "0.5" }
+half = { version = "2", default-features = false, features = ["num-traits"] }
 hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17", default-features = false, features = ["default-hasher", "raw-entry"] }
 hashbrown-986da7b5efc2b80e = { package = "hashbrown", version = "0.16" }
+hayro = { version = "0.7" }
+hayro-cmap = { version = "0.1", default-features = false, features = ["embed-cmaps"] }
+hayro-interpret = { version = "0.7", default-features = false, features = ["embed-cmaps", "embed-fonts"] }
 hayro-syntax = { version = "0.7", features = ["unsafe"] }
 hex = { version = "0.4" }
 hickory-proto = { version = "0.26", default-features = false, features = ["access-control"] }
@@ -313,7 +319,7 @@ icu_properties = { version = "2", features = ["serde"] }
 icu_provider = { version = "2", default-features = false, features = ["alloc", "baked", "deserialize_postcard_1", "sync"] }
 icu_segmenter = { version = "2", features = ["serde"] }
 idna = { version = "1" }
-image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "tiff", "webp"] }
+image = { version = "0.25", default-features = false, features = ["bmp", "gif", "jpeg", "png", "webp"] }
 indexmap = { version = "2", features = ["rayon", "serde"] }
 inout = { version = "0.2", default-features = false, features = ["block-padding"] }
 ipnet = { version = "2", features = ["serde"] }
@@ -357,6 +363,7 @@ rand-c38e5c1d305a1b54 = { package = "rand", version = "0.8", default-features = 
 rand_chacha-468e82937335b1c9 = { package = "rand_chacha", version = "0.3" }
 rand_chacha-93f6ce9d446188ac = { package = "rand_chacha", version = "0.10" }
 rand_core = { version = "0.6", default-features = false, features = ["std"] }
+raw-window-handle = { version = "0.6", default-features = false, features = ["std"] }
 rcgen = { version = "0.14" }
 read-fonts = { version = "0.39" }
 regex = { version = "1" }
@@ -430,13 +437,17 @@ zerofrom = { version = "0.1", default-features = false, features = ["alloc", "de
 zeroize = { version = "1", features = ["derive"] }
 zerotrie = { version = "0.2", default-features = false, features = ["serde", "yoke", "zerofrom", "zerovec"] }
 zerovec = { version = "0.11", default-features = false, features = ["alloc", "derive", "serde", "yoke"] }
+zune-jpeg = { version = "0.5" }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
+half = { version = "2" }
+harfrust = { version = "0.5" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
@@ -457,22 +468,27 @@ strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
 tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
+x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
+half = { version = "2" }
+harfrust = { version = "0.5" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
@@ -493,22 +509,27 @@ strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
 tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
+x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
+half = { version = "2" }
+harfrust = { version = "0.5" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
@@ -529,22 +550,27 @@ strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
 tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
+x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
 ashpd = { version = "0.13", default-features = false, features = ["file_chooser", "location", "notification", "open_uri", "screencast", "secret", "tokio", "wallpaper"] }
 brotli = { version = "8" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
+half = { version = "2" }
+harfrust = { version = "0.5" }
 hyper-util = { version = "0.1", default-features = false, features = ["client-legacy", "client-proxy"] }
+image = { version = "0.25", default-features = false, features = ["tiff"] }
 itertools-594e8ee84c453af0 = { package = "itertools", version = "0.13" }
 linux-raw-sys-5ef9efb8ec2df382 = { package = "linux-raw-sys", version = "0.12", default-features = false, features = ["auxvec", "elf", "errno", "general", "if_ether", "ioctl", "net", "netlink", "no_std", "prctl", "system", "xdp"] }
 linux-raw-sys-9fbad63c4bcf4a8f = { package = "linux-raw-sys", version = "0.4", default-features = false, features = ["elf", "errno", "general", "ioctl", "no_std", "prctl", "system"] }
@@ -565,14 +591,16 @@ strict-num = { version = "0.1" }
 tiny-skia = { version = "0.12" }
 tiny-skia-path = { version = "0.12" }
 tokio-util = { version = "0.7", default-features = false, features = ["rt"] }
+tokio-websockets = { version = "0.13", default-features = false, features = ["client", "getrandom", "ring", "rustls-bring-your-own-connector", "server"] }
 toml = { version = "1" }
 toml_datetime = { version = "1", default-features = false, features = ["serde", "std"] }
-tower-http = { version = "0.6", default-features = false, features = ["decompression-br", "decompression-gzip", "follow-redirect"] }
 tracing = { version = "0.1", features = ["log"] }
 wayland-backend = { path = "../../vendor/wayland-backend", default-features = false, features = ["client_system", "dlopen"] }
 wayland-protocols = { version = "0.32", default-features = false, features = ["client", "server", "staging", "unstable"] }
 wayland-protocols-misc = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-protocols-wlr = { version = "0.3", default-features = false, features = ["client", "server"] }
 wayland-sys = { version = "0.31", default-features = false, features = ["dlopen", "egl"] }
+x11rb = { version = "0.13", default-features = false, features = ["dl-libxcb", "randr", "resource_manager", "xinput", "xkb"] }
+x11rb-protocol = { version = "0.13", default-features = false, features = ["randr", "resource_manager", "xinput", "xkb"] }
 
 ### END HAKARI SECTION

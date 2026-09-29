@@ -346,6 +346,10 @@ pub fn warm_up_language(language: &str) {
         return;
     }
     STARTED.get_or_init(|| {
+        // A browser page has no threads; its first check builds the data.
+        if cfg!(target_family = "wasm") {
+            return;
+        }
         let _ = std::thread::Builder::new()
             .name("spellcheck-warmup".to_string())
             .spawn(|| {

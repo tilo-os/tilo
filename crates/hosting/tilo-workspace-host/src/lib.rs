@@ -2,6 +2,7 @@
 //! aggregate, delivery, the browser-facing ingress, the embedded relay, desktop
 //! commands, collaboration and app hosting.
 pub mod canonical_records;
+pub mod channel_steward;
 pub mod collaboration;
 pub mod host;
 pub mod https;

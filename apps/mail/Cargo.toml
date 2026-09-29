@@ -77,7 +77,7 @@ reqwest = { workspace = true, optional = true, features = ["blocking", "form"] }
 tokio = { workspace = true, optional = true, features = ["rt", "net", "io-util", "time", "macros"] }
 tokio-rustls = { workspace = true, optional = true }
 rustls = { workspace = true, optional = true, features = ["std", "tls12"] }
-tilo-net = { path = "../../crates/system/tilo-net", optional = true, features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", optional = true, features = ["blocking"] }
 futures-util = { workspace = true, optional = true }
 workspace-hack = { version = "0.1" }
 

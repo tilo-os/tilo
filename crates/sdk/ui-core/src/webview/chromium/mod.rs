@@ -118,6 +118,7 @@ const PRIVATE_ROOT_PREFIX: &str = "tilo-browser-private-";
 const PRIVATE_ROOT_MARKER: &str = ".tilo-private-root-v1";
 const PRIVATE_ROOT_MARKER_CONTENT: &str = "tilo-browser-owned-private-root-v1\n";
 const PRIVATE_ROOT_HELPER: &str = ".tilo-private-helper-pid";
+#[cfg(unix)]
 const PRIVATE_ROOT_LOCK: &str = ".tilo-private-root.lock";
 
 struct PrivateRootCleanup(Option<PathBuf>);

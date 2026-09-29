@@ -42,6 +42,10 @@ host-menu-close = Fenster schließen
 host-menu-minimize = Im Dock ablegen
 host-menu-zoom = Zoomen
 host-menu-front = Alle nach vorne bringen
+host-window-minimize = Minimieren
+host-window-maximize = Maximieren
+host-window-close = Schließen
+history-genesis = Erstellt
 history-edited-field = { $more ->
     [0] { $path } bearbeitet
    *[other] { $path } und { $more } weitere bearbeitet

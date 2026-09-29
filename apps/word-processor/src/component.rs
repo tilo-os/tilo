@@ -7,7 +7,7 @@ static DEFINITION: std::sync::LazyLock<ApplicationDefinition> =
         app_id: "so.tilo.word-processor",
         title: "Writer",
         icon: IconDescriptor::Glyph("󰈬"),
-        record_kind: RecordKind::new("document"),
+        record_kind: RecordKind::new(crate::RECORD_KIND),
         required: vec![],
         optional: vec![],
         opens: &[],

@@ -7,6 +7,7 @@
 # Font licenses are content-addressed by the canonical font manifest.
 crates/sdk/ui-core/assets/fonts/LICENSES/*.txt -text
 crates/sdk/ui-core/assets/fonts/manifest.toml text eol=lf
+crates/sdk/font-catalog/manifest.toml text eol=lf
 
 # Media license notices retain the bytes verified by sources.json.
 tools/windows/gstreamer-licenses/*.txt -text

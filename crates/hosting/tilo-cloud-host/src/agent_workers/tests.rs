@@ -25,6 +25,8 @@ pub(crate) fn selected_with_clock() -> (
 }
 
 fn selected_store() -> tempfile::TempDir {
+    // The actual broker and runtime threads open this Store too.
+    crate::storage::test_journal::journal_this_process();
     // The workers install the managed sender under the Store root.
     let (directory, mut store, _) = crate::agent_owner_tests::enrolled_admitted();
     let mut peer = store.peer().unwrap();
@@ -34,6 +36,67 @@ fn selected_store() -> tempfile::TempDir {
     store.commit(state).unwrap();
     drop(store);
     directory
+}
+
+/// The broker thread opens the owner's Store on collaboration joins. Here, as
+/// in production, an unchanged Store is reused on any thread without file or
+/// directory barriers, so a slow disk cannot stall joins behind them.
+#[test]
+fn broker_thread_store_opens_take_no_durability_barrier() {
+    let (_directory, owner) = selected();
+    drop(owner.store().unwrap());
+    let reconciles = std::thread::spawn(move || {
+        let before = crate::storage::reconciles_for_test();
+        for _ in 0..3 {
+            drop(owner.store().unwrap());
+        }
+        crate::storage::reconciles_for_test() - before
+    })
+    .join()
+    .unwrap();
+    assert_eq!(reconciles, 0, "a read-only open paid durability barriers");
+}
+
+/// On a broker-like thread, after this process forgot every durable file it
+/// knew (a fresh process, or files changed outside it): the reconciliations
+/// three request-handling Store opens pay, then the barriers one commit
+/// through the same owner path pays.
+fn broker_thread_barriers_after_cache_miss(owner: Arc<RuntimeOwner>) -> (u64, u64) {
+    crate::storage::forget_durable_for_test();
+    std::thread::spawn(move || {
+        let before = crate::storage::reconciles_for_test();
+        for _ in 0..3 {
+            drop(owner.store().unwrap());
+        }
+        let reads = crate::storage::reconciles_for_test() - before;
+        let mut store = owner.store().unwrap();
+        let mut state = store.state.clone();
+        state.generation += 1;
+        let before = crate::storage::write_barriers_for_test();
+        store.commit(state).unwrap();
+        (reads, crate::storage::write_barriers_for_test() - before)
+    })
+    .join()
+    .unwrap()
+}
+
+/// `serve` installs one long-lived Store per root (`owner_cell`) before the
+/// broker starts, reconciling it once on its own thread. Broker request
+/// handling borrows that Store, so even when nothing on disk is known durable
+/// it waits on no file or directory barrier; only opens from disk would.
+#[test]
+fn broker_thread_takes_no_durability_barrier_on_a_cache_miss() {
+    let (directory, owner) = selected();
+    // The control: opened from disk, a cache miss pays the barriers again.
+    let (reads, writes) = broker_thread_barriers_after_cache_miss(owner.clone());
+    assert!(reads > 0);
+    assert!(writes > 0);
+    let _daemon = crate::owner_cell::install(directory.path(), "agent-admission").unwrap();
+    let (reads, writes) = broker_thread_barriers_after_cache_miss(owner);
+    assert_eq!(reads, 0, "broker request handling paid durability barriers");
+    // No barrier was dropped: a commit through the long-lived Store still
+    // returns only after its durability barrier.
+    assert!(writes > 0, "a long-lived Store commit skipped its barrier");
 }
 
 // A second host/owner or a legacy/no-owner broker must not stand in for the
@@ -88,11 +151,8 @@ pub(crate) const HARNESS_WAIT: std::time::Duration = std::time::Duration::from_s
 
 fn apply_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
-    let (complete, outcome) = crate::agent_documents::apply_worker_document(
-        &owner,
-        pending,
-        std::time::Instant::now() + HARNESS_TURN,
-    );
+    let (complete, outcome) =
+        crate::agent_documents::apply_worker_document(&owner, pending, HARNESS_TURN);
     outcome.unwrap();
     // Opening Store here and in committed()/health() proves that the callback
     // released its exclusive Store lock before deferred worker completion.
@@ -311,7 +371,7 @@ async fn cloud_worker_actual_action_waits_for_store_and_consumes_exact_receipt_o
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
             );
             outcome.unwrap();
             commits += 1;
@@ -561,7 +621,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
             let (complete, outcome) = crate::agent_documents::apply_worker_document(
                 &owner,
                 pending,
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
             );
             outcome.unwrap();
             workers.committed().unwrap();
@@ -600,7 +660,7 @@ async fn cloud_worker_postcommit_lost_reply_never_reports_success_or_reexecutes(
         while let Ok(pending) = documents.try_recv() {
             let owner = reopened.owner.clone();
             let (complete, outcome) = pending.apply_scoped_fenced(
-                tilo_test_env::hang_deadline(),
+                tilo_test_env::hang_bound(),
                 |route, certificate, mutation, authorization| {
                     let mut store = owner.store()?;
                     let bytes = store
@@ -1289,7 +1349,7 @@ fn registered_source_owner() -> (
 fn settle_startup_document(workers: &mut AgentWorkers, pending: PendingHostDocument) {
     let owner = workers.owner.clone();
     let (complete, outcome) = pending.apply_scoped_fenced(
-        tilo_test_env::hang_deadline(),
+        tilo_test_env::hang_bound(),
         |route, certificate, mutation, authorization| {
             let authorization = authorization.expect("required worker custody");
             let record = route.record.as_deref().unwrap_or("");
@@ -1547,6 +1607,7 @@ async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
     let (directory, owner) = selected();
     let guard = TestMountGuard::set(std::time::Duration::MAX, &[(WRITER, RECORD)]);
     let (outbound, _network) = mpsc::channel(32);
+    let started = std::time::Instant::now();
     let (mut workers, _documents) = AgentWorkers::start(directory.path(), owner, outbound)
         .expect("one refused worker must not fail the whole mount");
     let key = (WRITER.to_owned(), RECORD.to_owned());
@@ -1557,18 +1618,58 @@ async fn cloud_worker_refused_record_is_skipped_and_retried_not_fatal() {
     );
     let (attempts, due) = workers.skipped[&key];
     assert_eq!(attempts, 1);
+    // Measured from before the mount, so a slow host cannot make the back-off
+    // look already spent.
     assert!(
-        due > std::time::Instant::now(),
+        due >= started + MOUNT_RETRY_MIN,
         "retried later, with back-off"
     );
     // Not due yet: a pump does not retry it.
+    workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now() + MOUNT_RETRY_MAX;
     workers.pump().unwrap();
     assert!(!mounted(&workers).contains(&key));
-    // Accepted again and due: the next pump mounts it.
+    // Accepted again and due: the next pumps join and mount it.
     drop(guard);
     workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now();
-    workers.pump().unwrap();
-    assert!(mounted(&workers).contains(&key));
+    tilo_test_env::wait_for("the retried worker to mount", || {
+        workers.pump().unwrap();
+        mounted(&workers).contains(&key).then_some(())
+    });
+    assert!(workers.skipped.is_empty());
+    workers.close().unwrap();
+}
+
+/// A worker's join runs off the owner loop: while the broker has not
+/// answered, every pump returns and the loop's other duties go on; the mount
+/// completes on a later pump once the join answers.
+#[tokio::test(flavor = "current_thread")]
+async fn cloud_worker_join_never_blocks_the_owner_loop() {
+    let (directory, owner) = selected();
+    let guard = TestMountGuard::set(std::time::Duration::MAX, &[(WRITER, RECORD)]);
+    let (outbound, _network) = mpsc::channel(32);
+    let (mut workers, _documents) = AgentWorkers::start(directory.path(), owner, outbound)
+        .expect("one refused worker must not fail the whole mount");
+    let key = (WRITER.to_owned(), RECORD.to_owned());
+    assert!(!mounted(&workers).contains(&key));
+    drop(guard);
+    // The next join is held until the test releases it, as a broker that
+    // takes arbitrarily long to answer the primary route.
+    let (release, gate) = std::sync::mpsc::channel();
+    TEST_JOIN_GATE.with(|slot| *slot.borrow_mut() = Some(gate));
+    workers.skipped.get_mut(&key).unwrap().1 = std::time::Instant::now();
+    // Each of these pumps would hang if it waited for the held join.
+    for _ in 0..20 {
+        workers.pump().unwrap();
+        workers.publications().unwrap();
+    }
+    assert!(workers.mounting(), "the held join is still under way");
+    assert!(!mounted(&workers).contains(&key));
+    release.send(()).unwrap();
+    tilo_test_env::wait_for("the released join to mount its worker", || {
+        workers.pump().unwrap();
+        mounted(&workers).contains(&key).then_some(())
+    });
+    assert!(!workers.mounting());
     assert!(workers.skipped.is_empty());
     workers.close().unwrap();
 }
@@ -1602,10 +1703,14 @@ async fn cloud_worker_mounting_is_bounded_per_pass_and_ready_only_when_complete(
     assert!(workers.mounting());
     workers.set_transport_ready(true);
     assert!(!workers.publications().unwrap().ready);
-    for pass in 2..=rows {
+    // Each pass mounts at most one more worker; the joins run off the
+    // owner loop, so a pass never waits for one.
+    tilo_test_env::wait_for("every validated record to mount", || {
+        let before = workers.workers.len();
         workers.pump().unwrap();
-        assert_eq!(workers.workers.len(), pass);
-    }
+        assert!(workers.workers.len() <= before + 1, "one worker per pass");
+        (workers.workers.len() == rows && !workers.mounting()).then_some(())
+    });
     assert!(!workers.mounting());
     let deadline = tokio::time::Instant::now() + HARNESS_WAIT;
     while !workers.publications().unwrap().ready {

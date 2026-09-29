@@ -43,6 +43,15 @@ pub(crate) fn windows_font_system(locale: String) -> Option<FontSystem> {
     })
 }
 
+/// A font system over an already verified database, with Tilo's fallback.
+#[cfg_attr(
+    test,
+    allow(dead_code, reason = "unit tests build the fixture font system instead")
+)]
+pub(crate) fn system_over(locale: String, db: fontdb::Database) -> FontSystem {
+    FontSystem::new_with_locale_and_db_and_fallback(locale, db, fallback::TiloFallback)
+}
+
 #[derive(Clone, Debug)]
 pub struct FontCatalog {
     root: PathBuf,
