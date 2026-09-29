@@ -23,7 +23,7 @@ async fn start() -> (Fixture, IngressReceiver) {
         rcgen::generate_simple_self_signed(vec!["localhost".into(), "127.0.0.1".into()]).unwrap();
     let key: PrivateKeyDer<'static> = PrivatePkcs8KeyDer::from(signing_key.serialize_der()).into();
     let (ingress, receiver) = super::super::ingress_channel();
-    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let (listener, udp) = crate::https::bind_https_pair().await;
     let address = listener.local_addr().unwrap();
     let adapter = HttpsAdapter::new(
         listener,
@@ -48,9 +48,14 @@ async fn start() -> (Fixture, IngressReceiver) {
     .unwrap();
     tls.alpn_protocols = vec![b"h3".to_vec()];
     let crypto = quinn::crypto::rustls::QuicServerConfig::try_from(tls).unwrap();
-    let endpoint =
-        quinn::Endpoint::server(quinn::ServerConfig::with_crypto(Arc::new(crypto)), address)
-            .unwrap();
+    udp.set_nonblocking(true).unwrap();
+    let endpoint = quinn::Endpoint::new(
+        quinn::EndpointConfig::default(),
+        Some(quinn::ServerConfig::with_crypto(Arc::new(crypto))),
+        udp,
+        quinn::default_runtime().unwrap(),
+    )
+    .unwrap();
     let (wt_tx, wt) = tokio::sync::mpsc::channel(4);
     let udp = tokio::spawn(async move {
         while let Some(incoming) = endpoint.accept().await {

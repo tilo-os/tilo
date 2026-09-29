@@ -208,7 +208,7 @@ impl InstalledIngress {
         Ok(true)
     }
 
-    /// Serve on a pair from [`bind_https_pair`].
+    /// Serve on a pair from [`crate::https::bind_https_pair`].
     #[cfg(test)]
     pub(crate) async fn start(
         owner: &mut SessionOwner,
@@ -831,23 +831,6 @@ fn endpoint(
         server_config(certificates, key)?,
         address,
     )?)
-}
-
-/// A loopback TCP listener and UDP socket on one port, as HTTPS and HTTP/3
-/// share it. Holding the TCP port reserves nothing on UDP, where a parallel
-/// test may already hold that number, so a taken UDP port draws a new pair.
-#[cfg(test)]
-pub(crate) async fn bind_https_pair() -> (TcpListener, std::net::UdpSocket) {
-    loop {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
-        match std::net::UdpSocket::bind(listener.local_addr().unwrap()) {
-            Ok(udp) => return (listener, udp),
-            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
-            Err(error) => panic!("bind the HTTP/3 half: {error}"),
-        }
-    }
 }
 
 /// Build a QUIC endpoint on an already-bound UDP socket (socket activation / tests).
