@@ -209,12 +209,18 @@ fi
 _tilo_rpms_ref_override="${RPMS_REF:-}"
 if [ -n "$_tilo_rpms_ref_override" ]; then
   RPMS_REF="$_tilo_rpms_ref_override"
+elif [ "${TILO_SKIP_BUILD:-0}" = 1 ]; then
+  # Imaging an image that already exists installs nothing from a snapshot, and
+  # the one it was built from (possibly local to another machine) need not
+  # resolve here.
+  RPMS_REF=""
 elif RPMS_REF="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh")"; then
   :
 else
   die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 fi
-[ -n "${RPMS_REF:-}" ] || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
+[ -n "${RPMS_REF:-}" ] || [ "${TILO_SKIP_BUILD:-0}" = 1 ] \
+  || die "no RPMS_REF — publish set-<fingerprint> via snapshot-rpms or follow os/docs/rpm-snapshot-packaging.md"
 # The digest-pinned tilo-kernel image (built by .forgejo/workflows/build-kernel.yml
 # — see os/kernel/Containerfile).  os/Containerfile swaps kernel-core →
 # tilo-kernel-core out of it.  Cross-time reproducible.
