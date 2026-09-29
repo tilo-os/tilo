@@ -308,10 +308,21 @@ jobs:
           AUTH_TYPE: Basic
           USERNAME: ada
           PASSWORD: conformance-password
+      # Nextcloud on SQLite answers 503 once a write waits 60 s for the
+      # database lock, which the suite's parallel clients reach on a slow disk.
+      nextcloud-db:
+        image: docker.io/library/postgres:17-alpine
+        env:
+          POSTGRES_DB: nextcloud
+          POSTGRES_USER: nextcloud
+          POSTGRES_PASSWORD: conformance-password
       nextcloud:
         image: docker.io/library/nextcloud:31-apache
         env:
-          SQLITE_DATABASE: nextcloud
+          POSTGRES_HOST: nextcloud-db
+          POSTGRES_DB: nextcloud
+          POSTGRES_USER: nextcloud
+          POSTGRES_PASSWORD: conformance-password
           NEXTCLOUD_ADMIN_USER: ada
           NEXTCLOUD_ADMIN_PASSWORD: conformance-password
           NEXTCLOUD_TRUSTED_DOMAINS: nextcloud
