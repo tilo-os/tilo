@@ -390,7 +390,7 @@ mod tests {
                 &[9; 32],
                 Some(SnapshotWrite {
                     author: [5; 32],
-                    frames: vec![second.clone()],
+                    frames: vec![second],
                 }),
                 &|_| false,
             )
