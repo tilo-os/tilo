@@ -1,10 +1,17 @@
 # Build a Tilo app
 
-The shortest path from an idea to an app running in the live development loop
-is one command:
+Install the `tilo-app` CLI once. It needs rustup and nothing else: no Tilo
+checkout, no capnp, and no system development packages.
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new reading-list --dev
+cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
+```
+
+From there, the shortest path from an idea to an app running in the live
+development loop is one command:
+
+```bash
+tilo-app new reading-list --dev
 ```
 
 Creation is atomic. Once the app exists, `--dev` runs its structural preflight,
@@ -19,18 +26,21 @@ Ctrl-C to stop.
 The same stages remain available separately for automation and focused work:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- check apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- certify apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- test apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- dev apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- run apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- shot apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- inspect apps/reading-list
-cargo run -p tilo-app-cli --bin tilo-app -- package apps/reading-list
+tilo-app new reading-list
+cd reading-list
+tilo-app check
+tilo-app certify
+tilo-app test
+tilo-app dev
+tilo-app run
+tilo-app shot
+tilo-app inspect
+tilo-app package
 ```
 
-If `tilo-app` is installed, omit `cargo run -p tilo-app-cli --bin tilo-app --` from these commands.
+Inside a Tilo checkout, `new` places the app in `apps/`, and
+`cargo run -p tilo-app-cli --bin tilo-app --` runs the CLI you are changing
+in place of the installed one.
 The app-aware commands find the app root from any file or directory inside it,
 run the same structural checks as `doctor`, and invoke Cargo with the app's
 manifest explicitly. They therefore behave the same for an app in this
@@ -57,11 +67,10 @@ tilo-app check --json | jq '.result.stages[] | select(.passed == false)'
 
 ### Outside the Tilo repository
 
-An app does not have to live in this repository. Install the CLI from the
-repository and create the app anywhere:
+An app does not have to live in this repository. With the CLI installed as
+above, create the app anywhere:
 
 ```bash
-cargo install --locked --git https://code.tilo.so/tilo/tilo.git tilo-app-cli
 tilo-app new reading-list --id org.example.reading-list
 ```
 
@@ -92,6 +101,38 @@ A standalone app builds the code this repository tests:
 Without `--id`, an app outside this repository is named `local.dev.<name>`.
 That name cannot be published. Choose an id in a namespace you control before
 you package the app.
+
+### System libraries
+
+`new`, `check`, `test`, `dev` and `package --static` need no system
+development packages. Wayland, X11 and xkbcommon are loaded when the app
+starts, and fonts are found without fontconfig's C library. The first Cargo
+command inside the app installs the compiler its `rust-toolchain.toml` pins,
+through rustup. An app's tests lay out text, so `check` and `test` need one
+installed font; every desktop has several, and on a bare machine or container
+`check` names the package (`google-noto-sans-fonts` on Fedora,
+`fonts-noto-core` on Debian and Ubuntu).
+
+A thin Tilo OS package, which `tilo-app package` builds by default, links the
+toolkit library the OS ships. That library has to be built with the OS's
+feature set, which links GStreamer, so it needs GStreamer's development files.
+`package` checks for them first and names the packages when they are missing:
+
+```bash
+sudo dnf install gstreamer1-devel gstreamer1-plugins-base-devel                # Fedora
+sudo apt install libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev          # Debian, Ubuntu
+```
+
+Without them, `tilo-app package --static` builds a larger package that links
+its own toolkit, and `tilo-app dev` restarts the app after each build
+instead of reloading it in its windows. The CI that `tilo-app add ci` writes
+builds in Tilo's builder image, which has them.
+
+The CLI installs from git rather than crates.io. `cargo install --git` builds
+it inside this workspace, so it gets the workspace's `[patch]` forks and, with
+`--locked`, its tested lockfile. The CLI also embeds that lockfile and the
+toolchain file for the apps it creates. A crates.io install would have none of
+these, and the workspace crates it depends on are not published.
 
 ## The Tilo-native contract
 
@@ -261,8 +302,8 @@ With a name and flags the command is deterministic and suitable for scripts;
 omitted `--template` defaults to `starter` outside an interactive terminal:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- new --list-templates
-cargo run -p tilo-app-cli --bin tilo-app -- new errands \
+tilo-app new --list-templates
+tilo-app new errands \
   --id org.example.errands \
   --title "Errands" \
   --template collection
@@ -560,7 +601,7 @@ Run a fast structural diagnosis without compiling the workspace when you want
 the checks without starting Cargo:
 
 ```bash
-cargo run -p tilo-app-cli --bin tilo-app -- doctor apps/reading-list
+tilo-app doctor reading-list
 ```
 
 `doctor` finds the app from any descendant path, parses the Cargo manifest,
