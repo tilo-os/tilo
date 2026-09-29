@@ -15,7 +15,7 @@ name = "tinker"
 path = "src/main.rs"
 
 [dependencies]
-tilo-clock = { path = "../tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 xdg-paths = { path = "../xdg-paths" }
 anyhow = { workspace = true }
 bounded-command = { path = "../bounded-command" }

@@ -8,15 +8,16 @@
 //! seals it and keeps the key.
 //!
 //! Each consumer describes its on-disk identity with a [`VaultFormat`]: the
-//! magic bytes, the Secret Service attributes and the DPAPI entropy. Changing
+//! magic bytes, the secret-store attributes and the DPAPI entropy. Changing
 //! any of those strands every existing vault of that format.
 //!
 //! # Key custody
 //!
-//! - [`Custody::SecretService`]: the freedesktop Secret Service holds the key
-//!   through `secret-tool`, apart from the ciphertext. An owner-only
-//!   `vault.key` left by local custody migrates only after a verified
-//!   Secret Service round-trip, then is removed.
+//! - [`Custody::System`]: the platform's secret store holds the key apart
+//!   from the ciphertext, through `tilo-secrets` — the Secret Service on
+//!   Linux (the item `secret-tool` used to write), the Keychain on macOS. An
+//!   owner-only `vault.key` left by local custody migrates only after a
+//!   verified round-trip, then is removed.
 //! - [`Custody::LocalFile`]: an owner-only `vault.key` beside the vault, for
 //!   headless and test environments without Secret Service.
 //! - `Custody::WindowsDpapi`: current-user DPAPI with a private
@@ -40,10 +41,10 @@
 
 use std::io::Read as _;
 use std::path::Path;
-use std::time::Duration;
 
 use tilo_seal::Label;
 use tilo_seal::envelope::{self, Context};
+use tilo_secrets::{PutOptions, SecretStore};
 use zeroize::Zeroizing;
 
 #[cfg(windows)]
@@ -69,8 +70,9 @@ fn key_from_bytes(bytes: &[u8]) -> Option<VaultKey> {
 /// Where a vault's key is held.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Custody {
-    /// The freedesktop Secret Service, through `secret-tool`.
-    SecretService,
+    /// The platform's secret store through `tilo-secrets`: the Secret
+    /// Service on Linux, the Keychain on macOS.
+    System,
     /// An owner-only key file beside the vault.
     LocalFile,
     /// Current-user DPAPI protecting a private key file.
@@ -83,7 +85,7 @@ impl Custody {
     #[must_use]
     pub fn label(self) -> &'static str {
         match self {
-            Self::SecretService => "System keyring",
+            Self::System => "System keyring",
             Self::LocalFile => "Local encrypted storage",
             #[cfg(windows)]
             Self::WindowsDpapi => "Windows user protection (DPAPI)",
@@ -91,7 +93,8 @@ impl Custody {
     }
 
     /// The strongest custody this session offers: DPAPI on Windows,
-    /// otherwise Secret Service when `secret-tool` answers, else a local key.
+    /// otherwise the platform's secret store when it answers, else a local
+    /// key.
     pub fn for_session() -> Self {
         #[cfg(windows)]
         {
@@ -99,8 +102,8 @@ impl Custody {
         }
         #[cfg(not(windows))]
         {
-            if secret_service_available() {
-                Self::SecretService
+            if system_store_available() {
+                Self::System
             } else {
                 Self::LocalFile
             }
@@ -119,7 +122,9 @@ pub struct VaultFormat {
     pub magic: &'static [u8; 4],
     /// Label shown by keyring managers for the Secret Service item.
     pub secret_service_label: &'static str,
-    /// Attribute pairs identifying the Secret Service item.
+    /// Attribute pairs identifying the key in the platform's secret store:
+    /// `application` names the `tilo-secrets` store and `purpose` the key in
+    /// it (the Secret Service item carries exactly these attributes).
     pub secret_service_attributes: &'static [(&'static str, &'static str)],
     /// Optional entropy mixed into DPAPI protection of the key.
     pub dpapi_entropy: &'static [u8],
@@ -157,7 +162,7 @@ impl VaultFormat {
     /// and no key is minted while `vault.enc` exists without one.
     pub fn load_or_create_key(&self, dir: &Path, custody: Custody) -> Option<VaultKey> {
         match custody {
-            Custody::SecretService => self.secret_service_key(dir),
+            Custody::System => self.system_key(dir, &self.system_store()),
             Custody::LocalFile => self.local_file_key(dir),
             #[cfg(windows)]
             Custody::WindowsDpapi => match windows::load_or_create_key(self, dir) {
@@ -170,12 +175,86 @@ impl VaultFormat {
         }
     }
 
-    fn secret_service_key(&self, dir: &Path) -> Option<VaultKey> {
-        match self.lookup_secret_service_key() {
+    /// The key of a vault that has no native directory (one in the page's
+    /// storage on the web): the platform's secret store only, with no local
+    /// key to migrate. A key is created only when `vault_exists` is false.
+    pub fn load_or_create_system_key(&self, vault_exists: bool) -> Option<VaultKey> {
+        self.system_only_key(vault_exists, &self.system_store())
+    }
+
+    /// [`Self::load_or_create_system_key`] in `store`.
+    pub fn load_or_create_system_key_in(
+        &self,
+        vault_exists: bool,
+        store: &SecretStore,
+    ) -> Option<VaultKey> {
+        self.system_only_key(vault_exists, store)
+    }
+
+    fn system_only_key(&self, vault_exists: bool, store: &SecretStore) -> Option<VaultKey> {
+        match self.lookup_system_key(store) {
+            Ok(Some(key)) => return Some(key),
+            Ok(None) if vault_exists => {
+                tracing::warn!(
+                    vault = self.name,
+                    "existing vault key is missing; refusing replacement"
+                );
+                return None;
+            }
+            Ok(None) => {}
+            Err(error) => {
+                tracing::warn!(vault = self.name, %error, "secret store lookup failed");
+                return None;
+            }
+        }
+        let key = VaultKey::generate().ok()?;
+        if let Err(error) = self.store_system_key(store, &key) {
+            tracing::warn!(vault = self.name, %error, "secret store key creation failed");
+            return None;
+        }
+        match self.lookup_system_key(store) {
+            Ok(Some(stored)) if stored == key => Some(key),
+            _ => {
+                tracing::warn!(
+                    vault = self.name,
+                    "the secret store did not return the key after storing it"
+                );
+                None
+            }
+        }
+    }
+
+    /// [`Self::load_or_create_key`] with [`Custody::System`], in `store`
+    /// rather than the platform's. For tests and hosts with their own store.
+    pub fn load_or_create_key_in(&self, dir: &Path, store: &SecretStore) -> Option<VaultKey> {
+        self.system_key(dir, store)
+    }
+
+    /// The store and key naming this format's vault key: the `application`
+    /// and `purpose` attributes, else the format's name.
+    fn system_item(&self) -> (&'static str, &'static str) {
+        let attribute = |name: &str| {
+            self.secret_service_attributes
+                .iter()
+                .find(|(attribute, _)| *attribute == name)
+                .map(|(_, value)| *value)
+        };
+        (
+            attribute("application").unwrap_or("Tilo"),
+            attribute("purpose").unwrap_or(self.name),
+        )
+    }
+
+    fn system_store(&self) -> SecretStore {
+        SecretStore::for_app(self.system_item().0)
+    }
+
+    fn system_key(&self, dir: &Path, store: &SecretStore) -> Option<VaultKey> {
+        match self.lookup_system_key(store) {
             Ok(Some(key)) => return Some(key),
             Ok(None) => {}
             Err(error) => {
-                tracing::warn!(vault = self.name, %error, "Secret Service lookup failed; refusing local fallback");
+                tracing::warn!(vault = self.name, %error, "secret store lookup failed; refusing local fallback");
                 return None;
             }
         }
@@ -206,11 +285,11 @@ impl VaultFormat {
             }
         };
 
-        if let Err(error) = self.store_secret_service_key(&key) {
-            tracing::warn!(vault = self.name, %error, "Secret Service key creation failed");
+        if let Err(error) = self.store_system_key(store, &key) {
+            tracing::warn!(vault = self.name, %error, "secret store key creation failed");
             return None;
         }
-        match self.lookup_secret_service_key() {
+        match self.lookup_system_key(store) {
             Ok(Some(stored)) if stored == key => {
                 if migrated && let Err(error) = std::fs::remove_file(&local_path) {
                     tracing::warn!(vault = self.name, %error, "migrated vault key but could not remove local copy");
@@ -220,43 +299,22 @@ impl VaultFormat {
             _ => {
                 tracing::warn!(
                     vault = self.name,
-                    "Secret Service did not return the key after storing it"
+                    "the secret store did not return the key after storing it"
                 );
                 None
             }
         }
     }
 
-    fn secret_service_args(&self, command: &'static str, label: Option<&str>) -> Vec<String> {
-        let mut args = vec![command.to_string()];
-        if let Some(label) = label {
-            args.push(format!("--label={label}"));
-        }
-        for (attribute, value) in self.secret_service_attributes {
-            args.push((*attribute).to_string());
-            args.push((*value).to_string());
-        }
-        args
-    }
-
-    fn lookup_secret_service_key(&self) -> Result<Option<VaultKey>, String> {
-        let output = bounded_command::run_os(
-            "secret-tool",
-            &self.secret_service_args("lookup", None),
-            None,
-            256,
-            Duration::from_secs(5),
-        )
-        .map_err(|error| format!("Secret Service lookup failed: {error}"))?;
-        if !output.status.success() {
-            return if output.stderr.is_empty() {
-                Ok(None)
-            } else {
-                Err("Secret Service refused or could not retrieve the vault key".to_string())
-            };
-        }
-        let encoded = String::from_utf8(output.stdout)
-            .map_err(|_| "Secret Service returned non-UTF-8 key material".to_string())?;
+    fn lookup_system_key(&self, store: &SecretStore) -> Result<Option<VaultKey>, String> {
+        let stored = store
+            .get_blocking(self.system_item().1)
+            .map_err(|error| format!("secret store lookup failed: {error}"))?;
+        let Some(stored) = stored else {
+            return Ok(None);
+        };
+        let encoded = std::str::from_utf8(stored.expose())
+            .map_err(|_| "the secret store returned non-UTF-8 key material".to_string())?;
         if encoded.trim().is_empty() {
             Ok(None)
         } else {
@@ -264,21 +322,19 @@ impl VaultFormat {
         }
     }
 
-    fn store_secret_service_key(&self, key: &VaultKey) -> Result<(), String> {
+    fn store_system_key(&self, store: &SecretStore, key: &VaultKey) -> Result<(), String> {
+        // Stored as lower-case hex, as `secret-tool` stored it, so keys
+        // written before and after this move read the same.
         let encoded = Zeroizing::new(encode_key(key.expose_secret()));
-        let output = bounded_command::run_os(
-            "secret-tool",
-            &self.secret_service_args("store", Some(self.secret_service_label)),
-            Some(encoded.as_bytes()),
-            256,
-            Duration::from_secs(5),
-        )
-        .map_err(|error| format!("Secret Service store failed: {error}"))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err("Secret Service refused or could not store the vault key".to_string())
-        }
+        store
+            .put_blocking(
+                self.system_item().1,
+                encoded.as_bytes(),
+                PutOptions {
+                    label: Some(self.secret_service_label.to_owned()),
+                },
+            )
+            .map_err(|error| format!("secret store refused the vault key: {error}"))
     }
 
     fn local_file_key(&self, dir: &Path) -> Option<VaultKey> {
@@ -328,17 +384,14 @@ impl VaultFormat {
     }
 }
 
-/// Whether `secret-tool` is installed and answers.
+/// Whether the platform's secret store answers on this session, and
+/// synchronously (the browser's store is async-only, which this crate's
+/// blocking API cannot use).
 #[cfg(not(windows))]
-pub fn secret_service_available() -> bool {
-    bounded_command::run(
-        "secret-tool",
-        &["--version"],
-        None,
-        256,
-        Duration::from_secs(2),
-    )
-    .is_ok_and(|output| output.status.success())
+pub fn system_store_available() -> bool {
+    tilo_secrets::availability(tilo_secrets::Feature::Blocking)
+        == tilo_secrets::Availability::Available
+        && SecretStore::for_app("Tilo").probe_blocking().is_ok()
 }
 
 /// A vault whose presence cannot be ruled out counts as existing, so an I/O
@@ -363,14 +416,14 @@ fn encode_key(key: &[u8; KEY_LEN]) -> String {
 
 fn decode_key(encoded: &str) -> Result<VaultKey, String> {
     if encoded.len() != KEY_LEN * 2 {
-        return Err("Secret Service key has the wrong length".into());
+        return Err("stored vault key has the wrong length".into());
     }
     // Decode straight into the zeroizing buffer; no intermediate `Vec` holds
     // key bytes.
     let mut key = Zeroizing::new([0u8; KEY_LEN]);
     hex::decode_to_slice(encoded, key.as_mut_slice())
-        .map_err(|_| "Secret Service key is not hexadecimal".to_string())?;
-    key_from_bytes(key.as_slice()).ok_or_else(|| "Secret Service key has the wrong length".into())
+        .map_err(|_| "stored vault key is not hexadecimal".to_string())?;
+    key_from_bytes(key.as_slice()).ok_or_else(|| "stored vault key has the wrong length".into())
 }
 
 #[cfg(test)]

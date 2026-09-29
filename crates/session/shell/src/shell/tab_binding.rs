@@ -999,37 +999,10 @@ pub fn remove_tab(tree: &mut WorkspaceTree, tab_id: TabId) -> bool {
         return false;
     }
 
-    let group = &mut tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups[group_idx];
-    let removed = group.tabs.remove(tab_idx);
+    let Some(removed) = tree.desktop.remove_tab(tab_id).map(|removed| removed.tab) else {
+        return false;
+    };
     tree.local_app_records.remove(&tab_id);
-    if group.active_tab == tab_id {
-        group.active_tab = group
-            .tabs
-            .get(tab_idx)
-            .or_else(|| group.tabs.last())
-            .map_or(0, |tab| tab.id);
-    }
-    if remove_group {
-        let removed_was_active = tree.desktop.active_group.get(&strip_id) == Some(&group_id);
-        tree.desktop.workspaces[ws_idx].strips[strip_idx]
-            .window_groups
-            .remove(group_idx);
-        if removed_was_active {
-            let groups = &tree.desktop.workspaces[ws_idx].strips[strip_idx].window_groups;
-            match groups
-                .get(group_idx)
-                .or_else(|| groups.last())
-                .map(|group| group.id)
-            {
-                Some(next) => {
-                    tree.desktop.active_group.insert(strip_id, next);
-                }
-                None => {
-                    tree.desktop.active_group.remove(&strip_id);
-                }
-            }
-        }
-    }
     if let Some(room) = tree.continuation_owned_tabs.remove(&tab_id) {
         tree.continuation_closed_tabs.insert(tab_id, room);
     }

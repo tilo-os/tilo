@@ -1825,13 +1825,8 @@ fn resolve_local_user_id() -> String {
     if let Some(v) = environment.identity.user_id.clone() {
         return v;
     }
-    #[cfg(unix)]
-    {
-        if let Some(id) = runtime_identity::load().ok().or_else(|| {
-            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
-        }) {
-            return person_id_from_key(id.group_public_key());
-        }
+    if let Some(id) = crate::local_identity::load() {
+        return person_id_from_key(id.group_public_key);
     }
     if let Ok(bytes) = std::fs::read("/var/lib/tilo/user-identity/pubkey.bin")
         && let Ok(key) = <[u8; 32]>::try_from(bytes.as_slice())
@@ -1843,15 +1838,6 @@ fn resolve_local_user_id() -> String {
         .account_name
         .clone()
         .unwrap_or_else(|| "local".to_string())
-}
-
-/// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else
-/// `$HOME/.config/tilo/identity/primary.json`.
-#[cfg(unix)]
-fn config_identity_path() -> Option<std::path::PathBuf> {
-    let base = crate::host::environment().paths.config_dir()?;
-    let p = base.join("tilo").join("identity").join("primary.json");
-    p.is_file().then_some(p)
 }
 
 /// A public key rendered as a person, in the one canonical form — so this

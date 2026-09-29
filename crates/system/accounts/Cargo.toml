@@ -12,7 +12,7 @@ path = "src/lib.rs"
 [dependencies]
 hex.workspace = true
 advisory-lock = { path = "../advisory-lock" }
-tilo-clock = { path = "../tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # Credentials are long-lived bearer secrets, so the vault is sealed on disk
 # with XChaCha20-Poly1305 under a 256-bit key held by Secret Service, DPAPI
 # or an owner-only local file; the shared crate owns both the format and
@@ -26,6 +26,9 @@ tracing.workspace = true
 # Resolves the per-user config root ($XDG_CONFIG_HOME/tilo) the same way the
 # Settings app does, so every app agrees on one directory.
 xdg-paths = { path = "../xdg-paths" }
+# The vault in a browser page, which has no native config directory.
+tilo-files = { path = "../../platform/tilo-files" }
+tilo-paths = { path = "../../platform/tilo-paths" }
 
 # getrandom's `SysRng` draws generated passwords from the OS CSPRNG;
 # `zeroize` wipes decrypted plaintext from the heap.
@@ -37,7 +40,6 @@ url.workspace = true
 # interface; the credential helper runs as a bounded child process.
 cloud-source = { path = "../cloud-source" }
 bounded-command = { path = "../../../crates/system/bounded-command" }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Tests stage and inspect key files through the vault's own private-file
@@ -46,3 +48,7 @@ private-fs = { path = "../private-fs" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

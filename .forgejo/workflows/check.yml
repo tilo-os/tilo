@@ -9,7 +9,10 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
   workflow_dispatch:
     inputs:
       builder_image:

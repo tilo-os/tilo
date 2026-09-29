@@ -16,14 +16,14 @@ path = "src/main.rs"
 [dependencies]
 fnv.workspace = true
 hex.workspace = true
-tilo-clock = { path = "../../crates/system/tilo-clock" }
+tilo-clock = { path = "../../crates/platform/tilo-clock" }
 xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared streaming and playback layer. The watch-page `VideoPlayer` uses the
 # same `media::MediaEngine` as the local player and editor preview.
-media = { path = "../../crates/media/core" }
+media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 automerge.workspace = true
 # The Tilo ACTION model: Tube's `actions` module exports its collaborative
 # operations (likes, queue, comment replies) as replayable actions the host's
@@ -42,7 +42,7 @@ anyhow.workspace = true
 # worker and excluded from the shots path.
 # rustls-tls because the distrobox image has no openssl/native-tls.
 reqwest = { workspace = true, features = ["blocking", "json", "query"] }
-tilo-net = { path = "../../crates/system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
 bounded-command = { path = "../../crates/system/bounded-command" }
 atomic-file = { path = "../../crates/system/atomic-file" }
 blake3.workspace = true
