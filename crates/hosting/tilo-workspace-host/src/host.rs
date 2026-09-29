@@ -11,6 +11,7 @@ use serde_json::json;
 use std::future::Future;
 use std::sync::Arc;
 use std::{io::BufRead, net::Ipv4Addr, path::Path, task::Poll, time::Duration};
+use tilo_action_broker::channel_encryption::InboundChannelGovernance;
 use tilo_relay::{
     Inbound, Relay, RelayClient, RelayCoeditSession, RelayConfig, WorkspaceBinding,
     daemon::RelayIdentity,
@@ -408,6 +409,8 @@ pub struct NativeSubscription {
     actions: Option<AttachedActions>,
     ready: bool,
     publication: std::sync::Mutex<crate::publication::PublicationCursor>,
+    /// Channel governance received for the steward, which the owner never admits.
+    governance: std::sync::Mutex<Vec<InboundChannelGovernance>>,
 }
 struct AttachedActions {
     task: Option<
@@ -445,6 +448,20 @@ impl NativeSubscription {
             self.ready = true;
         }
         event
+    }
+    fn queue_governance(&self, message: tilo_peer_state::NeighbourMsg) {
+        if let (Some(inbound), Ok(mut queue)) = (
+            InboundChannelGovernance::from_message(message),
+            self.governance.lock(),
+        ) {
+            queue.push(inbound);
+        }
+    }
+    fn take_governance(&self) -> Vec<InboundChannelGovernance> {
+        self.governance
+            .lock()
+            .map(|mut queue| std::mem::take(&mut *queue))
+            .unwrap_or_default()
     }
     pub fn into_client(self) -> RelayClient {
         Arc::try_unwrap(self.session)
@@ -726,6 +743,7 @@ impl LocalHost {
                     actions: None,
                     ready: false,
                     publication: Default::default(),
+                    governance: Default::default(),
                 })
             };
             let result = tokio::select! {
@@ -877,6 +895,8 @@ pub fn message_kind(message: &tilo_peer_state::NeighbourMsg) -> &'static str {
 /// The packet relay's port, kept in the owner root across restarts.
 pub const PACKET_RELAY_PORT_FILE: &str = "packet-relay-port";
 const STABLE_SESSION: Duration = Duration::from_secs(30);
+/// How often the channel steward runs its protocol over the live session.
+const STEWARD_INTERVAL: Duration = Duration::from_millis(100);
 /// Bound repeated retained-baseline replay when a connection cannot stay up.
 const MAX_RECONNECT_DELAY: Duration = Duration::from_secs(15);
 
@@ -1302,6 +1322,14 @@ where
                         };
                         let decoded = postcard::from_bytes::<tilo_peer_state::NeighbourMsg>(&bytes)
                             .map_err(anyhow::Error::from);
+                        if let Ok(message) = decoded.as_ref()
+                            && crate::channel_steward::is_governance(message)
+                        {
+                            if let (Some(current), Ok(message)) = (session.as_ref(), decoded) {
+                                current.queue_governance(message);
+                            }
+                            continue;
+                        }
                         let update = committed.begin(owner)?;
                         let received = decoded.and_then(|message| owner.receive(origin, message));
                         if !publish_owner_authority(update, owner)? {
@@ -1945,6 +1973,12 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
     }
     let collaboration = crate::collaboration::CollaborationService::new(invitation_transports);
     let mut action_runtime = ActionRuntime::new(committed.clone());
+    // Without its channel state the steward admits nobody: members wait.
+    let steward = crate::channel_steward::Steward::open(&owner)
+        .inspect_err(|problem| tracing::warn!(%problem, "channel steward unavailable"))
+        .ok();
+    let mut governance = tokio::time::interval(STEWARD_INTERVAL);
+    governance.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut pump = tokio::time::interval(Duration::from_millis(10));
     let mut action_error: Option<String> = None;
     let mut subscription_generation = 0u64;
@@ -2395,6 +2429,11 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
             message = action_runtime.network.recv(), if !action_runtime.retired && action_runtime.policy_time.is_some() => if let Some(message) = message
                 && let Some(current) = session.as_ref().filter(|s| owner.permits_publication() && s.is_ready())
                     && let Err(problem) = current.publish_presence(postcard::to_stdvec(&message)?) { action_error = Some(action_runtime.signing.fail(problem.to_string())); },
+            _ = governance.tick(), if steward.is_some() => {
+                if let (Some(steward), Some(current)) = (steward.as_ref(), session.as_ref().filter(|current| current.is_ready())) {
+                    steward.pump(&owner, &crate::channel_steward::RelayGovernance::new(current, current.take_governance()));
+                }
+            }
             connection = async { match reconnect.as_mut() {Some(attempt)=>(&mut attempt.task).await.context("native reconnect task failed")?,None=>std::future::pending().await} }, if reconnect.is_some() => {
                 reconnect.take();
                 match connection {
@@ -2453,6 +2492,11 @@ async fn run_owner(mut owner: SessionOwner, ready_path: &Path) -> Result<()> {
                         if let (tilo_peer_state::TransportOrigin::UntrustedPresence(author), Ok(message)) = (&origin, &decoded)
                             && crate::legacy_windows::LegacyWindows::carries(message) {
                             if let Some(installed) = delivery_ingress.as_mut() { installed.legacy_window(*author, message); }
+                            continue;
+                        }
+                        if let Ok(message) = decoded.as_ref()
+                            && crate::channel_steward::is_governance(message) {
+                            if let (Some(current), Ok(message)) = (session.as_ref(), decoded) { current.queue_governance(message); }
                             continue;
                         }
                         let kind = decoded.as_ref().map(message_kind).unwrap_or("undecodable");
