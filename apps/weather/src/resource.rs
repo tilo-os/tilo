@@ -3,13 +3,16 @@
 
 use automerge::AutoCommit;
 use ui::framework::{Dispatcher, ResourceApp, ResourceSurface, SurfaceCx, ViewCx};
+use ui::tilo_actions::{ActionParam, ActionSpec, ParamType};
 use ui::tilo_resource::{ActionDecl, Doc, ModelError, Resource, SearchEntry};
 use ui::widget::Element;
 
-use crate::actions::{WEATHER_ACTION_TYPE, WeatherAction, register};
+use crate::actions::{
+    WEATHER_ACTION_TYPE, WeatherAction, document_children, register, root_local_operations,
+};
 use crate::app::WeatherApp;
 use crate::doc::WeatherDoc;
-use crate::model::WeatherModel;
+use crate::model::{SavedLocation, WeatherModel};
 
 /// The weather locations resource.
 pub struct Weather;
@@ -31,8 +34,66 @@ impl Resource for Weather {
     }
 
     fn declarations() -> Vec<ActionDecl<Self>> {
-        // Location open/refresh stay View/Effect specs on the published tree.
-        Vec::new()
+        vec![ActionDecl::new(
+            "add-saved-location",
+            "Save location",
+            vec![
+                ActionParam::required("name", ParamType::Text, "City or place name"),
+                ActionParam::required("country", ParamType::Text, "Country name"),
+                ActionParam::required("latitude", ParamType::Number, "Latitude from -90 to 90"),
+                ActionParam::required("longitude", ParamType::Number, "Longitude from -180 to 180"),
+                ActionParam::optional("region", ParamType::Text, "Administrative region"),
+                ActionParam::optional("country_code", ParamType::Text, "ISO country code"),
+                ActionParam::optional(
+                    "timezone",
+                    ParamType::Text,
+                    "IANA timezone; defaults to auto",
+                ),
+            ],
+            |args, _| {
+                let name = args
+                    .text("name")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let country = args
+                    .text("country")
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty());
+                let latitude = args
+                    .number("latitude")
+                    .filter(|value| (-90.0..=90.0).contains(value));
+                let longitude = args
+                    .number("longitude")
+                    .filter(|value| (-180.0..=180.0).contains(value));
+                match (name, country, latitude, longitude) {
+                    (Some(name), Some(country), Some(latitude), Some(longitude)) => {
+                        Ok(WeatherAction::AddLocation {
+                            location: SavedLocation::new(
+                                name,
+                                args.text("region").unwrap_or_default().trim(),
+                                country,
+                                args.text("country_code").unwrap_or_default().trim(),
+                                latitude,
+                                longitude,
+                                args.text("timezone").unwrap_or("auto").trim(),
+                            ),
+                        })
+                    }
+                    _ => Err("name, country, and valid latitude/longitude are required".into()),
+                }
+            },
+        )]
+    }
+
+    fn children(state: &WeatherModel) -> Vec<tilo_actions::Resource> {
+        document_children(state)
+    }
+
+    fn local_operations() -> Vec<ActionSpec> {
+        // Network refresh is an Effect with no document delta. Standalone hosts
+        // overlay offline / empty-library availability; the live widget refuses
+        // when fetches are disabled.
+        root_local_operations()
     }
 
     fn search(state: &WeatherModel) -> Vec<SearchEntry> {
@@ -78,6 +139,8 @@ impl ResourceSurface<Weather> for WeatherApp {
 pub(crate) struct ActionSink {
     local: ui::ActionHost,
     framework: Option<Dispatcher<Weather>>,
+    /// Set by [`Self::attach`]; tests can flip it without a real dispatcher.
+    hosted: bool,
 }
 
 impl Default for ActionSink {
@@ -85,6 +148,7 @@ impl Default for ActionSink {
         Self {
             local: ui::ActionHost::new(),
             framework: None,
+            hosted: false,
         }
     }
 }
@@ -92,6 +156,11 @@ impl Default for ActionSink {
 impl ActionSink {
     pub(crate) fn attach(&mut self, dispatcher: Dispatcher<Weather>) {
         self.framework = Some(dispatcher);
+        self.hosted = true;
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.hosted
     }
 
     pub(crate) fn dispatch_with_context(
@@ -113,5 +182,11 @@ impl ActionSink {
 
     pub(crate) fn take_committed(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.local.take_committed()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.hosted = true;
     }
 }
