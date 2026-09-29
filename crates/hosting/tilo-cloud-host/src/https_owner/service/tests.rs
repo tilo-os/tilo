@@ -86,8 +86,9 @@ impl Client {
     }
     /// [`Self::post`], retried while the service answers its retryable 503
     /// (the Store lock stayed contended past the deferral bound, as on a
-    /// loaded runner), exactly as a delivery client retries. Any other status
-    /// is returned; the bound only catches a service that never recovers.
+    /// loaded runner), exactly as the browser's delivery, onboarding and
+    /// live-grant clients retry. Any other status is returned; the bound only
+    /// catches a service that never recovers.
     async fn post_retrying(&self, target: &str, body: Vec<u8>) -> (reqwest::StatusCode, Vec<u8>) {
         let deadline = tokio::time::Instant::now() + Duration::from_secs(60);
         loop {
@@ -881,7 +882,7 @@ async fn onboard(
             .to_bytes(),
     );
     let (status, reply) = client
-        .post(operation.path(), request.encode().unwrap())
+        .post_retrying(operation.path(), request.encode().unwrap())
         .await;
     assert_eq!(
         status,
