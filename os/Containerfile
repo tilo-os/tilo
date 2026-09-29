@@ -1642,6 +1642,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && rm -rf /usr/lib/bootupd /usr/lib/ostree-boot \
     && dnf clean all && ${FINALIZE_RPMDB}
 
+# The fedora-bootc base ships the NFS client and server stack. The Tilo kernel
+# has no NFS or rpc_pipefs (os/kernel/config-fragments/tilo.config: remote
+# storage is the userspace QuickFS protocol), so its units could only fail at
+# every boot (var-lib-nfs-rpc_pipefs.mount: "unknown filesystem type
+# 'rpc_pipefs'"). Remove the packages rather than their units; rpm -e without
+# --nodeps fails the build if anything else comes to need them.
+RUN rpm -e nfs-utils nfs-client-utils nfsv3-client-utils nfsv4-client-utils \
+        nfs-common-utils rpcbind \
+    && ${FINALIZE_RPMDB}
+
 # Keep encrypted-root unlock in the same visual path as the UKI splash.
 # Assets are generated at build time so the source remains reviewable and the
 # initramfs does not depend on a desktop image stack. Copied here, beside their
@@ -2049,6 +2059,8 @@ COPY os/usr/lib/udev/rules.d/90-tilo-backlight.rules os/usr/lib/udev/rules.d/60-
 # targets `/`, which is a composefs overlay here and cannot be grown; the
 # drop-in stands it down on this layout so the two never both apply.
 COPY os/usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf /usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf
+# The ESP random seed refresh runs only where /boot is writable; Tilo's is not.
+COPY os/usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf /usr/lib/systemd/system/systemd-boot-random-seed.service.d/10-tilo-read-only-boot.conf
 
 # systemd-tmpfiles snippets — pre-create /var/workspace and
 # /var/cache/quick-fs at boot. bootc images mount the root r/o, so
@@ -2585,7 +2597,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     # Stage model firmware and the hashed device-tree profile before dracut and
     # the rootfs split. The UKI builder then embeds that exact device tree.
     install -Dm0644 /run/hardware_profile.py /usr/lib/tilo/hardware_profile.py; \
-    python3 /run/tilo-prepare-hardware-profile.py \
+    # -B: the script imports hardware_profile from /run, and its bytecode
+    # (which records the checkout's mtime) would otherwise stay in the layer.
+    python3 -B /run/tilo-prepare-hardware-profile.py \
         --profile "$TILO_HARDWARE_PROFILE" --root / --kernel-version "$kver" \
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
@@ -2975,6 +2989,16 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
         binutils \
     && dnf clean all
 COPY os/dev/uki.sh os/dev/uki-hardware-profile.py os/dev/hardware_profile.py os/dev/make-boot-splash.py /usr/local/bin/
+
+# Nothing ships from this stage. It gathers the image's small tool stages, which
+# change with neither the Rust build nor the rootfs, into one target that CI
+# caches with its intermediate steps: the image build then neither repeats
+# their dnf transactions nor pulls the RPM snapshot to run them.
+FROM scratch AS image-tool-stages
+COPY --from=uki-tools /usr/local/bin/uki.sh /uki-tools/
+COPY --from=doubletake-builder /out/ /doubletake/
+COPY --from=fluxcast-builder /src/src/ /fluxcast/
+COPY --from=joycond-builder /out/ /joycond/
 
 FROM uki-tools AS uki
 # The first pass uses a deterministic all-zero placeholder. `bootc install`

@@ -374,6 +374,8 @@ async fn enrolled_deployment() -> (
     std::net::TcpListener,
     std::net::UdpSocket,
 ) {
+    // The served broker, runtime and HTTPS threads open this Store too.
+    crate::storage::test_journal::journal_this_process();
     let (transport_root, store_root, config, ready, tcp, udp) =
         crate::https_owner::serve::tests::fixture().await;
     let owner_root = SigningKey::from_bytes(&[7; 32]);
@@ -1546,7 +1548,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     handshake(&mut client, &root).await;
     let first = browser_delta(&root, MACHINE, "kept-one ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
+        .post_retrying("/peer/v3/state", chunk([1; 16], &first, 0, first.len()))
         .await;
     assert_eq!(
         status,
@@ -1556,7 +1558,7 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
     );
     let second = browser_delta(&root, MACHINE, "kept-two ");
     let (status, body) = client
-        .post("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
+        .post_retrying("/peer/v3/state", chunk([2; 16], &second, 0, second.len()))
         .await;
     assert_eq!(
         status,
@@ -1575,8 +1577,10 @@ async fn cloud_https_retention_rotation_recovers_consumers_by_snapshot_and_suffi
             break;
         }
     }
+    // A cursor ack is idempotent; the delivery client re-sends it after a
+    // retryable 503, as it does every state upload.
     let (status, _) = client
-        .post(
+        .post_retrying(
             "/peer/v3/acks",
             framed(
                 MessageType::CursorAck,

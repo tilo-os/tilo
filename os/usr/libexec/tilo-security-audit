@@ -120,9 +120,18 @@ case "$lock" in
 esac
 
 # Memory-init + heap hardening kargs
-for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none systemd.import_credentials=no; do
+for k in init_on_alloc=1 init_on_free=1 slab_nomerge page_alloc.shuffle=1 vsyscall=none; do
   has_karg "$k" && ok "karg $k" || warn "karg $k MISSING"
 done
+# A dev image (os/Containerfile.dev, /usr/lib/tilo/image-flavour = dev) drops
+# this karg on purpose: tilo-vm hands the VM its SSH key as a credential.
+if has_karg systemd.import_credentials=no; then
+  ok "karg systemd.import_credentials=no"
+elif [ "$(cat /usr/lib/tilo/image-flavour 2>/dev/null)" = dev ]; then
+  note "dev image: system credentials are imported (tilo-vm's SSH key)"
+else
+  warn "karg systemd.import_credentials=no MISSING"
+fi
 case " $cmdline " in *randomize_kstack_offset=on*|*randomize_kstack_offset=1*) ok "karg randomize_kstack_offset";; *) warn "karg randomize_kstack_offset MISSING";; esac
 
 # Device and user signing keys are deliberately never written to persistent
@@ -184,35 +193,45 @@ check_sysctl kernel.kptr_restrict 2
 check_sysctl kernel.dmesg_restrict 1
 check_sysctl kernel.unprivileged_bpf_disabled 1
 running_kernel_config="/usr/lib/modules/$(uname -r)/config"
-if grep -Fqx '# CONFIG_KEXEC is not set' "$running_kernel_config" 2>/dev/null; then
+# An option is compiled only when the config sets it (=y or =m). Kconfig writes
+# "# CONFIG_X is not set" only for options visible on this architecture, so an
+# option arm64 does not have at all (X86_*, removed ones like DEVKMEM) has no
+# line, and is just as absent. An unreadable config proves nothing.
+kconfig_off() {
+  [ -r "$running_kernel_config" ] || return 1
+  ! grep -Eq "^CONFIG_$1=(y|m)$" "$running_kernel_config"
+}
+[ -r "$running_kernel_config" ] \
+  || warn "running kernel config $running_kernel_config is unreadable; kernel options unverified"
+if kconfig_off KEXEC; then
   ok "kexec interfaces are not compiled"
 else
   check_sysctl kernel.kexec_load_disabled 1
 fi
-if grep -Fqx '# CONFIG_HIBERNATION is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off HIBERNATION; then
   ok "kernel hibernation image parser is not compiled"
 else
   warn "kernel hibernation remains compiled despite zram-only swap"
 fi
-if grep -Fqx '# CONFIG_MODULE_UNLOAD is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_LIVEPATCH is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off MODULE_UNLOAD \
+   && kconfig_off LIVEPATCH; then
   ok "running kernel cannot unload modules or install live patches"
 else
   warn "running kernel retains module-unload or livepatch mutation paths"
 fi
-if grep -Fqx '# CONFIG_ACPI_CUSTOM_METHOD is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_ACPI_CONFIGFS is not set' "$running_kernel_config" 2>/dev/null \
-   && grep -Fqx '# CONFIG_EFI_CUSTOM_SSDT_OVERLAYS is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off ACPI_CUSTOM_METHOD \
+   && kconfig_off ACPI_CONFIGFS \
+   && kconfig_off EFI_CUSTOM_SSDT_OVERLAYS; then
   ok "running kernel accepts no runtime ACPI or SSDT injection"
 else
   warn "running kernel retains a runtime ACPI or SSDT injection path"
 fi
-if grep -Fqx '# CONFIG_DEBUG_FS is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off DEBUG_FS; then
   ok "kernel debugfs control surface is not compiled"
 else
   warn "kernel debugfs control surface remains compiled"
 fi
-if grep -Fqx '# CONFIG_PROC_PAGE_MONITOR is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off PROC_PAGE_MONITOR; then
   ok "procfs physical-page monitoring interfaces are not compiled"
 else
   warn "procfs still exposes pagemap, smaps, or clear_refs interfaces"
@@ -227,8 +246,9 @@ else
   warn "kernel lacks BPF LSM or BTF required by systemd RestrictFileSystems="
 fi
 active_lsms="$(cat /sys/kernel/security/lsm 2>/dev/null || true)"
-case ":$active_lsms:" in
-  *:bpf:*) ok "BPF LSM is active for systemd filesystem restrictions" ;;
+# /sys/kernel/security/lsm is comma-separated.
+case ",$active_lsms," in
+  *,bpf,*) ok "BPF LSM is active for systemd filesystem restrictions" ;;
   *)       warn "BPF LSM is absent from the active LSM stack: ${active_lsms:-unavailable}" ;;
 esac
 for interface in \
@@ -256,7 +276,7 @@ for interface in \
   LIBFCOE SCSI_FC_ATTRS NET_FC NVME_RDMA NVME_FC NVME_TCP NVME_TARGET NVME_HOST_AUTH NVME_AUTH \
   NVME_KEYRING BLK_DEV_RNBD_CLIENT BLK_DEV_RNBD_SERVER TARGET_CORE \
   INFINIBAND; do
-  if grep -Fqx "# CONFIG_${interface} is not set" "$running_kernel_config" 2>/dev/null; then
+  if kconfig_off "$interface"; then
     ok "unused privileged kernel interface $interface is not compiled"
   else
     warn "unused privileged kernel interface $interface remains compiled"
@@ -265,20 +285,20 @@ done
 for protocol in \
   ATM CAN CAIF HAMRADIO 6LOWPAN AF_RXRPC IEEE802154 IP_DCCP IP_SCTP AF_KCM \
   LAPB L2TP MCTP MPLS NET_NSH NFC PHONET RDS SMC TIPC X25; do
-  if grep -Fqx "# CONFIG_${protocol} is not set" "$running_kernel_config" 2>/dev/null; then
+  if kconfig_off "$protocol"; then
     ok "unused kernel protocol $protocol is not compiled"
   else
     warn "unused kernel protocol $protocol remains compiled"
   fi
 done
 check_sysctl kernel.perf_event_paranoid 3
-if grep -Fqx '# CONFIG_IO_URING is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off IO_URING; then
   ok "io_uring syscall and worker surface is not compiled"
 else
   check_sysctl kernel.io_uring_disabled 2
 fi
 check_sysctl kernel.randomize_va_space 2
-if grep -Fqx '# CONFIG_USERFAULTFD is not set' "$running_kernel_config" 2>/dev/null; then
+if kconfig_off USERFAULTFD; then
   ok "userfaultfd page-fault control surface is not compiled"
 else
   check_sysctl vm.unprivileged_userfaultfd 0
@@ -518,9 +538,10 @@ case "${roottype:-}" in
   *)     note "root filesystem is NOT encrypted ($rootsrc, $roottype) — install with --encrypt to change that" ;;
 esac
 
-# hidepid on /proc (other users' processes hidden)
-if findmnt -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
-  ok "hidepid on /proc: $(findmnt -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
+# hidepid on /proc (other users' processes hidden). Read PID 1's /proc: the
+# audit's own sandbox (ProtectKernelTunables=) mounts a fresh /proc without it.
+if findmnt --task 1 -no OPTIONS /proc 2>/dev/null | grep -qE 'hidepid=(2|invisible|1)'; then
+  ok "hidepid on /proc: $(findmnt --task 1 -no OPTIONS /proc | tr ',' '\n' | grep hidepid)"
 else
   warn "hidepid on /proc NOT set"
 fi
