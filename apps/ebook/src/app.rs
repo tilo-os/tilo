@@ -3962,6 +3962,16 @@ impl BooksApp {
         self.actions.attach(dispatcher);
     }
 
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    /// Test-only: mark the sink hosted without constructing a framework dispatcher.
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
+    }
+
     /// The last [`EncodedAction`](tilo_actions::EncodedAction) an on-page
     /// affordance dispatched: a control and its Ctrl+K entry must build the
     /// identical action.
@@ -5838,16 +5848,14 @@ impl ui::search::capability::SearchSource for BooksApp {
 
 impl ui::resources::PublishesResources for BooksApp {
     /// Publish the open book + its annotations so the host's Ctrl+K action
-    /// palette scopes to them, via [`crate::actions`]'s
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl.
+    /// palette scopes to them. When the framework hosts the surface,
+    /// [`tilo_resource::publish`] already owns the library Document door;
+    /// hosted returns nothing rather than a second hand-built tree. Live
+    /// reading-chrome for the open book stays on exact [`Self::resource`]
+    /// lookup.
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // The framework root publishes the library and its books. Keep only
-        // reading settings when hosted — they are not Resource::children.
         if self.actions.is_hosted() {
-            return self
-                .publish_resource(doc, "ebook.settings")
-                .into_iter()
-                .collect();
+            return Vec::new();
         }
         self.publish_resources(doc)
     }
@@ -5863,7 +5871,7 @@ impl ui::resources::PublishesResources for BooksApp {
             _ => return None,
         };
         let roots: &[&str] = if self.actions.is_hosted() {
-            &["ebook.settings"]
+            &[]
         } else {
             &["ebook.library", "ebook.settings"]
         };
