@@ -237,6 +237,13 @@ class OsDevLaneTests(unittest.TestCase):
             gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
             self.assertIn("steps.release-mode.outputs.dev-fast != 'true'", gate.splitlines()[1])
 
+    def test_dev_images_carry_the_apps_of_their_commit(self):
+        workflow = WORKFLOW.read_text()
+        step = workflow.split("      - name: Materialize the pinned app collection\n", 1)[1]
+        self.assertTrue(step.startswith("        if: github.event_name != 'workflow_call'\n"))
+        self.assertLess(workflow.index("echo 'TILO_PREBUILT_APPS=0' >> \"$GITHUB_ENV\""),
+                        workflow.index("      - name: Materialize the pinned app collection\n"))
+
     def test_dev_series_names_the_ref_and_commit(self):
         workflow = WORKFLOW.read_text()
         block = workflow.split("      - name: Select build, validation, or publication mode\n", 1)[1]
