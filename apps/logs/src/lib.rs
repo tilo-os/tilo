@@ -5,12 +5,12 @@
 //! scrollable, severity-coloured entry list; a detail pane that surfaces
 //! every field of the selected record; and a filter bar (free-text
 //! search, unit, boot, and a syslog-priority threshold) plus a
-//! live-tail toggle. Selection, filters, and search are deliberately local:
-//! they describe one person's investigation and must not yank a collaborator's
-//! view. Live tail is also local because it starts this process's journal
-//! poller; journal entries themselves are an external render cache. The resource catalogue
-//! also exposes refresh, follow/pause, and an explicit-path JSON Lines export;
-//! it publishes metadata and stable entry identities, never raw log payloads.
+//! live-tail toggle. Shared filter and selection preferences sync as document
+//! actions on [`resource::Logs`]. Live tail is a process-local Effect (it
+//! starts this process's journal poller); journal entries themselves are an
+//! external render cache. The resource catalogue also exposes refresh,
+//! follow/pause, and an explicit-path JSON Lines export; it publishes
+//! metadata and stable entry identities, never raw log payloads.
 //!
 //! Data sources:
 //! - **Live**: parses `journalctl -o json` ([`journal::load_live`]).
@@ -47,6 +47,7 @@
 
 pub mod actions;
 pub mod app;
+pub mod doc;
 pub mod framework_history;
 #[cfg(test)]
 mod framework_history_tests;
