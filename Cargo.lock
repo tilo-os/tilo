@@ -19699,6 +19699,7 @@ dependencies = [
  "wayland-protocols-misc",
  "wayland-protocols-wlr",
  "wayland-sys",
+ "web-time",
  "winnow 0.7.14",
  "writeable",
  "x11rb",
