@@ -146,18 +146,23 @@ mod tests {
         Widget::sync(&mut view, &mut state.doc, &state.root);
         assert!(
             !view.is_framework_hosted(),
-            "standalone stays on the full hand tree"
+            "standalone publishes the document door"
         );
 
         let standalone = view.resources(&state.doc);
         assert_eq!(standalone.len(), 1);
         assert_eq!(standalone[0].kind, HexEditor::KIND);
+        let cursor = standalone[0]
+            .children
+            .iter()
+            .find(|child| child.kind == "hex_editor.cursor")
+            .expect("cursor edits stay a live child");
         assert!(
-            standalone[0]
+            cursor
                 .actions
                 .iter()
                 .any(|action| action.id == "insert-byte"),
-            "standalone nests cursor edits under the document root"
+            "standalone keeps cursor edits beside the document door"
         );
 
         view.mark_hosted_for_test();
