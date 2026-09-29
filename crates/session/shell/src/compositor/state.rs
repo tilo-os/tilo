@@ -3206,12 +3206,40 @@ pub(crate) fn is_privileged_client(client: &Client) -> bool {
 /// second client's window overwriting the first's. The id is the client's
 /// connection index in the high 32 bits, protocol id in the low 32 — both stable, so it can be recomputed rather than remembered, staying a plain `u64` for the peer-sync wire protocol.
 pub fn surface_id(surface: &WlSurface) -> u64 {
-    let index = surface
-        .client()
-        .and_then(|c| c.get_data::<ClientState>().map(|d| d.index))
-        // A surface whose client is gone can't collide with a live one; reserving 0 keeps it out of every live client's range.
-        .unwrap_or(0);
-    (u64::from(index) << 32) | u64::from(surface.id().protocol_id())
+    let protocol_id = u64::from(surface.id().protocol_id());
+    if let Some(client) = surface.client() {
+        let index = client.get_data::<ClientState>().map_or(0, |d| d.index);
+        return (u64::from(index) << 32) | protocol_id;
+    }
+    // A client that exits is torn down after it has gone, so its surfaces
+    // keep the id they were known by: that is what their tabs, input
+    // routing and frames are filed under.
+    if surface
+        .data::<smithay::wayland::compositor::SurfaceUserData>()
+        .is_some()
+        && let Some(id) = wl_compositor::with_states(surface, |states| {
+            states.data_map.get::<KnownSurfaceId>().map(|known| known.0)
+        })
+    {
+        return id;
+    }
+    // Reserving index 0 keeps an unknown dead surface out of every live
+    // client's range.
+    protocol_id
+}
+
+/// The [`surface_id`] a surface had while its client was alive.
+struct KnownSurfaceId(u64);
+
+/// Record `surface`'s [`surface_id`] for after its client has gone.
+fn remember_surface_id(surface: &WlSurface) -> u64 {
+    let id = surface_id(surface);
+    wl_compositor::with_states(surface, |states| {
+        states
+            .data_map
+            .insert_if_missing_threadsafe(|| KnownSurfaceId(id));
+    });
+    id
 }
 
 fn authenticated_toplevel_identity(
@@ -3262,10 +3290,8 @@ impl CompositorHandler for State {
     }
 
     fn new_surface(&mut self, surface: &WlSurface) {
-        self.surface_handles.insert(
-            crate::compositor::state::surface_id(surface),
-            surface.clone(),
-        );
+        self.surface_handles
+            .insert(remember_surface_id(surface), surface.clone());
         // A dmabuf remains client-owned until wl_buffer.release. Capture it
         // from pending state on a worker, and block this commit from replacing
         // (and releasing) the previous buffer until that read is done.
