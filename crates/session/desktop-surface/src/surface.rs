@@ -467,7 +467,8 @@ impl DesktopSurface {
             }
         }
         for mut host in live.into_values() {
-            self.close_reports.extend(host.close_components());
+            self.close_reports
+                .extend(ui::component_lifecycle::close_components(&mut host));
         }
         // Rows rebuilt above built every tab; the rest rebuild when shown.
         self.unbuilt.clear();
@@ -1139,7 +1140,10 @@ fn find_group(
 }
 
 impl Widget for DesktopSurface {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::component_lifecycle::ComponentLifecycle
+    );
 
     fn name(&self) -> &'static str {
         "DesktopSurface"
@@ -1378,14 +1382,16 @@ impl Widget for DesktopSurface {
         let row = self.shown_row().is_some_and(Widget::take_structure_dirty);
         own || row
     }
+}
 
+impl ui::component_lifecycle::ComponentLifecycle for DesktopSurface {
     /// Every tab's application, shown or not, closes with the surface.
     fn close_components(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        self.each_host(Widget::close_components)
+        self.each_host(|host| ui::component_lifecycle::close_components(host))
     }
 
     fn take_component_close_reports(&mut self) -> Vec<ui::application::ComponentCloseReport> {
-        self.each_host(Widget::take_component_close_reports)
+        self.each_host(|host| ui::component_lifecycle::take_component_close_reports(host))
     }
 }
 
