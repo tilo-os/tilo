@@ -16,14 +16,41 @@ use ui::widget::Element;
 use crate::actions;
 use crate::app::TypstApp;
 
-/// No replayable document action beyond the shared text object — see
-/// [`crate::actions`]. The empty enum still satisfies the resource contract
-/// so APPLY/GROUP exist for a future structural vocabulary.
+/// Document actions for the shared source text. Keystrokes stay on the CRDT
+/// text object the editor is bound to; creating that object and replacing the
+/// whole source are actions.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub enum TypstDocAction {}
+pub enum TypstDocAction {
+    /// Create `source` when it is missing and seed it once.
+    EnsureSource { seed: String },
+    /// Replace the shared source, diffing the unchanged prefix and suffix.
+    ReplaceSource { text: String },
+}
 
 impl Action for TypstDocAction {
-    fn apply(&self, _doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+    fn apply(&self, doc: &mut ui::tilo_actions::Doc) -> Result<(), ActionError> {
+        use automerge::transaction::Transactable;
+        use automerge::{ObjType, ReadDoc, Value};
+        let (id, created) = match doc.get(automerge::ROOT, "source")? {
+            Some((Value::Object(ObjType::Text), id)) => (id, false),
+            Some(_) => {
+                return Err(ActionError::Refused("typst source is not text".into()));
+            }
+            None => (
+                doc.put_object(automerge::ROOT, "source", ObjType::Text)?,
+                true,
+            ),
+        };
+        match self {
+            Self::EnsureSource { seed } => {
+                if created && !seed.is_empty() {
+                    doc.splice_text(&id, 0, 0, seed)?;
+                }
+            }
+            Self::ReplaceSource { text } => {
+                ui::doc::splice_text_diffed(doc, &id, text);
+            }
+        }
         Ok(())
     }
 }
