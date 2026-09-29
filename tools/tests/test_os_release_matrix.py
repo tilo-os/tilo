@@ -34,6 +34,7 @@ def plan(
     published: str = "",
     configured: str = "true",
     integration: str = "",
+    arches: str = "",
 ) -> tuple[bool, bool, list[dict[str, str]]]:
     with tempfile.TemporaryDirectory() as temporary:
         output = Path(temporary) / "output"
@@ -48,6 +49,7 @@ def plan(
                 "PUBLISHED_REVISION": published,
                 "PUBLICATION_CONFIGURED": configured,
                 "INTEGRATION_REVISION": integration,
+                "DEV_ARCHES": arches,
             }
         )
         subprocess.run(["bash", "-c", matrix_script()], env=environment, check=True)
@@ -202,6 +204,11 @@ class OsDevLaneTests(unittest.TestCase):
                     {"arch": "x86_64", "runner": "runner-large"},
                     {"arch": "aarch64", "runner": "runner-large-arm64"},
                 ])
+        with self.subTest(phase='a pull request builds the architectures os-dev chose'):
+            _, _, lanes = plan("refs/pull/12/head", "workflow_call", "", arches='["x86_64"]')
+            self.assertEqual(lanes, [{"arch": "x86_64", "runner": "runner-large"}])
+            self.assertIn("arches: ${{ needs.arches.outputs.arches }}",
+                          (ROOT / ".forgejo/workflows/os-dev.yml").read_text())
         with self.subTest(phase='a newer commit of the ref supersedes the build'):
             self.assertEqual(
                 concurrency_group("refs/pull/12/head", "workflow_call", ""),
