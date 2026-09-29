@@ -82,11 +82,11 @@ class BuilderResolutionTests(unittest.TestCase):
         self.assertNotIn('credentials:', shared)
         self.assertNotIn('enable-openid-connect:', shared)
         callers = (
-            'weekly-quality.yml',
-            'nightly.yml',
-            'legacy-app-e2e.yml',
-            'fs-fuse.yml',
-            'staging-loop.yml',
+            'ci-weekly-quality.yml',
+            'ci-nightly.yml',
+            'ci-legacy-apps.yml',
+            'ci-filesystem.yml',
+            'ci-staging-loop.yml',
         )
         for name in callers:
             workflow = (ROOT / '.forgejo/workflows' / name).read_text()

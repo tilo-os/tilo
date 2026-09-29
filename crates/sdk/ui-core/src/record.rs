@@ -20,6 +20,7 @@
 //! in each frame. Not all app state is a record — a theme or account stays
 //! in the package-level document ([`crate::persist`]) instead.
 
+pub mod capability;
 use std::collections::{BTreeMap, HashMap};
 
 use crate::portable_storage::PortableStorage;
@@ -3473,7 +3474,7 @@ pub fn tick(
     room: Option<&mut AutoCommit>,
     widget: &dyn crate::widget::Widget,
 ) -> Option<RecordCheckout> {
-    let want = widget.record_intent()?;
+    let want = crate::record::capability::record_intent(widget)?;
     set.checkout(state, room, &want).then_some(want)
 }
 

@@ -219,7 +219,7 @@ jobs:
         true
       }}
     # Forgejo does not supply OIDC credentials to expanded reusable jobs, so
-    # snapshot-rpms.yml owns all signing as a standalone main workflow. Resolve
+    # build-rpms.yml owns all signing as a standalone main workflow. Resolve
     # only its exact content fingerprint here; never fall back to a stale tag.
     runs-on: runner-quality
     timeout-minutes: 10
@@ -252,7 +252,7 @@ jobs:
         run: |
           set -euo pipefail
           ./os/dev/resolve-rpm-snapshot.sh || {
-            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone snapshot-rpms.yml main run, then retry this release.'
+            echo '::error::No signed RPM snapshot for this checkout. Wait for the standalone build-rpms.yml main run, then retry this release.'
             exit 1
           }
 
@@ -373,7 +373,7 @@ jobs:
       - name: Resolve RPMS_REF by package-set fingerprint
         run: |
           set -euo pipefail
-          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"             || { echo "::error::no fingerprint-resolved RPMS_REF; wait for snapshot-rpms on main"; exit 1; }
+          RPMS_REF="$(./os/dev/resolve-rpm-snapshot.sh)"             || { echo "::error::no fingerprint-resolved RPMS_REF; wait for build-rpms on main"; exit 1; }
           echo "RPMS_REF=$RPMS_REF" >> "$GITHUB_ENV"
           echo "rpms=$RPMS_REF"
 

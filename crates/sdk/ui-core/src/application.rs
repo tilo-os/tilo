@@ -861,7 +861,7 @@ impl AppComponent {
         };
         let _entry = self.context.wake_scope.enter();
         self.context
-            .read_record(|doc| root.unsaved_documents(doc))
+            .read_record(|doc| crate::component_lifecycle::unsaved_documents(root, doc))
             .unwrap_or_default()
     }
 
@@ -891,9 +891,11 @@ impl AppComponent {
             errors.push(error);
         }
         if let Some(root) = self.root.as_deref_mut() {
-            errors.extend(root.checkpoint_components());
+            errors.extend(crate::component_lifecycle::checkpoint_components(root));
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         errors.extend(crate::close_admission::retry_reports(
             &mut self.pending_reports,
@@ -912,9 +914,12 @@ impl AppComponent {
         self.context.wake_scope.close();
         let _entry = self.context.wake_scope.enter();
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.finish_admitted_close());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::finish_admitted_close(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         let mut report = ComponentCloseReport {
             recovery: Some(
@@ -989,9 +994,12 @@ impl AppComponent {
         // Parent View has already been captured. Each child still owns its live
         // tree and captures/closes exactly once before any parent root is dropped.
         if let Some(root) = self.root.as_deref_mut() {
-            self.pending_reports.extend(root.close_components());
             self.pending_reports
-                .extend(root.take_component_close_reports());
+                .extend(crate::component_lifecycle::close_components(root));
+            self.pending_reports
+                .extend(crate::component_lifecycle::take_component_close_reports(
+                    root,
+                ));
         }
         self.close_report = Some(report.clone());
         if let Err(error) = self.teardown() {
@@ -1007,7 +1015,9 @@ impl AppComponent {
         // the parent here, and never consult a root after teardown removed it.
         if let Some(root) = self.root.as_deref_mut() {
             let _entry = self.context.wake_scope.enter();
-            reports.extend(root.take_component_close_reports());
+            reports.extend(crate::component_lifecycle::take_component_close_reports(
+                root,
+            ));
         }
         if !self.report_drained
             && let Some(report) = &self.close_report

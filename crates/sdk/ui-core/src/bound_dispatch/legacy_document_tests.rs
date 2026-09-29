@@ -860,7 +860,7 @@ fn legacy_route_closed_rebound_busy_and_exhausted_owners_never_fall_back() {
     store
         .with_action_state(&id, |_, _, state| state.generation = before.2)
         .unwrap();
-    f.tile.close_components();
+    crate::component_lifecycle::close_components(&mut f.tile);
     assert!(
         invoke(
             &mut f.tile,
@@ -1236,7 +1236,7 @@ pub(crate) fn independent_batch_fixture(
     }
     match case {
         "closed" => {
-            b.tile.close_components();
+            crate::component_lifecycle::close_components(&mut b.tile);
             assert!(b.tile.history_owner().is_none());
         }
         "unavailable" => {

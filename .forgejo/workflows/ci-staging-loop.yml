@@ -18,7 +18,7 @@ on:
       - "os/dev/internal-bundle.py"
       - "os/tests/staging_helper_loop.sh"
       - "os/tests/staging_reclaim_loop.sh"
-      - ".forgejo/workflows/staging-loop.yml"
+      - ".forgejo/workflows/ci-staging-loop.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   push:
     branches: ["main"]
@@ -30,7 +30,7 @@ on:
       - "os/dev/internal-bundle.py"
       - "os/tests/staging_helper_loop.sh"
       - "os/tests/staging_reclaim_loop.sh"
-      - ".forgejo/workflows/staging-loop.yml"
+      - ".forgejo/workflows/ci-staging-loop.yml"
       - ".forgejo/workflows/resolve-builder.yml"
   workflow_dispatch:
 
