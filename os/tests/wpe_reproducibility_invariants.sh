@@ -91,6 +91,31 @@ key_changed="$(bash "$key_fixture/os/dev/wpe-stage-key.sh" x86_64)"
 [[ $key_changed != "$key_after" ]] \
   && ok 'WPE archive digest changes invalidate the WPE stage key' \
   || bad 'WPE archive digest change failed to invalidate the stage key'
+cp "$snapshot_script" "$key_fixture/os/dev/buildroot-snapshot.sh"
+git -C "$key_fixture" init -q
+git -C "$key_fixture" config user.name 'WPE key fixture'
+git -C "$key_fixture" config user.email 'wpe-fixture@tilo.invalid'
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm baseline
+fixture_before="$(git -C "$key_fixture" rev-parse HEAD)"
+printf '%064d\tanother-unrelated.tar.xz\thttps://example.invalid/another\n' 0 \
+  >> "$key_fixture/os/external-assets/github-assets.tsv"
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm unrelated
+fixture_after="$(git -C "$key_fixture" rev-parse HEAD)"
+stage_changes="$(cd "$key_fixture" && bash os/dev/buildroot-snapshot.sh changed "$fixture_before" "$fixture_after")"
+[[ $stage_changes == '[]' ]] \
+  && ok 'unrelated asset changes do not launch WPE buildroot or engine builds' \
+  || bad "unrelated asset change launched WPE builds: $stage_changes"
+sed -i 's/^aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\t/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb\t/' \
+  "$key_fixture/os/external-assets/github-assets.tsv"
+git -C "$key_fixture" add .
+git -C "$key_fixture" commit -qm wpe-source
+fixture_wpe="$(git -C "$key_fixture" rev-parse HEAD)"
+stage_changes="$(cd "$key_fixture" && bash os/dev/buildroot-snapshot.sh changed "$fixture_after" "$fixture_wpe")"
+[[ $stage_changes == '["wpe-stage"]' ]] \
+  && ok 'WPE archive changes launch the signed WPE stage build' \
+  || bad "WPE archive change did not launch the signed stage build: $stage_changes"
 rm -rf "$key_fixture"
 has "$container" 'os/Containerfile.wpe' \
   'OS recipe points at the isolated WPE compile recipe'
@@ -191,10 +216,13 @@ has "$snapshot_script" "aarch64) printf '%s_AARCH64_REF' \"\$key\" ;;" \
 # The script owns each buildroot's inputs: every one must trigger the workflow
 # and block a stale promotion.
 mapfile -t snapshot_inputs < <(
-  sed -n '/^common_inputs=(/,/^)/p; /^wpe_inputs=(/,/^)/p' "$snapshot_script" | grep -Ev '^[a-z_]+=\(|^\)$' | tr -d ' '
+  sed -n '/^common_inputs=(/,/^)/p; /^wpe_inputs=(/,/^)/p; /^wpe_stage_inputs=(/,/^)/p' "$snapshot_script" | grep -Ev '^[a-z_]+=\(|^\)$' | tr -d ' '
 )
-[ "${#snapshot_inputs[@]}" -ge 12 ] && ok 'WPE snapshot declares its inputs' || bad 'WPE snapshot input list is incomplete'
+[ "${#snapshot_inputs[@]}" -ge 16 ] && ok 'WPE snapshot declares its inputs' || bad 'WPE snapshot input list is incomplete'
 trigger_block="$(sed -n '/^[[:space:]]*paths:/,/^$/p' "$snapshot_workflow")"
+grep -Fq -- 'os/external-assets/github-assets.tsv' <<< "$trigger_block" \
+  && ok 'asset manifest changes run the WPE-specific plan' \
+  || bad 'asset manifest changes do not run the WPE-specific plan'
 for input in "${snapshot_inputs[@]}"; do
   grep -Fq -- "$input" <<< "$trigger_block" \
     && ok "$input triggers a snapshot and blocks stale promotion" \
