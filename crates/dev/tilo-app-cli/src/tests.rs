@@ -5289,6 +5289,28 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
     assert!(rendered.contains("error[portability/W3]: src/platform.rs:1: `std::fs`"));
 }
 
+#[test]
+fn portability_lint_reports_a_temp_dir_fallback_which_panics_on_the_web() {
+    let root = tempfile::tempdir().unwrap();
+    let app = platform_specific_app(root.path());
+    let platform = std::fs::read_to_string(app.join("src/platform.rs")).unwrap();
+    std::fs::write(
+        app.join("src/platform.rs"),
+        format!(
+            "{platform}pub fn cache(home: Option<std::path::PathBuf>) -> std::path::PathBuf {{ home.unwrap_or_else(std::env::temp_dir) }}\n"
+        ),
+    )
+    .unwrap();
+    let rendered = lint_portability(&app).unwrap().render();
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("portability/W3]: src/platform.rs:2:")
+                && line.contains("temp_dir")),
+        "{rendered}"
+    );
+}
+
 fn narrow_platforms(app: &Path, platforms: &str, reason: &str) {
     let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
     let manifest = manifest.replacen(
