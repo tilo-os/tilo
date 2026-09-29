@@ -90,6 +90,12 @@ impl KeyboardSettings {
     /// The person-facing name of source `index` — XKB's own description
     /// ("English (US)", "German (no dead keys)") — falling back to the
     /// source id when the keymap cannot be compiled.
+    #[cfg(not(target_os = "linux"))]
+    pub fn source_label(&self, index: usize) -> String {
+        self.source_ids.get(index).cloned().unwrap_or_default()
+    }
+
+    #[cfg(target_os = "linux")]
     pub fn source_label(&self, index: usize) -> String {
         use smithay::input::keyboard::xkb;
         let fallback = || self.source_ids.get(index).cloned().unwrap_or_default();

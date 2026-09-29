@@ -14,7 +14,9 @@ use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
 use crate::{State, Theme};
 
+mod component_adapter;
 mod shot_frame;
+pub use component_adapter::{ComponentActions, ComponentLocales, RecordLaunch, record_launch};
 pub use shot_frame::{ShotFrame, ShotLayout};
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
 // the browser has not got; laying out and drawing a frame is portable.
@@ -175,6 +177,24 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
+    /// The arguments of a component mounted by an in-process host: no
+    /// screenshot, headless or audit mode and no app-specific arguments.
+    pub fn component() -> Self {
+        Self {
+            shots: None,
+            responsive_matrix: None,
+            viewport: None,
+            scenario: None,
+            headless: None,
+            native_audit: false,
+            pseudo_locale: false,
+            text_scale: None,
+            extras: Vec::new(),
+            values: Vec::new(),
+            positionals: Vec::new(),
+        }
+    }
+
     pub fn has(&self, flag: &str) -> bool {
         self.extras.iter().any(|arg| arg == flag)
     }
@@ -325,6 +345,8 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    component_actions: Option<ComponentActions>,
+    component_locales: ComponentLocales,
 }
 
 impl LaunchSpec {
@@ -546,6 +568,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -581,6 +605,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -1309,6 +1335,14 @@ fn run_with_args_with_attachment(
             .transpose()?;
 
     if let Some(out) = &args.shots {
+        if out.is_dir() {
+            return Err(LaunchError::Operation(format!(
+                "--shots writes one PNG file, but {} is a directory; name a file \
+                 (e.g. {}) or use --responsive-matrix DIR for a set of shots",
+                out.display(),
+                out.join(format!("{}.png", spec.app_id)).display()
+            )));
+        }
         if let Some(handler) = spec.shot_handler {
             handler(&args)?;
             return Ok(());
