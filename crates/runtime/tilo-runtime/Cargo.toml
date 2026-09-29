@@ -56,8 +56,9 @@ tilo-action-broker = { path = "../../collab/tilo-action-broker" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-automerge-isolate.workspace = true
 tilo-desktop-model = { path = "../../session/desktop-model" }
-# The document-media capability over the content store, without the mount.
-tilo-fs = { package = "fs", path = "../../system/fs", default-features = false, features = ["document-media"] }
+# The document-media capability over the content store, and the workspace
+# files mirrored into a folder where nothing mounts them.
+tilo-fs = { package = "fs", path = "../../system/fs" }
 tilo-app-package = { path = "../../packaging/tilo-app-package" }
 tilo-identity-host = { path = "../tilo-identity-host" }
 tilo-installed-apps = { path = "../../packaging/installed-apps" }
