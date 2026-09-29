@@ -25,6 +25,16 @@ impl HistoryHost {
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
+        // Open History lays out its own navigation rows edge to edge; only
+        // the closed strip is inset like a bar.
+        if self.has_toolbar_controls()
+            && !self.open
+            && let Ok(style) = tree.style(toolbar)
+        {
+            let mut style = style.clone();
+            style.padding = crate::chrome::bar_padding(theme);
+            let _ = tree.set_style(toolbar, style);
+        }
         self.toolbar_node = Some(toolbar);
         self.timeline_node = None;
         self.canvas_node = None;
@@ -107,6 +117,11 @@ impl HistoryHost {
         // Registering `self` could alias the thin data pointer of its first
         // inline child and make reverse-node lookup resolve to the wrong node.
         root
+    }
+    /// A closed History with its button in the host's chrome leaves the
+    /// toolbar empty; it then takes no bar at all.
+    fn has_toolbar_controls(&self) -> bool {
+        !self.toolbar.children().is_empty()
     }
     fn body_origin(&self, tree: &TaffyTree<()>) -> Point {
         let layout = self
@@ -213,6 +228,9 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.has_toolbar_controls() {
+            crate::chrome::paint_bar(scene, transform, theme, self.toolbar.get_rect());
+        }
         self.toolbar.draw(scene, transform, text, theme, presence);
         if self.show_timeline() && !self.timeline_available() {
             self.unavailable
