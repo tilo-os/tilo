@@ -116,7 +116,47 @@ jobs:
       publish: ${{ steps.matrix.outputs.publish }}
       skip: ${{ steps.matrix.outputs.skip }}
       hardware-profile: ${{ steps.matrix.outputs.hardware-profile }}
+      app_collection_source: ${{ steps.pins.outputs.app_collection_source }}
+      app_collection_url: ${{ steps.pins.outputs.app_collection_url }}
+      app_collection_sha256: ${{ steps.pins.outputs.app_collection_sha256 }}
+      app_collection_url_x86_64: ${{ steps.pins.outputs.app_collection_url_x86_64 }}
+      app_collection_sha256_x86_64: ${{ steps.pins.outputs.app_collection_sha256_x86_64 }}
+      app_collection_url_aarch64: ${{ steps.pins.outputs.app_collection_url_aarch64 }}
+      app_collection_sha256_aarch64: ${{ steps.pins.outputs.app_collection_sha256_aarch64 }}
+      app_collection_publisher: ${{ steps.pins.outputs.app_collection_publisher }}
+      desktop_payload_url: ${{ steps.pins.outputs.desktop_payload_url }}
+      desktop_payload_sha256: ${{ steps.pins.outputs.desktop_payload_sha256 }}
+      desktop_payload_url_x86_64: ${{ steps.pins.outputs.desktop_payload_url_x86_64 }}
+      desktop_payload_sha256_x86_64: ${{ steps.pins.outputs.desktop_payload_sha256_x86_64 }}
+      desktop_payload_url_aarch64: ${{ steps.pins.outputs.desktop_payload_url_aarch64 }}
+      desktop_payload_sha256_aarch64: ${{ steps.pins.outputs.desktop_payload_sha256_aarch64 }}
     steps:
+      # Both lanes of a release must build from the same prebuilt inputs.
+      # Each job reads repository variables when it starts, and Release / apps
+      # moves the collection pins while a release runs (in run 48898 the two
+      # lanes packed different collections), so every lane takes them from here.
+      - name: Pin the prebuilt inputs for every lane
+        id: pins
+        env:
+          APP_COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          APP_COLLECTION_URL: ${{ vars.TILO_APP_COLLECTION_URL }}
+          APP_COLLECTION_SHA256: ${{ vars.TILO_APP_COLLECTION_SHA256 }}
+          APP_COLLECTION_URL_X86_64: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 }}
+          APP_COLLECTION_SHA256_X86_64: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 }}
+          APP_COLLECTION_URL_AARCH64: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
+          APP_COLLECTION_SHA256_AARCH64: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
+          APP_COLLECTION_PUBLISHER: ${{ vars.TILO_APP_COLLECTION_PUBLISHER }}
+          DESKTOP_PAYLOAD_URL: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
+          DESKTOP_PAYLOAD_SHA256: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256 }}
+          DESKTOP_PAYLOAD_URL_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_X86_64 }}
+          DESKTOP_PAYLOAD_SHA256_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_X86_64 }}
+          DESKTOP_PAYLOAD_URL_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_AARCH64 }}
+          DESKTOP_PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+        run: |
+          for name in APP_COLLECTION_SOURCE APP_COLLECTION_URL APP_COLLECTION_SHA256 APP_COLLECTION_URL_X86_64 APP_COLLECTION_SHA256_X86_64 APP_COLLECTION_URL_AARCH64 APP_COLLECTION_SHA256_AARCH64 APP_COLLECTION_PUBLISHER DESKTOP_PAYLOAD_URL DESKTOP_PAYLOAD_SHA256 DESKTOP_PAYLOAD_URL_X86_64 DESKTOP_PAYLOAD_SHA256_X86_64 DESKTOP_PAYLOAD_URL_AARCH64 DESKTOP_PAYLOAD_SHA256_AARCH64; do
+            printf '%s=%s\n' "${name,,}" "${!name}" >> "$GITHUB_OUTPUT"
+          done
+
       # The nightly run exists to keep a fresh image available, not to spend a
       # generation and two native lanes on a revision that is already out.
       # Every published image carries its source commit as the OCI revision
@@ -427,18 +467,18 @@ jobs:
       - name: Materialize the pinned app collection
         env:
           DEV_BUILD: ${{ github.event_name == 'workflow_call' }}
-          COLLECTION_SOURCE: ${{ vars.TILO_APP_COLLECTION_SOURCE }}
+          COLLECTION_SOURCE: ${{ needs.plan.outputs.app_collection_source }}
           PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           COLLECTION_AUDIENCE: ${{ vars.TILO_OS_APP_COLLECTION_AUDIENCE }}
           COLLECTION_URL_INPUT: ${{ github.event.inputs.app_collection_url }}
           COLLECTION_SHA256_INPUT: ${{ github.event.inputs.app_collection_sha256 }}
-          COLLECTION_URL_DEFAULT: ${{ vars.TILO_APP_COLLECTION_URL }}
-          COLLECTION_SHA256_DEFAULT: ${{ vars.TILO_APP_COLLECTION_SHA256 }}
-          COLLECTION_URL_X86_64: ${{ vars.TILO_APP_COLLECTION_URL_X86_64 }}
-          COLLECTION_SHA256_X86_64: ${{ vars.TILO_APP_COLLECTION_SHA256_X86_64 }}
-          COLLECTION_URL_AARCH64: ${{ vars.TILO_APP_COLLECTION_URL_AARCH64 }}
-          COLLECTION_SHA256_AARCH64: ${{ vars.TILO_APP_COLLECTION_SHA256_AARCH64 }}
-          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || vars.TILO_APP_COLLECTION_PUBLISHER }}
+          COLLECTION_URL_DEFAULT: ${{ needs.plan.outputs.app_collection_url }}
+          COLLECTION_SHA256_DEFAULT: ${{ needs.plan.outputs.app_collection_sha256 }}
+          COLLECTION_URL_X86_64: ${{ needs.plan.outputs.app_collection_url_x86_64 }}
+          COLLECTION_SHA256_X86_64: ${{ needs.plan.outputs.app_collection_sha256_x86_64 }}
+          COLLECTION_URL_AARCH64: ${{ needs.plan.outputs.app_collection_url_aarch64 }}
+          COLLECTION_SHA256_AARCH64: ${{ needs.plan.outputs.app_collection_sha256_aarch64 }}
+          COLLECTION_PUBLISHER: ${{ github.event.inputs.app_collection_publisher || needs.plan.outputs.app_collection_publisher }}
         run: |
           set -euo pipefail
           if [[ $DEV_BUILD == true ]]; then
@@ -571,12 +611,12 @@ jobs:
           PACKAGE_TOKEN: ${{ github.event_name == 'workflow_call' && secrets.REGISTRY_TOKEN || '' }}
           PAYLOAD_URL_INPUT: ${{ github.event.inputs.desktop_payload_url }}
           PAYLOAD_SHA256_INPUT: ${{ github.event.inputs.desktop_payload_sha256 }}
-          PAYLOAD_URL_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_URL }}
-          PAYLOAD_SHA256_DEFAULT: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256 }}
-          PAYLOAD_URL_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_X86_64 }}
-          PAYLOAD_SHA256_X86_64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_X86_64 }}
-          PAYLOAD_URL_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_URL_AARCH64 }}
-          PAYLOAD_SHA256_AARCH64: ${{ vars.TILO_DESKTOP_PAYLOAD_SHA256_AARCH64 }}
+          PAYLOAD_URL_DEFAULT: ${{ needs.plan.outputs.desktop_payload_url }}
+          PAYLOAD_SHA256_DEFAULT: ${{ needs.plan.outputs.desktop_payload_sha256 }}
+          PAYLOAD_URL_X86_64: ${{ needs.plan.outputs.desktop_payload_url_x86_64 }}
+          PAYLOAD_SHA256_X86_64: ${{ needs.plan.outputs.desktop_payload_sha256_x86_64 }}
+          PAYLOAD_URL_AARCH64: ${{ needs.plan.outputs.desktop_payload_url_aarch64 }}
+          PAYLOAD_SHA256_AARCH64: ${{ needs.plan.outputs.desktop_payload_sha256_aarch64 }}
         run: |
           set -euo pipefail
           # Building the compositor from source links shell alongside the other
