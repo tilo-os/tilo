@@ -188,7 +188,7 @@ fn v1_frame_charge(
 /// certificate channel replays first, because a shell drops what a device
 /// published until it holds that device's certificate, and channels are
 /// otherwise ordered by hash.
-fn lineage_rank(lineage: &str) -> &'static str {
+pub(crate) fn lineage_rank(lineage: &str) -> &'static str {
     let identity = lineage.split_once('-').is_some_and(|(author, channel)| {
         let Ok(author) = hex::decode(author) else {
             return false;

@@ -241,6 +241,7 @@ impl Fixture {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -1708,6 +1709,7 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
                 positions: None,
+                compactor: None,
                 resumes: Box::leak(Box::default()),
                 lag: Box::leak(Box::default()),
             };
@@ -1814,6 +1816,7 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         live_bridge: None,
         agents: Box::leak(Box::default()),
         positions: None,
+        compactor: None,
         resumes: Box::leak(Box::default()),
         lag: Box::leak(Box::default()),
     };
@@ -1944,6 +1947,7 @@ impl Fixture {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2197,6 +2201,7 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
                 positions: None,
+                compactor: None,
                 resumes: Box::leak(Box::default()),
                 lag: Box::leak(Box::default()),
             };
@@ -2342,6 +2347,7 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2476,6 +2482,7 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -2910,6 +2917,7 @@ impl Fixture {
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };
@@ -3260,6 +3268,7 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             live_bridge: None,
             agents: Box::leak(Box::default()),
             positions: None,
+            compactor: None,
             resumes: Box::leak(Box::default()),
             lag: Box::leak(Box::default()),
         };

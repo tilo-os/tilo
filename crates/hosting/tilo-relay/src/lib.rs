@@ -79,6 +79,8 @@ pub mod certification;
 pub mod client;
 pub mod coedit;
 #[cfg(not(target_arch = "wasm32"))]
+pub mod compaction;
+#[cfg(not(target_arch = "wasm32"))]
 pub mod compute;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod compute_session;

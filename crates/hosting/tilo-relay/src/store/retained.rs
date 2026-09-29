@@ -32,7 +32,7 @@ fn framed_envelope(bytes: &[u8]) -> Option<(Envelope, &[u8])> {
 
 /// Validate EVERY enclosing representation before granting proof authority.
 /// Authentication happens at ingress, not in this disk decoder.
-pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+pub(crate) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
     let (
         Envelope::Delta {
             workspace_id,
@@ -49,6 +49,15 @@ pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditP
         return None;
     }
     Some((author_device_public_key, complete_coedit_payload(&delta)?))
+}
+
+/// The co-edit body of a retained frame of `workspace`.
+pub(crate) fn body_of(bytes: &[u8], workspace: u64) -> Option<Vec<u8>> {
+    match payload(bytes, workspace)?.1 {
+        CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. } => {
+            Some(body)
+        }
+    }
 }
 
 /// Used with an independently validated complete outer frame during replay.
