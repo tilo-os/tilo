@@ -225,3 +225,10 @@ mid-frame, which hung the macOS window server.
 A recording's freed images (the per-frame gradient ramp) are destroyed after
 submission instead of only dropped. On WebGPU a dropped texture lives until
 JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
+
+## Image atlas limit (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+`Renderer::set_image_atlas_max` (through `Resolver::set_image_atlas_max` and
+`ImageCache::set_max_size`) limits how far the image atlas grows; upstream's
+maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
+eviction are omitted and reported, as they already were at the maximum.
