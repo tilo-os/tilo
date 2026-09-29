@@ -24,6 +24,7 @@ use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub mod android;
 pub mod ci;
+mod dev_reload;
 pub mod examples;
 mod json;
 pub mod native_libs;
@@ -494,7 +495,14 @@ pub struct DevRequest {
     pub forwarded: Vec<OsString>,
     pub watch_ui: bool,
     pub debounce: Duration,
+    /// Report where each reload spent its time.
+    pub timings: bool,
 }
+
+/// Quiet period `tilo-app dev` waits after a save before it builds.
+pub const DEV_DEBOUNCE_MS: u64 = 30;
+
+pub use dev_reload::run_as_build_tool_if_requested;
 
 #[derive(Debug)]
 pub struct PackageRequest {
@@ -5545,8 +5553,9 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 ///
 /// Returns an error when the app cannot be resolved, its initial preflight
 /// fails, signal handlers cannot be installed, or filesystem watching cannot
-/// be started.
-pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
+/// be started. On success, returns one timing record per reload when
+/// `request.timings` is set.
+pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Value>> {
     let app_dir = resolve_app_dir(start)?;
     let initial = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)?;
     let roots = dev_watch_roots(&app_dir, request.watch_ui)?;
@@ -5584,6 +5593,11 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
     // event channel from ever going idle. Stamp polls run on a timer either way.
     let mut sources = snapshot_restart_sources(&roots).unwrap_or_default();
     let mut next_source_poll = Instant::now();
+    let mut dev = dev_reload::DevLoop::new(
+        dev_session_dir(&app_dir),
+        request.timings,
+        Arc::clone(&source_revision),
+    );
     // The first process has to be the prefer-dynamic host. A static binary
     // links its own `ui`, so the library built on the next save cannot run
     // inside those windows.
@@ -5601,13 +5615,13 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
             &event_rx,
             &roots,
             &mut watcher,
-            &source_revision,
             &mut sources,
+            &mut dev,
         )
     {
         stop_dev_child(&mut child);
         eprintln!("[tilo-app] stopped");
-        return Ok(());
+        return Ok(Vec::new());
     }
     'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         match watch_tick(
@@ -5619,6 +5633,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         ) {
             WatchTick::Stop => bail!("app file watcher stopped"),
             WatchTick::Rebuild { bump_revision } => {
+                dev.changed_at = Some(SystemTime::now());
                 if bump_revision {
                     source_revision.fetch_add(1, Ordering::Release);
                 }
@@ -5629,19 +5644,21 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
                     &event_rx,
                     &roots,
                     &mut watcher,
-                    &source_revision,
                     &mut sources,
+                    &mut dev,
                 ) {
                     break 'watching;
                 }
             }
             WatchTick::Idle => {}
         }
+        dev.poll();
         report_child_exit(&mut child);
     }
+    dev.finish(Duration::from_secs(2));
     stop_dev_child(&mut child);
     eprintln!("[tilo-app] stopped");
-    Ok(())
+    Ok(std::mem::take(&mut dev.reports))
 }
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
@@ -5653,30 +5670,41 @@ fn rebuild_running_dev_app(
     events: &mpsc::Receiver<notify::Result<Event>>,
     roots: &[PathBuf],
     watcher: &mut DevWatcher,
-    source_revision: &AtomicU64,
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+    dev: &mut dev_reload::DevLoop,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
     if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+        dev.changed_at = None;
         return false;
     }
     loop {
         if let Some(next) = snapshot_restart_sources(roots) {
             *sources = next;
         }
+        let mut timings = dev.start();
+        if let Some(timings) = timings.as_mut() {
+            let waited = SystemTime::now()
+                .duration_since(timings.changed)
+                .unwrap_or_default();
+            timings.set("debounce", waited.as_secs_f64() * 1000.0);
+        }
         report_child_exit(child);
         eprintln!("[tilo-app] change detected; rebuilding");
-        let building_revision = source_revision.load(Ordering::Acquire);
+        let building_revision = dev.source_revision.load(Ordering::Acquire);
         // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
         let in_place = reloads_in_place(&plan.app_dir);
         let candidate = if in_place {
-            build_in_place_dev_app(
+            build_in_place_dev_app_for_loop(
                 plan,
-                Some(events),
+                events,
                 roots,
-                |event| watcher.observe(event),
+                watcher,
                 child.is_none(),
+                sources,
+                dev,
+                &mut timings,
             )
         } else {
             build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
@@ -5687,7 +5715,7 @@ fn rebuild_running_dev_app(
             watcher.observe(event);
         });
         let superseded =
-            queued_restart || source_revision.load(Ordering::Acquire) != building_revision;
+            queued_restart || dev.source_revision.load(Ordering::Acquire) != building_revision;
         if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
             return true;
         }
@@ -5695,6 +5723,7 @@ fn rebuild_running_dev_app(
             eprintln!(
                 "[tilo-app] newer change arrived during the build; skipping the stale candidate"
             );
+            dev.changed_at = Some(SystemTime::now());
             drain_until_quiet(events, roots, request.debounce, watcher);
             continue;
         }
@@ -5704,6 +5733,9 @@ fn rebuild_running_dev_app(
                     && reload_running_dev_app(running)
                 {
                     eprintln!("[tilo-app] build succeeded; reloading the open windows");
+                    if let Some(timings) = timings {
+                        dev.signalled(timings);
+                    }
                 } else if in_place {
                     eprintln!("[tilo-app] build succeeded; opening the app");
                     *child = spawn_thin_dev_binary_reported(
@@ -5721,6 +5753,7 @@ fn rebuild_running_dev_app(
                 eprintln!(
                     "[tilo-app] newer change arrived during the build; skipping the stale candidate"
                 );
+                dev.changed_at = Some(SystemTime::now());
                 drain_until_quiet(events, roots, request.debounce, watcher);
                 continue;
             }
@@ -5843,7 +5876,6 @@ struct DevCargo {
 enum DevPick {
     Executable(String),
     DynamicLibrary,
-    ExitStatus,
 }
 
 #[cfg(test)]
@@ -5882,6 +5914,7 @@ fn build_dev_candidate_interruptible(
             env: Vec::new(),
             pick: DevPick::Executable(expected_binary),
         },
+        None,
     )
 }
 
@@ -5891,6 +5924,7 @@ fn run_dev_cargo(
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
     cargo: &DevCargo,
+    mut span: Option<&mut RustcSpan>,
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_manifest = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
@@ -5945,7 +5979,6 @@ fn run_dev_cargo(
                     bail!("Cargo development build failed with {status}");
                 }
                 let artifact = match &cargo.pick {
-                    DevPick::ExitStatus => PathBuf::new(),
                     DevPick::Executable(name) => artifacts.remove(name).with_context(|| {
                         format!(
                             "Cargo build completed without reporting executable {name:?}; set package.default-run when the app has multiple binaries"
@@ -5962,7 +5995,11 @@ fn run_dev_cargo(
             Ok(None) => {}
             Err(error) => return Err(error).context("waiting for Cargo development build"),
         }
-        std::thread::sleep(Duration::from_millis(20));
+        #[cfg(unix)]
+        if let Some(span) = span.as_mut() {
+            span.observe(build.id());
+        }
+        std::thread::sleep(Duration::from_millis(if span.is_some() { 5 } else { 20 }));
     }
 }
 
@@ -6741,15 +6778,95 @@ fn app_supports_in_place_reload(app_dir: &Path) -> bool {
         .contains("dev_reload_entry!")
 }
 
-/// Build the shared toolkit, the prefer-dynamic host, and the app library
+/// Build the prefer-dynamic host and the app library
 /// that the host will `dlopen`. Stages the library before returning the host
 /// executable. `need_host` is false when that executable is already running.
+#[cfg(test)]
 fn build_in_place_dev_app(
+    plan: &CargoPlan,
+    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    roots: &[PathBuf],
+    observe: impl FnMut(&Event),
+    need_host: bool,
+) -> Result<DevCandidate> {
+    build_in_place_dev_app_with_cargo(plan, events, roots, observe, need_host, &mut None)
+}
+
+/// The watch loop's in-place build. Once the app is running and every edit
+/// since Cargo last compiled the reload library is a file that library's
+/// rustc read, rustc alone rebuilds it; anything else goes through Cargo.
+fn build_in_place_dev_app_for_loop(
+    plan: &CargoPlan,
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    watcher: &mut DevWatcher,
+    need_host: bool,
+    sources: &HashMap<PathBuf, (SystemTime, u64)>,
+    dev: &mut dev_reload::DevLoop,
+    timings: &mut Option<dev_reload::ReloadTimings>,
+) -> Result<DevCandidate> {
+    let fast = (!need_host)
+        .then(|| dev_reload::FastRebuild::load(dev.session()))
+        .flatten()
+        .filter(|fast| fast.covers(&changed_sources(&dev.baseline, sources)));
+    if let Some(fast) = fast {
+        eprintln!("[tilo-app] building the reload library with rustc");
+        match dev_reload::rebuild_with_rustc(
+            &fast,
+            events,
+            roots,
+            |event| watcher.observe(event),
+            timings,
+        ) {
+            dev_reload::FastOutcome::Done(DevCandidate::Built(library)) => {
+                let staging = SystemTime::now();
+                let staged = stage_dev_reload_library(&plan.app_dir, &library)?;
+                if let Some(timings) = timings.as_mut() {
+                    timings.set("stage", elapsed_ms(staging));
+                    timings.staged(staged.clone());
+                }
+                eprintln!("[tilo-app] reload library {}", staged.display());
+                return Ok(DevCandidate::Built(PathBuf::new()));
+            }
+            dev_reload::FastOutcome::Done(DevCandidate::Superseded) => {
+                return Ok(DevCandidate::Superseded);
+            }
+            dev_reload::FastOutcome::Failed(error) => return Err(error),
+            dev_reload::FastOutcome::Fallback(reason) => {
+                eprintln!("[tilo-app] {reason}; rebuilding with Cargo");
+            }
+        }
+    }
+    // What Cargo is about to compile. Later edits are compared against it.
+    dev.baseline.clone_from(sources);
+    let session = dev.session().to_path_buf();
+    build_in_place_dev_app_with_cargo(
+        plan,
+        Some(events),
+        roots,
+        |event| watcher.observe(event),
+        need_host,
+        &mut Some((session.as_path(), timings)),
+    )
+}
+
+fn elapsed_ms(since: SystemTime) -> f64 {
+    SystemTime::now()
+        .duration_since(since)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// Build the steps with Cargo. With a session, the reload library's rustc
+/// command is recorded there for the next edit, and each step is timed.
+fn build_in_place_dev_app_with_cargo(
     plan: &CargoPlan,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
     need_host: bool,
+    loop_state: &mut Option<(&Path, &mut Option<dev_reload::ReloadTimings>)>,
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let binary = dev_binary_name(&manifest)?;
@@ -6758,29 +6875,139 @@ fn build_in_place_dev_app(
     } else {
         ThinDevLinkage::Target(host_triple(&plan.app_dir)?)
     };
+    let library_crate = cargo_library_name(&manifest);
     let mut executable = PathBuf::new();
-    for step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
+    for mut step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
         eprintln!("[tilo-app] building {}", step.label);
-        match run_dev_cargo(plan, events, roots, &mut observe, &step.cargo)? {
+        if let (DevPick::DynamicLibrary, Some((session, _)), Some(name)) = (
+            &step.cargo.pick,
+            loop_state.as_ref(),
+            library_crate.as_deref(),
+        ) {
+            step.cargo
+                .env
+                .extend(dev_reload::capture_env(session, name));
+        }
+        let timing = loop_state
+            .as_mut()
+            .and_then(|(_, timings)| timings.as_mut());
+        let mut span = timing.is_some().then(RustcSpan::default);
+        let started = SystemTime::now();
+        let built = run_dev_cargo(
+            plan,
+            events,
+            roots,
+            &mut observe,
+            &step.cargo,
+            span.as_mut(),
+        )?;
+        if let Some(timings) = loop_state
+            .as_mut()
+            .and_then(|(_, timings)| timings.as_mut())
+        {
+            let wall = elapsed_ms(started);
+            let compiled = span.as_ref().map_or(0.0, |span| span.record(timings));
+            timings.add("cargo", (wall - compiled).max(0.0));
+        }
+        match built {
             DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
             DevCandidate::Built(artifact) => match step.cargo.pick {
                 DevPick::Executable(_) => executable = artifact,
                 DevPick::DynamicLibrary => {
+                    let staging = SystemTime::now();
                     let staged = stage_dev_reload_library(&plan.app_dir, &artifact)?;
+                    if let Some(timings) = loop_state
+                        .as_mut()
+                        .and_then(|(_, timings)| timings.as_mut())
+                    {
+                        timings.set("stage", elapsed_ms(staging));
+                        timings.staged(staged.clone());
+                    }
                     eprintln!("[tilo-app] reload library {}", staged.display());
                 }
-                DevPick::ExitStatus => {}
             },
         }
     }
     Ok(DevCandidate::Built(executable))
 }
 
+/// The library target's crate name: `[lib] name`, else the package name with
+/// dashes as underscores.
+fn cargo_library_name(manifest: &Path) -> Option<String> {
+    let value = std::fs::read_to_string(manifest)
+        .ok()?
+        .parse::<toml::Table>()
+        .ok()?;
+    let explicit = value
+        .get("lib")
+        .and_then(|lib| lib.get("name"))
+        .and_then(toml::Value::as_str);
+    let package = value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str);
+    explicit.or(package).map(|name| name.replace('-', "_"))
+}
+
+/// When rustc ran inside a Cargo step, seen by polling Cargo's descendants.
+#[derive(Debug, Default)]
+struct RustcSpan {
+    first: Option<SystemTime>,
+    linking: Option<SystemTime>,
+    last: Option<SystemTime>,
+}
+
+impl RustcSpan {
+    #[cfg(unix)]
+    fn observe(&mut self, cargo: u32) {
+        let now = SystemTime::now();
+        let descendants = descendant_pids(cargo);
+        let rustc = descendants
+            .iter()
+            .copied()
+            .filter(|pid| process_name(*pid).is_some_and(|name| name == "rustc"))
+            .collect::<Vec<_>>();
+        if rustc.is_empty() {
+            return;
+        }
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+        let linking = descendants
+            .iter()
+            .any(|pid| parent_pid(*pid).is_some_and(|parent| rustc.contains(&parent)));
+        if linking {
+            self.linking.get_or_insert(now);
+        }
+    }
+
+    /// Add compile and link time; returns the milliseconds rustc ran.
+    fn record(&self, timings: &mut dev_reload::ReloadTimings) -> f64 {
+        let (Some(first), Some(last)) = (self.first, self.last) else {
+            return 0.0;
+        };
+        let linking = self.linking.unwrap_or(last);
+        let ms = |from: SystemTime, to: SystemTime| {
+            to.duration_since(from).unwrap_or_default().as_secs_f64() * 1000.0
+        };
+        timings.add("compile", ms(first, linking));
+        timings.add("link", ms(linking, last));
+        ms(first, last)
+    }
+}
+
+#[cfg(unix)]
+fn process_name(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|name| name.trim().to_owned())
+}
+
 /// How a thin development build links the toolkit and `libstd` dynamically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ThinDevLinkage {
-    /// `runtime-dylib` is a member of the app's workspace and is built on its
-    /// own with `-C prefer-dynamic`.
+    /// `runtime-dylib` is a member of the app's workspace. It comes in as a
+    /// dependency of the host and the library, with the flags both share: a
+    /// step of its own with other flags made each of them rebuild it.
     WorkspaceToolkit,
     /// Outside the Tilo workspace Cargo cannot select `runtime-dylib` or set
     /// its features. Every artifact for this target triple is built with
@@ -6836,26 +7063,6 @@ fn thin_dev_steps(
         }
     };
     let mut steps = Vec::new();
-    if *linkage == ThinDevLinkage::WorkspaceToolkit {
-        steps.push(ThinDevStep {
-            label: "the shared toolkit",
-            cargo: DevCargo {
-                args: [
-                    "rustc",
-                    "-p",
-                    "runtime-dylib",
-                    "--message-format=json-render-diagnostics",
-                    "--",
-                    "-C",
-                    "prefer-dynamic",
-                ]
-                .map(OsString::from)
-                .to_vec(),
-                env: Vec::new(),
-                pick: DevPick::ExitStatus,
-            },
-        });
-    }
     if need_host {
         steps.push(app_step(
             "the reload host",

@@ -528,12 +528,17 @@ struct DevArgs {
     path: Option<PathBuf>,
 
     /// Quiet period used to coalesce editor save events.
-    #[arg(long, default_value = "150")]
+    #[arg(long, default_value_t = NonZeroU64::new(tilo_app_cli::DEV_DEBOUNCE_MS).expect("the default debounce is not zero"))]
     debounce_ms: NonZeroU64,
 
     /// Watch only the app, not its local `ui` dependency.
     #[arg(long)]
     app_only: bool,
+
+    /// Report where each reload spent its time, from the change to the
+    /// first presented frame. With `--json`, the result lists every reload.
+    #[arg(long)]
+    timings: bool,
 
     /// `web` serves the app's web build and reloads the page into the same
     /// document after each rebuild; a native platform runs on this machine
@@ -853,6 +858,7 @@ enum ComponentTemplateArg {
 }
 
 fn main() -> ExitCode {
+    tilo_app_cli::run_as_build_tool_if_requested();
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
         Err(error) => return report_usage_error(&error),
@@ -1498,6 +1504,7 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         forwarded: args.forwarded,
         watch_ui: !args.app_only,
         debounce: Duration::from_millis(args.debounce_ms.get()),
+        timings: args.timings,
     };
     if platform == tilo_app_cli::PackagePlatform::Web {
         tilo_app_cli::web::dev_web(
@@ -1516,7 +1523,10 @@ fn run_dev(args: DevArgs) -> Result<Value> {
         )?;
     } else {
         platform.ensure_runs_here(arch)?;
-        tilo_app_cli::dev_app(&path, &request)?;
+        let reloads = tilo_app_cli::dev_app(&path, &request)?;
+        if request.timings {
+            return Ok(json!({"stopped": true, "reloads": reloads}));
+        }
     }
     Ok(json!({"stopped": true}))
 }
@@ -2365,7 +2375,8 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
             &tilo_app_cli::DevRequest {
                 forwarded: Vec::new(),
                 watch_ui: true,
-                debounce: Duration::from_millis(150),
+                debounce: Duration::from_millis(tilo_app_cli::DEV_DEBOUNCE_MS),
+                timings: false,
             },
         )?;
         Ok(report)
