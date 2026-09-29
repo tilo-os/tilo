@@ -184,6 +184,7 @@ struct CheckpointCadence {
     pending: bool,
     replacement_pending: bool,
     last_activity: std::time::Instant,
+    idle: Duration,
 }
 impl CheckpointCadence {
     /// Publish a pending replacement at latest after this many committed
@@ -191,12 +192,20 @@ impl CheckpointCadence {
     const MAX_DELTAS: u32 = 1024;
     /// Flush a pending complete basis once input pauses for this long.
     const IDLE: Duration = Duration::from_millis(5000);
+    /// Overrides [`Self::IDLE`] in whole milliseconds, so a test can prove a
+    /// publication happened without the idle flush.
+    const IDLE_ENV: &str = "TILO_HOST_IDLE_CHECKPOINT_MS";
     fn new() -> Self {
+        let idle = std::env::var(Self::IDLE_ENV)
+            .ok()
+            .and_then(|ms| ms.parse().ok())
+            .map_or(Self::IDLE, Duration::from_millis);
         Self {
             deltas_since_publish: 0,
             pending: false,
             replacement_pending: false,
             last_activity: std::time::Instant::now(),
+            idle,
         }
     }
     fn publication_due(
@@ -227,7 +236,7 @@ impl CheckpointCadence {
     }
     /// On an idle tick: flush the coalesced checkpoint once input has paused.
     fn due_on_idle(&self, now: std::time::Instant) -> bool {
-        self.pending && now.duration_since(self.last_activity) >= Self::IDLE
+        self.pending && now.duration_since(self.last_activity) >= self.idle
     }
     /// A checkpoint was published (through any path); reset the coalescing state.
     fn mark_published(&mut self, now: std::time::Instant) {
