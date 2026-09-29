@@ -325,7 +325,7 @@ impl MediaEngine {
             self.binding = None;
             match outcome {
                 live::BindOutcome::Bound(live) => {
-                    self.transport = Box::new(live);
+                    self.transport = live;
                     self.bound = true;
                 }
                 // The simulator stays in place.
@@ -507,13 +507,13 @@ mod live {
             for sub in self.subs.drain(..) {
                 live.subscribe(sub);
             }
-            Some(BindOutcome::Bound(live))
+            Some(BindOutcome::Bound(Box::new(live)))
         }
     }
 
     /// How a [`PendingBind`] ended.
     pub enum BindOutcome {
-        Bound(IrohTransport),
+        Bound(Box<IrohTransport>),
         /// The endpoint could not bind (no usable network stack).
         Failed,
     }
