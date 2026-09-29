@@ -247,10 +247,10 @@ impl super::App {
 
     pub(super) fn service_idle_model(&mut self) -> IdleModelProgress {
         let mut changed = self.service_local_control_history();
-        let local_commit = self.root_widget.needs_commit();
+        let local_commit = crate::undo::needs_commit(self.root_widget.as_ref());
         if local_commit {
             self.commit_action();
-            self.root_widget.on_commit();
+            crate::undo::on_commit(self.root_widget.as_mut());
             self.needs_sync = true;
             changed = true;
         }

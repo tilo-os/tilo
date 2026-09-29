@@ -207,20 +207,24 @@ class OsDevLaneTests(unittest.TestCase):
                 concurrency_group("refs/pull/12/head", "workflow_call", ""),
                 "tilo-os-dev-refs/pull/12/head",
             )
-            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' }}", WORKFLOW.read_text())
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'workflow_call' && github.ref != 'refs/heads/main' }}", WORKFLOW.read_text())
         with self.subTest(phase='main pushes and image pull requests call it'):
             caller = (ROOT / ".forgejo/workflows/os-dev.yml").read_text()
             self.assertIn("name: Build / OS dev", caller)
             self.assertIn("uses: ./.forgejo/workflows/build-image.yml", caller)
             self.assertIn("branches: [main]", caller)
             self.assertIn('- "os/**"', caller)
-            self.assertIn("cancel-in-progress: true", caller)
+            self.assertIn("cancel-in-progress: ${{ github.event_name == 'pull_request' }}", caller)
             self.assertIn("  workflow_call:", WORKFLOW.read_text())
         with self.subTest(phase='the dev build publishes images and skips the disk install'):
             workflow = WORKFLOW.read_text()
             step = workflow.split("      - name: Build and publish the dev image\n", 1)[1].split("\n      - name: ", 1)[0]
             self.assertIn("steps.release-mode.outputs.dev-fast == 'true'", step)
-            self.assertIn("TILO_DEV_DISK=0", step)
+            self.assertIn("-f os/Containerfile.dev", step)
+            self.assertIn("type=gha,scope=tilo-vm-dev-$ARCH", step)
+            self.assertIn("--secret id=actions_cache_url,env=ACTIONS_CACHE_URL", step)
+            self.assertIn("push=true", step)
+            self.assertIn("PUSHED_DIGEST=", step)
             self.assertIn("IMAGE_ONLY=1", step)
             self.assertIn("TILO_DEV_RUST_LTO=off", step)
             gate = workflow.split("      - name: Reseal, install, boot, and stage the verified image\n", 1)[1]
@@ -321,7 +325,7 @@ class ReleaseGateTests(unittest.TestCase):
             workflow = WORKFLOW.read_text()
             archive = re.compile(r"oci-archive:/var/tmp/tilo-image(?:-repro)?\.tar")
             uses = list(archive.finditer(workflow))
-            self.assertEqual(len(uses), 7)
+            self.assertEqual(len(uses), 6)
             for use in uses:
                 self.assertRegex(
                     workflow[use.end():use.end() + 24],

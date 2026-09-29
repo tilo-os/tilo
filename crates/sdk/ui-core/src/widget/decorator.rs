@@ -419,26 +419,6 @@ pub trait Decorator {
         self.inner().opening()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner().needs_commit()
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.inner_mut().take_commit_context()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner_mut().on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.inner().get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.inner_mut().set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner().text_review()
     }
@@ -964,26 +944,6 @@ impl<T: Decorator> Widget for T {
 
     fn opening(&self) -> bool {
         Decorator::opening(self)
-    }
-
-    fn needs_commit(&self) -> bool {
-        Decorator::needs_commit(self)
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Decorator::take_commit_context(self)
-    }
-
-    fn on_commit(&mut self) {
-        Decorator::on_commit(self);
-    }
-
-    fn get_state(&self) -> Option<String> {
-        Decorator::get_state(self)
-    }
-
-    fn set_state(&mut self, state: &str) {
-        Decorator::set_state(self, state);
     }
 
     fn text_review(&self) -> Option<(usize, String)> {

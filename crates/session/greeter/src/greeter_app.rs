@@ -232,6 +232,8 @@ impl VStack {
 }
 
 impl Widget for VStack {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -415,22 +417,25 @@ impl Widget for VStack {
         any
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children.iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in &mut self.children {
-            child.on_commit();
-        }
-    }
-
     fn name(&self) -> &'static str {
         "GreeterStack"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for VStack {
+    fn needs_commit(&self) -> bool {
+        self.children
+            .iter()
+            .any(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        for child in &mut self.children {
+            ui::undo::on_commit(child.as_mut());
+        }
     }
 }
 
@@ -1650,7 +1655,7 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
-    ui::provides!(dyn ui::widget::FullscreenProvider);
+    ui::provides!(dyn ui::widget::FullscreenProvider, dyn ui::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -1933,16 +1938,6 @@ impl Widget for GreeterApp {
         }
     }
 
-    fn needs_commit(&self) -> bool {
-        self.composed.as_ref().is_some_and(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        if let Some(c) = &mut self.composed {
-            c.on_commit();
-        }
-    }
-
     fn wants_pointer_capture(&self) -> bool {
         self.composed
             .as_ref()
@@ -1955,6 +1950,19 @@ impl Widget for GreeterApp {
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for GreeterApp {
+    fn needs_commit(&self) -> bool {
+        self.composed
+            .as_ref()
+            .is_some_and(|c| ui::undo::needs_commit(c.as_ref()))
+    }
+    fn on_commit(&mut self) {
+        if let Some(c) = &mut self.composed {
+            ui::undo::on_commit(c.as_mut());
+        }
     }
 }
 

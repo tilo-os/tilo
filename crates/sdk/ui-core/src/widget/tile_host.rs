@@ -808,21 +808,21 @@ impl TileHost {
         let (Some(binding), TileContent::App(root)) = (&self.binding, &mut self.content) else {
             return Ok(());
         };
-        if !root.needs_commit() {
+        if !crate::undo::needs_commit(root.as_ref()) {
             return Ok(());
         }
         binding
             .store
             .with_action_state(&binding.live, |doc, history, _| {
-                let context = root.take_commit_context();
+                let context = crate::undo::take_commit_context(root.as_mut());
                 history.commit_action_authored_with_message(
                     doc,
                     None,
-                    root.get_state(),
+                    crate::undo::get_state(root.as_ref()),
                     Some(crate::collaboration::local_user_id()),
                     context.and_then(|context| context.change_message()),
                 );
-                root.on_commit();
+                crate::undo::on_commit(root.as_mut());
             })
             .map_err(|error| error.to_string())
     }
@@ -1602,7 +1602,8 @@ impl Widget for TileHost {
         dyn crate::search::capability::SearchSource,
         dyn crate::presence::capability::PublishesPresence,
         dyn crate::view::capability::ViewState,
-        dyn crate::component_lifecycle::ComponentLifecycle
+        dyn crate::component_lifecycle::ComponentLifecycle,
+        dyn crate::undo::UndoPoints
     );
 
     fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
@@ -2185,21 +2186,31 @@ impl Widget for TileHost {
                     history.commit_action_authored(
                         doc,
                         None,
-                        app.get_state(),
+                        crate::undo::get_state(app.as_ref()),
                         Some(author.clone()),
                     );
                 }
                 match step {
-                    UndoStep::Undo => history.undo_as(doc, Some(&author), None, app.get_state()),
-                    UndoStep::Redo => history.redo_as(doc, Some(&author), None, app.get_state()),
+                    UndoStep::Undo => history.undo_as(
+                        doc,
+                        Some(&author),
+                        None,
+                        crate::undo::get_state(app.as_ref()),
+                    ),
+                    UndoStep::Redo => history.redo_as(
+                        doc,
+                        Some(&author),
+                        None,
+                        crate::undo::get_state(app.as_ref()),
+                    ),
                 }
                 .map(|entry| {
                     if let Some(meta) = entry.widget_metadata.as_deref() {
-                        app.set_state(meta);
+                        crate::undo::set_state(app.as_mut(), meta);
                     }
                 })
             });
-            app.on_commit();
+            crate::undo::on_commit(app.as_mut());
             *ctx.handled = true;
             return;
         }
@@ -2288,34 +2299,6 @@ impl Widget for TileHost {
             TileContent::Stub { .. } | TileContent::Notice { .. } => false,
         }
     }
-    /// A bound tile has already committed the app's burst against its own
-    /// record in [`Widget::update`]; saying "yes" here would commit the
-    /// host's own, unrelated document too.
-    fn needs_commit(&self) -> bool {
-        if self
-            .history
-            .as_ref()
-            .is_some_and(|history| !history.live_interactive())
-            || crate::history_mode::frame::FrameworkInputFrame::active()
-        {
-            return false;
-        }
-        if self.binding.is_some() {
-            return false;
-        }
-        match &self.content {
-            TileContent::App(w) => w.needs_commit(),
-            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
-        }
-    }
-    fn on_commit(&mut self) {
-        if self.binding.is_some() {
-            return;
-        }
-        if let TileContent::App(w) = &mut self.content {
-            w.on_commit();
-        }
-    }
     fn take_structure_dirty(&mut self) -> bool {
         // Both flags drained, not short-circuited, so neither can be left
         // set behind the other.
@@ -2341,6 +2324,37 @@ impl Widget for TileHost {
         let opening_indicator =
             Widget::opening(self) && Widget::needs_animation_frame(&self.opening_spinner);
         self.spawn_in_flight() || self.handover_in_flight() || opening_indicator || inner
+    }
+}
+
+impl crate::undo::UndoPoints for TileHost {
+    /// A bound tile has already committed the app's burst against its own
+    /// record in [`Widget::update`]; saying "yes" here would commit the
+    /// host's own, unrelated document too.
+    fn needs_commit(&self) -> bool {
+        if self
+            .history
+            .as_ref()
+            .is_some_and(|history| !history.live_interactive())
+            || crate::history_mode::frame::FrameworkInputFrame::active()
+        {
+            return false;
+        }
+        if self.binding.is_some() {
+            return false;
+        }
+        match &self.content {
+            TileContent::App(w) => crate::undo::needs_commit(w.as_ref()),
+            TileContent::Stub { .. } | TileContent::Notice { .. } => false,
+        }
+    }
+    fn on_commit(&mut self) {
+        if self.binding.is_some() {
+            return;
+        }
+        if let TileContent::App(w) = &mut self.content {
+            crate::undo::on_commit(w.as_mut());
+        }
     }
 }
 

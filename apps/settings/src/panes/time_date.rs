@@ -321,7 +321,10 @@ impl TimeZoneMap {
 }
 
 impl Widget for TimeZoneMap {
-    ui::provides!(dyn ui::widget::controls::ActionControls);
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::undo::UndoPoints
+    );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
@@ -358,14 +361,6 @@ impl Widget for TimeZoneMap {
             .unwrap();
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
-    }
-
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-
-    fn on_commit(&mut self) {
-        self.needs_commit = false;
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
@@ -605,6 +600,15 @@ impl Widget for TimeZoneMap {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::undo::UndoPoints for TimeZoneMap {
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
+    fn on_commit(&mut self) {
+        self.needs_commit = false;
     }
 }
 
@@ -912,6 +916,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for TimeDatePane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -991,20 +997,6 @@ impl Widget for TimeDatePane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "time-date",
-            "Time & date",
-            "Change time and date preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "TimeDatePane"
     }
@@ -1020,6 +1012,22 @@ impl Widget for TimeDatePane {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+}
+
+impl ui::undo::UndoPoints for TimeDatePane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "time-date",
+            "Time & date",
+            "Change time and date preferences",
+        )
     }
 }
 
@@ -1141,9 +1149,12 @@ mod tests {
                 read_str_or_text(&doc, &root, draft_key(TIMEZONE_KEY)).as_deref(),
                 Some("Europe/Berlin")
             );
-            assert!(map.needs_commit(), "a real timezone choice is durable");
-            map.on_commit();
-            assert!(!map.needs_commit());
+            assert!(
+                ui::undo::needs_commit(&map),
+                "a real timezone choice is durable"
+            );
+            ui::undo::on_commit(&mut map);
+            assert!(!ui::undo::needs_commit(&map));
             assert!(!map.perform_action(
                 &ui::a11y::Action::SetValue("Mars/Olympus_Mons".to_string()),
                 &mut doc,

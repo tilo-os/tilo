@@ -1602,6 +1602,106 @@ mod command_path_tests {
         }
     }
 
+    /// An agent sorts a downloads folder with typed actions only: `go-to` an
+    /// absolute folder, browse its entries, and `move-to`/`copy-to` another.
+    #[test]
+    fn go_to_move_to_and_copy_to_organise_files_by_absolute_path() {
+        use ui::resources::PublishesResources;
+        use ui::tilo_actions::{ActionAddress, door};
+        let root = tempfile::tempdir().unwrap();
+        let downloads = root.path().join("in/downloads");
+        let images = root.path().join("out/images");
+        let documents = root.path().join("out/documents");
+        for dir in [&downloads, &images, &documents] {
+            std::fs::create_dir_all(dir).unwrap();
+        }
+        std::fs::write(downloads.join("holiday.jpg"), b"jpg").unwrap();
+        std::fs::write(downloads.join("notes.txt"), b"txt").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        let mut doc = automerge::AutoCommit::new();
+        let invoke = |files: &mut FileExplorerWidget,
+                      doc: &mut automerge::AutoCommit,
+                      target: (String, &str),
+                      arg: (&str, &Path)| {
+            let (resource, action) = target;
+            let resources = ui::resources::resources(&*files, doc);
+            let arguments = serde_json::Map::from_iter([(
+                arg.0.to_string(),
+                serde_json::Value::String(arg.1.to_string_lossy().into_owned()),
+            )]);
+            let encoded = door::encode_json(
+                &resources,
+                &ActionAddress::new(resource, action),
+                &arguments,
+            )
+            .unwrap();
+            let kind = if action == "go-to" {
+                OperationKind::View
+            } else {
+                OperationKind::Effect
+            };
+            Widget::start_operation(
+                files,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    kind,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                doc,
+                &automerge::ROOT,
+            )
+        };
+
+        let start = (
+            crate::search_provider::folder_resource_id(&files.current_path),
+            "go-to",
+        );
+        invoke(&mut files, &mut doc, start, ("path", &downloads)).unwrap();
+        assert_eq!(files.current_path, downloads);
+        let folder = crate::search_provider::folder_resource_id(&downloads);
+        let relative = invoke(
+            &mut files,
+            &mut doc,
+            (folder.clone(), "go-to"),
+            ("path", Path::new("in")),
+        );
+        assert!(relative.unwrap_err().contains("absolute"));
+
+        let browsed = files.resource(&doc, &folder).unwrap();
+        let holiday = crate::search_provider::entry_resource_id(&downloads.join("holiday.jpg"));
+        let notes = crate::search_provider::entry_resource_id(&downloads.join("notes.txt"));
+        let children: Vec<&str> = browsed.children.iter().map(|c| c.id.as_str()).collect();
+        assert!(children.contains(&holiday.as_str()) && children.contains(&notes.as_str()));
+
+        invoke(
+            &mut files,
+            &mut doc,
+            (holiday, "move-to"),
+            ("folder", &images),
+        )
+        .unwrap();
+        invoke(
+            &mut files,
+            &mut doc,
+            (notes.clone(), "copy-to"),
+            ("folder", &documents),
+        )
+        .unwrap();
+        assert!(images.join("holiday.jpg").exists());
+        assert!(!downloads.join("holiday.jpg").exists(), "moved, not copied");
+        assert!(documents.join("notes.txt").exists() && downloads.join("notes.txt").exists());
+        let nowhere = root.path().join("nope");
+        let missing = invoke(
+            &mut files,
+            &mut doc,
+            (notes, "move-to"),
+            ("folder", &nowhere),
+        );
+        assert!(missing.unwrap_err().contains("new-folder"));
+        assert!(downloads.join("notes.txt").exists());
+    }
+
     fn exported_rename_changes_case_without_overwriting_another_entry() {
         use ui::tilo_actions::{ActionAddress, door};
         let directory = tempfile::tempdir().unwrap();

@@ -55,8 +55,6 @@ jobs:
       CARGO_TERM_COLOR: never
       VERIFIER_ARCH: ${{ matrix.arch }}
       BUILDER_IMAGE: ${{ needs.builder.outputs.image }}
-      FALLBACK_AWS_ACCESS_KEY_ID: ${{ secrets.SCCACHE_AWS_ACCESS_KEY_ID }}
-      FALLBACK_AWS_SECRET_ACCESS_KEY: ${{ secrets.SCCACHE_AWS_SECRET_ACCESS_KEY }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:

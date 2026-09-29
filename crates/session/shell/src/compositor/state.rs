@@ -74,7 +74,6 @@ use smithay::wayland::shell::xdg::{
 };
 use smithay::wayland::shm::{ShmHandler, ShmState};
 use smithay::wayland::idle_inhibit::{IdleInhibitHandler, IdleInhibitManagerState};
-use smithay::wayland::xdg_toplevel_icon::{XdgToplevelIconHandler, XdgToplevelIconManager};
 use smithay::wayland::viewporter::ViewporterState;
 use smithay::wayland::virtual_keyboard::VirtualKeyboardManagerState;
 use smithay::wayland::xdg_activation::{
@@ -88,7 +87,7 @@ use smithay::{
     delegate_primary_selection, delegate_relative_pointer,
     delegate_seat, delegate_session_lock, delegate_shm,
     delegate_viewporter, delegate_virtual_keyboard_manager, delegate_xdg_decoration,
-    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell, delegate_xdg_toplevel_icon,
+    delegate_xdg_activation, delegate_xdg_dialog, delegate_xdg_shell,
 };
 
 use crate::collab::flatpak_share::SharedFlatpakSession;
@@ -568,7 +567,7 @@ pub struct State {
     pub idle_inhibitors: crate::compositor::idle_inhibit::IdleInhibitors,
     /// `xdg_toplevel_icon_manager_v1` — a window naming or drawing its own
     /// icon for its tab; see [`crate::compositor::toplevel_icon`].
-    pub toplevel_icon_manager: XdgToplevelIconManager,
+    pub toplevel_icon_manager: crate::compositor::toplevel_icon::ToplevelIconManager,
     /// Current display scale factor (`HiDPI`), sent to clients as the
     /// preferred `wp_fractional_scale`. Read once at session start from the
     /// shared settings store (`display.scale`), so it tracks the Settings app's "Display scale" control. Defaults to `1.0` when unset or absent.
@@ -3424,8 +3423,9 @@ impl CompositorHandler for State {
 impl BufferHandler for State {
     fn buffer_destroyed(
         &mut self,
-        _buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
+        buffer: &smithay::reexports::wayland_server::protocol::wl_buffer::WlBuffer,
     ) {
+        self.toplevel_icon_manager.buffer_destroyed(buffer);
     }
 }
 
@@ -4954,11 +4954,6 @@ delegate_output!(State);
 delegate_fractional_scale!(State);
 delegate_viewporter!(State);
 delegate_idle_inhibit!(State);
-delegate_xdg_toplevel_icon!(State);
-
-/// The icon is double-buffered: it is read on the surface's next commit.
-impl XdgToplevelIconHandler for State {}
-
 impl IdleInhibitHandler for State {
     fn inhibit(&mut self, surface: WlSurface) {
         self.idle_inhibitors.inhibit(surface);

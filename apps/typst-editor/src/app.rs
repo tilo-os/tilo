@@ -1901,7 +1901,8 @@ impl Widget for TypstApp {
     ui::provides!(
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::widget::controls::ActionControls,
-        dyn ui::resources::PublishesResources
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
     );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2273,31 +2274,6 @@ impl Widget for TypstApp {
         }
     }
 
-    fn needs_commit(&self) -> bool {
-        self.native_edit_pending
-    }
-
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        self.native_edit_pending.then(|| {
-            let document = self
-                .documents
-                .get(self.current)
-                .map_or("Untitled.typ", |document| document.name.as_str());
-            ui::tilo_actions::ActionContext::for_resource(
-                "Edit source",
-                format!("typst.document:{document}"),
-                "typst.document",
-                document,
-            )
-            .with_app("so.tilo.typst-editor", "Typst")
-            .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
-        })
-    }
-
-    fn on_commit(&mut self) {
-        self.native_edit_pending = false;
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -2336,6 +2312,31 @@ impl Widget for TypstApp {
         // sets `dirty`, so divider drags, preview text-selection, and inline
         // diagnostic tooltips all repaint smoothly.
         self.dirty
+    }
+}
+
+impl ui::undo::UndoPoints for TypstApp {
+    fn needs_commit(&self) -> bool {
+        self.native_edit_pending
+    }
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        self.native_edit_pending.then(|| {
+            let document = self
+                .documents
+                .get(self.current)
+                .map_or("Untitled.typ", |document| document.name.as_str());
+            ui::tilo_actions::ActionContext::for_resource(
+                "Edit source",
+                format!("typst.document:{document}"),
+                "typst.document",
+                document,
+            )
+            .with_app("so.tilo.typst-editor", "Typst")
+            .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
+        })
+    }
+    fn on_commit(&mut self) {
+        self.native_edit_pending = false;
     }
 }
 
@@ -2954,9 +2955,9 @@ mod tests {
 
             assert!(send(&mut app, &mut doc, &char_press("x")));
             assert_ne!(app.read_source(&doc), before, "the source really changed");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
 
-            let context = app.take_commit_context().expect("native edit provenance");
+            let context = ui::undo::take_commit_context(&mut app).expect("native edit provenance");
             assert_eq!(context.action_label, "Edit source");
             assert_eq!(
                 context.app.as_ref().map(|app| app.id.as_str()),
@@ -2970,9 +2971,9 @@ mod tests {
                 Some("typst.document")
             );
 
-            app.on_commit();
+            ui::undo::on_commit(&mut app);
             assert!(
-                !app.needs_commit(),
+                !ui::undo::needs_commit(&app),
                 "commit acknowledgement clears the latch"
             );
         }
@@ -3005,7 +3006,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(app.read_source(&doc), "= Accessible edit");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
         }
     }
 

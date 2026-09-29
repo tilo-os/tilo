@@ -594,7 +594,7 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), widget.get_state());
+            states.insert(id.to_owned(), crate::undo::get_state(widget));
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -606,7 +606,7 @@ fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Optio
     if let Some(id) = widget.test_id().map(str::to_owned)
         && let Some(Some(state)) = states.get(&id)
     {
-        widget.set_state(state);
+        crate::undo::set_state(widget, state);
     }
     for child in widget.children_mut() {
         restore_widget_states(child, states);
@@ -1362,7 +1362,10 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    crate::provides!(dyn crate::resources::PublishesResources);
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -1454,14 +1457,6 @@ impl Widget for LiveUi {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own | self.child.take_structure_dirty()
@@ -1522,6 +1517,15 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for LiveUi {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -1637,7 +1641,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), widget.get_state()));
+        return Some((id.to_owned(), crate::undo::get_state(widget)));
     }
     widget
         .children()
@@ -1649,7 +1653,7 @@ fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) 
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
         if let Some(state) = state {
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
         }
         return true;
     }
@@ -3032,7 +3036,7 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    crate::provides!(dyn crate::undo::LocalUndo);
+    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
@@ -3128,14 +3132,6 @@ impl Widget for UiGraphEditor {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.child.take_structure_dirty()
     }
@@ -3164,6 +3160,15 @@ impl Widget for UiGraphEditor {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for UiGraphEditor {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
     }
 }
 
@@ -3683,7 +3688,7 @@ mod tests {
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
         if widget.test_id() == Some(id) {
             widget.set_focus(true);
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
             return true;
         }
         widget
@@ -3694,7 +3699,7 @@ mod tests {
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
         if widget.test_id() == Some(id) {
-            return widget.get_state();
+            return crate::undo::get_state(widget);
         }
         widget
             .children()

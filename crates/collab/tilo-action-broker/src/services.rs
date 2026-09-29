@@ -138,6 +138,9 @@ pub struct DesktopOpener {
 pub struct LaunchableApplication {
     pub package_id: String,
     pub display_name: String,
+    /// A host application Tilo did not package: it runs outside every Tilo
+    /// sandbox, with the user's own files, and publishes no typed actions.
+    pub unconfined: bool,
 }
 /// The application a launcher-authenticated connection belongs to, and the
 /// workspace it was launched into. Launch content is only ever read through
