@@ -16234,6 +16234,7 @@ dependencies = [
  "vello_encoding",
  "wgpu",
  "wgpu-hal",
+ "windows 0.62.2",
  "windows-sys 0.61.2",
  "winit",
  "wire-frame",

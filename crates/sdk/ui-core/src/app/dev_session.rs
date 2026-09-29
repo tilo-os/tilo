@@ -6,7 +6,7 @@
 // watcher does not treat the write as another edit.
 
 use std::path::Path;
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 
 use crate::widget::RouteSnapshot;
@@ -95,12 +95,12 @@ pub(crate) fn write_dev_checkpoint(app: &App, dir: &Path) -> bool {
     std::fs::rename(&temporary, &destination).is_ok()
 }
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 static DEV_STOP_PIPE: AtomicI32 = AtomicI32::new(-1);
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 static DEV_STOP_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 extern "C" fn request_dev_session_stop(signal: libc::c_int) {
     let fd = DEV_STOP_PIPE.load(Ordering::Relaxed);
     if fd >= 0 {
@@ -118,7 +118,7 @@ extern "C" fn request_dev_session_stop(signal: libc::c_int) {
 /// SIGUSR1 asks it to reload the contents of the windows it already has. The
 /// dev loop uses that after a successful build so a new process, and therefore
 /// a new window, is not opened.
-#[cfg(feature = "native")]
+#[cfg(all(feature = "native", unix))]
 #[allow(
     clippy::disallowed_methods,
     reason = "the signal pipe is read for the life of the process; a pool job would pin a worker on a blocking read"
@@ -171,6 +171,10 @@ pub(crate) fn install_dev_session_stop(proxy: winit::event_loop::EventLoopProxy<
         );
     }
 }
+
+/// Windows has no signals for the dev loop to send; it ends the process.
+#[cfg(all(feature = "native", not(unix)))]
+pub(crate) fn install_dev_session_stop(_proxy: winit::event_loop::EventLoopProxy<UserEvent>) {}
 
 /// Replace the baked catalogs with the `.ftl` files in `dir`.
 ///

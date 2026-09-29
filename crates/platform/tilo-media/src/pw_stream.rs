@@ -43,7 +43,7 @@ pub const S16_BYTES: usize = 2;
 
 /// This device's `CLOCK_MONOTONIC` in nanoseconds: the clock `PipeWire`
 /// timestamps its graph cycles with.
-#[cfg(not(target_arch = "wasm32"))]
+#[cfg(unix)]
 #[allow(
     clippy::useless_conversion,
     reason = "time_t and c_long are 32 bits wide on 32-bit targets"
