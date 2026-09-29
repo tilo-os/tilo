@@ -134,6 +134,18 @@ pub enum TableEdit {
     Delete,
 }
 
+/// A file format [`RichTextAction::ReplaceFormatted`] can import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportFormat {
+    Markdown,
+    Text,
+    Html,
+    Rtf,
+    Docx,
+    Odt,
+}
+
 /// Every collaborative, document-mutating operation the word processor exports.
 ///
 /// Deliberately positional: each variant names the exact block ids and offsets
@@ -390,6 +402,12 @@ pub enum RichTextAction {
     /// restore a version): every existing body block is removed, then the
     /// Markdown is imported as fresh blocks.
     ReplaceBody { markdown: String },
+    /// Replace the body with `bytes` decoded as `format`. A decode failure
+    /// refuses the action so the open document stays as it was.
+    ReplaceFormatted {
+        format: ImportFormat,
+        bytes: Vec<u8>,
+    },
     /// Accept one tracked change, or every change when `id` is absent.
     AcceptChanges { id: Option<String> },
     /// Reject one tracked change, or every change when `id` is absent.
@@ -444,7 +462,8 @@ impl RichTextAction {
             | Self::RemoveBlocks { .. }
             | Self::RemoveRegionBlocks { .. }
             | Self::EnsureRegionBlock { .. }
-            | Self::ReplaceBody { .. } => ActionDomain::Text,
+            | Self::ReplaceBody { .. }
+            | Self::ReplaceFormatted { .. } => ActionDomain::Text,
             Self::SetParagraphStyle { .. }
             | Self::ApplyNamedStyle { .. }
             | Self::SetBlockAttr { .. }
@@ -798,6 +817,7 @@ impl<'a> ActionValidator<'a> {
             }
             RichTextAction::EnsureRegionBlock { .. } => true,
             RichTextAction::ReplaceBody { markdown } => Self::safe_text(markdown),
+            RichTextAction::ReplaceFormatted { bytes, .. } => bytes.len() <= MAX_IMPORT_BYTES,
             _ => false,
         }
     }
@@ -1819,6 +1839,45 @@ fn apply_remove_region_blocks(dm: &mut DocMut, region: Region, blocks: &[String]
     }
 }
 
+const MAX_IMPORT_BYTES: usize = 8 * 1024 * 1024;
+
+fn apply_replace_formatted(dm: &mut DocMut, format: ImportFormat, bytes: &[u8]) {
+    use tilo_doc_codecs::FormatProvider;
+    let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
+    for id in &existing {
+        dm.tombstone_block_in(Region::Body, id);
+    }
+    let mut inputs = tilo_content::ContentInputs::new();
+    let imported = match format {
+        ImportFormat::Markdown => tilo_doc_codecs::MarkdownCodec.import(bytes, dm, &mut inputs),
+        ImportFormat::Html => tilo_doc_codecs::HtmlCodec.import(bytes, dm, &mut inputs),
+        ImportFormat::Rtf => tilo_doc_codecs::RtfCodec.import(bytes, dm, &mut inputs),
+        ImportFormat::Docx => tilo_doc_codecs::DocxCodec.import(bytes, dm, &mut inputs),
+        ImportFormat::Odt => tilo_doc_codecs::OdtCodec.import(bytes, dm, &mut inputs),
+        ImportFormat::Text => import_plain_text(dm, bytes),
+    };
+    if imported.is_err() {
+        // The caller stages a successful import before this write. A replay
+        // that still fails keeps the cleared body rather than a half-written
+        // codec result mixed with the old one.
+        let _ = imported;
+    }
+}
+
+fn import_plain_text(dm: &mut DocMut, bytes: &[u8]) -> Result<(), tilo_doc_codecs::CodecError> {
+    let text = std::str::from_utf8(bytes)
+        .map_err(|error| tilo_doc_codecs::CodecError::Parse(error.to_string()))?;
+    dm.bulk(|dm| {
+        let mut previous = None;
+        for line in text.lines() {
+            let block = dm.insert_block(previous.as_deref(), "paragraph");
+            dm.splice_text(&block, 0, 0, line);
+            previous = Some(block);
+        }
+    });
+    Ok(())
+}
+
 fn apply_replace_body(dm: &mut DocMut, markdown: &str) {
     use tilo_doc_codecs::FormatProvider;
     let existing = tilo_doc::model::blocks_in_order(dm.doc, dm.c);
@@ -1984,6 +2043,9 @@ fn apply_text_action(dm: &mut DocMut<'_>, action: &RichTextAction) {
             apply_ensure_region_block(dm, region.to_region());
         }
         RichTextAction::ReplaceBody { markdown } => apply_replace_body(dm, markdown),
+        RichTextAction::ReplaceFormatted { format, bytes } => {
+            apply_replace_formatted(dm, *format, bytes);
+        }
         _ => {}
     }
 }
