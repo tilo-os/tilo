@@ -1,6 +1,4 @@
 //! Transport-independent MCP projection of the production action broker.
-#[path = "mcp_page.rs"]
-mod page;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use tilo_actions::remote::{
@@ -16,9 +14,6 @@ pub struct McpServer<H> {
     run: Option<tilo_actions::ActionGroup>,
     /// Pixel fallback, when the host runs beside a compositor.
     computer: Option<std::sync::Arc<crate::computer::Computer>>,
-    /// The page `tilo_query` answers when a call names no `detail`; a client
-    /// that parses v1 rows pins `full` for its session at `initialize`.
-    detail: Detail,
 }
 
 #[derive(Default, Deserialize)]
@@ -31,13 +26,12 @@ struct ListArgs {
 #[serde(deny_unknown_fields)]
 struct QueryArgs {
     peer_id: Option<u64>,
-    app_id: Option<String>,
     #[serde(default)]
     workspace: bool,
     #[serde(default)]
     revision: String,
     #[serde(default)]
-    cursor: Cursor,
+    cursor: Vec<u8>,
     #[serde(default)]
     parent_resource: String,
     #[serde(default)]
@@ -46,48 +40,14 @@ struct QueryArgs {
     max_bytes: Option<u32>,
     max_work: Option<u32>,
     max_depth: Option<u16>,
-    detail: Option<Detail>,
-}
-/// A continuation as a page issued it: the compact page's string, or the
-/// full page's byte array.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Cursor {
-    Bytes(Vec<u8>),
-    Text(String),
-}
-impl Default for Cursor {
-    fn default() -> Self {
-        Self::Bytes(Vec::new())
-    }
-}
-impl Cursor {
-    fn into_bytes(self) -> Result<Vec<u8>, String> {
-        match self {
-            Self::Bytes(bytes) => Ok(bytes),
-            Self::Text(text) => page::cursor_bytes(&text),
-        }
-    }
-}
-/// How much of each row a page carries.
-#[derive(Clone, Copy, Default, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-enum Detail {
-    /// Rows grouped by resource, each action a one-line signature.
-    #[default]
-    Compact,
-    /// Every row with its descriptor and contracts, as first published.
-    Full,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TargetArgs {
     peer_id: Option<u64>,
-    app_id: Option<String>,
     #[serde(default)]
     workspace: bool,
-    /// Omitted: the directory as it is now.
-    revision: Option<String>,
+    revision: String,
     resource: String,
     action: String,
 }
@@ -95,21 +55,15 @@ struct TargetArgs {
 #[serde(deny_unknown_fields)]
 struct InvokeArgs {
     peer_id: Option<u64>,
-    app_id: Option<String>,
     #[serde(default)]
     workspace: bool,
-    /// Omitted: the directory as it is now.
-    revision: Option<String>,
+    revision: String,
     resource: String,
     action: String,
-    #[serde(default)]
     arguments: serde_json::Map<String, Value>,
     /// Caller-chosen id; retrying with the same id never starts twice.
     #[serde(default)]
     invocation_id: Option<String>,
-    /// How long to wait for a terminal update before answering with the
-    /// current one.
-    wait_ms: Option<u64>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -144,7 +98,6 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             actor,
             run: None,
             computer: None,
-            detail: Detail::Compact,
         }
     }
     /// Offer the canonical `computer` tools, driving `computer`.
@@ -271,10 +224,19 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             }
         }
         let result = match method {
-            "initialize" => match self.initialize(&params) {
-                Ok(result) => Ok(result),
-                Err(message) => return Some(error(&id, -32602, message)),
-            },
+            "initialize" => {
+                let Some(version) = params.get("protocolVersion").and_then(Value::as_str) else {
+                    return Some(error(&id, -32602, "protocolVersion is required"));
+                };
+                let selected = if ["2024-11-05", "2025-03-26", "2025-06-18"].contains(&version) {
+                    version
+                } else {
+                    "2025-06-18"
+                };
+                Ok(
+                    json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
+                )
+            }
             "ping" => Ok(json!({})),
             "tools/list" => Ok(json!({"tools":self.tools()})),
             "tools/call" => {
@@ -311,25 +273,6 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             Ok(value) => json!({"jsonrpc":"2.0","id":id,"result":value}),
             Err(e) => error(&id, -32602, &e),
         })
-    }
-    /// Negotiate the protocol version and take the client's page detail.
-    fn initialize(&mut self, params: &Value) -> Result<Value, &'static str> {
-        let version = params
-            .get("protocolVersion")
-            .and_then(Value::as_str)
-            .ok_or("protocolVersion is required")?;
-        let selected = if ["2024-11-05", "2025-03-26", "2025-06-18"].contains(&version) {
-            version
-        } else {
-            "2025-06-18"
-        };
-        if let Some(detail) = params.pointer(SURFACE_DETAIL) {
-            self.detail =
-                Detail::deserialize(detail).map_err(|_| "detail must be compact or full")?;
-        }
-        Ok(
-            json!({"protocolVersion":selected,"capabilities":{"tools":{},"resources":{},"experimental":{SURFACE:{"version":2}}},"serverInfo":{"name":"tilo-runtime","version":env!("CARGO_PKG_VERSION")}}),
-        )
     }
     /// One catalogue page from the action host, as this bridge's caller.
     async fn ask(&self, query: CatalogueQuery) -> Result<CataloguePage, String> {
@@ -394,204 +337,35 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
     }
     /// The provider a call addresses: one live application instance, or the
     /// workspace itself (installed applications to open, shortcuts, …).
-    async fn provider(
-        &self,
-        peer_id: Option<u64>,
-        app_id: Option<&str>,
-        workspace: bool,
-    ) -> Result<String, String> {
-        match (peer_id, app_id, workspace) {
-            (None, None, true) => Ok(tilo_actions::remote::workspace_provider(&self.room)),
-            (Some(peer), None, false) => {
+    async fn provider(&self, peer_id: Option<u64>, workspace: bool) -> Result<String, String> {
+        match (peer_id, workspace) {
+            (None, true) => Ok(tilo_actions::remote::workspace_provider(&self.room)),
+            (Some(peer), false) => {
                 self.live_peer(peer).await?;
                 Ok(peer.to_string())
             }
-            // The newest instance: the one an `open` in the same turn started.
-            (None, Some(app_id), false) => self
-                .peers_of(app_id)
-                .await?
-                .last()
-                .map(ToString::to_string)
-                .ok_or_else(|| {
-                    format!("{app_id} is not running; open it through the workspace first")
-                }),
-            _ => Err("name exactly one of peer_id, app_id or workspace: true".into()),
+            _ => Err("name exactly one of peer_id or workspace: true".into()),
         }
     }
     async fn query(&self, args: QueryArgs) -> Result<Value, String> {
-        let provider = self
-            .provider(args.peer_id, args.app_id.as_deref(), args.workspace)
+        let provider = self.provider(args.peer_id, args.workspace).await?;
+        let page = self
+            .ask(CatalogueQuery {
+                provider: Some(provider),
+                parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
+                needle: args.needle,
+                target: None,
+                revision: (!args.revision.is_empty()).then_some(args.revision),
+                cursor: args.cursor,
+                max_results: args.max_results.unwrap_or(128).min(128),
+                limits: Some(CatalogueLimits {
+                    max_bytes: Some(args.max_bytes.unwrap_or(65536).min(65536)),
+                    max_work: Some(args.max_work.unwrap_or(512).min(512)),
+                    max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
+                }),
+            })
             .await?;
-        let cursor = args.cursor.into_bytes()?;
-        let words = page::needle_words(&args.needle);
-        let query = CatalogueQuery {
-            provider: Some(provider),
-            parent_resource: (!args.parent_resource.is_empty()).then_some(args.parent_resource),
-            // A host matches one substring; the longest word narrows most,
-            // and the rest are matched here.
-            needle: if words.len() > 1 {
-                words
-                    .iter()
-                    .max_by_key(|word| word.len())
-                    .cloned()
-                    .unwrap_or_default()
-            } else {
-                args.needle
-            },
-            target: None,
-            revision: (!args.revision.is_empty()).then_some(args.revision),
-            cursor,
-            max_results: args.max_results.unwrap_or(DEFAULT_PAGE).min(128),
-            limits: Some(CatalogueLimits {
-                max_bytes: Some(args.max_bytes.unwrap_or(65536).min(65536)),
-                max_work: Some(args.max_work.unwrap_or(512).min(512)),
-                max_depth: Some(args.max_depth.unwrap_or(16).min(16)),
-            }),
-        };
-        let mut page = self.ask(query.clone()).await?;
-        if words.len() > 1 {
-            page.rows.retain(|row| page::matches_words(row, &words));
-            // A page every row of which another word ruled out would read
-            // as "nothing here"; read on a little before answering.
-            let mut pages = 1;
-            while page.rows.is_empty()
-                && !page.exhausted
-                && !page.next_cursor.is_empty()
-                && pages < WORD_FILTER_PAGES
-            {
-                let mut next = query.clone();
-                next.revision = Some(page.revision.clone());
-                next.cursor = std::mem::take(&mut page.next_cursor);
-                page = self.ask(next).await?;
-                page.rows.retain(|row| page::matches_words(row, &words));
-                pages = pages.saturating_add(1);
-            }
-        }
-        let detail = args.detail.unwrap_or(self.detail);
-        if detail == Detail::Compact && !query.needle.is_empty() {
-            self.with_every_action(&query, &mut page).await?;
-        }
-        Ok(match detail {
-            Detail::Compact => page::compact_page(&page),
-            Detail::Full => page_json(&page),
-        })
-    }
-    /// Add every action of the few resources a needle matched: an agent
-    /// that found "paste" on a document also learns its "save-as" without a
-    /// second search.
-    async fn with_every_action(
-        &self,
-        query: &CatalogueQuery,
-        page: &mut CataloguePage,
-    ) -> Result<(), String> {
-        let mut matched = Vec::<String>::new();
-        for row in page.rows.iter().filter(|row| row.action.is_some()) {
-            if !matched.contains(&row.resource.id) {
-                matched.push(row.resource.id.clone());
-            }
-        }
-        if matched.len() > EXPANDED_RESOURCES {
-            return Ok(());
-        }
-        for resource in matched {
-            let listed = self
-                .ask(CatalogueQuery {
-                    parent_resource: Some(resource.clone()),
-                    needle: String::new(),
-                    revision: None,
-                    cursor: Vec::new(),
-                    max_results: 128,
-                    ..query.clone()
-                })
-                .await?;
-            for row in listed.rows {
-                let new = row.resource.id == resource
-                    && row.action.as_ref().is_some_and(|action| {
-                        !page.rows.iter().any(|seen| {
-                            seen.resource.id == resource
-                                && seen.action.as_ref().map(|a| &a.address.action)
-                                    == Some(&action.address.action)
-                        })
-                    });
-                if new {
-                    page.rows.push(row);
-                }
-            }
-        }
-        Ok(())
-    }
-    /// The revision `provider`'s directory is at now, for a caller that
-    /// named none.
-    async fn current_revision(&self, provider: &str) -> Result<String, String> {
-        self.ask(CatalogueQuery {
-            provider: Some(provider.to_owned()),
-            max_results: 1,
-            limits: Some(CatalogueLimits {
-                max_bytes: Some(4096),
-                max_work: Some(1),
-                max_depth: Some(1),
-            }),
-            ..CatalogueQuery::default()
-        })
-        .await
-        .map(|page| page.revision)
-    }
-    /// The caller's revision, or the current one when it named none. An
-    /// explicitly empty revision stays an error.
-    async fn revision_for(
-        &self,
-        provider: &str,
-        revision: Option<String>,
-    ) -> Result<(String, bool), String> {
-        match revision {
-            Some(revision) if revision.is_empty() => Err("revision must not be empty".into()),
-            Some(revision) => Ok((revision, false)),
-            None => Ok((self.current_revision(provider).await?, true)),
-        }
-    }
-    /// Live instances of `app_id`, by peer id.
-    async fn peers_of(&self, app_id: &str) -> Result<Vec<u64>, String> {
-        Ok(self
-            .instances()
-            .await?
-            .1
-            .into_iter()
-            .filter(|(_, app)| app["app_id"].as_str() == Some(app_id))
-            .map(|(peer, _)| peer)
-            .collect())
-    }
-    /// The instance an `open` of `app_id` started: the first peer not in
-    /// `before`, once it is listed and has published its directory. An app
-    /// is listed before it publishes, and an empty first page reads as "no
-    /// typed actions".
-    async fn opened_peer(&self, app_id: &str, before: &[u64]) -> Option<u64> {
-        let deadline = tokio::time::Instant::now().checked_add(JUST_LAUNCHED_WAIT)?;
-        let peer = loop {
-            let peers = self.peers_of(app_id).await.ok()?;
-            if let Some(peer) = peers.iter().find(|peer| !before.contains(peer)) {
-                break *peer;
-            }
-            if tokio::time::Instant::now() >= deadline {
-                // An app that was already open may have been raised
-                // instead of started again.
-                return peers.last().copied();
-            }
-            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
-        };
-        while tokio::time::Instant::now() < deadline {
-            let first = self
-                .ask(CatalogueQuery {
-                    provider: Some(peer.to_string()),
-                    max_results: 1,
-                    ..CatalogueQuery::default()
-                })
-                .await;
-            if first.is_ok_and(|page| !page.rows.is_empty()) {
-                break;
-            }
-            tokio::time::sleep(JUST_LAUNCHED_POLL).await;
-        }
-        Some(peer)
+        Ok(page_json(&page))
     }
     async fn call(&self, name: &str, args: Value) -> Result<Value, String> {
         match name {
@@ -599,18 +373,16 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
             "tilo_query" => self.query(parse(args)?).await,
             "tilo_resolve" => {
                 let a: TargetArgs = parse(args)?;
-                if a.revision.as_deref() == Some("") {
+                if a.revision.is_empty() {
                     return Err("revision must not be empty".into());
                 }
-                let provider = self
-                    .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-                    .await?;
-                let (revision, _) = self.revision_for(&provider, a.revision).await?;
                 let target = RemoteActionTarget {
-                    provider,
+                    provider: self.provider(a.peer_id, a.workspace).await?,
                     address: tilo_actions::ActionAddress::new(a.resource, a.action),
                 };
-                let page = self.ask(CatalogueQuery::resolve(&target, revision)).await?;
+                let page = self
+                    .ask(CatalogueQuery::resolve(&target, a.revision))
+                    .await?;
                 if page.stale_cursor {
                     return Err("StaleRevision".into());
                 }
@@ -619,7 +391,56 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                     .map(|row| json!({"row":row_json(row)}))
                     .ok_or_else(|| "NotFound".into())
             }
-            "tilo_invoke" => self.invoke(parse(args)?).await,
+            "tilo_invoke" => {
+                let a: InvokeArgs = parse(args)?;
+                if a.revision.is_empty() {
+                    return Err("revision must not be empty".into());
+                }
+                let provider = self.provider(a.peer_id, a.workspace).await?;
+                if a.workspace {
+                    self.seat_for_launch().await;
+                }
+                let invocation = a
+                    .invocation_id
+                    .as_deref()
+                    .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
+                let target = RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new(a.resource, a.action),
+                };
+                let mut request = InvokeRequest {
+                    invocation,
+                    target,
+                    argument: InvokeArgument::Json(a.arguments),
+                    context: self.context(),
+                    // The MCP client admitted this call under its own
+                    // allow/deny policy; that decision is the confirmation.
+                    confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
+                    revision: Some(a.revision),
+                };
+                if let Err(error) = self.start(request.clone()).await {
+                    if error
+                        != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string()
+                    {
+                        return Err(error);
+                    }
+                    // Only an exact-phrase contract refuses the plain
+                    // confirmation; answer with the phrase it names.
+                    let revision = request.revision.clone().unwrap_or_default();
+                    match self
+                        .contract_confirmation(&request.target, &revision)
+                        .await?
+                    {
+                        tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
+                            request.confirmation =
+                                Some(tilo_actions::remote::Confirmation::Phrase(phrase));
+                            self.start(request).await?;
+                        }
+                        _ => return Err(error),
+                    }
+                }
+                self.status(invocation)
+            }
             "tilo_status" => {
                 let a: StatusArgs = parse(args)?;
                 self.status(invocation_id(&a.invocation_id)?)
@@ -633,106 +454,6 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
                 self.status(invocation)
             }
             _ => Err("Unknown tool".into()),
-        }
-    }
-    /// Start an action and answer with its terminal update when it arrives
-    /// within the caller's wait, so a quick action costs one call.
-    async fn invoke(&self, a: InvokeArgs) -> Result<Value, String> {
-        if a.revision.as_deref() == Some("") {
-            return Err("revision must not be empty".into());
-        }
-        let provider = self
-            .provider(a.peer_id, a.app_id.as_deref(), a.workspace)
-            .await?;
-        if a.workspace {
-            self.seat_for_launch().await;
-        }
-        // A host application (`app.host:<desktop-id>`) is no Tilo peer.
-        let launching = a
-            .resource
-            .strip_prefix("app.")
-            .filter(|app_id| a.workspace && a.action == "open" && !app_id.starts_with("host:"))
-            .map(str::to_owned);
-        let before = match &launching {
-            Some(app_id) => self.peers_of(app_id).await?,
-            None => Vec::new(),
-        };
-        let invocation = a
-            .invocation_id
-            .as_deref()
-            .map_or_else(|| Ok(tilo_actions::InvocationId::new()), invocation_id)?;
-        let (revision, current) = self.revision_for(&provider, a.revision).await?;
-        let mut request = InvokeRequest {
-            invocation,
-            target: RemoteActionTarget {
-                provider,
-                address: tilo_actions::ActionAddress::new(a.resource, a.action),
-            },
-            argument: InvokeArgument::Json(a.arguments),
-            context: self.context(),
-            // The MCP client admitted this call under its own
-            // allow/deny policy; that decision is the confirmation.
-            confirmation: Some(tilo_actions::remote::Confirmation::Confirmed),
-            revision: Some(revision),
-        };
-        let mut started = self.start_confirmed(&mut request).await;
-        if current && started.as_ref().is_err_and(|error| error.contains(STALE)) {
-            // The caller asked for the directory as it is now, and it moved
-            // between reading its revision and starting: read it again.
-            request.revision = Some(self.current_revision(&request.target.provider).await?);
-            started = self.start_confirmed(&mut request).await;
-        }
-        started?;
-        let wait =
-            std::time::Duration::from_millis(a.wait_ms.unwrap_or(DEFAULT_WAIT_MS).min(MAX_WAIT_MS));
-        let mut value = self.settled(invocation, wait).await?;
-        if let Some(app_id) = launching
-            && value.pointer("/update/state").and_then(Value::as_str) == Some("succeeded")
-            && let Some(peer) = self.opened_peer(&app_id, &before).await
-            && let Some(fields) = value.as_object_mut()
-        {
-            fields.insert("peer_id".into(), json!(peer));
-        }
-        Ok(value)
-    }
-    /// Start `request`, answering an exact-phrase confirmation contract with
-    /// the phrase it names.
-    async fn start_confirmed(&self, request: &mut InvokeRequest) -> Result<(), String> {
-        let Err(error) = self.start(request.clone()).await else {
-            return Ok(());
-        };
-        if error != tilo_actions::remote::ActionHostError::ConfirmationRequired.to_string() {
-            return Err(error);
-        }
-        // Only an exact-phrase contract refuses the plain confirmation.
-        let revision = request.revision.clone().unwrap_or_default();
-        match self
-            .contract_confirmation(&request.target, &revision)
-            .await?
-        {
-            tilo_actions::ConfirmationPolicy::Phrase { phrase } => {
-                request.confirmation = Some(tilo_actions::remote::Confirmation::Phrase(phrase));
-                self.start(request.clone()).await
-            }
-            _ => Err(error),
-        }
-    }
-    /// The invocation's update once it is terminal, or after `wait`.
-    async fn settled(
-        &self,
-        id: tilo_actions::InvocationId,
-        wait: std::time::Duration,
-    ) -> Result<Value, String> {
-        let deadline = tokio::time::Instant::now().checked_add(wait);
-        loop {
-            let terminal = self
-                .host()
-                .observe(&self.caller(), &id)
-                .is_some_and(|state| state.update.is_terminal());
-            if terminal || deadline.is_none_or(|deadline| tokio::time::Instant::now() >= deadline) {
-                return self.status(id);
-            }
-            tokio::time::sleep(SETTLE_POLL).await;
         }
     }
     /// The action host every caller shares; this bridge is one more caller.
@@ -848,37 +569,12 @@ impl<H: ActionHost + Send + Sync> McpServer<H> {
         if a.uri != format!("tilo://apps/{peer}") {
             return Err("Invalid application URI".into());
         }
-        let value = self
-            .query(parse(json!({"peer_id":peer,"detail":"full"}))?)
-            .await?;
+        let value = self.query(parse(json!({"peer_id":peer}))?).await?;
         Ok(
             json!({"contents":[{"uri":a.uri,"mimeType":"application/json","text":value.to_string()}]}),
         )
     }
 }
-/// How long an `open` waits for its instance to be listed and to publish
-/// its directory, and how often it looks.
-const JUST_LAUNCHED_WAIT: std::time::Duration = std::time::Duration::from_secs(10);
-const JUST_LAUNCHED_POLL: std::time::Duration = std::time::Duration::from_millis(200);
-/// The experimental capability naming this surface's version. Version 2
-/// answers `tilo_query` with compact pages; a client sends
-/// `{"so.tilo.mcp": {"detail": "full"}}` to keep version 1's rows.
-const SURFACE: &str = "so.tilo.mcp";
-const SURFACE_DETAIL: &str = "/capabilities/experimental/so.tilo.mcp/detail";
-/// Rows per page when the caller names no limit.
-const DEFAULT_PAGE: u32 = 64;
-/// Resources a compact needle page lists in full; more means the needle was
-/// broad, and the matches alone are the useful answer.
-const EXPANDED_RESOURCES: usize = 3;
-/// Host pages one multi-word needle reads before answering with none.
-const WORD_FILTER_PAGES: usize = 8;
-/// How long `tilo_invoke` waits for a terminal update by default, at most,
-/// and how often it looks.
-const DEFAULT_WAIT_MS: u64 = 5_000;
-const MAX_WAIT_MS: u64 = 30_000;
-const SETTLE_POLL: std::time::Duration = std::time::Duration::from_millis(25);
-/// What the host says when a target changed since the revision named.
-const STALE: &str = "changed since that revision";
 fn empty_object() -> Value {
     json!({})
 }
@@ -928,30 +624,27 @@ fn row_json(row: &CatalogueRow) -> Value {
         "visibility_contract":row.visibility.as_ref().map(|visibility| &visibility.contract),
     })
 }
-/// The advertised tools. Descriptions are read on every model turn, so they
-/// say what an agent needs and no more; tuning knobs a model never needs
-/// (`max_bytes`, `max_work`, `max_depth`) are accepted but not advertised.
 fn tool_definitions() -> Vec<Value> {
-    let integer = json!({"type":"integer"});
+    let integer = json!({"type":"integer","minimum":0});
     let string = json!({"type":"string"});
-    let boolean = json!({"type":"boolean"});
-    let app_id =
-        json!({"type":"string","description":"Instead of peer_id: that app's newest instance"});
-    let target = json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"revision":string,"resource":string,"action":string});
+    let workspace = json!({"type":"boolean","description":"Address the workspace itself instead of a live app: installed applications to open (resource app.<id>, action open; app.host:<desktop-id> opens an unconfined host application such as a browser or office suite, driven with the computer tool), shortcuts and workspace settings"});
+    let target = json!({"peer_id":integer,"workspace":workspace,"revision":string,"resource":string,"action":string});
     let mut invoke = target.clone();
     if let Some(properties) = invoke.as_object_mut() {
         properties.insert("arguments".into(), json!({"type":"object"}));
-        properties.insert("invocation_id".into(), string.clone());
-        properties.insert("wait_ms".into(), integer.clone());
+        properties.insert(
+            "invocation_id".into(),
+            json!({"type":"string","format":"uuid"}),
+        );
     }
     let read = json!({"readOnlyHint":true,"openWorldHint":false});
     [
-        ("tilo_list_apps","Running apps (peer_id, app_id). workspace: true in the other tools addresses the workspace instead: tilo_query it for installed apps, tilo_invoke {workspace: true, resource: \"app.<app_id>\", action: \"open\"} starts one and returns its peer_id (app.host:<desktop-id> opens a host application, such as a browser, driven with the computer tool)",json!({"after_peer":integer,"max_results":integer}),json!([]),read.clone()),
-        ("tilo_query","Find actions. needle: words in an action or resource name, e.g. \"save as\"; each resource found lists all its actions as id: \"Label (params)\" (p? optional, p:type, a|b choices). parent_resource lists a resource's children; pass next_cursor to continue; detail: \"full\" gives whole contracts",json!({"peer_id":integer,"app_id":app_id,"workspace":boolean,"needle":string,"parent_resource":string,"cursor":string,"revision":string,"max_results":integer,"detail":{"enum":["compact","full"]}}),json!([]),read.clone()),
-        ("tilo_resolve","An action's full contract and parameter schemas",target,json!(["resource","action"]),read.clone()),
-        ("tilo_invoke","Run an action and return its result (waits up to wait_ms, default 5000; if still running, poll tilo_status). Omit revision for the current one. Repeating an invocation_id never runs twice. Calling confirms the action, destructive ones included",invoke,json!(["resource","action"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
-        ("tilo_status","An invocation's latest update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
-        ("tilo_cancel","Stop an invocation",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
+        ("tilo_list_apps","List a bounded page of live application instances. To start an app that is not running, tilo_query with workspace: true and invoke its open action",json!({"after_peer":integer,"max_results":{"type":"integer","minimum":1,"maximum":128}}),json!([]),read.clone()),
+        ("tilo_query","Browse a bounded live directory page; preserve revision and cursor. Each action's contract carries its risk level",json!({"peer_id":integer,"workspace":workspace,"revision":string,"cursor":{"type":"array","items":{"type":"integer","minimum":0,"maximum":255}},"parent_resource":string,"needle":string,"max_results":integer,"max_bytes":integer,"max_work":integer,"max_depth":integer}),json!([]),read.clone()),
+        ("tilo_resolve","Resolve an exact current action contract",target,json!(["revision","resource","action"]),read.clone()),
+        ("tilo_invoke","Atomically resolve and start an action; accepted is not succeeded. Retry with the same invocation_id to never start twice. Allowing this call confirms the action, including destructive ones; check the contract's risk first",invoke,json!(["revision","resource","action","arguments"]),json!({"readOnlyHint":false,"destructiveHint":true,"idempotentHint":false,"openWorldHint":true})),
+        ("tilo_status","Read an owned invocation's canonical update",json!({"invocation_id":string}),json!(["invocation_id"]),read),
+        ("tilo_cancel","Request cancellation of an owned invocation and read its update",json!({"invocation_id":string}),json!(["invocation_id"]),json!({"readOnlyHint":false,"destructiveHint":false,"idempotentHint":true,"openWorldHint":false})),
     ].into_iter().map(|(name,description,properties,required,annotations)|json!({"name":name,"description":description,"inputSchema":{"type":"object","properties":properties,"required":required,"additionalProperties":false},"annotations":annotations})).collect()
 }
 #[cfg(test)]

@@ -321,6 +321,35 @@ pub(crate) fn snapshot_json(
     })
 }
 
+/// Local presence snapshot of a single-record mount: the record fills the
+/// mount, so there is no window rectangle, and pointers stay unpublished.
+#[cfg(any(feature = "relay", test))]
+pub(crate) fn record_snapshot_json(
+    app: &str,
+    record: &str,
+    selection: Option<(PresenceKey, PresencePayload)>,
+) -> serde_json::Value {
+    let focus = record_json(Some(&(app.to_owned(), record.to_owned())));
+    let selection = (!focus.is_null())
+        .then_some(selection)
+        .flatten()
+        .and_then(|(key, payload)| encode_selection(&key, &payload))
+        .map_or(
+            serde_json::Value::Null,
+            |(anchor, head)| serde_json::json!({"anchor": hex(&anchor), "head": hex(&head)}),
+        );
+    serde_json::json!({
+        "covered": false,
+        "focus": focus,
+        "focusRect": null,
+        "focusScroll": null,
+        "focusGroup": null,
+        "selection": selection,
+        "drag": null,
+        "groups": [],
+    })
+}
+
 /// Labels hosts put on certificates they issue for the owner's own devices
 /// (`tilo-device-host` identity/enrollment). They name a machine, never the
 /// person, so they are not shown as the owner's name.
@@ -538,6 +567,25 @@ mod tests {
         );
         let (anchor, head) = encode_selection(&key, &PresencePayload::Caret { pos: 17 }).unwrap();
         assert_eq!(decode_selection(&anchor, &head), Some((key, 17, 17)));
+    }
+
+    #[test]
+    fn single_record_snapshot_names_its_record_and_caret() {
+        let key = writer_block("2@5f3a9c01d2e4b6a8");
+        let snapshot = record_snapshot_json(
+            "so.tilo.writer",
+            "",
+            Some((key.clone(), PresencePayload::Caret { pos: 4 })),
+        );
+        assert_eq!(
+            snapshot["focus"],
+            serde_json::json!({"app": "so.tilo.writer", "record": PACKAGE_PRIMARY_RECORD})
+        );
+        assert!(snapshot["focusRect"].is_null());
+        let anchor = unhex(snapshot["selection"]["anchor"].as_str().unwrap()).unwrap();
+        let head = unhex(snapshot["selection"]["head"].as_str().unwrap()).unwrap();
+        assert_eq!(decode_selection(&anchor, &head), Some((key, 4, 4)));
+        assert!(record_snapshot_json("", "r", None)["focus"].is_null());
     }
 
     /// Notes names blocks by their stable UUID; both its caret key and its

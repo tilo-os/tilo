@@ -186,7 +186,7 @@ async fn protocol_errors_and_request_metadata_are_validated() {
         let read = server.handle(request("resources/read", &json!({"uri":"tilo://apps/71","_meta":metadata})));
         let (reply, ()) = tokio::join!(read, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
         assert!(reply.unwrap()["result"]["contents"][0]["text"].is_string());
-        let mut invoke = call("tilo_invoke", &json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0}));
+        let mut invoke = call("tilo_invoke", &json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}}));
         invoke["params"]["_meta"] = metadata.clone();
         let invoke = server.handle(invoke);
         let (reply, ()) = tokio::join!(invoke, async { tokio::task::yield_now().await; drain_directory_bridge(&fixture).await; });
@@ -246,7 +246,7 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let mut server = McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room,actor);
         let roots=server.handle(call("tilo_list_apps",&json!({}))).await.unwrap();
         assert_eq!(roots["result"]["structuredContent"]["apps"][0]["peer_id"],71);
-        let query=server.handle(call("tilo_query",&json!({"peer_id":71,"detail":"full"})));
+        let query=server.handle(call("tilo_query",&json!({"peer_id":71})));
         let (reply,())=tokio::join!(query, async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         assert_eq!(reply["result"]["structuredContent"]["revision"],"directory-r1");
@@ -353,10 +353,9 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         let reply = reply.unwrap();
         assert_eq!(reply["result"]["isError"], false, "first published peer {peer_id} must be queryable: {reply}");
         let page = &reply["result"]["structuredContent"];
-        let resource = &page["resources"][0]["resource"];
-        assert_eq!(resource, "workspace:atlas", "{page}");
-        let action = page["resources"][0]["actions"].as_object().and_then(|actions| actions.keys().next()).cloned();
-        let target = json!({"peer_id":peer_id,"revision":page["revision"],"resource":resource,"action":action});
+        let resource = &page["rows"][0]["resource"];
+        assert_eq!(resource, "workspace:atlas");
+        let target = json!({"peer_id":peer_id,"revision":page["revision"],"resource":resource,"action":page["rows"][0]["action"]});
         let resolve = server.handle(call("tilo_resolve", &target));
         let (reply, ()) = tokio::join!(resolve, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
@@ -364,7 +363,6 @@ async fn broker_queries_and_resources_are_live_and_authority_scoped() {
         assert_eq!(reply["result"]["structuredContent"]["row"]["resource"], "workspace:atlas");
         let mut target = target;
         target["arguments"] = json!({});
-        target["wait_ms"] = json!(0);
         let invoke = server.handle(call("tilo_invoke", &target));
         let (reply, ()) = tokio::join!(invoke, async {tokio::task::yield_now().await; drain_directory_bridge(&fixture).await;});
         let reply = reply.unwrap();
@@ -385,7 +383,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
     tokio::task::LocalSet::new().run_until(async {
         let (mut fixture,room,actor)=fixture();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor.clone());
-        let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0})));
+        let invoke=server.handle(call("tilo_invoke",&json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}})));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();
         assert_eq!(reply["result"]["isError"],false,"{reply}");
@@ -406,7 +404,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
         let (mut fixture,room,actor)=fixture();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor.clone());
         let id="6a1e5c3a-9d2f-4a6b-8c1e-2f3a4b5c6d7e";
-        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"invocation_id":id,"wait_ms":0});
+        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"invocation_id":id});
         let invoke=server.handle(call("tilo_invoke",&args));
         let (first,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let first=first.unwrap();
@@ -442,8 +440,7 @@ async fn invocations_preserve_actor_arguments_and_start_once() {
                         "revision": "directory-r1",
                         "resource": "workspace:atlas",
                         "action": "open",
-                        "arguments": arguments,
-                        "wait_ms": 0
+                        "arguments": arguments
                     }),
                 ));
                 let (reply, ()) = tokio::join!(invoke, async {
@@ -596,7 +593,7 @@ async fn invocation_targets_queue_limits_and_results_are_honest() {
         let actor_name=actor.clone();
         let mut server=McpServer::new(BrokerActionHost::new(fixture.broker.clone()),room.clone(),actor);
         fixture.set_confirmation_required(true);
-        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{},"wait_ms":0});
+        let args=json!({"peer_id":71,"revision":"directory-r1","resource":"workspace:atlas","action":"open","arguments":{}});
         let invoke=server.handle(call("tilo_invoke",&args));
         let (reply,())=tokio::join!(invoke,async {tokio::task::yield_now().await;drain_directory_bridge(&fixture).await;});
         let reply=reply.unwrap();

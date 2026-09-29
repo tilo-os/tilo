@@ -159,34 +159,18 @@ action host — the same `tilo_actions::remote` door apps, agents and peers use 
 so an invocation is identified by a UUID `invocation_id`. Pass your own
 `invocation_id` to `tilo_invoke` to make a retry safe: repeating the same id and
 request reports the original invocation instead of starting it again, and
-reusing an id for a different request is refused. Call `tilo_list_apps`, then `tilo_query`; keep the returned peer
-id (or name the app by `app_id`: its newest instance), resource and action for
-`tilo_resolve` or `tilo_invoke`. Browse roots with an empty `parent_resource`,
-then use a returned resource as `parent_resource` to discover its actions and
-children. Follow `next_cursor` with the same revision and query. `needle`
-finds actions and resources by name; several words must each begin a word of
-the row's names, and each of up to three resources a needle finds is listed
-with all its actions. `revision` is optional on `tilo_resolve` and
-`tilo_invoke`: omitted, the target resolves against the directory as it is
-now; named, a target that changed since is refused. `tilo_invoke` waits up to
-`wait_ms` (default 5 s) for the terminal update and answers with it; an
-invocation still running then is followed with `tilo_status`. Opening an app
-through the workspace also answers with the new instance's `peer_id`, once it
-has published its directory. Pass
+reusing an id for a different request is refused. Call `tilo_list_apps`, then `tilo_query`; preserve the returned peer
+id, revision, resource and action for `tilo_resolve` or `tilo_invoke`. Browse
+roots with an empty `parent_resource`, then use a returned resource as
+`parent_resource` to discover its actions and children. Follow `next_cursor`
+with the same revision and query. The optional `needle` searches declared
+search providers; it is not a search across every action label. After an
+invocation is accepted, poll `tilo_status` with its `invocation_id` until its
+real terminal update. Pass
 content resource references returned by one successful action as typed
 arguments to a freshly discovered action in another app. The runtime contains
 no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
 replays a mutation automatically.
-
-`tilo_query` pages are compact (surface version 2, reported at `initialize`
-as `capabilities.experimental["so.tilo.mcp"].version`): each resource once,
-its actions as one-line signatures such as `"save-as": "Save document as
-(path?)"`, and string cursors. A model reads every page again on each later
-turn, and version 1's rows repeated each resource id three times and each
-contract twice. `detail: "full"` returns version 1 rows for one call; a client
-that parses them sends `{"so.tilo.mcp": {"detail": "full"}}` in
-`capabilities.experimental` at `initialize` to keep them for its session.
-`resources/read` always returns full rows.
 
 A normal `ui::App` automatically obtains collaboration and identity
 connections from the shared runtime and publishes its current lazy directory.

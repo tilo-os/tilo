@@ -275,6 +275,71 @@ jobs:
             self.assertNotEqual(result.returncode, 0)
             self.assertFalse(output.exists())
 
+    def test_root_cargo_changes_count_only_inside_the_package_closure(self):
+        def lock(extra='', server_dep='"serde 1.0.0"'):
+            return (
+                'version = 4\n\n'
+                '[[package]]\nname = "server"\nversion = "0.1.0"\n'
+                f'dependencies = [{server_dep}]\n\n'
+                '[[package]]\nname = "serde"\nversion = "1.0.0"\n'
+                'source = "registry+https://github.com/rust-lang/crates.io-index"\n'
+                'checksum = "aa"\n\n'
+                '[[package]]\nname = "other"\nversion = "0.1.0"\n' + extra)
+        def manifest(members='["server", "other"]', profile=''):
+            return (f'[workspace]\nmembers = {members}\n\n'
+                    '[workspace.dependencies]\nserde = "1"\ntokio = "1"\n' + profile)
+        self.write('Cargo.lock', lock())
+        self.write('Cargo.toml', manifest())
+        self.write('.forgejo/workflows/fixture.yml', self.workflow(applicability=True))
+        base = self.commit()
+        paths = ['Cargo.lock', 'Cargo.toml', 'server/**']
+        cases = (
+            ('another member joins the workspace',
+             lock('\n[[package]]\nname = "third"\nversion = "0.1.0"\n'),
+             manifest('["server", "other", "third"]'), False),
+            ('a crate outside the closure is bumped',
+             lock('dependencies = ["tokio"]\n\n[[package]]\nname = "tokio"\nversion = "1.0.0"\n'
+                  'source = "registry+https://github.com/rust-lang/crates.io-index"\nchecksum = "bb"\n'),
+             manifest(), False),
+            ('a profile override outside the closure', lock(),
+             manifest(profile='\n[profile.dev.package.tokio]\nopt-level = 1\n'), False),
+            ('a dependency inside the closure changes', lock(server_dep='"serde 1.0.0", "other"'),
+             manifest(), True),
+            ('a profile applying to the closure', lock(),
+             manifest(profile='\n[profile.release]\nlto = true\n'), True),
+            ('a profile override inside the closure', lock(),
+             manifest(profile='\n[profile.release.package.serde]\nopt-level = 1\n'), True),
+        )
+        for name, lock_source, manifest_source, expected in cases:
+            with self.subTest(case=name):
+                self.git('checkout', '-q', '--detach', base)
+                self.write('Cargo.lock', lock_source)
+                self.write('Cargo.toml', manifest_source)
+                head = self.commit()
+                event = self.event(base, head)
+                self.assertEqual(gate.cargo_closure_changed(self.repo, base, head, ['server']),
+                                 expected)
+                applicable, _ = gate.applicable(self.repo, 'pull_request', event, paths,
+                                                '.forgejo/workflows/fixture.yml', ['server'])
+                self.assertEqual(applicable, expected)
+                # Without a package every root Cargo change still builds.
+                self.assertTrue(gate.applicable(self.repo, 'pull_request', event, paths,
+                                                '.forgejo/workflows/fixture.yml')[0])
+        with self.subTest(case='the package\'s own sources always build'):
+            self.git('checkout', '-q', '--detach', base)
+            self.write('server/src/lib.rs', 'changed')
+            head = self.commit()
+            self.assertTrue(gate.applicable(self.repo, 'pull_request', self.event(base, head), paths,
+                                            '.forgejo/workflows/fixture.yml', ['server'])[0])
+        with self.subTest(case='callers name the package they build'):
+            for name, package in (('release-registry-server.yml', 'registry-server'),
+                                  ('release-relay.yml', 'tilo-relay'),
+                                  ('ci-filesystem.yml', 'fs')):
+                text = (ROOT/'.forgejo/workflows'/name).read_text(encoding='utf-8')
+                self.assertIn(f'      cargo-package: {package}\n', text)
+            shared = (ROOT/'.forgejo/workflows/applicability.yml').read_text(encoding='utf-8')
+            self.assertIn('${CARGO_PACKAGE:+--cargo-package "$CARGO_PACKAGE"}', shared)
+
     def test_declared_paths_grammar_and_pr_job_gating_are_exact(self):
         with self.subTest(phase='globs and unsupported grammar'):
             self.doCleanups()

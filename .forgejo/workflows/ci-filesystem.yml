@@ -190,6 +190,7 @@ jobs:
     with:
       workflow: .forgejo/workflows/ci-filesystem.yml
       event: ${{ github.event_name }}
+      cargo-package: fs
 
   builder:
     needs: applicability
