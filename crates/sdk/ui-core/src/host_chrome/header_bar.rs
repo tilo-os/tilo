@@ -159,6 +159,39 @@ impl HeaderBar {
         self.viewport = viewport;
     }
 
+    /// Lay the bar out `width` wide in `tree`, an arena of its own that
+    /// `nodes` maps back into this bar. `None` when it did not settle.
+    pub(crate) fn solve_layout(
+        &mut self,
+        tree: &mut TaffyTree<()>,
+        nodes: &mut HashMap<NodeId, *mut dyn Widget>,
+        theme: &Theme,
+        text: &mut TextRenderer,
+        width: f64,
+    ) -> Option<NodeId> {
+        *tree = TaffyTree::new();
+        nodes.clear();
+        let node = self.build_layout(tree, theme, nodes);
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "logical window widths are far inside f32 range"
+        )]
+        let available = taffy::Size {
+            width: taffy::AvailableSpace::Definite(width as f32),
+            height: taffy::AvailableSpace::MaxContent,
+        };
+        let mut bindings = crate::bound_dispatch::BoundNodeMap::new();
+        // SAFETY: the arena and node map were just built from this bar alone,
+        // which stays in place and unaliased for both calls.
+        let solved = unsafe {
+            bindings.rebuild(self, tree, node, nodes);
+            crate::widget::compute_widget_layout(tree, node, available, nodes, &bindings, text)
+        };
+        solved.ok()?;
+        self.apply_layout(tree, node, Point::ORIGIN);
+        Some(node)
+    }
+
     /// Requests in the order the person made them. Rising-edge.
     pub(crate) fn take_requests(&self) -> Vec<HeaderRequest> {
         self.requests.borrow_mut().drain(..).collect()
@@ -395,6 +428,7 @@ mod tests {
     use crate::headless::Driver;
     use crate::host_chrome::HostChrome;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
+    use crate::widget::Widget;
 
     fn app_with_history() -> App {
         let mut state = crate::State::new();
@@ -462,6 +496,34 @@ mod tests {
             "the palette's door opens it"
         );
         assert!(app.document_history_snapshot().unwrap().is_some());
+    }
+
+    #[test]
+    fn a_live_window_sizes_every_control_to_its_content() {
+        let mut app = app_with_history();
+        let mut bar = HeaderBar::new("Notes", &app.host_commands(true));
+        let (mut tree, mut nodes) = (taffy::TaffyTree::new(), std::collections::HashMap::new());
+        let theme = crate::Theme::light();
+        let mut text = crate::TextRenderer::new();
+        bar.solve_layout(&mut tree, &mut nodes, &theme, &mut text, 800.0)
+            .expect("the bar settles");
+        let controls: Vec<_> = Widget::children(&bar.row)
+            .into_iter()
+            .filter_map(|child| Some((child.test_id()?.to_owned(), child.get_rect())))
+            .collect();
+        assert_eq!(controls.len(), 5, "{controls:?}");
+        let height = controls[0].1.height();
+        for (id, rect) in &controls {
+            assert!(rect.width() >= height * 0.75, "{id} is squeezed: {rect:?}");
+        }
+        assert!(
+            controls[0].1.width() > controls[1].1.width(),
+            "History carries its label: {controls:?}"
+        );
+        assert!(
+            controls.windows(2).all(|pair| pair[0].1.x1 <= pair[1].1.x0),
+            "controls never overlap: {controls:?}"
+        );
     }
 
     #[test]
