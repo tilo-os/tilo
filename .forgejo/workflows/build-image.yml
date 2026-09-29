@@ -272,12 +272,14 @@ jobs:
             if [[ $GITHUB_REF == refs/tags/v* ]]; then
               matrix='{"include":[{"arch":"x86_64","runner":"imager-linux-x86_64"},{"arch":"aarch64","runner":"imager-linux-aarch64"},{"arch":"x86_64","runner":"imager-linux-x86_64","role":"reproduce"},{"arch":"aarch64","runner":"imager-linux-aarch64","role":"reproduce"}]}'
             else
-              # A protected manual or nightly main publication uses the same native
-              # runner-large fleet as the integration build below; its runner
-              # image carries the release signer. The early KVM probe rejects
-              # publishing if nested virtualization is unavailable. Tags retain
-              # the dedicated release fleet above.
-              matrix='{"include":[{"arch":"x86_64","runner":"runner-large"},{"arch":"aarch64","runner":"runner-large-arm64"},{"arch":"x86_64","runner":"runner-large","role":"reproduce"},{"arch":"aarch64","runner":"runner-large-arm64","role":"reproduce"}]}'
+              # A protected manual or nightly main publication runs on the
+              # release class: the large runners' image (it carries the release
+              # signer) with 32 CPUs and 128 GiB, since both lanes compile with
+              # thin LTO and no layer cache, and a shell link alone peaks near
+              # 10 GiB. The early KVM probe rejects publishing if nested
+              # virtualization is unavailable. Tags retain the dedicated release
+              # fleet above.
+              matrix='{"include":[{"arch":"x86_64","runner":"runner-release"},{"arch":"aarch64","runner":"runner-release-arm64"},{"arch":"x86_64","runner":"runner-release","role":"reproduce"},{"arch":"aarch64","runner":"runner-release-arm64","role":"reproduce"}]}'
             fi
           else
             # Main integration images feed both native dev VM architectures.
@@ -1147,7 +1149,7 @@ jobs:
       # guest kernel has FUSE and loop devices; expose its devtmpfs and prove a
       # real loop mount before spending hours building the sealed image.
       - name: Prepare and prove Kata disk devices
-        if: steps.release-mode.outputs.validate == 'true' && startsWith(matrix.runner, 'runner-large')
+        if: steps.release-mode.outputs.validate == 'true' && (startsWith(matrix.runner, 'runner-large') || startsWith(matrix.runner, 'runner-release'))
         run: bash os/dev/ci-prepare-disk-devices.sh --kata-job
 
       # A publication signs only after hours of building. Prove the runner's
@@ -1298,17 +1300,20 @@ jobs:
         if: env.TILO_WITH_BROWSER == '1'
         env:
           ARCH: ${{ matrix.arch }}
+          PUBLISH: ${{ steps.release-mode.outputs.publish }}
         run: |
           set -euo pipefail
           key="$(os/dev/wpe-stage-key.sh "$ARCH")"
           legacy_key="$(os/dev/wpe-stage-key.sh "$ARCH" --legacy)"
           echo "TILO_WPE_CACHE_KEY=$key" >> "$GITHUB_ENV"
           echo "TILO_WPE_LEGACY_CACHE_KEY=$legacy_key" >> "$GITHUB_ENV"
-          # Match the snapshot publisher's memory-safe job count. Eight jobs
-          # preserves the cache made by existing large-runner OS builds.
-          jobs=$(( $(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 3145728 ))
+          # Match the snapshot publisher's memory-safe job count: 3.5 GiB per
+          # job of the builder's share. Eight jobs preserves the cache made by
+          # existing large-runner OS builds; a publication uses no cache and
+          # takes what its release-class slot allows.
+          jobs=$(( ($(awk '/^MemTotal:/ {print $2}' /proc/meminfo) / 1024 - 4096) / 3584 ))
           (( jobs > $(nproc) )) && jobs=$(nproc)
-          (( jobs > 8 )) && jobs=8
+          [[ $PUBLISH == true ]] || (( jobs <= 8 )) || jobs=8
           (( jobs < 1 )) && jobs=1
           echo "TILO_WPE_JOBS=$jobs" >> "$GITHUB_ENV"
           name="WPE_STAGE_${ARCH^^}_REF"
