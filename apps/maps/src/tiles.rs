@@ -273,6 +273,9 @@ pub struct TileLayer {
     job_tx: Option<Sender<Job>>,
     /// Finished tiles + download ticks arrive here.
     done_rx: Option<Receiver<Done>>,
+    /// Wakes the app when the worker delivers, so an in-flight fetch needs no
+    /// frame loop polling for it.
+    wake: ui::wake::WakeHandle,
     /// The active basemap style: the tone the worker decodes tiles into, so the
     /// resident tiles always match the theme.
     style: TileStyle,
@@ -345,8 +348,9 @@ impl TileLayer {
         let dir = self.cache_dir.clone();
         let base_url = self.base_url.clone();
         let style = self.style;
+        let wake = self.wake.clone();
         let spawned = ui::rt::spawn_thread("maps-tiles", move || {
-            worker(&job_rx, &done_tx, &dir, &base_url, style);
+            worker(&job_rx, &done_tx, &wake, &dir, &base_url, style);
         })
         .is_ok();
         self.job_tx = spawned.then_some(job_tx);
@@ -395,6 +399,7 @@ impl TileLayer {
             failed: HashMap::new(),
             job_tx: None,
             done_rx: None,
+            wake: ui::wake::WakeHandle::new(),
             style: TileStyle::Light,
             base_url: TILE_SERVER.to_string(),
             allows_prefetch: false,
@@ -840,6 +845,7 @@ fn lonlat_to_tile(lat: f64, lon: f64, z: u8) -> (u32, u32) {
 fn worker(
     rx: &Receiver<Job>,
     tx: &Sender<Done>,
+    wake: &ui::wake::WakeHandle,
     cache_dir: &std::path::Path,
     base_url: &str,
     style: TileStyle,
@@ -866,6 +872,7 @@ fn worker(
                 if tx.send(Done::Tile { id, rgba }).is_err() {
                     break;
                 }
+                wake.wake();
             }
             Job::Download(id) => {
                 // For downloads we only need the bytes on disk; decoding is the
@@ -879,6 +886,7 @@ fn worker(
                 if tx.send(Done::Download { ok }).is_err() {
                     break;
                 }
+                wake.wake();
             }
         }
     }
