@@ -113,7 +113,7 @@ impl WorkspaceFiles {
     }
 }
 
-/// The workspace's durable parts, from which each view builds its QuickFS.
+/// The workspace's durable parts, from which each view builds its `QuickFS`.
 struct Files {
     state: PathBuf,
     namespace: Arc<NamespaceFile>,
@@ -196,6 +196,10 @@ impl NamespaceFile {
         })
     }
 
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the saved heads stay locked across the write, so two savers never write the file out of order"
+    )]
     fn save_if_changed(&self) -> io::Result<()> {
         let poisoned = || io::Error::other("workspace namespace lock poisoned");
         let mut saved = self.saved.lock().map_err(|_| poisoned())?;
