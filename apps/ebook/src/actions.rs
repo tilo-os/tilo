@@ -2519,11 +2519,15 @@ mod tests {
         {
             let (app, doc, book_id, _group) = open_with_annotations();
             let roots = ui::resources::resources(&app, &doc);
-            assert_eq!(roots.len(), 2);
+            assert_eq!(roots.len(), 1);
             assert_eq!(roots[0].id.as_str(), "ebook.library");
-            assert!(roots[0].children.is_empty());
-            assert_eq!(roots[1].id.as_str(), "ebook.settings");
-            assert!(roots[1].children.is_empty());
+            assert!(
+                roots[0]
+                    .children
+                    .iter()
+                    .any(|child| child.id.as_str() == "ebook.settings"),
+                "reading settings ride the library door"
+            );
             let books: Vec<crate::model::Book> = app
                 .library()
                 .iter()
@@ -2562,7 +2566,7 @@ mod tests {
                 );
             }
             let settings = ui::resources::resource(&app, &doc, "ebook.settings").expect("settings");
-            assert!(settings.children.is_empty());
+            assert_eq!(settings.kind, "ebook.settings");
             for font in BooksDoc::read_fonts(&doc) {
                 assert!(
                     ui::resources::resource(&app, &doc, &format!("ebook.font:{}", font.id))
