@@ -34,7 +34,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use uuid::Uuid;
 
-use tilo_actions::{ActionSpec, EncodedAction, ExecutionMode, OperationKind, Resource, ResultSpec};
+use tilo_actions::{ActionSpec, EncodedAction, OperationKind, Resource};
 use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -1074,8 +1074,16 @@ impl DbClientApp {
                 generation,
             } => self.run_history(&connection_id, generation)?,
             DbClientOperation::RunQuery { connection_id, sql } => {
-                let id = Uuid::parse_str(&connection_id)
-                    .map_err(|_| "invalid database connection id".to_string())?;
+                // Empty id means "active connection" — the framework resource
+                // publishes Run SQL without a live session snapshot.
+                let id = if connection_id.is_empty() {
+                    self.session
+                        .active_connection_id()
+                        .ok_or_else(|| "connect to a database before running SQL".to_string())?
+                } else {
+                    Uuid::parse_str(&connection_id)
+                        .map_err(|_| "invalid database connection id".to_string())?
+                };
                 if self.session.active_connection_id() != Some(id) {
                     return Err("the requested connection is no longer active".to_string());
                 }
@@ -1316,6 +1324,66 @@ impl DbClientApp {
         dispatcher: ui::framework::Dispatcher<crate::resource::DbClient>,
     ) {
         self.actions.attach(dispatcher);
+    }
+
+    pub(crate) fn is_hosted(&self) -> bool {
+        self.actions.is_hosted()
+    }
+
+    pub(crate) fn session_connected(&self) -> bool {
+        self.session.connected
+    }
+
+    /// In-flight connect / query / export job label for hosted live extras.
+    pub(crate) fn live_job_label(&self) -> Option<String> {
+        match &self.session.status {
+            RunStatus::Busy(label) => Some(label.clone()),
+            _ if self.resource_operation.is_some() => Some("Database operation…".into()),
+            _ => None,
+        }
+    }
+
+    /// Current query-result resource when one is live (not document state).
+    pub(crate) fn live_query_result_resource(&self) -> Option<Resource> {
+        let connection_id = self.session.active_connection_id()?.to_string();
+        let result = self.session.query_result.as_ref()?;
+        let result_id = catalog_resource_id(
+            "query-result",
+            &[&connection_id, &self.session.query_gen.to_string()],
+        );
+        let mut resource = Resource::new(&result_id, "database.query-result", result.message());
+        if let Ok(action) = ActionSpec::operation(
+            "show",
+            "Show query result",
+            OperationKind::View,
+            DB_OPERATION_TYPE,
+            &DbClientOperation::ShowResult {
+                connection_id: connection_id.clone(),
+                result_generation: self.session.query_gen,
+            },
+        ) {
+            resource = resource.with_action(action);
+        }
+        if result.is_select
+            && let Ok(action) = ActionSpec::operation(
+                "export_csv",
+                "Export CSV",
+                OperationKind::Effect,
+                DB_OPERATION_TYPE,
+                &DbClientOperation::ExportCsv {
+                    connection_id,
+                    result_generation: self.session.query_gen,
+                },
+            )
+        {
+            resource = resource.with_action(action);
+        }
+        Some(resource)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn mark_hosted_for_test(&mut self) {
+        self.actions.mark_hosted_for_test();
     }
 
     /// Save a new connection profile. The live app routes it through the action
@@ -2663,65 +2731,16 @@ impl ui::search::capability::SearchSource for DbClientApp {
 }
 
 impl ui::resources::PublishesResources for DbClientApp {
-    #[allow(
-        clippy::too_many_lines,
-        reason = "the resource tree intentionally keeps every externally searchable database capability in one auditable definition"
-    )]
+    /// Standalone / `--shots` / unit tests publish the full tree. When the
+    /// framework hosts the surface, [`tilo_resource::publish`] already owns
+    /// the workspace door — keep only live query results and in-flight jobs.
     fn resources(&self, doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("database", "database.workspace", "Database");
-        let active_id = self.session.active_connection_id();
-        let query_connection_id = active_id.map_or_else(String::new, |id| id.to_string());
-        let mut query = ActionSpec::prompted_operation(
-            "query",
-            "Run SQL",
-            "SQL query",
-            "SELECT …",
-            OperationKind::Effect,
-            DB_OPERATION_TYPE,
-            move |sql| {
-                encode_operation(&DbClientOperation::RunQuery {
-                    connection_id: query_connection_id.clone(),
-                    sql: sql.to_string(),
-                })
-            },
-        );
-        // Prompted SQL may be a read, but agents cannot soundly classify an
-        // arbitrary dialect statement from this transport envelope. Declare
-        // the conservative write/confirmation contract; the editor keeps its
-        // lighter in-app path for clearly read-only SQL.
-        query = query
-            .execution(ExecutionMode::Background { cancellable: true })
-            .returns(ResultSpec::Job)
-            .destructive();
-        if !self.session.connected {
-            query = query.unavailable(
-                "not_connected",
-                "Open a saved connection before running SQL",
-            );
+        if self.is_hosted() {
+            return crate::resource::live_extras(self);
         }
-        root.actions.push(query);
-        let sql = EditorDoc::read_sql(doc);
-        if !sql.trim().is_empty() {
-            root.actions.push(
-                ActionSpec::prompted(
-                    "save_query",
-                    "Save current query",
-                    "Query name",
-                    "Saved query",
-                    tilo_actions::ExecutionLocus::ClientLocal,
-                    move |name| {
-                        crate::actions::encode(&crate::actions::save_query_action(
-                            Uuid::new_v4(),
-                            name,
-                            &sql,
-                        ))
-                    },
-                )
-                .reversible(),
-            );
-        }
-        vec![root]
+        self.publish_resources(doc)
     }
+
     fn action_directory_resource_page(
         &self,
         doc: &AutoCommit,
@@ -2742,10 +2761,15 @@ impl ui::resources::PublishesResources for DbClientApp {
             exhausted: true,
         })
     }
+
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<Resource> {
-        (id == "database")
-            .then(|| self.resources(doc).pop())
-            .flatten()
+        if self.is_hosted() {
+            return crate::resource::live_extras(self)
+                .into_iter()
+                .find(|resource| resource.id.as_str() == id)
+                .or_else(|| self.search_index.resource(id));
+        }
+        self.publish_resource(doc, id)
             .or_else(|| self.search_index.resource(id))
     }
 }
