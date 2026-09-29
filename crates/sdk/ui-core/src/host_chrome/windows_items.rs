@@ -186,20 +186,23 @@ mod tests {
     }
 
     #[test]
-    fn framework_history_recent_changes_become_jump_tasks() {
+    fn framework_history_apps_get_search_history_and_recent_changes_as_jump_tasks() {
         let mut app = crate::app::framework_history_tests::native_chrome_app();
         app.set_platform_conventions(PlatformConventions::new(Platform::Windows));
-        let titles: Vec<_> = jump_tasks(&app.host_commands(true))
+        let commands = app.host_commands(true);
+        let titles: Vec<_> = jump_tasks(&commands)
             .into_iter()
             .map(|task| task.title)
             .collect();
-        assert_eq!(titles[0], "Show History");
-        assert_eq!(
-            titles.len(),
-            3,
-            "History and two recent changes: {titles:?}"
-        );
-        assert!(titles[1..].iter().all(|title| title.contains(" · ")));
+        assert_eq!(titles[..2], ["Search…", "Show History"], "{titles:?}");
+        assert_eq!(titles.len(), 4, "and two recent changes: {titles:?}");
+        assert!(titles[2..].iter().all(|title| title.contains(" · ")));
+        let windows = PlatformConventions::new(Platform::Windows);
+        let search = commands
+            .iter()
+            .find(|command| command.group == CommandGroup::Search)
+            .expect("the Edit menu offers Search");
+        assert_eq!(menu_text(search, windows), "Search…\tCtrl+K");
     }
 
     #[test]
