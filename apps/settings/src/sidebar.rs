@@ -264,6 +264,8 @@ impl SidebarRow {
 }
 
 impl Widget for SidebarRow {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -525,18 +527,6 @@ impl Widget for SidebarRow {
         )
     }
 
-    /// Expose the active state so a rebuilt tree can be inspected — used by
-    /// the interaction tests to confirm the highlight followed the click. The
-    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
-    /// place for this read-only snapshot.
-    fn get_state(&self) -> Option<String> {
-        Some(if self.active {
-            "active".into()
-        } else {
-            "inactive".into()
-        })
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -572,6 +562,20 @@ impl Widget for SidebarRow {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::undo::UndoPoints for SidebarRow {
+    /// Expose the active state so a rebuilt tree can be inspected — used by
+    /// the interaction tests to confirm the highlight followed the click. The
+    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
+    /// place for this read-only snapshot.
+    fn get_state(&self) -> Option<String> {
+        Some(if self.active {
+            "active".into()
+        } else {
+            "inactive".into()
+        })
     }
 }
 

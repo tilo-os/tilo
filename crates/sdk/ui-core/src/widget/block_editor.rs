@@ -6870,7 +6870,10 @@ impl BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    crate::provides!(dyn crate::presence::capability::PublishesPresence);
+    crate::provides!(
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = crate::doc::document(state, path);
@@ -8824,21 +8827,6 @@ impl Widget for BlockEditor {
                 .any(|block| block.line.layout_needs_measure())
     }
 
-    fn needs_commit(&self) -> bool {
-        self.commit_pending
-            || self
-                .blocks
-                .iter()
-                .any(|block| Widget::needs_commit(block.line.inner()))
-    }
-
-    fn on_commit(&mut self) {
-        self.commit_pending = false;
-        for block in &mut self.blocks {
-            Widget::on_commit(block.line.inner_mut());
-        }
-    }
-
     fn mark_drawn(&mut self) {
         self.dirty = false;
     }
@@ -8856,6 +8844,22 @@ impl Widget for BlockEditor {
     /// expose, so an idle document re-measures nothing.
     fn is_layout_dirty(&self) -> bool {
         self.blocks.iter().any(|block| block.line.is_layout_dirty())
+    }
+}
+
+impl crate::undo::UndoPoints for BlockEditor {
+    fn needs_commit(&self) -> bool {
+        self.commit_pending
+            || self
+                .blocks
+                .iter()
+                .any(|block| crate::undo::needs_commit(block.line.inner()))
+    }
+    fn on_commit(&mut self) {
+        self.commit_pending = false;
+        for block in &mut self.blocks {
+            crate::undo::on_commit(block.line.inner_mut());
+        }
     }
 }
 

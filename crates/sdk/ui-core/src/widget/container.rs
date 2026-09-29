@@ -247,7 +247,8 @@ impl Container {
 impl Widget for Container {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
     );
 
     fn start_operation(
@@ -447,14 +448,6 @@ impl Widget for Container {
     fn is_focused(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
 
     fn take_structure_dirty(&mut self) -> bool {
         self.child
@@ -512,6 +505,19 @@ impl Widget for Container {
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for Container {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
         }
     }
 }

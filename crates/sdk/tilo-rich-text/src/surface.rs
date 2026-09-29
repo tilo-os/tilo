@@ -595,7 +595,7 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
-    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints; inner = editor);
 
     type Inner = BlockEditor;
 
@@ -630,9 +630,6 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
 
     // Every edit is an action bounded into undo steps by its source or the
     // host; the editor's own commit requests would close a word mid-typing.
-    fn needs_commit(&self) -> bool {
-        false
-    }
 
     /// An assistive technology focuses the field or sets its text, as a
     /// person typing would: the new text is written through the source's
@@ -658,6 +655,12 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             }
             _ => self.editor.perform_action(action, state, path),
         }
+    }
+}
+
+impl<S: RichTextSource + 'static> ui::undo::UndoPoints for RichTextSurface<S> {
+    fn needs_commit(&self) -> bool {
+        false
     }
 }
 

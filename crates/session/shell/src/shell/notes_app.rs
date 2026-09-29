@@ -309,7 +309,8 @@ impl Widget for NotesApp {
         dyn ui::widget::CompleteContentProvider,
         dyn ui::history_mode::capability::DocumentHistory,
         dyn ui::presence::capability::PublishesPresence,
-        dyn ui::record::capability::RecordScoped
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
     );
 
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
@@ -464,15 +465,15 @@ impl Widget for NotesApp {
         (self.empty_action_rect.area() > 0.0 && self.empty_action_rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
+}
 
+impl ui::undo::UndoPoints for NotesApp {
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.body.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         // Encode "anchor:cursor" so undo/redo restores selection state.
         Some(format!(
@@ -480,7 +481,6 @@ impl Widget for NotesApp {
             self.selection.anchor, self.selection.cursor
         ))
     }
-
     fn set_state(&mut self, s: &str) {
         if let Some((a, c)) = s.split_once(':')
             && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>())
@@ -1274,17 +1274,17 @@ mod tests {
             let mut app = NotesApp::with_seed("hello world");
             app.selection.anchor = 6;
             app.selection.cursor = 11;
-            let s = app.get_state().unwrap();
+            let s = ui::undo::get_state(&app).unwrap();
             assert_eq!(s, "6:11");
             let mut app2 = NotesApp::with_seed("hello world");
-            app2.set_state(&s);
+            ui::undo::set_state(&mut app2, &s);
             assert_eq!(app2.selection.anchor, 6);
             assert_eq!(app2.selection.cursor, 11);
         }
 
         fn state_backcompat_cursor_only() {
             let mut app = NotesApp::with_seed("hello");
-            app.set_state("3");
+            ui::undo::set_state(&mut app, "3");
             assert_eq!(app.selection.cursor, 3);
             assert_eq!(app.selection.anchor, 3);
         }

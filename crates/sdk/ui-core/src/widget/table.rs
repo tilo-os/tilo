@@ -501,10 +501,7 @@ impl Table {
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
-            let state = self
-                .cells
-                .get(self.projected_index(row, column)?)?
-                .get_state();
+            let state = crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?);
             Some((row, column, state))
         });
         let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
@@ -575,9 +572,7 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        self.cells
-            .get(self.projected_index(row, column)?)?
-            .get_state()
+        crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -590,7 +585,7 @@ impl Table {
         let Some(input) = self.cells.get_mut(index) else {
             return;
         };
-        input.set_state(state);
+        crate::undo::set_state(input, state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
         input.set_caret_position(caret);
@@ -1334,6 +1329,8 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
@@ -1671,19 +1668,25 @@ impl Widget for Table {
         self.structure_dirty || self.cells.iter().any(super::Widget::is_layout_dirty)
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Table))
+    }
+}
+
+impl crate::undo::UndoPoints for Table {
     fn needs_commit(&self) -> bool {
-        self.pending_commit || self.cells.iter().any(super::Widget::needs_commit)
+        self.pending_commit
+            || self
+                .cells
+                .iter()
+                .any(|cell| crate::undo::needs_commit(cell))
     }
     fn on_commit(&mut self) {
         self.pending_commit = false;
         for c in &mut self.cells {
             c.on_commit();
         }
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Table))
     }
 }
 

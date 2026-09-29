@@ -219,7 +219,8 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     crate::provides!(
         dyn crate::permissions::capability::PermissionGated,
-        dyn crate::presence::capability::PublishesPresence
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
     );
 
     fn build_layout(
@@ -447,16 +448,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         "ResizableSplit"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let l = self.left.take_structure_dirty();
         let r = self.right.take_structure_dirty();
@@ -532,6 +523,19 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
             None,
             &paint_rect,
         );
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
     }
 }
 

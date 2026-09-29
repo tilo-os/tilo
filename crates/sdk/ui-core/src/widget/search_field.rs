@@ -289,6 +289,8 @@ impl Default for SearchField {
 }
 
 impl Widget for SearchField {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.input.set_platform_conventions(conventions);
@@ -503,14 +505,6 @@ impl Widget for SearchField {
         vec![&mut self.input as &mut (dyn Widget + '_)]
     }
 
-    fn needs_commit(&self) -> bool {
-        self.input.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.input.on_commit();
-    }
-
     fn name(&self) -> &'static str {
         "SearchField"
     }
@@ -546,6 +540,15 @@ impl Widget for SearchField {
             return matches!(action, crate::a11y::Action::Activate) && self.request_palette();
         }
         Widget::perform_action(&mut self.input, action, state, path)
+    }
+}
+
+impl crate::undo::UndoPoints for SearchField {
+    fn needs_commit(&self) -> bool {
+        self.input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.input.on_commit();
     }
 }
 
