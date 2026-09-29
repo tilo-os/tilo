@@ -798,8 +798,11 @@ mod tests {
             assert_eq!(add.kind, OperationKind::View);
             assert!(add.params().is_empty());
             assert!(
-                vault.children.is_empty(),
-                "the contextual root stays bounded"
+                vault
+                    .children
+                    .iter()
+                    .any(|child| child.kind == "totp.account"),
+                "accounts ride the vault door"
             );
             let account = AuthDoc::list_accounts(&state.doc)
                 .into_iter()

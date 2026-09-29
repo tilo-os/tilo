@@ -1766,21 +1766,35 @@ impl ui::resources::PublishesResources for AuthenticatorApp {
     /// to them. Delegates to the
     /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
     /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         // The framework root publishes the vault and its accounts. Keep only
         // the live persistence retry when hosted — it is not in the resource.
         if self.actions.is_hosted() {
             return self.persistence_retry_resource().into_iter().collect();
         }
-        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
-        if self.persistence_pending
-            && let Some(root) = resources.first_mut()
-        {
-            *root = root
-                .clone()
-                .with_action(crate::actions::retry_persist_operation());
+        let accounts =
+            <crate::resource::Totp as ui::tilo_resource::Resource>::read(doc).unwrap_or_default();
+        let mut root = ui::tilo_resource::publish::<crate::resource::Totp>(
+            "totp.vault",
+            "Accounts",
+            &accounts,
+        );
+        let ordered = self.vault.ordered();
+        let count = ordered.len();
+        root.children.retain(|child| child.kind != "totp.account");
+        root.children
+            .extend(ordered.iter().enumerate().map(|(index, account)| {
+                crate::actions::provide_account_resource(
+                    account,
+                    index,
+                    count,
+                    account.secret_is_valid(),
+                )
+            }));
+        if self.persistence_pending {
+            root = root.with_action(crate::actions::retry_persist_operation());
         }
-        resources
+        vec![root]
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if id == "totp.persistence" {
