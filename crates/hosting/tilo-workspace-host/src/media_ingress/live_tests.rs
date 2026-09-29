@@ -255,24 +255,48 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
         .subscribe(subscription)
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(200)).await;
-    let canonical = edit(&h.f.owner, 1);
-    let (admission, _) = h.upload([61; 16], &canonical).await;
-    assert!(
-        matches!(admission.outcome(), AdmissionOutcome::Accepted { .. }),
-        "{admission:?}"
-    );
-    let forwarded =
-        tilo_test_env::within("the admitted signed change on the live ops track", async {
-            // Groups travel on separate streams: a seal appended after the
-            // change can overtake it. Readers skip seals (one empty frame).
-            loop {
-                let mut group = ops.recv_group().await.unwrap().unwrap();
-                let frame = group.read_frame().await.unwrap().unwrap();
-                if !frame.payload.is_empty() {
-                    break frame.payload.to_vec();
+    // A change admitted before the relay serves this subscription (the first
+    // one also creates its egress ops track) reaches it only by durable
+    // replay. Admit fresh changes until one is forwarded live, a relay window
+    // apart, as the live-forward measurement's warm-up does.
+    let mut issued = Vec::new();
+    let (id, canonical, forwarded) =
+        tilo_test_env::within("an admitted signed change on the live ops track", async {
+            for attempt in 1u8.. {
+                let canonical = edit(&h.f.owner, u64::from(attempt));
+                let id = [60 + attempt; 16];
+                let (admission, _) = h.upload(id, &canonical).await;
+                assert!(
+                    matches!(admission.outcome(), AdmissionOutcome::Accepted { .. }),
+                    "{admission:?}"
+                );
+                issued.push((id, canonical));
+                let next = timeout(Duration::from_secs(2), async {
+                    // Groups travel on separate streams: a seal appended after
+                    // the change can overtake it. Readers skip seals (one
+                    // empty frame).
+                    loop {
+                        let mut group = ops.recv_group().await.unwrap().unwrap();
+                        let frame = group.read_frame().await.unwrap().unwrap();
+                        if !frame.payload.is_empty() {
+                            break frame.payload.to_vec();
+                        }
+                    }
+                });
+                if let Ok(forwarded) = next.await {
+                    let digest = match OpsFrame::decode(&forwarded).unwrap() {
+                        OpsFrame::SignedChange { digest, .. } => digest,
+                        other => panic!("expected a forwarded signed change: {other:?}"),
+                    };
+                    let (id, canonical) = issued
+                        .iter()
+                        .find(|(_, canonical)| *blake3::hash(canonical).as_bytes() == digest)
+                        .cloned()
+                        .expect("a forwarded change is one this test admitted");
+                    return (id, canonical, forwarded);
                 }
             }
+            unreachable!("attempts are unbounded until the hang bound")
         })
         .await;
     let OpsFrame::SignedChange {
@@ -287,7 +311,7 @@ async fn installed_endpoint_serves_live_presence_and_forwards_admitted_signed_ch
     assert_eq!(bytes, canonical, "exact canonical delivery item bytes");
     assert_eq!(digest, *blake3::hash(&canonical).as_bytes());
     // A duplicate upload is not forwarded again.
-    let (duplicate, _) = h.upload([61; 16], &canonical).await;
+    let (duplicate, _) = h.upload(id, &canonical).await;
     assert!(matches!(
         duplicate.outcome(),
         AdmissionOutcome::Accepted { .. } | AdmissionOutcome::Duplicate { .. }

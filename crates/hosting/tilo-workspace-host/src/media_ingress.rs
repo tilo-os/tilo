@@ -208,18 +208,16 @@ impl InstalledIngress {
         Ok(true)
     }
 
+    /// Serve on a pair from [`crate::https::bind_https_pair`].
     #[cfg(test)]
     pub(crate) async fn start(
         owner: &mut SessionOwner,
         current: CommittedAuthority,
-        listener: TcpListener,
+        (listener, udp): (TcpListener, std::net::UdpSocket),
         config: IngressConfig,
     ) -> Result<Self> {
-        let endpoint = endpoint(
-            listener.local_addr()?,
-            config.certificates.clone(),
-            config.key.clone_key(),
-        )?;
+        let endpoint =
+            endpoint_from_socket(udp, config.certificates.clone(), config.key.clone_key())?;
         let channels = https::try_ingress_channel()?;
         Self::start_bound(owner, current, listener, config, endpoint, channels).await
     }
