@@ -594,8 +594,12 @@ ARG TILO_REQUIRE_COMPILER_CACHE=0
 ARG TILO_COMPILER_CACHE=shared
 ENV CARGO_BUILD_JOBS=${TILO_CARGO_BUILD_JOBS}
 ARG TILO_APP_COLLECTION_PUBLISHER=""
+# Names the target cache, so builds that compile differently (os/dev/build-image.sh
+# hashes the settings into it) keep separate target directories instead of
+# rebuilding each other's artifacts. The cargo home and sccache are shared.
+ARG TILO_BUILD_CACHE_KEY=default
 RUN --mount=type=cache,target=/build/.cargo-home \
-    --mount=type=cache,target=/build/target \
+    --mount=type=cache,id=tilo-cargo-target-${TILO_BUILD_CACHE_KEY},target=/build/target \
     --mount=type=cache,target=/build/.sccache \
     --mount=type=secret,id=aws_access_key_id \
     --mount=type=secret,id=aws_secret_access_key \
