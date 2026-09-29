@@ -496,6 +496,15 @@ impl Widget for Router {
         }
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.child
+            .nav_availability()
+            .or(crate::gesture::NavAvailability {
+                back: self.handle.can_back(),
+                forward: self.handle.can_forward(),
+            })
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         std::mem::take(&mut self.focus_reset) || self.child.take_focus_reset()
     }

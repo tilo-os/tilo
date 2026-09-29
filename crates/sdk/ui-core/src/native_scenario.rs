@@ -173,6 +173,7 @@ impl GateConfig {
     }
 }
 
+#[cfg(unix)]
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 struct GateRequest {
@@ -183,6 +184,7 @@ struct GateRequest {
     challenge: String,
 }
 
+#[cfg(unix)]
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GateReply {
@@ -193,6 +195,7 @@ struct GateReply {
 struct InputGate {
     #[cfg(unix)]
     stream: std::os::unix::net::UnixStream,
+    #[cfg_attr(not(unix), allow(dead_code, reason = "the gate only opens on Unix"))]
     config: GateConfig,
 }
 

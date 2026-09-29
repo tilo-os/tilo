@@ -41,6 +41,8 @@ mod coedit_keystone;
 mod colorpicker_hex_input;
 #[path = "command_palette_test.rs"]
 mod command_palette_test;
+#[path = "component_text_input.rs"]
+mod component_text_input;
 #[path = "container_update_forwarding.rs"]
 mod container_update_forwarding;
 #[path = "context_menu_test.rs"]

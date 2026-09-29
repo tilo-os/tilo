@@ -263,7 +263,7 @@ enum Command {
     Live(u64, Vec<u8>),
     RemoteAction(u64, [u8; 32], Vec<u8>),
     Barrier(Completion),
-    LiveGrant(u64, GrantCompletion),
+    LiveGrant(u64, Option<String>, GrantCompletion),
     Reconnect,
     Refresh,
     Close,
@@ -519,7 +519,23 @@ impl PeerHandle {
     ///
     /// Returns an error once the session is closed.
     pub fn live_grant_then(&self, workspace_id: u64, done: GrantCompletion) -> Result<(), String> {
-        self.send(Command::LiveGrant(workspace_id, done))
+        self.send(Command::LiveGrant(workspace_id, None, done))
+    }
+
+    /// [`Self::live_grant_then`] for agent `agent_id` this device runs: the
+    /// grant publishes under the agent's namespace
+    /// ([`tilo_relay_protocol::web::agent_publisher`]).
+    ///
+    /// # Errors
+    ///
+    /// Returns an error once the session is closed.
+    pub fn agent_live_grant_then(
+        &self,
+        workspace_id: u64,
+        agent_id: String,
+        done: GrantCompletion,
+    ) -> Result<(), String> {
+        self.send(Command::LiveGrant(workspace_id, Some(agent_id), done))
     }
 
     /// Drop the connection and reconnect now, also after a failure.
@@ -1083,17 +1099,32 @@ impl Task {
                 }
                 true
             }
-            Command::LiveGrant(workspace_id, done) => {
+            Command::LiveGrant(workspace_id, agent, done) => {
                 match client {
                     Some(Link::Https(link)) => {
                         let http = link.client().clone();
                         let session = link.session().to_owned();
                         n0_future::task::spawn(async move {
-                            done(
-                                crate::carrier::live_grant(http.as_ref(), &session, workspace_id)
+                            let grant = match agent {
+                                None => {
+                                    crate::carrier::live_grant(
+                                        http.as_ref(),
+                                        &session,
+                                        workspace_id,
+                                    )
                                     .await
-                                    .map_err(|error| error.to_string()),
-                            );
+                                }
+                                Some(agent) => {
+                                    crate::carrier::agent_live_grant(
+                                        http.as_ref(),
+                                        &session,
+                                        workspace_id,
+                                        agent,
+                                    )
+                                    .await
+                                }
+                            };
+                            done(grant.map_err(|error| error.to_string()));
                         });
                     }
                     #[cfg(feature = "iroh")]

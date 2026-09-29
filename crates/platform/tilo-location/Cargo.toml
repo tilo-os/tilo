@@ -1,0 +1,42 @@
+[package]
+name = "tilo-location"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "Device location on Linux (the XDG portal), macOS (CoreLocation) and the web (Geolocation)."
+repository.workspace = true
+homepage.workspace = true
+
+[lib]
+name = "tilo_location"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-rt = { version = "0.1.0", path = "../tilo-rt" }
+# The macOS request's deadline.
+tilo-clock = { version = "0.1.0", path = "../tilo-clock" }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { workspace = true, features = ["location"] }
+# Drives the portal's update stream beside the start request.
+futures-util.workspace = true
+tokio = { workspace = true, features = ["time"] }
+
+# CoreLocation, with its delegate on the request thread's run loop.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSArray", "NSBundle", "NSDate", "NSError", "NSObjCRuntime", "NSObject", "NSRunLoop", "NSString"] }
+objc2-core-location = { version = "0.3", default-features = false, features = ["std", "CLLocation", "CLLocationManager", "CLLocationManagerDelegate"] }
+
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.108"
+wasm-bindgen-futures = "=0.4.58"
+js-sys = "=0.3.85"
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

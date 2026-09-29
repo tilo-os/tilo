@@ -84,9 +84,13 @@ pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+#[cfg(target_os = "macos")]
+mod keychain;
 pub mod machine_mesh;
 #[cfg(target_os = "linux")]
 pub mod nofollow;
+// Identity files need an owner-checked filesystem; the browser keeps its
+// device key in host custody instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;

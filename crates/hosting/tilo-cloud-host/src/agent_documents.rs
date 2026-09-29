@@ -267,9 +267,9 @@ impl Store {
 pub(crate) fn apply_worker_document(
     owner: &crate::agent_runtime_adapter::RuntimeOwner,
     pending: tilo_action_broker::host_documents::PendingHostDocument,
-    deadline: std::time::Instant,
+    budget: std::time::Duration,
 ) -> (Box<dyn FnOnce() + Send>, Result<(), String>) {
-    pending.apply_scoped_fenced(deadline, |route, certificate, mutation, authorization| {
+    pending.apply_scoped_fenced(budget, |route, certificate, mutation, authorization| {
         let began = std::time::Instant::now();
         let mut store = owner.store().map_err(HostDocumentTurnError::Refused)?;
         let open_us = tilo_action_broker::agent_timing::us(began);
@@ -679,7 +679,7 @@ mod tests {
         assert_eq!(documents.outstanding_handoffs(), 1);
         source.invalidate();
         let (complete, outcome) = pending
-            .apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
+            .apply(tilo_test_env::hang_bound(), |route, cert, mutation| {
                 owner.store()?.commit_agent_document(route, cert, mutation)
             });
         assert!(outcome.is_err());
@@ -748,7 +748,7 @@ mod tests {
         task.abort();
         let _ = task.await;
         let (complete, outcome) = pending.apply(
-            std::time::Instant::now() + std::time::Duration::from_secs(5),
+            tilo_action_broker::owner_turn::STALL_BUDGET,
             |route, cert, mutation| owner.store()?.commit_agent_document(route, cert, mutation),
         );
         assert!(
@@ -796,7 +796,7 @@ mod tests {
         let task = tokio::spawn(signer.commit(&route, mutation));
         let pending = requests.recv().await.unwrap();
         let (complete, outcome) =
-            pending.apply(tilo_test_env::hang_deadline(), |route, cert, mutation| {
+            pending.apply(tilo_test_env::hang_bound(), |route, cert, mutation| {
                 Store::open(dir.path(), "agent-admission")
                     .map_err(|e| e.to_string())?
                     .commit_agent_document(route, cert, mutation)

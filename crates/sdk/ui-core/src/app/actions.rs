@@ -638,6 +638,11 @@ impl App {
         if !self.collaboration.manager.is_connected() {
             return;
         }
+        if self.collaboration.manager.take_action_surface_failed() {
+            // The broker did not install the last surface: nothing counts as
+            // published until it acknowledges one.
+            self.actions.last_published_actions = None;
+        }
         let route = self.bound_broker_route().cloned();
         if self.actions.last_published_bound_route != route {
             self.actions.last_published_actions = None;
@@ -680,13 +685,16 @@ impl App {
                 .as_ref()
                 .is_some_and(|actions| !actions.is_empty())
             {
-                self.collaboration
+                if self
+                    .collaboration
                     .manager
                     .send(CollabRequest::PublishActions {
                         app_id: publication_app_id,
                         actions: Vec::new(),
-                    });
-                self.actions.last_published_actions = Some(Vec::new());
+                    })
+                {
+                    self.actions.last_published_actions = Some(Vec::new());
+                }
             }
             return;
         }
@@ -728,13 +736,16 @@ impl App {
             {
                 return;
             }
-            self.collaboration
+            if self
+                .collaboration
                 .manager
                 .send(CollabRequest::PublishActions {
                     app_id: crate::collaboration::local_app_id(),
                     actions: Vec::new(),
-                });
-            self.actions.last_published_actions = Some(Vec::new());
+                })
+            {
+                self.actions.last_published_actions = Some(Vec::new());
+            }
             return;
         }
         let descriptors = tilo_actions::door::survey(&resources);
@@ -743,13 +754,17 @@ impl App {
             return;
         }
         let actions = descriptors.iter().map(Self::exported_action).collect();
-        self.collaboration
+        // A surface the transport did not take is retried on the next frame.
+        if self
+            .collaboration
             .manager
             .send(CollabRequest::PublishActions {
                 app_id: publication_app_id,
                 actions,
-            });
-        self.actions.last_published_actions = Some(descriptors);
+            })
+        {
+            self.actions.last_published_actions = Some(descriptors);
+        }
     }
 
     fn exported_action(

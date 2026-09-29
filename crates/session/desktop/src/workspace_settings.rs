@@ -93,10 +93,7 @@ pub enum PermissionProfileOperation {
     },
 }
 
-/// Governance action letting one application use another's action.
-pub const APP_ACTION_GRANT_ACTION_ID: &str = "app-action.grant";
-/// Governance action taking such a grant back.
-pub const APP_ACTION_REVOKE_ACTION_ID: &str = "app-action.revoke";
+pub use tilo_desktop_model::{APP_ACTION_GRANT_ACTION_ID, APP_ACTION_REVOKE_ACTION_ID};
 
 /// Whether `action` is one of the workspace's governance actions, which
 /// the workspace itself runs rather than an application.

@@ -151,33 +151,37 @@ impl PortabilityReport {
     /// Every finding with its location, kind and remedy.
     #[must_use]
     pub fn to_json(&self) -> Value {
-        let findings = self
-            .findings
-            .iter()
-            .map(|finding| {
-                json!({
-                    "path": absolute(&finding.path),
-                    "line": finding.line,
-                    "kind": match finding.kind {
-                        FindingKind::OsStd => "os-std",
-                        FindingKind::NativeCrate => "native-crate",
-                        FindingKind::Ffi => "ffi",
-                        FindingKind::TargetCfg => "target-cfg",
-                        FindingKind::NativeDependency => "native-dependency",
-                        FindingKind::NativeSdkFeature => "native-sdk-feature",
-                    },
-                    "what": finding.what,
-                    "help": finding.help,
+        let findings = |findings: &[crate::portability::PortabilityFinding]| {
+            findings
+                .iter()
+                .map(|finding| {
+                    json!({
+                        "path": absolute(&finding.path),
+                        "line": finding.line,
+                        "kind": match finding.kind {
+                            FindingKind::OsStd => "os-std",
+                            FindingKind::NativeCrate => "native-crate",
+                            FindingKind::Ffi => "ffi",
+                            FindingKind::TargetCfg => "target-cfg",
+                            FindingKind::NativeDependency => "native-dependency",
+                            FindingKind::NativeSdkFeature => "native-sdk-feature",
+                            FindingKind::NativeOnlyStd => "native-only-std",
+                        },
+                        "what": finding.what,
+                        "help": finding.help,
+                    })
                 })
-            })
-            .collect::<Vec<_>>();
+                .collect::<Vec<_>>()
+        };
         json!({
             "app_dir": absolute(&self.app_dir),
             "lint": crate::portability::LINT,
             "passed": self.passed(),
             "native": self.native,
             "files": self.files,
-            "findings": findings,
+            "findings": findings(&self.findings),
+            "web_capable": self.web_capable(),
+            "web_findings": findings(&self.web),
         })
     }
 }

@@ -1,8 +1,7 @@
-"""Publications never compile through the shared compiler cache.
+"""Which publications compile through the shared compiler cache, and how.
 
-Every CI job and agent sandbox holds a credential that can write any object in
-the sccache bucket. A signed OS image or kernel compiled through it could carry
-planted compiler output, and the independent rebuild would agree with it.
+A signed OS image or kernel compiled through a shared cache could carry planted
+compiler output unless an independent uncached rebuild must agree with it.
 """
 from pathlib import Path
 import os
@@ -131,23 +130,26 @@ class KernelPublicationTests(unittest.TestCase):
         self.steps = steps(self.workflow)
         self.bind = self.steps["Bind the runner compiler cache"]
 
-    def test_kernel_builds_use_the_cache_only_for_pull_requests_through_the_bind(self):
-        with self.subTest(phase='only pull requests bind the shared cache'):
+    def test_published_kernels_never_read_the_cache(self):
+        with self.subTest(phase='only pull requests read the shared cache; publications only write it'):
             self.assertIn("PULL_REQUEST: ${{ github.event_name == 'pull_request' }}", self.bind)
-            values, text = run_script(self.bind, {"PULL_REQUEST": "false", **runner_cache()})
-            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
+            values, _ = run_script(self.bind, {"PULL_REQUEST": "false", **runner_cache()})
+            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "populate")
             self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
-            self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"], "")
-            self.assertNotIn("runner-", text)
             values, _ = run_script(self.bind, {"PULL_REQUEST": "true", **runner_cache()})
             self.assertEqual(values["KERNEL_COMPILER_CACHE"], "shared")
+            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "1")
             self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"].splitlines(), [
                 "actions_cache_url=ACTIONS_CACHE_URL",
                 "actions_runtime_token=ACTIONS_RUNTIME_TOKEN",
             ])
-            values, _ = run_script(self.bind, {"PULL_REQUEST": "true"})
-            self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
-            self.assertEqual(values["KERNEL_REQUIRE_COMPILER_CACHE"], "0")
+            for pull_request in ("true", "false"):
+                values, _ = run_script(self.bind, {"PULL_REQUEST": pull_request})
+                self.assertEqual(values["KERNEL_COMPILER_CACHE"], "off")
+                self.assertEqual(values["KERNEL_COMPILER_CACHE_SECRETS"], "")
+        with self.subTest(phase='populate compiles every object before writing it'):
+            text = (ROOT / "os/kernel/Containerfile").read_text()
+            self.assertIn("populate:0) export SCCACHE_IGNORE_SERVER_IO_ERROR=1 SCCACHE_RECACHE=1 ;;", text)
         with self.subTest(phase='kernel builds pass credentials only through the bind'):
             self.assertNotIn("TILO_REQUIRE_COMPILER_CACHE=1", self.workflow)
             build = self.steps["Build the tilo-kernel image (push only on tags/dispatch)"]
@@ -155,7 +157,7 @@ class KernelPublicationTests(unittest.TestCase):
             self.assertIn("secret-envs: ${{ env.KERNEL_COMPILER_CACHE_SECRETS }}", build)
             probe = self.steps["Prove firmware rejects unsigned EFI and executes the signed image"]
             self.assertIn('"TILO_COMPILER_CACHE=$KERNEL_COMPILER_CACHE"', probe)
-            self.assertIn("if [[ $KERNEL_COMPILER_CACHE == shared ]]; then", probe)
+            self.assertIn("if [[ $KERNEL_COMPILER_CACHE != off ]]; then", probe)
             outside = probe.replace(probe[probe.index("cache_secrets=(--secret"):probe.index("          fi\n")], "")
             self.assertNotIn("--secret id=actions_cache_url", outside)
             for forbidden in ("SCCACHE_AWS", "SCCACHE_BUCKET", "aws_access_key_id", "compiler_cache_env.sh"):
@@ -169,27 +171,40 @@ class KernelPublicationTests(unittest.TestCase):
 
 
 class AppCollectionPublicationTests(unittest.TestCase):
+    """App collections compile through the runner's Actions cache.
+
+    Pull request jobs write only their own scope, and whoever can write the
+    shared scope can already read the signing secrets. What matters is that
+    those secrets never reach the compile, where every build script runs.
+    """
+
     def setUp(self):
         self.steps = steps(APPS_WORKFLOW.read_text())
 
-    def test_app_collection_publication_compiles_without_the_shared_cache(self):
-        with self.subTest(phase='only unpublished runs prepare the shared cache'):
+    def test_app_collection_compiles_cached_and_signs_without_compiling(self):
+        compile_step = self.steps["Build and verify selected tapps once for this architecture"]
+        sign = self.steps["Package and sign selected tapps"]
+        with self.subTest(phase='every run prepares the runner cache'):
             prepare = self.steps["Prepare compiler cache"]
-            self.assertIn("if: needs.plan.outputs.publish != 'true'", prepare)
+            self.assertNotIn("if:", prepare)
             self.assertIn("run: bash tools/ci/sccache.sh prepare", prepare)
-        with self.subTest(phase='a publication compiles without cache credentials or wrapper'):
-            build = self.steps["Build and verify selected tapps once for this architecture"]
-            script = textwrap.dedent(build.split("        run: |\n", 1)[1])
-            guard = script.split("if [[ -n ${TAPP_PUBLISHER_IDENTITY:-} ]]; then", 1)[0]
-            probe = guard.replace("${{ needs.plan.outputs.publish }}", "true") + (
-                'env | grep -E "^(AWS_|SCCACHE_)" && exit 1\n'
-                '[[ -z ${RUSTC_WRAPPER:-} ]] || exit 1\n')
-            env = {"PATH": os.environ["PATH"], "RUSTC_WRAPPER": "/usr/local/bin/sccache",
-                   "SCCACHE_S3_KEY_PREFIX": "tilo/apps", **runner_cache()}
-            result = subprocess.run(["bash", "-c", probe], env=env, text=True,
-                                    capture_output=True, check=False)
-            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-            self.assertLess(script.index(guard), script.index("dist/apps/package-apps.sh"))
+        with self.subTest(phase='the compile step holds no signing secret'):
+            self.assertNotIn("secrets.", compile_step)
+            self.assertIn('TILO_APP_COMPILE_ONLY: "1"', compile_step)
+        with self.subTest(phase='signing reuses the compiled graph'):
+            self.assertIn("secrets.TAPP_PUBLISHER_IDENTITY", sign)
+            self.assertIn("secrets.RUNTIME_BUNDLE_SIGNING_KEY", sign)
+            self.assertIn("unset TAPP_PUBLISHER_IDENTITY RUNTIME_BUNDLE_SIGNING_KEY", sign)
+            self.assertNotIn("TILO_APP_COMPILE_ONLY", sign)
+            order = list(self.steps)
+            self.assertLess(order.index("Build and verify selected tapps once for this architecture"),
+                            order.index("Package and sign selected tapps"))
+        with self.subTest(phase='compile-only stops before any identity is needed'):
+            script = (ROOT / "dist/apps/package-apps.sh").read_text()
+            stop = script.index("[[ ${TILO_APP_COMPILE_ONLY:-} != 1 ]] || exit 0")
+            self.assertLess(script.index("build-thin-apps.sh\"\n"), stop)
+            self.assertLess(stop, script.index("key generate"))
+            self.assertLess(stop, script.index("RUNTIME_VERSION="))
 
 
 class DesktopPayloadPublicationTests(unittest.TestCase):
