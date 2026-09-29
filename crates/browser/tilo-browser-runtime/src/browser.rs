@@ -142,6 +142,8 @@ impl Gpu {
 /// Stop rendering `id` with the shared device, and release the device once
 /// no mount renders with it or it failed.
 fn release_gpu(id: u64, gpu: Gpu) {
+    // On WebGPU a dropped texture stays resident until JavaScript collects it.
+    gpu.surface.target_texture.destroy();
     let (last, failed) = gpu
         .shared
         .try_borrow()
