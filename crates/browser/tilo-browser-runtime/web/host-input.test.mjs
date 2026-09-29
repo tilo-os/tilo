@@ -22,7 +22,7 @@ class Node {
   for(const node of path)for(const row of node.listeners.get(event.type)??[])if(!row.options.capture&&!row.options.signal?.aborted&&!event.stopped){event.currentTarget=node;row.listener(event);}
   return !event.defaultPrevented;
  }
- focus(options){this.focusOptions=options;if(document.activeElement===this)return;document.activeElement?.dispatchEvent(new DomEvent('blur'));document.activeElement=this;this.dispatchEvent(new DomEvent('focus'));this.dispatchEvent(new DomEvent('focusin'));}
+ focus(options){this.focusOptions=options;if(document.activeElement===this)return;const previous=document.activeElement;previous?.dispatchEvent(new DomEvent('blur',{relatedTarget:this}));document.activeElement=this;this.dispatchEvent(new DomEvent('focus',{relatedTarget:previous}));this.dispatchEvent(new DomEvent('focusin',{relatedTarget:previous}));}
  cloneNode(){const next=new Node(this.tagName);Object.assign(next,{style:{...this.style},dataset:{...this.dataset},tabIndex:this.tabIndex,disabled:this.disabled});return next;}
  replaceWith(next){const parent=this.parentNode;parent.children[parent.children.indexOf(this)]=next;next.parentNode=parent;this.parentNode=null;if(document.activeElement===this)document.activeElement=document.body;}
  remove(){this.parentNode.children=this.parentNode.children.filter(child=>child!==this);}
@@ -36,8 +36,9 @@ async function fixture({standalone=false,legacy=false}={}){
   if(String(url).endsWith('fonts.json'))return {ok:true,json:async()=>({schema:1,catalog:'host-input-fixture',assets:[{name:'NotoSans[wght].ttf',bytes:1,sha256:'4bf5122f344554c53bde2ebb8cd2b7e3d1600ad631c385a5d7cce23c7785459a',startup:true}]})};
   return {ok:true,arrayBuffer:async()=>new Uint8Array([1]).buffer};
  };
- let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[];let update;
- const runtime={mount(_canvas,_config,_assets,_entries,callback){update=callback;setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},flush_files:async()=>{},storage_write_hook(){},drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
+ let allocated=false,ownershipReads=0;let state={sequence:'1',activation:'1',owner:'writer',ime:{x:0,y:0,height:20}};const delivered=[],deliveredOwners=[],windowFocus=[];let update;
+ // Winit's web backend reports the canvas's own focus and blur as the window's.
+ const runtime={mount(canvas,_config,_assets,_entries,callback){update=callback;for(const type of ['focus','blur'])canvas.addEventListener(type,()=>windowFocus.push(type));setTimeout(()=>{allocated=true;callback(JSON.stringify({phase:'gpu-pending'}));queueMicrotask(()=>callback(JSON.stringify({phase:'presented',frames:1})));},0);return 1;},refresh_storage_lease(){},load_storage(){},mirror_files:async()=>{},flush_files:async()=>{},storage_write_hook(){},drain_storage:()=>[],retry_storage:()=>0,acknowledge_storage(){},pending_writes:()=>[],asset_requests:()=> '[]',modifiers(){},ime:(...args)=>delivered.push(args.slice(1)),clipboard_event:(_id,kind)=>{delivered.push([kind]);return true;},
   desktop_input_ownership:()=>{ownershipReads++;if(!allocated)throw Error('Desktop disposed');if(standalone)throw Error('Desktop navigation unavailable');return JSON.stringify(state);},desktop_navigation_snapshot:()=>{if(!allocated)throw Error('Desktop disposed');return standalone?undefined:JSON.stringify({generation:'g'});},desktop_navigation_revision:()=>1,searchToggles:0,desktop_search_toggle(){this.searchToggles++;},
   desktop_navigate:(_id,raw)=>{const command=JSON.parse(raw);if(command.route==='bad')throw Error('rejected');state={sequence:String(Number(state.sequence)+1),activation:String(Number(state.activation)+1),owner:command.route,ime:command.route==='calculator'?null:{x:0,y:0,height:20}};},
  };
@@ -50,7 +51,7 @@ async function fixture({standalone=false,legacy=false}={}){
   .replace(/from '(\.\/[^']+)'/g,(_all,path)=>`from '${new URL(path,import.meta.url).href}'`);
  const {mountDesktop}=await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}#${Math.random()}`);
  const target=new Node('div');document.body.append(target);const host=await mountDesktop(target,{app:standalone?'writer':'desktop'});await tick();
- return {host,runtime,document,delivered,deliveredOwners,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
+ return {host,runtime,document,delivered,deliveredOwners,windowFocus,get ownershipReads(){return ownershipReads;},disposeRuntime(){allocated=false;},get state(){return state;},set state(value){state=value;},update:state=>update(JSON.stringify(state))};
 }
 test('outside pointer press dismisses only the current system search and preserves the external click',async()=>{
  const f=await fixture();
@@ -83,6 +84,18 @@ test('Rust-internal Search selection hands off only for a local surface gesture'
  f.host.canvas.dispatchEvent(new DomEvent('keydown',{key:'Enter'}));await tick();assert.equal(f.document.activeElement,f.host.editor);
  const external=new Node('textarea');f.document.body.append(external);external.focus();
  f.state={sequence:'3',activation:'3',owner:'writer',ime:{x:0,y:0,height:20}};f.update({phase:'presented',frames:2});await tick();assert.equal(f.document.activeElement,external);
+});
+test('focus moving between the canvas and its IME editor is not a window blur',async()=>{
+ const f=await fixture();f.host.editor.focus();f.windowFocus.length=0;f.delivered.length=0;
+ // A press on the canvas takes focus from the editor; the next status hands it back.
+ f.host.canvas.focus();f.update({phase:'presented',frames:2});await tick();
+ assert.equal(f.document.activeElement,f.host.editor);
+ assert.deepEqual(f.windowFocus.filter(type=>type==='blur'),[],'a pointer gesture on the canvas survives the IME handoff');
+ assert.deepEqual(f.delivered,[['end',''],['start','']],'the IME still ends and restarts');
+ const outside=new Node('input');f.document.body.append(outside);outside.focus();
+ assert.deepEqual(f.windowFocus.at(-1),'blur','leaving the surface is still a window blur');
+ f.host.canvas.focus();f.windowFocus.length=0;outside.focus();
+ assert.deepEqual(f.windowFocus,['blur'],'and so is leaving it from the canvas');
 });
 test('current standalone and legacy runtimes retain local text input without desktop ownership',async()=>{
  for(const config of [{standalone:true},{legacy:true}]){
