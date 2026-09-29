@@ -46,6 +46,29 @@ The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 
+## Published forks
+
+The SDK's own crates depend on three forks under their own crates.io names,
+so the SDK can be published (`tools/sdk/publish_check.py`): `tilo-winit`
+(`vendor/winit`), `tilo-accesskit-winit` (`vendor/accesskit_winit`, the
+unchanged 0.34.0 release built on tilo-winit) and `tilo-vello`,
+`tilo-vello-encoding`, `tilo-vello-shaders` (`vendor/vello*`). Each keeps its
+upstream library name, so code still writes `winit::`/`vello::`, and each has
+a `TILO-FORK.md` naming upstream and what differs. Their manifests differ
+from the crates.io originals only in that publication identity (name,
+description, readme, packaged files, renamed dependencies);
+`tools/verify-vendor-trees.py` sets those lines aside.
+
+crates.io crates in the workspace that depend on `winit` (accesskit_winit for
+the shell, smithay) get the fork through `crates/forks/winit`, a facade named
+`winit` that re-exports tilo-winit, so every crate sees one set of winit
+types. vello had no crates.io dependents, so its `[patch]` entries are gone.
+
+The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
+crates.io release, and only the optional `presentation-feedback` feature
+needs the patched Metal observer (now part of the `metal` feature, since a
+published crate cannot name a feature the release lacks).
+
 ## Git forks
 
 Some patches live in public forks on code.tilo.so rather than in this tree.
@@ -67,9 +90,10 @@ change.
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
 `vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
-below. Everything else in both trees — including `Cargo.toml`, `Cargo.lock`,
-the licenses and every other `.rs` file — is the unmodified crates.io release;
-diff either tree against the published crate to confirm.
+below and the publication identity in `Cargo.toml` (see "Published forks").
+Everything else in both trees — including `Cargo.lock`, the licenses and
+every other `.rs` file — is the unmodified crates.io release; diff either tree
+against the published crate to confirm.
 
 The patch is one thing: size the bump-allocated scratch buffers from what a
 frame measurably uses instead of from upstream's fixed, worst-case constants.
@@ -105,23 +129,18 @@ pixels silently missing, with no prior frame for `BumpBudget::observe` to have
 grown from yet. See the doc comment above `FLOOR_PTCL_PER_TILE` for the
 measurement this raised it from.
 
-Own test module: the two faults above and the `ptcl` floor gap each have a
-dedicated regression test, plus growth-from-measurement, ceiling and the
-headline "far less than upstream" comparison.
+Own test module (7 tests): the two faults above and the `ptcl` floor gap each
+have a dedicated regression test, plus growth-from-measurement, ceiling and
+the headline "far less than upstream" comparison.
 
-Every reservation is also bounded by the device. `BumpReservation` pairs the
-budget with the largest buffer the device binds, and
-`BufferSizes::new_reserved`/`RenderConfig::new_reserved` clamp each
-bump-allocated buffer to it: a buffer past `max_storage_buffer_binding_size`
-is a wgpu validation error, which wgpu's default handler turns into a panic.
-A frame that needs more than the device binds overflows and draws partially
-instead. The growth ceiling scales with the viewport
-(`BumpBudget::ceiling_for_viewport`) — the flat `CEILING` sat below what a
-5120x2880 desktop with one spilled blend level per tile needs, so its
-`blend_spill` overflowed on every frame and never converged — and
-`BumpBudget::within_binding` holds that ceiling to the device limit.
-
-## `vendor/vello/src/bump_budget.rs` (new)
+`BumpBudget::max_binding_bytes` caps every bump buffer, floors and growth
+included, at the device's largest storage binding. `CEILING` puts lines and
+segments at 8M x 24 bytes = 192 MiB and the lines floor grows with the path
+tag count, both past WebGPU's default 128 MiB; a bind group past the limit
+fails the device, where a clamped buffer drops geometry the shaders report
+through `BumpAllocators::failed`. `BudgetTracker::set_device_limits` sets it
+from `device.limits()`, rounded down to a size class the engine's buffer pool
+allocates exactly, since the pool rounds requests up and binds whole buffers.
 
 ## `vendor/vello/src/bump_budget.rs` (new)
 
@@ -130,15 +149,14 @@ instead. The growth ceiling scales with the viewport
 it (or an already-finished one) at the top of the next, and grows the budget
 to cover what was used. `VELLO_BUMP_LOG=1` logs used-vs-reserved per frame;
 `VELLO_BUMP_BUDGET=upstream` pins `BumpBudget::UPSTREAM` for an A/B
-comparison from one binary. The tracker reads the binding bound from the
-device's limits and grows only within it.
+comparison from one binary.
 
 ## `vendor/vello/src/lib.rs`
 
 `Renderer` gains a `budget: bump_budget::BudgetTracker` field. Both render
 paths (`render_to_texture`/`render_to_surface` and the async
 `render_to_texture_async`) collect the previous frame's counters, pass
-`self.budget.reservation()` into `render::render_full`/`render_encoding_coarse`,
+`self.budget.budget()` into `render::render_full`/`render_encoding_coarse`,
 and start or await the next readback; a budget that grew clears the engine's
 buffer pool so stale-size buffers are dropped rather than held for the life
 of the process. The async path always reads back now (upstream gated this on
@@ -150,7 +168,7 @@ same way the sync path does.
 ## `vendor/vello/src/render.rs`
 
 `render_full`, `render_encoding_full` and `render_encoding_coarse` take a
-`&vello_encoding::BumpReservation` and a `measure: bool` (threaded through as
+`&vello_encoding::BumpBudget` and a `measure: bool` (threaded through as
 upstream's existing `robust` readback flag — the fork reuses that plumbing
 rather than adding a second one), and hand back the bump-counter download
 buffer when `measure` is set.
@@ -160,10 +178,6 @@ buffer when `measure` is set.
 Adds `WgpuEngine::clear_pool()`: drops every buffer the size-class pool is
 holding for reuse. Called only when the budget just grew, so old size
 classes stop being kept for a request that will not come again.
-
-The pool rounds a request up to its size class only as far as the device
-binds: `ResourcePool` binds whole buffers, so rounding a legal 100 MiB storage
-request up to 128 MiB-plus would itself exceed the binding limit.
 
 ## `vendor/vello_encoding/src/resolve.rs`
 
@@ -181,4 +195,4 @@ Adds `ImageCache::atlas_size()`, the atlas's current live side length, for
 
 ## `vendor/vello_encoding/src/lib.rs`
 
-Re-exports `BumpBudget` and `BumpReservation` from `config`.
+Re-exports `BumpBudget` from `config`.

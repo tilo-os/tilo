@@ -2512,7 +2512,9 @@ impl RoomActivityPane {
         if self.narrative_request == request {
             return;
         }
-        self.narrative = request.as_ref().map(ui::deterministic_narrative);
+        // The deterministic summary only restates the brief titles below
+        // it, so the card waits for prose that adds something.
+        self.narrative = None;
         self.narrative_request = request;
     }
 
@@ -3564,17 +3566,12 @@ impl RoomActivityPane {
         }
         let metrics = BriefCardMetrics::new(tr, theme);
         if let Some(narrative) = self.narrative.as_ref() {
-            let generated = narrative.generator != "tilo-deterministic";
             // Section-header role for the label (HIG §9.6: `xs`) — the former
             // `sm - 1` was an invented size — over up to two body lines, each
             // seated on its measured line so 200 % type grows the card.
             let label_size = type_size(tr, theme.tokens.typography.scale.xs);
             let body_size = type_size(tr, theme.tokens.typography.scale.sm);
-            let label = t(if generated {
-                "activity-summary-on-device"
-            } else {
-                "activity-summary-glance"
-            });
+            let label = t("activity-summary-on-device");
             let inner_w = text_width(x1 - x0 - 24.0);
             let (_, label_h) = tr.measure(&label, label_size, Some(inner_w));
             let lines = tr.clamp_to_lines(&narrative.text, body_size, inner_w, 2);
@@ -3584,11 +3581,7 @@ impl RoomActivityPane {
             scene.fill(
                 Fill::NonZero,
                 transform,
-                theme.tokens.colors.accent[5].with_alpha_factor(if generated {
-                    0.13
-                } else {
-                    0.07
-                }),
+                theme.tokens.colors.accent[5].with_alpha_factor(0.13),
                 None,
                 &RoundedRect::from_rect(card, f64::from(theme.tokens.radii.md)),
             );
@@ -7378,8 +7371,8 @@ fn draw_work_session_boundary(
     // itself spatial: each half transfers the bordering action across it in
     // the direction shown, instead of repeating two long explanatory labels.
     let buttons = [
-        (into_newer, "↑  1 action", can_move_up),
-        (into_older, "1 action  ↓", can_move_down),
+        (into_newer, t("activity-session-move-newer"), can_move_up),
+        (into_older, t("activity-session-move-older"), can_move_down),
     ];
     for (button, label, enabled) in buttons {
         let shape = RoundedRect::from_rect(button, 13.0);
@@ -7402,7 +7395,7 @@ fn draw_work_session_boundary(
             &shape,
         );
         let label = tr.elide_to_width(
-            label,
+            &label,
             theme.tokens.typography.scale.sm,
             text_width(button.width() - 18.0),
         );

@@ -4143,7 +4143,10 @@ impl WorkspaceTree {
         let strip_id = match command {
             DesktopCommand::ReorderTab { location, .. } => location.strip,
             DesktopCommand::ReorderGroup { strip, .. } => *strip,
-            _ => return Err("this desktop commits only reorders as commands".into()),
+            DesktopCommand::MoveGroup { group, strip, .. } => {
+                return self.commit_group_move(command, *group, StripId(*strip));
+            }
+            _ => return Err("this desktop commits only reorders and moves as commands".into()),
         };
         let strip_id = StripId(strip_id);
         let (ws_idx, strip_idx) = self
@@ -4210,6 +4213,68 @@ impl WorkspaceTree {
         Ok(true)
     }
 
+    /// [`Self::commit_command`] for a [`DesktopCommand::MoveGroup`]: the
+    /// group leaves its strip for `strip_id`, in the cache and the room
+    /// document together, or in neither.
+    ///
+    /// [`DesktopCommand::MoveGroup`]: tilo_desktop_model::commands::DesktopCommand::MoveGroup
+    fn commit_group_move(
+        &mut self,
+        command: &tilo_desktop_model::commands::DesktopCommand,
+        group_id: GroupId,
+        strip_id: StripId,
+    ) -> Result<bool, String> {
+        let (ws_idx, strip_idx) = self
+            .desktop
+            .strip_position(strip_id)
+            .ok_or("strip was removed")?;
+        let workspace = self
+            .desktop
+            .workspaces
+            .get_mut(ws_idx)
+            .ok_or("workspace was removed")?;
+        let before = workspace.strips.clone();
+        tilo_desktop_model::commands::apply_command(
+            workspace,
+            command,
+            &mut || Err("a move mints no identity".into()),
+            &mut |_, _| Err("a move creates no record".into()),
+        )?;
+        let landed = workspace.strips.get(strip_idx).and_then(|strip| {
+            let index = strip
+                .window_groups
+                .iter()
+                .position(|group| group.id == group_id)?;
+            Some((index, strip.window_groups.get(index)?.clone()))
+        });
+        let order = |strips: &[Strip]| {
+            strips
+                .iter()
+                .map(|strip| {
+                    strip
+                        .window_groups
+                        .iter()
+                        .map(|group| group.id)
+                        .collect::<Vec<GroupId>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        if order(&before) == order(&workspace.strips) {
+            return Ok(false);
+        }
+        let mirrored = landed.is_some_and(|(index, group)| {
+            tilo_desktop_model::desktop_doc::move_group(&mut self.doc, strip_id, &group, index)
+        });
+        if !mirrored {
+            if let Some(workspace) = self.desktop.workspaces.get_mut(ws_idx) {
+                workspace.strips = before;
+            }
+            return Err("the room document refused the group move".into());
+        }
+        self.flush_to_disk();
+        Ok(true)
+    }
+
     /// Bind a group reorder the way the desktop surface reports it (the
     /// post-removal slot) and commit it.
     #[cfg(test)]
@@ -4241,7 +4306,8 @@ impl WorkspaceTree {
     fn commit_intent_for_tests(&mut self, intent: tilo_desktop::intents::SessionIntent) -> bool {
         let group = match &intent {
             tilo_desktop::intents::SessionIntent::ReorderGroup { group, .. }
-            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. } => *group,
+            | tilo_desktop::intents::SessionIntent::ReorderTab { group, .. }
+            | tilo_desktop::intents::SessionIntent::MoveGroup { group, .. } => *group,
             _ => return false,
         };
         let Some(room) = self
@@ -7192,6 +7258,73 @@ mod active_group_tests {
                 vec![2, 3, 1],
                 "a normal restart must retain the reordered group list"
             );
+        }
+
+        // Phase `move_group_carries_a_group_across_strips_in_cache_and_doc`.
+        {
+            use tilo_desktop::intents::SessionIntent;
+
+            let (mut tree, upper, _ids) = tree_with_n_groups(3);
+            for group in &mut tree.desktop.workspaces[0].strips[0].window_groups {
+                let tab_id = 10_000 + group.id;
+                group.tabs.push(Tab {
+                    id: tab_id,
+                    title: format!("Group {}", group.id),
+                    tile: TileContent::Stub {
+                        kind: AppKind::Terminal,
+                        label: format!("Group {}", group.id),
+                    },
+                });
+                group.active_tab = tab_id;
+            }
+            let lower = StripId::new();
+            tree.desktop.workspaces[0].strips.push(Strip {
+                id: lower,
+                name: "Below".into(),
+                window_groups: Vec::new(),
+            });
+            tree.seed_doc_from_cache();
+            let state_dir = tempfile::tempdir().expect("state dir");
+            tree.persist_path = Some(state_dir.path().join("state.json"));
+
+            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                group: 2,
+                to: lower,
+                before: None,
+            }));
+            assert!(tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                group: 3,
+                to: lower,
+                before: Some(2),
+            }));
+            assert_eq!(group_order(&tree, upper), vec![1]);
+            assert_eq!(group_order(&tree, lower), vec![3, 2]);
+            assert!(
+                !tree.commit_intent_for_tests(SessionIntent::MoveGroup {
+                    group: 1,
+                    to: lower,
+                    before: Some(404),
+                }),
+                "a stale anchor moves nothing"
+            );
+            assert_eq!(group_order(&tree, upper), vec![1]);
+
+            let reloaded = crate::shell::persist::load_tree_from(
+                tree.persist_path.as_ref().expect("persistence configured"),
+            )
+            .expect("moved tree reloads");
+            assert_eq!(group_order(&reloaded, upper), vec![1]);
+            assert_eq!(
+                group_order(&reloaded, lower),
+                vec![3, 2],
+                "a restart must find the groups in the strip they were carried to"
+            );
+            let carried = reloaded.desktop.workspaces[0].strips[1]
+                .window_groups
+                .iter()
+                .find(|group| group.id == 2)
+                .expect("group 2 reloads");
+            assert_eq!(carried.active_tab, 10_002, "the group keeps its tabs");
         }
     }
 

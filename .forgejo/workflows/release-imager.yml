@@ -81,12 +81,14 @@ jobs:
               echo '::error::offline medium requires main, installer_only, an immutable signed target, and a full source revision'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            # No runner carries the imager fleet's labels any more; the large
+            # ARM runners have nested KVM and the disk these media need.
             if [[ -n ${LENOVO_TARGET_IMAGE:-} && ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"},{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"},{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             elif [[ ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
             else
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             fi
             exit 0
           fi

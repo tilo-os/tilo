@@ -8,7 +8,7 @@
 //! the entry's resource id bound to that input, so the run meets the same
 //! checks as one from the palette or an agent.
 
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use tilo_actions::remote::{
     CatalogueQuery, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE, ReceiptStatus,
@@ -266,7 +266,7 @@ mod tests {
     /// and one that takes nothing.
     fn fetched() -> ShortcutMenuState {
         let mut menu = ShortcutMenuState::default();
-        menu.poll_if_due(Instant::now());
+        menu.poll_if_due(ui::time::now());
         let requests = menu.take_requests();
         let [
             CollabRequest::RemoteAction {

@@ -254,4 +254,4 @@ Use `verify --trusted-key` in CI pipelines that gate `tilo-install`
 without maintaining a persistent trust registry.
 
 Next: [`cross-target.md`](./cross-target.md) — shipping the same source
-to `.tapp` AND Flatpak.
+to Linux, macOS and the web.

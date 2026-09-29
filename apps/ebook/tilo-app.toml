@@ -25,6 +25,10 @@ de = "E-Book-Leser"
 x86_64 = "v3"
 aarch64 = "aarch64"
 
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+optional = ["clipboard", "files.open", "files.paths", "app-files", "settings", "threads", "media.decode"]
+
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
 signature = ""

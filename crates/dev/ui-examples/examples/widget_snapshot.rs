@@ -8,7 +8,7 @@
 //! cargo run -p ui-examples --example ui-shots -- widget_snapshot
 //! ```
 //! The PNG is written to `/tmp/quick-ui-widget-gallery.png`. Override
-//! the path with `QUICK_UI_SNAPSHOT_OUT=…`.
+//! the path with `TILO_UI_SNAPSHOT_OUT=…`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -572,7 +572,7 @@ fn draw_row8_modal(ctx: &mut GalleryCtx<'_>, pad: f64, canvas_w: u32, y: f64) {
 }
 
 pub fn run(_args: &[String]) {
-    let out = std::env::var("QUICK_UI_SNAPSHOT_OUT")
+    let out = tilo_ui::env::var("TILO_UI_SNAPSHOT_OUT")
         .unwrap_or_else(|_| "/tmp/quick-ui-widget-gallery.png".to_string());
     let (canvas_w, canvas_h) = (1100u32, 1500u32);
 

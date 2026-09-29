@@ -3101,7 +3101,7 @@ impl ResourcePool {
         usage: BufferUsages,
         device: &Device,
     ) -> Buffer {
-        let rounded_size = Self::bound_size_class(size, usage, &device.limits());
+        let rounded_size = Self::size_class(size, SIZE_CLASS_BITS);
         let props = BufferProperties {
             size: rounded_size,
             usages: usage,
@@ -3118,24 +3118,6 @@ impl ResourcePool {
             usage,
             mapped_at_creation: false,
         })
-    }
-
-    /// [`Self::size_class`], never rounding past a limit `size` itself
-    /// respects.
-    ///
-    /// Storage buffers are bound whole, so a 100 MiB request rounded to
-    /// its 128 MiB class is bound as 128 MiB, and a 129 MiB one as 192 MiB:
-    /// past the device's binding limit, which wgpu reports as a validation
-    /// error and by default answers by aborting the process.
-    fn bound_size_class(size: u64, usage: BufferUsages, limits: &wgpu::Limits) -> u64 {
-        let mut cap = limits.max_buffer_size;
-        if usage.contains(BufferUsages::STORAGE) {
-            cap = cap.min(limits.max_storage_buffer_binding_size);
-        }
-        // RADV reports a 4 GiB - 1 binding limit; a whole binding must stay
-        // a multiple of four bytes.
-        let cap = cap & !(wgpu::COPY_BUFFER_ALIGNMENT - 1);
-        Self::size_class(size, SIZE_CLASS_BITS).min(cap.max(size))
     }
 
     /// Quantize a size up to the nearest size class.
@@ -3492,37 +3474,6 @@ impl<'a> TransientBindMap<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The pool rounds sizes up to classes of 2^k and 1.5 * 2^k and binds
-    /// the rounded buffer whole. A request inside the device's limit must
-    /// stay inside it after rounding.
-    #[test]
-    fn pooled_storage_never_rounds_past_the_binding_limit() {
-        let limits = wgpu::Limits::default();
-        let max = limits.max_storage_buffer_binding_size;
-        let storage = BufferUsages::STORAGE | BufferUsages::COPY_DST;
-        for size in [max / 2 + 4, max * 3 / 4 + 4, max - 4, max] {
-            let rounded = ResourcePool::bound_size_class(size, storage, &limits);
-            assert!(rounded >= size, "{size} rounded down to {rounded}");
-            assert!(rounded <= max, "{size} rounded to {rounded}, past {max}");
-        }
-        // RADV binds up to 4 GiB - 1; a whole binding stays 4-byte aligned.
-        let radv = wgpu::Limits {
-            max_storage_buffer_binding_size: u64::from(u32::MAX),
-            max_buffer_size: u64::from(u32::MAX) - 3,
-            ..wgpu::Limits::default()
-        };
-        let rounded = ResourcePool::bound_size_class(3 << 30, storage, &radv);
-        assert_eq!(rounded % wgpu::COPY_BUFFER_ALIGNMENT, 0);
-        assert!(rounded <= radv.max_storage_buffer_binding_size);
-        // Buffers that are never bound as storage still round freely
-        // within the buffer size limit.
-        let download = BufferUsages::MAP_READ | BufferUsages::COPY_DST;
-        assert_eq!(
-            ResourcePool::bound_size_class(max + 4, download, &limits),
-            ResourcePool::size_class(max + 4, SIZE_CLASS_BITS)
-        );
-    }
 
     #[test]
     fn sparse_segment_row_mask_requires_exact_opt_in_value() {

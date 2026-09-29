@@ -767,7 +767,7 @@ fn presentation_from_facts(
 impl SelectionPreference {
     #[cfg(not(test))]
     fn live() -> Result<Self, String> {
-        let root = xdg_paths::data_local_dir()
+        let root = tilo_paths::data_local_dir()
             .ok_or("A device-local settings folder is unavailable on this computer.")?;
         Ok(Self::at(
             root.join("tilo")

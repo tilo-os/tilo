@@ -5,6 +5,8 @@
 //!
 //! - `package.version` parses as semver.
 //! - `package.runtime` is `<name>/<semver>`, absent for `kind = "runtime"`.
+//! - `package.platform-reason` is present exactly when `package.platforms`
+//!   narrows the default targets; capability names are non-empty and unique.
 //! - `kind = "app"` has `[entrypoint]` with `bin` set.
 //! - `kind = "format-provider"` has non-empty `providers.mime` and
 //!   ships [`FORMAT_PROVIDER_MODULE`] (payload-side counterpart in
@@ -15,7 +17,7 @@
 use semver::Version;
 
 use crate::id::Kind;
-use crate::manifest::{ContinuityFacet, EntrypointType, Manifest};
+use crate::manifest::{ContinuityFacet, DEFAULT_PLATFORMS, EntrypointType, Manifest};
 
 /// File a `kind = "format-provider"` payload must ship: the provider's core
 /// WebAssembly module, which the format host checks against its provider ABI
@@ -31,11 +33,26 @@ pub enum ManifestError {
     BadRuntimeForm(String),
     #[error("package.runtime version {0:?} is not valid semver: {1}")]
     BadRuntimeVersion(String, String),
+    #[error("package.platforms must name at least one platform")]
+    EmptyPlatforms,
+    #[error("package.platforms repeats {0:?}")]
+    DuplicatePlatform(String),
     #[error(
-        "platform.native must be a one-line reason the app is platform-specific, \
+        "package.platforms leaves out {missing} and needs a one-line package.platform-reason, \
          for example \"Writes OS images to block devices.\""
     )]
-    BadPlatformNative,
+    MissingPlatformReason { missing: String },
+    #[error(
+        "package.platform-reason is only for an app that narrows package.platforms; \
+         remove it, the app runs on linux, macos and web"
+    )]
+    UnneededPlatformReason,
+    #[error("package.platform-reason must be one non-empty line")]
+    BadPlatformReason,
+    #[error("capabilities.{list} has an empty or padded capability name {name:?}")]
+    BadCapabilityName { list: &'static str, name: String },
+    #[error("capabilities lists {0:?} more than once")]
+    DuplicateCapability(String),
     #[error("kind=runtime must not declare a runtime dependency")]
     RuntimeKindHasRuntime,
     #[error("kind=app requires `[entrypoint]` with `bin` set")]
@@ -137,7 +154,7 @@ pub fn validate_manifest(m: &Manifest) -> Result<(), ManifestError> {
         });
     }
 
-    validate_platform(m)?;
+    validate_platforms(m).and_then(|()| validate_capabilities(m))?;
 
     let mut facets = std::collections::BTreeSet::new();
     for facet in &m.continuity.required {
@@ -362,13 +379,53 @@ fn validate_desktop_target(
     Ok(())
 }
 
-fn validate_platform(m: &Manifest) -> Result<(), ManifestError> {
-    match &m.platform.native {
-        Some(reason) if reason.trim().is_empty() || reason.contains('\n') => {
-            Err(ManifestError::BadPlatformNative)
+fn validate_platforms(m: &Manifest) -> Result<(), ManifestError> {
+    let platforms = m.package.platforms();
+    if platforms.is_empty() {
+        return Err(ManifestError::EmptyPlatforms);
+    }
+    let mut seen = std::collections::BTreeSet::new();
+    if let Some(repeated) = platforms.iter().find(|platform| !seen.insert(**platform)) {
+        return Err(ManifestError::DuplicatePlatform(
+            repeated.as_str().to_owned(),
+        ));
+    }
+    match (&m.package.platform_reason, m.package.is_platform_narrowed()) {
+        (Some(reason), true) if reason.trim().is_empty() || reason.contains('\n') => {
+            Err(ManifestError::BadPlatformReason)
         }
+        (Some(_), false) => Err(ManifestError::UnneededPlatformReason),
+        (None, true) => Err(ManifestError::MissingPlatformReason {
+            missing: DEFAULT_PLATFORMS
+                .iter()
+                .filter(|platform| !platforms.contains(platform))
+                .map(|platform| platform.as_str())
+                .collect::<Vec<_>>()
+                .join(", "),
+        }),
         _ => Ok(()),
     }
+}
+
+fn validate_capabilities(m: &Manifest) -> Result<(), ManifestError> {
+    let mut seen = std::collections::BTreeSet::new();
+    for (list, names) in [
+        ("required", &m.capabilities.required),
+        ("optional", &m.capabilities.optional),
+    ] {
+        for name in names {
+            if name.trim().is_empty() || name.trim() != name {
+                return Err(ManifestError::BadCapabilityName {
+                    list,
+                    name: name.clone(),
+                });
+            }
+            if !seen.insert(name.as_str()) {
+                return Err(ManifestError::DuplicateCapability(name.clone()));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_atspi_acceptance(m: &Manifest) -> Result<(), ManifestError> {

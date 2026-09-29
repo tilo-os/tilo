@@ -643,9 +643,9 @@ fn decode_pcm(uri: &str) -> Option<Vec<f32>> {
     // A wedged pipeline must not hang the caller forever. Long enough that a
     // slow decode of a long source still finishes, short enough that a stall
     // surfaces as missing audio rather than a frozen export.
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(120);
+    let deadline = ui::time::now() + std::time::Duration::from_secs(120);
     loop {
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             tracing::warn!("audio: decoding {uri} timed out; mixing it as silence");
             break;
         }
@@ -1086,45 +1086,43 @@ impl AudioMonitor {
             stop: AtomicBool::new(false),
         });
         let state = shared.clone();
-        let handle = std::thread::Builder::new()
-            .name("video-editor-monitor".into())
-            .spawn(move || {
-                let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
-                while !state.stop.load(AtomicOrdering::Relaxed) {
-                    if !state.playing.load(AtomicOrdering::Relaxed) {
-                        // Idle cheaply. Nothing is pushed while paused, so a
-                        // paused editor makes no sound at all.
-                        std::thread::sleep(std::time::Duration::from_millis(10));
-                        continue;
-                    }
-                    let at = *state
-                        .position
+        let handle = ui::rt::spawn_thread("video-editor-monitor", move || {
+            let block_secs = MONITOR_BLOCK as f64 / f64::from(SAMPLE_RATE);
+            while !state.stop.load(AtomicOrdering::Relaxed) {
+                if !state.playing.load(AtomicOrdering::Relaxed) {
+                    // Idle cheaply. Nothing is pushed while paused, so a
+                    // paused editor makes no sound at all.
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_millis(10));
+                    continue;
+                }
+                let at = *state
+                    .position
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                let (block, report) = {
+                    let project = state
+                        .project
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    let (block, report) = {
-                        let project = state
-                            .project
-                            .lock()
-                            .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
-                    };
-                    // Recorded before the push, so a device that goes away
-                    // mid-block still leaves behind what the last one measured
-                    // rather than swallowing the overload that killed it.
-                    meters.record(at, &report);
-                    if !sink.push(&block) {
-                        break;
-                    }
-                    // Advance by exactly what was mixed, so the audio clock
-                    // is the sample count rather than wall time and cannot
-                    // drift away from the picture.
-                    *state
-                        .position
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+                    mix_block_metered(&project, at, MONITOR_BLOCK, source.as_mut())
+                };
+                // Recorded before the push, so a device that goes away
+                // mid-block still leaves behind what the last one measured
+                // rather than swallowing the overload that killed it.
+                meters.record(at, &report);
+                if !sink.push(&block) {
+                    break;
                 }
-            })
-            .ok();
+                // Advance by exactly what was mixed, so the audio clock
+                // is the sample count rather than wall time and cannot
+                // drift away from the picture.
+                *state
+                    .position
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner) = at + block_secs;
+            }
+        })
+        .ok();
         Self { shared, handle }
     }
 
@@ -1398,7 +1396,7 @@ mod tests {
                 .to_uri()
                 .expect("fixture file URL");
 
-            let began = std::time::Instant::now();
+            let began = ui::time::now();
             let got = super::decode_pcm_for_test(&uri);
             let took = began.elapsed();
             std::fs::remove_file(&junk).ok();
@@ -1817,7 +1815,7 @@ mod tests {
     /// monitor runs on its own thread and the box is shared.
     fn eventually(mut cond: impl FnMut() -> bool) -> bool {
         let deadline = tilo_test_env::hang_deadline();
-        while std::time::Instant::now() < deadline {
+        while ui::time::now() < deadline {
             if cond() {
                 return true;
             }

@@ -81,7 +81,7 @@ impl Downloads {
         })?;
         let bytes = serde_json::to_vec_pretty(&self.entries)
             .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))?;
-        atomic_file::write_creating_parent(&path, &bytes)
+        tilo_files::native::atomic::write_creating_parent(&path, &bytes)
     }
 
     pub fn entries(&self) -> &[DownloadEntry] {
@@ -218,7 +218,7 @@ impl Downloads {
 }
 
 fn store_path() -> Option<PathBuf> {
-    xdg_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
+    tilo_paths::data_dir().map(|dir| dir.join("tilo-browser").join("downloads.json"))
 }
 
 fn valid_id(id: &str) -> bool {

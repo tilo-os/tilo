@@ -936,7 +936,7 @@ mod tests {
             let result = native::query("/usr/bin/printf", &["hello"], bound, 32).unwrap();
             assert_eq!(result.stdout, "hello");
             assert!(native::query("/usr/bin/printf", &["123456789"], bound, 4).is_err());
-            let start = std::time::Instant::now();
+            let start = ui::time::now();
             let sleep = (bound.as_secs() * 2).to_string();
             assert!(native::query("/bin/sleep", &[&sleep], Duration::from_millis(25), 32).is_err());
             assert!(start.elapsed() < bound);

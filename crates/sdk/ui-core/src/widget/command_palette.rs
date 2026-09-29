@@ -1457,17 +1457,14 @@ impl CommandPalette {
         let chip_h = (footer.height() - 12.0).max(13.0);
 
         let mut x = footer.x0 + 6.0;
-        let enter = match self.mode {
-            PaletteMode::Search => crate::i18n!("command-palette-hint-open"),
-            PaletteMode::Commands => crate::i18n!("command-palette-hint-run"),
+        let activate = match self.mode {
+            PaletteMode::Search => "palette-hint-open",
+            PaletteMode::Commands => "palette-hint-run",
         };
         let hints = [
-            (
-                "\u{2191}\u{2193}",
-                crate::i18n!("command-palette-hint-navigate"),
-            ),
-            ("\u{21b5}", enter),
-            ("Esc", crate::i18n!("command-palette-hint-close")),
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!(activate)),
+            ("Esc", crate::i18n!("palette-hint-close")),
         ];
         for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, size, None);
@@ -1506,7 +1503,7 @@ impl CommandPalette {
 
         let n = self.result_total();
         if n > 0 {
-            let right = crate::i18n!("command-palette-result-count", "count" => n);
+            let right = crate::i18n!("palette-result-count", "count" => n);
             let (sw, sh) = text_renderer.measure(&right, size, None);
             text_renderer.draw_text(
                 scene,
@@ -1918,7 +1915,8 @@ impl CommandPalette {
             None,
         );
         let hint_size = (theme.tokens.typography.scale.xs).max(10.0);
-        let hint = "Try fewer words, or widen the scope";
+        let hint = crate::i18n!("palette-no-results-hint");
+        let hint = hint.as_str();
         let (hw, _) = text_renderer.measure(hint, hint_size, None);
         text_renderer.draw_text(
             scene,
@@ -1935,9 +1933,9 @@ impl CommandPalette {
 
     fn empty_results_title(&self) -> String {
         if self.query.is_empty() {
-            "Nothing to show".to_string()
+            crate::i18n!("palette-empty")
         } else {
-            format!("No results for “{}”", self.query)
+            crate::i18n!("palette-no-results", "query" => self.query.as_str())
         }
     }
 
@@ -2325,7 +2323,7 @@ impl Widget for CommandPalette {
         use crate::a11y::{AccessNode, AccessState, Role};
         let open = self.is_open();
         let mut node = AccessNode::new(Role::Dialog)
-            .with_name("Command palette")
+            .with_name(crate::i18n!("palette-name"))
             .with_state(AccessState {
                 focusable: self.is_focusable(),
                 focused: self.is_focused(),
@@ -2394,14 +2392,14 @@ impl Widget for CommandPalette {
             result_children.push(
                 AccessNode::new(Role::StaticText)
                     .with_name(self.empty_results_title())
-                    .with_description("Try fewer words, or widen the scope")
+                    .with_description(crate::i18n!("palette-no-results-hint"))
                     .with_bounds(self.empty_results_rect()),
             );
         }
         node = node.with_children(vec![
             query_node,
             AccessNode::new(Role::List)
-                .with_name("Results")
+                .with_name(crate::i18n!("palette-results"))
                 .with_bounds(Rect::new(
                     self.rect.x0 + PADDING,
                     self.list_top_y(),

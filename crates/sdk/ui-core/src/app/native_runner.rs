@@ -475,7 +475,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
             // faster on a device; the default remains the GPU pipeline.
-            use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+            use_cpu: crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
             // Every frame below renders with `AaConfig::Area`. Advertising
             // 8x/16x MSAA as well only compiles and retains shader variants
             // this framework never selects, increasing startup and GPU
@@ -1734,7 +1734,10 @@ impl AppHandler {
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
         #[cfg(target_os = "linux")]
-        self.decorations.draw(app, &mut scene, transform);
+        {
+            self.decorations.draw(app, &mut scene, transform);
+            full_redraw_required |= self.decorations.take_repaint();
+        }
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);

@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ReadDoc, Value};
@@ -85,9 +85,7 @@ pub fn default_root() -> Result<Option<PathBuf>, String> {
         }
         return Ok(Some(root));
     }
-    Ok(xdg_paths::home()
-        .or_else(|| std::env::var_os("HOME").map(PathBuf::from))
-        .map(|home| home.join("notes")))
+    Ok(tilo_paths::home().map(|home| home.join("notes")))
 }
 
 /// Ensure the workspace root + the `pages/` subdirectory exist. Idempotent.
@@ -96,7 +94,7 @@ pub fn default_root() -> Result<Option<PathBuf>, String> {
 ///
 /// Returns `Err` if creating the directories fails (e.g. permissions).
 pub fn ensure_layout(root: &Path) -> io::Result<()> {
-    std::fs::create_dir_all(root.join(PAGES_DIR))?;
+    crate::files::create_dir_all(&root.join(PAGES_DIR)).map_err(crate::files::io)?;
     Ok(())
 }
 
@@ -118,10 +116,10 @@ pub fn workspace_file_path(root: &Path) -> PathBuf {
 /// (permissions, invalid UTF-8, etc.).
 pub fn read_page_body(root: &Path, id: PageId) -> io::Result<String> {
     let path = page_file_path(root, id);
-    match std::fs::read_to_string(&path) {
+    match crate::files::read_to_string(&path) {
         Ok(s) => Ok(s),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(e),
+        Err(tilo_files::FsError::NotFound) => Ok(String::new()),
+        Err(e) => Err(crate::files::io(e)),
     }
 }
 
@@ -137,7 +135,7 @@ pub fn write_page_body(root: &Path, id: PageId, body: &str) -> io::Result<()> {
     // These are the user's real markdown files. A plain write truncates in
     // place, so a crash between the truncate and the write loses the note
     // outright; replacing the file leaves the previous text readable.
-    atomic_file::write(&page_file_path(root, id), body.as_bytes())
+    crate::files::write(&page_file_path(root, id), body.as_bytes()).map_err(crate::files::io)
 }
 
 /// Delete the page file for `id`. Missing-file is success (the caller
@@ -149,10 +147,9 @@ pub fn write_page_body(root: &Path, id: PageId, body: &str) -> io::Result<()> {
 /// absent (e.g. permissions).
 pub fn delete_page_file(root: &Path, id: PageId) -> io::Result<()> {
     let path = page_file_path(root, id);
-    match std::fs::remove_file(&path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(e),
+    match crate::files::remove(&path) {
+        Ok(()) | Err(tilo_files::FsError::NotFound) => Ok(()),
+        Err(e) => Err(crate::files::io(e)),
     }
 }
 
@@ -212,9 +209,9 @@ pub fn decode_workspace(bytes: &[u8]) -> Result<Workspace, String> {
 /// contents fail to decode (see [`decode_workspace`]).
 pub fn load_workspace(root: &Path) -> Result<Option<Workspace>, String> {
     let path = workspace_file_path(root);
-    let bytes = match std::fs::read(&path) {
+    let bytes = match crate::files::read(&path) {
         Ok(b) => b,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(tilo_files::FsError::NotFound) => return Ok(None),
         Err(e) => return Err(format!("read {}: {}", path.display(), e)),
     };
     decode_workspace(&bytes).map(Some)
@@ -231,7 +228,7 @@ pub fn load_workspace(root: &Path) -> Result<Option<Workspace>, String> {
 pub fn save_workspace(root: &Path, workspace: &Workspace) -> io::Result<()> {
     ensure_layout(root)?;
     let bytes = encode_workspace(workspace).map_err(io::Error::other)?;
-    atomic_file::write(&workspace_file_path(root), &bytes)?;
+    crate::files::write(&workspace_file_path(root), &bytes).map_err(crate::files::io)?;
     Ok(())
 }
 
@@ -270,17 +267,15 @@ impl Saver {
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
-        let join_handle = thread::Builder::new()
-            .name("notes-saver".into())
-            .spawn(move || {
-                saver_loop(
-                    &rx,
-                    &pending_thread,
-                    &root_thread,
-                    debounce_thread,
-                    &status_thread,
-                );
-            })?;
+        let join_handle = ui::rt::spawn_thread("notes-saver", move || {
+            saver_loop(
+                &rx,
+                &pending_thread,
+                &root_thread,
+                debounce_thread,
+                &status_thread,
+            );
+        })?;
         Ok(Self {
             tx,
             debounce,
@@ -379,17 +374,15 @@ impl PageSaver {
         let debounce_thread = debounce;
         let status = Arc::new(AtomicU8::new(SaveStatus::Saved.as_u8()));
         let status_thread = status.clone();
-        let join_handle = thread::Builder::new()
-            .name("notes-page-saver".into())
-            .spawn(move || {
-                page_saver_loop(
-                    &rx,
-                    &pending_thread,
-                    &root_thread,
-                    debounce_thread,
-                    &status_thread,
-                );
-            })?;
+        let join_handle = ui::rt::spawn_thread("notes-page-saver", move || {
+            page_saver_loop(
+                &rx,
+                &pending_thread,
+                &root_thread,
+                debounce_thread,
+                &status_thread,
+            );
+        })?;
         Ok(Self {
             tx,
             debounce,
@@ -507,7 +500,7 @@ fn page_saver_loop(
         match msg {
             Some(PageSaverMsg::Save(id, body)) => {
                 lock(pending).insert(id, body);
-                last_request = Some(Instant::now());
+                last_request = Some(ui::time::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
             Some(PageSaverMsg::Flush(ack)) => {
@@ -616,7 +609,7 @@ fn saver_loop(
         match msg {
             Some(SaverMsg::Save(w)) => {
                 *lock(pending) = Some(w);
-                last_request = Some(Instant::now());
+                last_request = Some(ui::time::now());
                 status.store(SaveStatus::Saving.as_u8(), Ordering::Release);
             }
             Some(SaverMsg::Flush(ack)) => {
@@ -660,7 +653,7 @@ fn saver_loop(
 /// Refuses a directory with an existing cooperating writer or unusable lock.
 pub fn lock_workspace(root: &Path) -> Result<advisory_lock::FileLock, String> {
     use advisory_lock::{FileLock, LockMode, TryLockError};
-    std::fs::create_dir_all(root).map_err(|e| e.to_string())?;
+    crate::files::create_dir_all(root).map_err(|e| e.to_string())?;
     let path = root.join(".notes-writer.lock");
     let lock = FileLock::try_open(&path, LockMode::Exclusive).map_err(|e| match e {
         TryLockError::WouldBlock => {
