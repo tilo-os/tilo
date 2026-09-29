@@ -26,6 +26,24 @@ release_server="${TILO_RELEASE_SERVER:-https://github.com}"
   || { printf 'release server must be an HTTPS origin\n' >&2; exit 2; }
 release_page="${release_server}/${release_repository}"
 
+# Self-update (dist/macos/README.md, "Updates"): the feed URL and public key go
+# into Info.plist, sealed by the bundle signature; without both the bundle
+# updates only through its installer. With TILO_RUNTIME_UPDATE_KEY_FILE the
+# build also writes the signed feed for this release.
+update_feed="${TILO_RUNTIME_UPDATE_FEED:-}"
+update_public_key="${TILO_RUNTIME_UPDATE_PUBLIC_KEY:-}"
+update_key_file="${TILO_RUNTIME_UPDATE_KEY_FILE:-}"
+if [ -n "$update_feed$update_public_key" ]; then
+  [[ "$update_feed" =~ ^https://[^[:space:]]+$ ]] \
+    || { printf 'TILO_RUNTIME_UPDATE_FEED must be an https URL\n' >&2; exit 2; }
+  [[ "$update_public_key" =~ ^[0-9a-f]{64}$ ]] \
+    || { printf 'TILO_RUNTIME_UPDATE_PUBLIC_KEY must be 64 lowercase hex digits\n' >&2; exit 2; }
+fi
+if [ -n "$update_key_file" ] && [ -z "$update_feed" ]; then
+  printf 'signing an update feed needs TILO_RUNTIME_UPDATE_FEED and its public key\n' >&2
+  exit 2
+fi
+
 require_signing="${TILO_REQUIRE_SIGNING:-0}"
 identity="${TILO_MAC_SIGNING_IDENTITY:-}"
 notary=0
@@ -51,6 +69,7 @@ for target in "${targets[@]}"; do
 done
 cargo build --locked --release \
   -p tilo-runtime --bin tilo-runtime -p store --bin store \
+  -p runtime-update --bin tilo-runtime-update \
   "${targets[@]/#/--target=}"
 
 app="$out/Tilo.app"
@@ -60,19 +79,28 @@ mkdir -p "$contents/MacOS" "$contents/Library/LaunchAgents"
 lipo -create -output "$contents/MacOS/Tilo" \
   target/aarch64-apple-darwin/release/store \
   target/x86_64-apple-darwin/release/store
-lipo -create -output "$contents/MacOS/tilo-runtime" \
-  target/aarch64-apple-darwin/release/tilo-runtime \
-  target/x86_64-apple-darwin/release/tilo-runtime
-for binary in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime"; do
+for binary in tilo-runtime tilo-runtime-update; do
+  lipo -create -output "$contents/MacOS/$binary" \
+    "target/aarch64-apple-darwin/release/$binary" \
+    "target/x86_64-apple-darwin/release/$binary"
+done
+for binary in "$contents/MacOS/Tilo" "$contents/MacOS/tilo-runtime" \
+              "$contents/MacOS/tilo-runtime-update"; do
   [ "$(lipo -archs "$binary" | tr ' ' '\n' | sort | xargs)" = "arm64 x86_64" ] \
     || { printf '%s is not universal\n' "$binary" >&2; exit 1; }
 done
 cp "$here/Info.plist" "$contents/Info.plist"
 /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $version" \
   -c "Set :CFBundleVersion $version" "$contents/Info.plist"
-cp "$here/so.tilo.runtime.plist" "$contents/Library/LaunchAgents/so.tilo.runtime.plist"
-plutil -lint -s "$contents/Info.plist" \
-  "$contents/Library/LaunchAgents/so.tilo.runtime.plist" "$here/Tilo.entitlements"
+if [ -n "$update_feed" ]; then
+  /usr/libexec/PlistBuddy -c "Add :TiloUpdateFeedURL string $update_feed" \
+    -c "Add :TiloUpdatePublicKey string $update_public_key" "$contents/Info.plist"
+fi
+for agent in so.tilo.runtime so.tilo.runtime.update; do
+  cp "$here/$agent.plist" "$contents/Library/LaunchAgents/$agent.plist"
+done
+plutil -lint -s "$contents/Info.plist" "$contents/Library/LaunchAgents/"*.plist \
+  "$here/Tilo.entitlements"
 
 # Inner code first, then the bundle, which seals the main executable, the
 # agent plist and the already-signed runtime. No --deep: it would re-sign the
@@ -84,6 +112,7 @@ else
   sign+=(--timestamp=none --sign -)
 fi
 "${sign[@]}" --identifier so.tilo.runtime.daemon "$contents/MacOS/tilo-runtime"
+"${sign[@]}" --identifier so.tilo.runtime.update "$contents/MacOS/tilo-runtime-update"
 "${sign[@]}" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
@@ -136,6 +165,18 @@ if [ "$notary" = 1 ]; then
 fi
 write_digest "$artifact.zip"
 
+# The feed names the final (stapled) zip, and its signature covers these exact
+# bytes, so it is written compactly and never reformatted.
+feed="$out/tilo-macos-update.json"
+rm -f "$feed" "$feed.sig"
+if [ -n "$update_key_file" ]; then
+  printf '{"version":"%s","url":"%s","sha256":"%s"}' "$version" \
+    "$release_page/releases/download/runtime-v$version/tilo-macos-universal.zip" \
+    "$(awk '{print $1}' "$artifact.zip.sha256")" >"$feed"
+  target/aarch64-apple-darwin/release/tilo-runtime-update sign --key "$update_key_file" \
+    "$feed" >"$feed.sig"
+fi
+
 dmg_root="$(mktemp -d "${TMPDIR:-/tmp}/tilo-dmg.XXXXXX")"
 trap 'rm -rf -- "$dmg_root"' EXIT
 ditto "$app" "$dmg_root/Tilo.app"
@@ -159,6 +200,12 @@ sed -e "s|@VERSION@|$version|g" \
     -e "s|@RELEASE_PAGE@|$release_page|g" \
     -e "s|@MACOS_UNIVERSAL_SHA256@|$dmg_sha256|g" \
     "$here/homebrew/tilo-cask.rb.in" >"$out/tilo.rb"
+if [ -n "$update_feed" ]; then
+  # Homebrew leaves a self-updating app to itself instead of reinstalling it.
+  sed -i '' '/^  homepage /a\
+  auto_updates true
+' "$out/tilo.rb"
+fi
 if grep -En '@[A-Z0-9_]+@' "$out/tilo.rb"; then
   printf 'unresolved Homebrew template placeholder\n' >&2
   exit 1
@@ -167,3 +214,4 @@ ruby -c "$out/tilo.rb" >/dev/null
 
 printf 'built %s %s\n' "$app" "$version"
 printf '  %s\n' "$artifact.zip" "$artifact.dmg" "$out/tilo.rb"
+[ ! -f "$feed" ] || printf '  %s\n' "$feed" "$feed.sig"
