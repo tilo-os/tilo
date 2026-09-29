@@ -68,7 +68,8 @@ case $mode in
 throwaway)
     [[ $(id -u) == 0 ]] || { echo "the throwaway-user smoke test must run as root" >&2; exit 2; }
     useradd --home-dir "$work/home" --create-home --shell /bin/bash "$smoke_user"
-    chmod 0711 "$work"
+    # The home's parent is readable, as /home is on every packaged distribution.
+    chmod 0755 "$work"
     install -d -m 0700 -o "$smoke_user" -g "$(id -g "$smoke_user")" "$work/runtime"
     as_user=(runuser -u "$smoke_user" -- env -i
         HOME="$work/home" USER="$smoke_user" LOGNAME="$smoke_user"
