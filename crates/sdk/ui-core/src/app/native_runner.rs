@@ -8,6 +8,9 @@
 
 use super::*;
 
+#[cfg(target_os = "linux")]
+mod linux_header;
+
 #[cfg(not(target_os = "android"))]
 type PrimaryA11yAdapter = accesskit_winit::Adapter;
 #[cfg(target_os = "android")]
@@ -79,12 +82,22 @@ struct AppHandler {
     /// The reload library this process runs. The dev loop stages the first one
     /// from the build that produced this host, so it starts as the running code.
     dev_loaded_library: Option<std::path::PathBuf>,
+    /// The last in-place reload, until its first frame is submitted.
+    dev_reload_timing: Option<super::DevReloadTiming>,
     /// The menu bar and title-bar search field, when the host draws them.
     #[cfg(target_os = "macos")]
     host_chrome: Option<crate::host_chrome::macos::MacChrome>,
+    /// The menu bar and Jump List, when the host draws them.
+    #[cfg(windows)]
+    host_chrome: Option<crate::host_chrome::windows::WindowsChrome>,
     /// What the host chrome last presented, to skip unchanged refreshes.
-    #[cfg(target_os = "macos")]
+    #[cfg(any(target_os = "macos", windows))]
     host_commands_key: Option<super::host_commands::HostCommandsKey>,
+    /// Who decorates the window, and the header bar when the app does.
+    #[cfg(target_os = "linux")]
+    decorations: linux_header::Decorations,
+    /// The host OS's appearance, for a standalone app outside Tilo OS.
+    host_appearance: Option<crate::host_appearance::Source>,
 }
 
 #[cfg(target_os = "macos")]
@@ -123,7 +136,10 @@ impl AppHandler {
         self.host_chrome = Some(chrome);
         self.host_commands_key = None;
     }
+}
 
+#[cfg(any(target_os = "macos", windows))]
+impl AppHandler {
     /// Hand the host chrome fresh commands when anything they show changed.
     fn refresh_host_chrome(&mut self) {
         if let Some(chrome) = &self.host_chrome {
@@ -133,6 +149,38 @@ impl AppHandler {
                 chrome.update(self.app.host_commands(true));
             }
         }
+    }
+}
+
+#[cfg(windows)]
+impl AppHandler {
+    /// Put History, Search and Undo into the window's menu bar and the Jump
+    /// List, and run the command a Jump List task launched this process with.
+    fn install_host_chrome(&mut self, window: &Window) {
+        use winit::raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        let proxy = self.a11y_proxy.clone();
+        if let Some(invocation) = crate::host_chrome::windows::take_startup_command() {
+            let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+        }
+        if crate::host_chrome::HostChrome::current(self.app.input.platform)
+            != crate::host_chrome::HostChrome::Native
+        {
+            return;
+        }
+        let Ok(handle) = window.window_handle() else {
+            return;
+        };
+        let RawWindowHandle::Win32(handle) = handle.as_raw() else {
+            return;
+        };
+        let hwnd = windows::Win32::Foundation::HWND(handle.hwnd.get() as *mut std::ffi::c_void);
+        self.host_chrome = Some(crate::host_chrome::windows::WindowsChrome::install(
+            hwnd,
+            move |invocation| {
+                let _ = proxy.send_event(UserEvent::HostCommand(invocation));
+            },
+        ));
+        self.host_commands_key = None;
     }
 }
 
@@ -884,6 +932,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: size.width.max(1),
                 height: size.height.max(1),
@@ -1304,6 +1353,7 @@ impl AppHandler {
             .render_tx
             .send(RenderRequest::Frame {
                 cpu_frame_id: None,
+                on_present: None,
                 scene,
                 width: inner.width.max(1),
                 height: inner.height.max(1),
@@ -1529,6 +1579,8 @@ impl AppHandler {
             }
         }
         sync_safe_area(&mut self.app, window);
+        #[cfg(target_os = "linux")]
+        self.decorations.refresh(&mut self.app, window);
         let app = &mut self.app;
 
         // Continue one bounded provider page per frame. Re-querying resets the
@@ -1681,6 +1733,8 @@ impl AppHandler {
         crate::webview::frame_trace::begin_scene();
         let (transform, window_rect, t_draw_us) =
             draw_frame_content(app, &mut scene, width, height, scale_factor, t_draw_start);
+        #[cfg(target_os = "linux")]
+        self.decorations.draw(app, &mut scene, transform);
 
         let __prof_presence = app.profiler.as_ref().map(|_| crate::time::now());
         draw_legacy_cursors(app, &mut scene, transform);
@@ -1876,6 +1930,11 @@ impl AppHandler {
             base_color: app.theme.bg_app,
             damage_regions,
             full_redraw: full_redraw_required,
+            on_present: self.dev_reload_timing.take().map(|timing| {
+                let submitted = crate::time::wall();
+                Box::new(move |presented| timing.record(submitted, presented))
+                    as crate::render_thread::PresentHook
+            }),
         };
         record_main_stage(&mut native_main_stages, MainStage::AfterHudRequest);
         if let Some((origin, entered)) = native_redraw_entry {
@@ -2574,8 +2633,11 @@ impl AppHandler {
             }
             return;
         };
+        let received = crate::time::wall();
+        let started = crate::time::now();
         let _ = super::write_dev_checkpoint(&self.app, &session);
         let checkpoint = std::fs::read(session.join("checkpoint.bin")).unwrap_or_default();
+        let checkpointed = started.elapsed();
         let slots = windows
             .iter()
             .map(|(id, _)| super::DevWindowSlot {
@@ -2587,6 +2649,7 @@ impl AppHandler {
                     .unwrap_or_else(|| checkpoint.clone()),
             })
             .collect::<Vec<_>>();
+        let loading = crate::time::now();
         let reloaded = match super::reload_from_library(&library, &slots) {
             Ok(reloaded) => reloaded,
             Err(error) => {
@@ -2594,6 +2657,8 @@ impl AppHandler {
                 return;
             }
         };
+        let loaded = loading.elapsed();
+        let installing = crate::time::now();
         if let Some(root) = reloaded.root {
             if !self.app.install_reloaded_view(root) {
                 eprintln!(
@@ -2603,6 +2668,14 @@ impl AppHandler {
             }
             self.app.init_layout();
         }
+        self.dev_reload_timing = Some(super::DevReloadTiming {
+            library: library.clone(),
+            received,
+            checkpoint: checkpointed,
+            load: reloaded.load,
+            handoff: loaded.saturating_sub(reloaded.load),
+            install: installing.elapsed(),
+        });
         self.dev_loaded_library = Some(library);
         self.dev_window_state = reloaded
             .windows
@@ -2884,10 +2957,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         }
         // Required, not incidental: the compositor only accepts
         // `set_selection` from the connection that owns the focused surface.
-        #[cfg(target_os = "linux")]
-        {
-            crate::host::native::attach_display(event_loop);
-        }
+        crate::host::native::attach_display(event_loop);
         // AccessKit's adapter asserts it's created while the window is
         // hidden, so build invisible, create the adapter, show.
         let title = resolve_window_title(self.app.window.title.as_deref());
@@ -2993,13 +3063,17 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             self.app.root_widget.as_mut(),
             &crate::widget::NativeViewHost::live(&window, self.app.input.platform),
         );
+        if let Some(host) = self.host_appearance.as_mut() {
+            host.note_window_theme(window.theme());
+        }
+        self.apply_host_appearance(false);
         #[cfg(windows)]
         if let Err(reason) = self.init_render(&window) {
             crate::diag!("tilo: {reason}");
             event_loop.exit();
             return;
         }
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.install_host_chrome(&window);
         // Honour system/presentation roots before the first visible configure.
         // The normal reconcile path still owns output selection and later changes.
@@ -3086,6 +3160,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
             }
             self.text_input_touched = true;
         }
+        self.note_host_appearance_event(&event);
         self.route_window_event(
             event_loop,
             window_id,
@@ -3104,7 +3179,7 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         let Some(window) = self.window.clone() else {
             return;
         };
-        #[cfg(target_os = "macos")]
+        #[cfg(any(target_os = "macos", windows))]
         self.refresh_host_chrome();
         sync_safe_area(&mut self.app, &window);
         self.poll_touch_hold(&window);
@@ -3295,8 +3370,15 @@ impl ApplicationHandler<UserEvent> for AppHandler {
         // Run both: Settings' open Appearance pane may intentionally override
         // the file-level base with its richer live accessibility intent.
         let configured_changed = app.reconcile_configured_theme();
+        // A settings change re-themes from the file; outside Tilo OS the host
+        // appearance takes over again.
+        let host_changed = self
+            .host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(configured_changed))
+            .is_some_and(|appearance| app.apply_host_appearance(appearance));
         let appearance_changed = app.reconcile_appearance();
-        if configured_changed || appearance_changed {
+        if configured_changed || host_changed || appearance_changed {
             app.needs_sync = true;
             request_primary_redraw();
         }
@@ -3519,6 +3601,16 @@ impl AppHandler {
         if let Some(adapter) = self.a11y_adapter.as_mut() {
             adapter.process_event(window, &event);
         }
+        #[cfg(target_os = "linux")]
+        {
+            let routed = self.decorations.route(&mut self.app, window, &event);
+            if routed.close {
+                self.close_primary_window(event_loop, window);
+            }
+            if routed.consumed {
+                return;
+            }
+        }
         self.dispatch_touch_pointer_events(window, &event);
         match event {
             WindowEvent::CloseRequested => self.close_primary_window(event_loop, window),
@@ -3693,6 +3785,7 @@ impl App {
             );
         }
         let event_loop = event_loop_builder.build().unwrap();
+        tilo_host_search::forward_to_runtime();
         let proxy = event_loop.create_proxy();
         super::install_dev_session_stop(proxy.clone());
         #[cfg(target_os = "android")]
@@ -3718,11 +3811,14 @@ impl App {
             native_scenario.is_none() || self.profiler.is_some(),
             "native performance scenarios require TILO_PROFILE_OUT or TILO_PROFILE"
         );
-        {
+        let host_appearance = {
             let _entry = self.enter_wake_scope();
             setup(proxy);
             self.init_layout();
-        }
+            self.watch_system_settings
+                .then(crate::host_appearance::Source::start)
+                .flatten()
+        };
 
         let mut handler = AppHandler {
             app: self,
@@ -3758,10 +3854,14 @@ impl App {
                 .dev_session
                 .as_deref()
                 .and_then(dev_reload_library),
-            #[cfg(target_os = "macos")]
+            dev_reload_timing: None,
+            #[cfg(any(target_os = "macos", windows))]
             host_chrome: None,
-            #[cfg(target_os = "macos")]
+            #[cfg(any(target_os = "macos", windows))]
             host_commands_key: None,
+            #[cfg(target_os = "linux")]
+            decorations: linux_header::Decorations::Unsettled,
+            host_appearance,
         };
         match event_loop.run_app(&mut handler) {
             Ok(()) => {}
@@ -3772,6 +3872,29 @@ impl App {
                 tracing::error!(%error, "application event loop failed; application exiting");
             }
         }
+    }
+}
+
+impl AppHandler {
+    fn note_host_appearance_event(&mut self, event: &WindowEvent) {
+        let Some(host) = self.host_appearance.as_mut() else {
+            return;
+        };
+        match event {
+            WindowEvent::ThemeChanged(theme) => {
+                host.note_window_theme(Some(*theme));
+                host.refresh();
+            }
+            WindowEvent::Focused(true) => host.refresh(),
+            _ => {}
+        }
+    }
+
+    fn apply_host_appearance(&mut self, force: bool) -> bool {
+        self.host_appearance
+            .as_mut()
+            .and_then(|host| host.take_change(force))
+            .is_some_and(|appearance| self.app.apply_host_appearance(appearance))
     }
 }
 

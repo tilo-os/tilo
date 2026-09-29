@@ -361,7 +361,7 @@ fn actual_delivery_holder_preserves_policy_errors_before_current_route_denial() 
 }
 
 #[test]
-fn a_file_grant_to_an_app_leaves_the_delivery_policy_available() {
+fn file_and_action_grants_to_apps_leave_the_delivery_policy_available() {
     use collab_types::caps::{CapOverride, Scope, Subject, Verb};
     let (mut peer, key, _, device, now) = crate::admission_tests::seeded();
     let mut room = peer.admitted_room().unwrap().clone();
@@ -372,6 +372,16 @@ fn a_file_grant_to_an_app_leaves_the_delivery_policy_available() {
         Verb::Write,
     );
     room.put(&caps, "profile:files", serde_json::to_vec(&grant).unwrap())
+        .unwrap();
+    let action = CapOverride::grant(
+        Subject::app("so.tilo.notes"),
+        Scope::Action {
+            app: "so.tilo.word-processor".into(),
+            action: "read-text".into(),
+        },
+        Verb::Write,
+    );
+    room.put(&caps, "app-action", serde_json::to_vec(&action).unwrap())
         .unwrap();
     let changes = room
         .get_changes(&[])

@@ -7,12 +7,20 @@
 //! that enters the same local door as the palette and assistive technology.
 
 pub(crate) mod edit;
+#[cfg(any(all(target_os = "linux", feature = "native"), test))]
+pub(crate) mod header_bar;
 #[cfg(all(target_os = "macos", feature = "native"))]
 pub(crate) mod macos;
+#[cfg(any(all(any(target_os = "macos", windows), feature = "native"), test))]
+pub(crate) mod menus;
 #[cfg(any(feature = "native", test))]
 pub(crate) mod model;
 #[cfg(any(feature = "native", test))]
 mod owner;
+#[cfg(all(windows, feature = "native"))]
+pub(crate) mod windows;
+#[cfg(any(all(windows, feature = "native"), test))]
+pub(crate) mod windows_items;
 
 #[cfg(any(feature = "native", test))]
 pub(crate) use owner::HostChrome;

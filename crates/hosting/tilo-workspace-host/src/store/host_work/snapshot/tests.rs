@@ -528,3 +528,90 @@ fn snapshot_existing_zero_or_reclaimed_directory_cannot_allocate_a_record() {
         "lookup failure releases inventory mutex"
     );
 }
+
+fn root_inode(store: &SessionStore) -> u64 {
+    use std::os::unix::fs::MetadataExt;
+    store.directory.metadata().unwrap().ino()
+}
+
+/// One reconcile makes the root durable exactly once, after both transport
+/// entries exist and before either directory's recovery scan barriers, so no
+/// reservation can be issued while either entry could still be lost.
+#[test]
+fn reconcile_takes_one_root_barrier_after_both_entries() {
+    use super::super::staging::files::barrier_fault::recorded;
+    let (_temp, store, _ingress, inventory) = fixture();
+    let root = root_inode(&store);
+    let reconciles: [(&str, &dyn Fn() -> bool); 2] = [
+        ("snapshot", &|| {
+            inventory.snapshot_directory(&store.directory, 7).is_ok()
+        }),
+        ("staging", &|| {
+            inventory.staging_directory(&store.directory, 7).is_ok()
+        }),
+    ];
+    for (kind, reconcile) in reconciles {
+        let (ok, barriers) = recorded(reconcile);
+        assert!(ok, "{kind}");
+        let roots: Vec<_> = barriers.iter().filter(|b| b.inode == root).collect();
+        assert_eq!(roots.len(), 1, "{kind}: {barriers:?}");
+        assert!(
+            roots[0].staging && roots[0].snapshots,
+            "{kind}: {barriers:?}"
+        );
+        assert_eq!(barriers[0].inode, root, "{kind}: root first: {barriers:?}");
+    }
+}
+
+/// A failed root barrier over freshly created entries issues nothing; the
+/// next reconcile repeats the barrier over the existing entries.
+#[test]
+fn failed_root_barrier_over_both_new_entries_issues_nothing_until_retried() {
+    let (_temp, store, _ingress, inventory) = fixture();
+    super::super::staging::files::barrier_fault::with(&store.directory, || {
+        assert!(inventory.snapshot_directory(&store.directory, 7).is_err());
+        assert!(inventory.staging_directory(&store.directory, 7).is_err());
+    });
+    assert!(store.root().join("staging-v1").is_dir());
+    assert!(store.root().join("snapshots-v1").is_dir());
+    assert_eq!(disk(&inventory), 0);
+    let directory = inventory.snapshot_directory(&store.directory, 7).unwrap();
+    directory
+        .reserve([31; 16])
+        .unwrap()
+        .prepare(b"after the barrier")
+        .unwrap();
+}
+
+/// A crash before the root barrier may lose either entry, or both. A restarted
+/// host recreates whatever is missing under one barrier and serves the same
+/// accounting as a host that never crashed.
+#[test]
+fn restart_after_lost_transport_entries_recreates_them_consistently() {
+    use super::super::staging::files::barrier_fault::recorded;
+    for lost in [
+        &["staging-v1"][..],
+        &["snapshots-v1"],
+        &["staging-v1", "snapshots-v1"],
+    ] {
+        let (_temp, store, _ingress, inventory) = fixture();
+        drop(inventory.snapshot_directory(&store.directory, 7).unwrap());
+        for name in lost {
+            std::fs::remove_dir(store.root().join(name)).unwrap();
+        }
+        let (_restarted, _rx) = crate::https::ingress_channel();
+        let restarted = _restarted.host_work();
+        let (directory, barriers) =
+            recorded(|| restarted.snapshot_directory(&store.directory, 7).unwrap());
+        let root = root_inode(&store);
+        let roots: Vec<_> = barriers.iter().filter(|b| b.inode == root).collect();
+        assert_eq!(roots.len(), 1, "{lost:?}: {barriers:?}");
+        assert!(roots[0].staging && roots[0].snapshots, "{lost:?}");
+        assert_eq!(disk(&restarted), 0, "{lost:?}");
+        directory
+            .reserve([32; 16])
+            .unwrap()
+            .prepare(b"recreated")
+            .unwrap();
+    }
+}

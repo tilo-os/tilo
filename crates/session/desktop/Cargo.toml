@@ -23,7 +23,7 @@ collab-types = { path = "../../collab/collab-types" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-desktop-model = { path = "../desktop-model" }
 desktop-policy = { path = "../../system/desktop-policy", default-features = false }
-tilo-clock = { path = "../../system/tilo-clock" }
+tilo-clock = { path = "../../platform/tilo-clock" }
 # The emoji picker's catalogue, search, skin tones and recents.
 emoji = { path = "../../text/emoji" }
 

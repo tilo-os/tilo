@@ -1429,9 +1429,21 @@ mod stamp_tests {
         let root = dir.path().join("payload");
         std::fs::create_dir_all(root.join("bin")).unwrap();
         std::fs::write(root.join("bin/agent"), b"one").unwrap();
+        // Filesystem timestamps come from a coarse clock (several ms on
+        // Linux), so a rewrite right after the first write can share its
+        // mtime and ctime. Date the installed file back as a real payload is.
+        std::fs::File::options()
+            .write(true)
+            .open(root.join("bin/agent"))
+            .unwrap()
+            .set_modified(
+                std::time::SystemTime::now()
+                    .checked_sub(std::time::Duration::from_secs(60))
+                    .unwrap(),
+            )
+            .unwrap();
         let first = TreeStamp::of(&[&root]).unwrap();
         assert_eq!(TreeStamp::of(&[&root]), Some(TreeStamp(first.0.clone())));
-        std::thread::sleep(std::time::Duration::from_millis(5));
         // Same-length rewrite: mtime/ctime change.
         std::fs::write(root.join("bin/agent"), b"two").unwrap();
         let rewritten = TreeStamp::of(&[&root]).unwrap();

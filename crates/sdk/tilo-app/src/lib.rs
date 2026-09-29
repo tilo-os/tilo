@@ -28,18 +28,22 @@ pub use ui_core::*;
 
 pub mod framework;
 
-/// Export the symbols `tilo-app dev` loads into the process that already
-/// owns the windows.
+/// Export the entry points every platform's host enters the app library by.
 ///
 /// Invoke it once at the root of the app library, naming the [`framework::ResourceApp`]
-/// type. The reload symbols compile only for a `thin` build, the build that
-/// links one shared `ui` so the new view is the same type as the windows
-/// already on screen. On every target it also defines the library's
-/// `definition()`, the entry a web build registers with the browser's toolkit
-/// core, as component apps define theirs.
+/// type. The reload symbols `tilo-app dev` loads into the process that already
+/// owns the windows compile only for a `thin` build, the build that links one
+/// shared `ui` so the new view is the same type as the windows already on
+/// screen. On every target it also defines the library's `definition()`, the
+/// entry a web build registers with the browser's toolkit core, as component
+/// apps define theirs. On Android it defines `android_main`, which the
+/// `NativeActivity` of `tilo-app build --platform android` enters: the library
+/// built as a `cdylib` is the whole app there, run as [`framework::run`] runs it.
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {
+        $crate::android_main!($crate::framework::run::<$app>);
+
         #[cfg(feature = "thin")]
         extern crate runtime_dylib;
 

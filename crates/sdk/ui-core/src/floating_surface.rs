@@ -16,7 +16,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
 #[cfg(unix)]
 use std::io::{Read, Write};
-#[cfg(unix)]
+#[cfg(all(unix, feature = "local-daemons"))]
 use std::os::fd::{FromRawFd, OwnedFd};
 #[cfg(unix)]
 use std::os::unix::net::UnixStream;
@@ -249,6 +249,7 @@ pub struct FloatingSurfaceServiceClient {
 impl FloatingSurfaceServiceClient {
     /// Discover the optional session service. Outside Tilo (or on an older
     /// shell) this returns `None`; apps retain their ordinary attached UI.
+    #[cfg(feature = "local-daemons")]
     pub fn discover() -> Option<Self> {
         let fd = runtime_portal::service_fd(FLOATING_SURFACE_SERVICE)?;
         // The inherited service descriptor belongs to this one client. Lift
@@ -257,6 +258,13 @@ impl FloatingSurfaceServiceClient {
         Self::from_stream(UnixStream::from(owned)).ok()
     }
 
+    /// Without the local daemons there is no inherited session service.
+    #[cfg(not(feature = "local-daemons"))]
+    pub fn discover() -> Option<Self> {
+        None
+    }
+
+    #[cfg(any(test, feature = "local-daemons"))]
     fn from_stream(stream: UnixStream) -> std::io::Result<Self> {
         stream.set_nonblocking(true)?;
         Ok(Self {

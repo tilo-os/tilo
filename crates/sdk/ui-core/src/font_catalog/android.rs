@@ -1,9 +1,10 @@
 //! The font catalog on Android.
 //!
-//! `build-apk.sh` packs the catalog into the APK's `assets/tilo/fonts`. Font
-//! files inside an APK have no path fontdb could map, so the first start of
-//! each catalog version copies them into the app's files directory; loading
-//! then verifies that copy like any installed catalog. Android has no
+//! `tilo-app build --platform android` packs the catalog into the APK's
+//! `assets/tilo/fonts`. Font files inside an APK have no path fontdb could
+//! map, so the first start of each catalog version copies them into the app's
+//! files directory; loading then verifies that copy like any installed
+//! catalog. Android has no
 //! fontconfig: the device's own faces, which cover scripts the catalog does
 //! not, are read from `/system/fonts`.
 

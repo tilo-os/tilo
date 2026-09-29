@@ -37,16 +37,16 @@ pub(crate) fn open_mime_types(
         }
     };
     for filter in filters {
-        if filter.globs.is_empty() && filter.mimetypes.is_empty() {
+        if filter.globs().is_empty() && filter.mimetypes().is_empty() {
             return any();
         }
-        for mime in &filter.mimetypes {
+        for mime in filter.mimetypes() {
             if mime == ANY_TYPE {
                 return any();
             }
             add(mime.to_ascii_lowercase());
         }
-        for glob in &filter.globs {
+        for glob in filter.globs() {
             let Some(mime) = glob_extension(glob).and_then(|extension| mime_type(&extension))
             else {
                 return any();
@@ -74,7 +74,7 @@ pub(crate) fn save_mime_type(
         .or_else(|| {
             filters
                 .iter()
-                .flat_map(|filter| &filter.mimetypes)
+                .flat_map(FileFilter::mimetypes)
                 .find(|mime| !mime.contains('*'))
                 .cloned()
         })
