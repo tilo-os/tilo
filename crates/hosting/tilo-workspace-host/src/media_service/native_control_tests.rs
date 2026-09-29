@@ -24,7 +24,7 @@ impl Fixture {
         let mut owner = SessionOwner::initialize(&dir.path().join("owner")).unwrap();
         crate::room_media_policy::tests::activate(&mut owner);
         owner.activate_delivery().unwrap();
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (listener, udp) = crate::media_ingress::bind_https_pair().await;
         let origin = format!(
             "https://127.0.0.1:{}",
             listener.local_addr().unwrap().port()
@@ -40,7 +40,7 @@ impl Fixture {
         let ingress = InstalledIngress::start(
             &mut owner,
             current.clone(),
-            listener,
+            (listener, udp),
             IngressConfig {
                 origin: origin.clone(),
                 assets: AssetRoot::open(&assets).unwrap(),

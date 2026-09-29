@@ -193,9 +193,7 @@ impl Harness {
         Self::serve_reconciled(f, true).await
     }
     async fn serve_reconciled(mut f: Fixture, reconciled: bool) -> Self {
-        let listener = TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
-            .await
-            .unwrap();
+        let (listener, udp) = super::bind_https_pair().await;
         let address = listener.local_addr().unwrap();
         let origin = format!("https://127.0.0.1:{}", address.port());
         let now = f.now;
@@ -229,7 +227,8 @@ impl Harness {
         let assets = tempfile::tempdir().unwrap();
         std::fs::write(assets.path().join("index.html"), "isolated").unwrap();
         let key = PrivateKeyDer::Pkcs8(PrivatePkcs8KeyDer::from(cert.signing_key.serialize_der()));
-        let endpoint = endpoint(address, vec![certificate.clone()], key.clone_key()).unwrap();
+        let endpoint =
+            endpoint_from_socket(udp, vec![certificate.clone()], key.clone_key()).unwrap();
         let pinned = certificate.clone();
         let config = IngressConfig {
             origin,
