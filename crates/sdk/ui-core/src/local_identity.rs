@@ -53,6 +53,21 @@ pub fn load() -> Option<LocalIdentity> {
     }
 }
 
+/// The identity bound to this process: the installed source, else the
+/// runtime identity the launcher bound (feature `local-daemons`), else none.
+/// Unlike [`load`], never the shell's own `primary.json`: for callers that
+/// fall back to an identity of their own when the launcher bound none.
+pub fn bound() -> Option<LocalIdentity> {
+    let installed = SOURCE
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .clone();
+    match installed {
+        Some(source) => source.load(),
+        None => default_bound(),
+    }
+}
+
 /// A source with no identity.
 pub struct NoLocalIdentity;
 
@@ -69,10 +84,21 @@ pub struct RuntimeIdentity;
 
 #[cfg(feature = "local-daemons")]
 impl LocalIdentitySource for RuntimeIdentity {
-    #[cfg(unix)]
     fn load(&self) -> Option<LocalIdentity> {
+        Self::resolve(true)
+    }
+}
+
+#[cfg(feature = "local-daemons")]
+impl RuntimeIdentity {
+    /// The launcher's identity, else (with `shell_config`) `primary.json`.
+    #[cfg(unix)]
+    fn resolve(shell_config: bool) -> Option<LocalIdentity> {
         let id = runtime_identity::load().ok().or_else(|| {
-            config_identity_path().and_then(|p| runtime_identity::load_from_path(p).ok())
+            shell_config
+                .then(config_identity_path)
+                .flatten()
+                .and_then(|p| runtime_identity::load_from_path(p).ok())
         })?;
         Some(LocalIdentity {
             group_public_key: id.group_public_key(),
@@ -82,9 +108,19 @@ impl LocalIdentitySource for RuntimeIdentity {
     }
 
     #[cfg(not(unix))]
-    fn load(&self) -> Option<LocalIdentity> {
+    fn resolve(_shell_config: bool) -> Option<LocalIdentity> {
         None
     }
+}
+
+#[cfg(feature = "local-daemons")]
+fn default_bound() -> Option<LocalIdentity> {
+    RuntimeIdentity::resolve(false)
+}
+
+#[cfg(not(feature = "local-daemons"))]
+const fn default_bound() -> Option<LocalIdentity> {
+    None
 }
 
 /// `$XDG_CONFIG_HOME/tilo/identity/primary.json`, else

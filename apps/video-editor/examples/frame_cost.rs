@@ -30,7 +30,6 @@
 //! rasterise and present inside the same frame.
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use taffy::prelude::*;
 use taffy::{AvailableSpace, Size, Style, TaffyTree};
@@ -61,13 +60,13 @@ fn phases(
     let mut taffy: TaffyTree<()> = TaffyTree::new();
     let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     widget.sync(&mut state.doc, &state.root);
     let status = state.undo_status(None);
     ui::undo::set_undo_status(widget, &mut || status.clone());
     let sync_us = t.elapsed().as_micros();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     let child = widget.build_layout(&mut taffy, theme, &mut node_map);
     let root = taffy.new_with_children(
         Style {
@@ -81,7 +80,7 @@ fn phases(
     )?;
     let build_us = t.elapsed().as_micros();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     {
         let measure_map = node_map.clone();
         let tr = &mut *text;
@@ -102,11 +101,11 @@ fn phases(
     }
     let compute_us = t.elapsed().as_micros();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     widget.apply_layout(&taffy, child, Point::ORIGIN);
     let apply_us = t.elapsed().as_micros();
 
-    let t = Instant::now();
+    let t = ui::time::now();
     let mut scene = Scene::new();
     widget.draw_with_presence(
         &mut scene,
@@ -190,7 +189,7 @@ fn main() -> anyhow::Result<()> {
 
         let mut samples = Vec::with_capacity(120);
         for _ in 0..120 {
-            let t = Instant::now();
+            let t = ui::time::now();
             let scene = shot::compose(&mut widget, (1920, 1080), &theme, &mut state, &mut text)?;
             samples.push(t.elapsed().as_micros());
             // Keep the scene alive to here, so the compiler cannot decide the
@@ -239,10 +238,10 @@ fn main() -> anyhow::Result<()> {
         std::hint::black_box(video_editor::doc::VideoDoc::load_project(&doc));
     }
     for _ in 0..120 {
-        let t = Instant::now();
+        let t = ui::time::now();
         std::hint::black_box(video_editor::doc::VideoDoc::load_project(&doc));
         load.push(t.elapsed().as_micros());
-        let t = Instant::now();
+        let t = ui::time::now();
         std::hint::black_box(doc.get_heads());
         heads.push(t.elapsed().as_micros());
     }
@@ -282,7 +281,7 @@ fn main() -> anyhow::Result<()> {
             for i in 0..60 {
                 // Walk the playhead so no frame is a repeat of the last.
                 let t = 2.0 + f64::from(i) * 0.05;
-                let start = Instant::now();
+                let start = ui::time::now();
                 let rgba = c.frame(&project, t, 1920, 1080, &mut sources);
                 us.push(start.elapsed().as_micros());
                 std::hint::black_box(&rgba);

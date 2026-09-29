@@ -121,7 +121,8 @@ fn load_known_hosts(path: &Path) -> Result<KnownHosts, String> {
 fn write_known_hosts(path: &Path, known_hosts: &KnownHosts) -> Result<(), String> {
     validate_private_store_path(path)?;
     let bytes = serde_json::to_vec_pretty(known_hosts).map_err(|error| error.to_string())?;
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())?;
     validate_private_store_path(path)
 }
 
@@ -138,7 +139,7 @@ pub fn default_known_hosts_path() -> Result<PathBuf, String> {
         validate_private_store_path(&path)?;
         return Ok(path);
     }
-    let state = xdg_paths::xdg::state_home()
+    let state = tilo_paths::xdg::state_home()
         .ok_or_else(|| "no private state directory is available for SSH host trust".to_string())?;
     let directory = state.join("tilo").join("remote");
     ensure_private_directory(&directory)?;
@@ -312,9 +313,7 @@ pub fn resolve_auth(
 
 /// Standard on-disk identity paths, most-preferred first.
 pub fn default_key_paths() -> Vec<PathBuf> {
-    let home = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default();
+    let home = tilo_paths::home().unwrap_or_default();
     ["id_ed25519", "id_ecdsa"]
         .iter()
         .map(|n| home.join(".ssh").join(n))
@@ -901,8 +900,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Poll to Connected.
         let mut connected = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             match ssh.status() {
                 SessionStatus::Connected => {
                     connected = true;
@@ -916,8 +915,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
 
         // Drain the banner into the grid.
         let mut saw_banner = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells
@@ -943,8 +942,8 @@ VYO75vHKVaGSkOCr8Ui2AAAAF3Fvcy1yZW1vdGUtdGVzdC1ob3N0a2V5AQIDBAUG
             "resource input is acknowledged only after the SSH channel write"
         );
         let mut saw_echo = false;
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             ssh.pump();
             if ssh.grid().lines().iter().any(|l| {
                 l.cells

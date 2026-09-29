@@ -12,7 +12,6 @@
 //! claims to have recognized a person from a photograph.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::PathBuf;
 
 use crate::actions::PhotosAction;
 use crate::model::PhotoLibrary;
@@ -191,7 +190,7 @@ pub struct PeopleController {
     privacy: PeoplePrivacy,
     capability: FaceCapability,
     clusters: BTreeMap<String, LocalPersonCluster>,
-    storage_path: Option<PathBuf>,
+    storage_path: Option<crate::files::StateFile>,
 }
 
 #[derive(Debug, Default, serde::Deserialize, serde::Serialize)]
@@ -211,13 +210,15 @@ impl PeopleController {
     /// embeddings, face geometry, crops, and confidence are never persisted.
     #[must_use]
     pub fn persistent() -> Self {
-        Self::load_from(local_store_path())
+        Self::load_from(crate::files::StateFile::in_state(
+            "photos/people-review.json",
+        ))
     }
 
-    fn load_from(storage_path: Option<PathBuf>) -> Self {
+    fn load_from(storage_path: Option<crate::files::StateFile>) -> Self {
         let persisted = storage_path
             .as_ref()
-            .and_then(|path| std::fs::read(path).ok())
+            .and_then(crate::files::StateFile::read)
             .and_then(|bytes| serde_json::from_slice::<PersistedPeople>(&bytes).ok())
             .unwrap_or_default();
         let capability = if persisted.privacy.recognition_enabled {
@@ -234,21 +235,15 @@ impl PeopleController {
     }
 
     fn save(&self) {
-        let Some(path) = &self.storage_path else {
+        let Some(file) = &self.storage_path else {
             return;
         };
-        let Some(parent) = path.parent() else {
-            return;
-        };
-        if std::fs::create_dir_all(parent).is_err() {
-            return;
-        }
         let state = PersistedPeople {
             privacy: self.privacy,
             clusters: self.clusters.clone(),
         };
         if let Ok(bytes) = serde_json::to_vec(&state) {
-            let _ = atomic_file::write(path, &bytes);
+            let _ = file.write(&bytes);
         }
     }
 
@@ -646,11 +641,6 @@ impl PeopleController {
     }
 }
 
-fn local_store_path() -> Option<PathBuf> {
-    let base = xdg_paths::xdg::state_home()?;
-    Some(base.join("tilo/photos/people-review.json"))
-}
-
 fn valid_cluster_id(value: &str) -> bool {
     !value.trim().is_empty()
         && value.len() <= 160
@@ -775,7 +765,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("people-review.json");
-            let mut people = PeopleController::load_from(Some(path.clone()));
+            let mut people = PeopleController::load_from(crate::files::StateFile::at(&path));
             people.set_recognition_enabled(true);
             assert!(people.set_verified_local_face_model("face-model", "revision-7"));
             assert!(people.add_cluster(
@@ -788,7 +778,7 @@ mod tests {
                 PeopleChange::Updated
             );
 
-            let restored = PeopleController::load_from(Some(path));
+            let restored = PeopleController::load_from(crate::files::StateFile::at(&path));
             assert!(restored.privacy().recognition_enabled);
             assert_eq!(
                 restored.capability(),

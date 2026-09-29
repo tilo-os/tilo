@@ -102,21 +102,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "accesskit_winit"
-version = "0.34.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1eb960a51582305f94b3884a7ff54b3462abe38f0de95a9e7e04dd7ab7b757da"
-dependencies = [
- "accesskit",
- "accesskit_ios",
- "accesskit_macos",
- "accesskit_unix",
- "accesskit_windows",
- "raw-window-handle",
- "winit",
-]
-
-[[package]]
 name = "account-custody"
 version = "0.1.0"
 dependencies = [
@@ -330,7 +315,6 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
  "tilo-model-gateway",
  "tilo-reference",
@@ -513,7 +497,6 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "base64",
- "reqwest",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -523,9 +506,9 @@ dependencies = [
  "tilo-automerge",
  "tilo-net",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -623,7 +606,6 @@ name = "app-state"
 version = "0.1.0"
 dependencies = [
  "advisory-lock",
- "atomic-file",
  "automerge",
  "cli",
  "durable-store",
@@ -633,10 +615,11 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
  "tracing",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -1051,7 +1034,6 @@ dependencies = [
 name = "backups"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "hex",
  "host-fs",
@@ -1063,11 +1045,12 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
- "vello",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-vello",
+ "tilo-winit",
  "walkdir",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -1151,29 +1134,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b1f45e9417d87227c7a56d22e471c6206462cba514c7590c09aff4cf6d1ddcad"
 dependencies = [
  "serde",
-]
-
-[[package]]
-name = "bindgen"
-version = "0.69.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "271383c67ccabffb7381723dea0672a673f292304fcb45c01cc648c7a8d58088"
-dependencies = [
- "bitflags 2.11.0",
- "cexpr",
- "clang-sys",
- "itertools 0.12.1",
- "lazy_static",
- "lazycell",
- "log",
- "prettyplease",
- "proc-macro2",
- "quote",
- "regex",
- "rustc-hash 1.1.0",
- "shlex",
- "syn 2.0.117",
- "which",
 ]
 
 [[package]]
@@ -1426,7 +1386,6 @@ version = "0.1.0"
 dependencies = [
  "accesskit_consumer",
  "advisory-lock",
- "atomic-file",
  "automerge",
  "base64",
  "blake3",
@@ -1446,15 +1405,16 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-files",
  "tilo-net",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "url",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zip",
 ]
 
@@ -1547,8 +1507,8 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -1557,7 +1517,6 @@ name = "calendar"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "atomic-file",
  "automerge",
  "chrono",
  "chrono-tz",
@@ -1575,13 +1534,16 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-dav",
+ "tilo-files",
+ "tilo-net",
+ "tilo-paths",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "url",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -1626,11 +1588,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
- "gstreamer",
- "gstreamer-app",
- "gstreamer-video",
  "image",
- "os-actions",
  "qdoc-pdf",
  "qrcode",
  "rqrr",
@@ -1641,14 +1599,16 @@ dependencies = [
  "thumbnail",
  "tilo-actions",
  "tilo-app",
+ "tilo-capture",
  "tilo-clock",
  "tilo-content",
+ "tilo-files",
  "tilo-ocr",
+ "tilo-paths",
  "tilo-test-env",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -1885,11 +1845,9 @@ dependencies = [
  "fnv",
  "hex",
  "image",
- "iroh",
  "qdoc",
  "qdoc-rich-text",
  "runtime-dylib",
- "runtime-identity",
  "serde",
  "serde_json",
  "taffy",
@@ -1899,17 +1857,18 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-files",
  "tilo-media",
+ "tilo-net",
+ "tilo-paths",
  "tilo-reference",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "uuid",
- "vello",
- "winit",
- "wire-frame",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -2111,11 +2070,9 @@ dependencies = [
 name = "clocks"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "chrono",
  "chrono-tz",
- "private-fs",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -2123,11 +2080,14 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-process",
+ "tilo-vello",
+ "tilo-winit",
+ "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -2279,7 +2239,6 @@ dependencies = [
 name = "code-editor"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "bounded-command",
  "hex",
@@ -2293,11 +2252,12 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "url",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -2559,13 +2519,13 @@ dependencies = [
  "tilo-app",
  "tilo-app-package",
  "tilo-automerge",
- "tilo-clock",
+ "tilo-files",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "unicode-normalization",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -2584,19 +2544,10 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-test-env",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
  "xdg-paths",
-]
-
-[[package]]
-name = "convert_case"
-version = "0.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ec182b0ca2f35d8fc196cf3404988fd8b8c739a4d270ff118a398feb0cbec1ca"
-dependencies = [
- "unicode-segmentation",
 ]
 
 [[package]]
@@ -2748,7 +2699,7 @@ version = "0.2.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cc7459e07732f6de74001fcf73a3fdfbb0f368e4fd8e2392f4a2206a065e6e95"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "cc",
  "pkg-config",
 ]
@@ -3077,9 +3028,9 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -3179,7 +3130,7 @@ version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "799a97264921d8623a957f6c3b9011f3b5492f557bbb7a5a19b7fa6d06ba8dcb"
 dependencies = [
- "convert_case 0.10.0",
+ "convert_case",
  "proc-macro2",
  "quote",
  "rustc_version",
@@ -3241,9 +3192,11 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -3301,6 +3254,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tilo-app",
+ "tilo-paths",
  "workspace-hack",
 ]
 
@@ -3457,7 +3411,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serial_test",
- "settings-store",
  "taffy",
  "tempfile",
  "thumbnail",
@@ -3466,13 +3419,15 @@ dependencies = [
  "tilo-automerge",
  "tilo-clock",
  "tilo-content",
+ "tilo-files",
+ "tilo-paths",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "unicode-bidi",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -4051,7 +4006,6 @@ dependencies = [
  "fnv",
  "hex",
  "quick-xml 0.41.0",
- "reqwest",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -4059,12 +4013,11 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
  "tilo-net",
- "tokio",
- "tokio-rustls",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -4139,19 +4092,19 @@ dependencies = [
  "tilo-app",
  "tilo-automation",
  "tilo-clock",
+ "tilo-paths",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "trash",
  "unic-langid",
  "uuid",
- "vello",
- "winit",
  "wire-frame",
  "workspace-hack",
- "xdg-paths",
  "zip",
 ]
 
@@ -4197,9 +4150,9 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -5000,11 +4953,12 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-net",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "url",
- "vello",
- "winit",
  "workspace-hack",
  "zeroize",
 ]
@@ -5224,10 +5178,10 @@ dependencies = [
  "serde_json",
  "taffy",
  "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "tracing-subscriber",
- "vello",
- "winit",
  "workspace-hack",
  "zeroize",
 ]
@@ -5748,8 +5702,10 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "vello",
- "winit",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -5887,15 +5843,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6303bc9732ae41b04cb554b844a762b4115a61bfaa81e3e83050991eeb56863f"
 dependencies = [
  "digest 0.11.3",
-]
-
-[[package]]
-name = "home"
-version = "0.5.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
-dependencies = [
- "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6573,6 +6520,8 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
  "uuid",
  "workspace-hack",
 ]
@@ -6615,16 +6564,15 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-net",
  "tilo-ntfs-protocol",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
  "windows-sys 0.61.2",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zbus",
 ]
 
@@ -6771,11 +6719,11 @@ dependencies = [
  "tilo-power-mgmt",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
  "zeroize",
 ]
@@ -7607,12 +7555,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
 
 [[package]]
-name = "lazycell"
-version = "1.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "830d08ce1d1d941e6b30645f1a0eb5643013d835ce3779a5fc208261dbe10f55"
-
-[[package]]
 name = "leb128"
 version = "0.2.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7956,7 +7898,7 @@ dependencies = [
 name = "libspa-sys"
 version = "0.10.1"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "cc",
  "system-deps",
 ]
@@ -8114,8 +8056,8 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -8179,7 +8121,6 @@ dependencies = [
  "account-custody",
  "accounts",
  "async-imap",
- "atomic-file",
  "automerge",
  "base64",
  "fnv",
@@ -8205,16 +8146,17 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-files",
  "tilo-net",
  "tilo-oauth",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "tokio-rustls",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -8245,7 +8187,6 @@ dependencies = [
  "fnv",
  "hex",
  "lru 0.18.3",
- "reqwest",
  "runtime-dylib",
  "serde",
  "serde_json",
@@ -8253,13 +8194,14 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
  "tilo-net",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -8475,9 +8417,8 @@ dependencies = [
  "taffy",
  "tilo-actions",
  "tilo-app",
- "tilo-clock",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -8537,16 +8478,13 @@ checksum = "2195bf6aa996a481483b29d62a7663eed3fe39600c460e323f8ff41e90bdd89b"
 name = "music"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "base64",
  "fnv",
  "gstreamer",
  "hex",
- "host-info",
  "image",
  "reqwest",
- "rquickjs",
  "runtime-dylib",
  "rustypipe",
  "serde",
@@ -8560,18 +8498,19 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-files",
  "tilo-media",
  "tilo-net",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "tracing",
  "tracing-subscriber",
  "url",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -9016,15 +8955,16 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-files",
+ "tilo-paths",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "url",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -9837,11 +9777,11 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
- "vello",
  "wayland-client",
  "wayland-protocols-misc",
- "winit",
  "workspace-hack",
  "xkbcommon",
 ]
@@ -10052,17 +9992,16 @@ name = "passwords"
 version = "0.1.0"
 dependencies = [
  "accounts",
- "atomic-file",
  "automerge",
  "runtime-dylib",
  "serde",
  "serde_json",
  "taffy",
  "tilo-app",
- "tilo-clock",
+ "tilo-files",
  "tilo-seal",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
  "zeroize",
 ]
@@ -10101,6 +10040,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "automerge",
+ "blake3",
  "fnv",
  "image",
  "qdoc-rich-text",
@@ -10113,15 +10053,16 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
+ "tilo-files",
+ "tilo-paths",
  "tilo-pdf",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -10357,7 +10298,6 @@ name = "photos"
 version = "0.1.0"
 dependencies = [
  "agent-provider-config",
- "atomic-file",
  "automerge",
  "image",
  "kamadak-exif",
@@ -10373,17 +10313,18 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-files",
  "tilo-ocr",
+ "tilo-paths",
  "tilo-reference",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-vello-encoding",
  "tilo-vision",
+ "tilo-winit",
  "tokio",
  "tracing",
- "vello",
- "vello_encoding",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -10461,7 +10402,7 @@ version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9ce653f53e63e5b93853218092ee9a8906a5d082c92f3f1db26316955dd63ce0"
 dependencies = [
- "bindgen 0.72.1",
+ "bindgen",
  "libspa-sys",
  "system-deps",
 ]
@@ -10909,8 +10850,8 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-ocr",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -11718,12 +11659,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "relative-path"
-version = "1.9.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ba39f3699c378cd8970968dcbff9c43159ea4cfbd88d43c00b22f2ef10a435d2"
-
-[[package]]
 name = "reloadable-core"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -11745,7 +11680,6 @@ name = "remote"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atomic-file",
  "automerge",
  "des",
  "iroh-base",
@@ -11761,15 +11695,16 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-callstream",
+ "tilo-files",
+ "tilo-paths",
  "tilo-relay-protocol",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "uuid",
- "vello",
  "vte",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -11934,7 +11869,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c5227859c4dfc83f428e58f9569bf439e628c8d139020e7faff437e6f5abaa0"
 dependencies = [
  "rquickjs-core",
- "rquickjs-macro",
 ]
 
 [[package]]
@@ -11943,25 +11877,7 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e82e0ca83028ad5b533b53b96c395bbaab905a5774de4aaf1004eeacafa3d85d"
 dependencies = [
- "relative-path",
  "rquickjs-sys",
-]
-
-[[package]]
-name = "rquickjs-macro"
-version = "0.9.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b4d2eccd988a924a470a76fbd81a191b22d1f5f4f4619cf5662a8c1ab4ca1db7"
-dependencies = [
- "convert_case 0.6.0",
- "fnv",
- "ident_case",
- "indexmap",
- "proc-macro-crate",
- "proc-macro2",
- "quote",
- "rquickjs-core",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -11970,7 +11886,6 @@ version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7fed0097b0b4fbb2a87f6dd3b995a7c64ca56de30007eb7e867dfdfc78324ba5"
 dependencies = [
- "bindgen 0.69.5",
  "cc",
 ]
 
@@ -12682,6 +12597,7 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-app",
+ "tilo-files",
  "workspace-hack",
 ]
 
@@ -13058,7 +12974,6 @@ dependencies = [
  "accounts",
  "agent-provider-config",
  "async-imap",
- "atomic-file",
  "automerge",
  "bounded-command",
  "cloud-source",
@@ -13092,21 +13007,22 @@ dependencies = [
  "tilo-clock",
  "tilo-dav",
  "tilo-desktop-entry",
+ "tilo-files",
  "tilo-media",
  "tilo-model-gateway",
  "tilo-net",
  "tilo-oauth",
+ "tilo-paths",
  "tilo-relay-protocol",
  "tilo-test-env",
  "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "tokio-rustls",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zeroize",
 ]
 
@@ -13121,9 +13037,10 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tilo-clock",
+ "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -13256,24 +13173,23 @@ name = "sheets"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atomic-file",
  "automerge",
  "qdoc",
  "qdoc-codecs",
  "runtime-dylib",
  "serde",
  "serde_json",
- "settings-store",
  "taffy",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zip",
 ]
 
@@ -13399,6 +13315,9 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-vello",
+ "tilo-vello-encoding",
+ "tilo-winit",
  "tilo-workspace-host",
  "tokio",
  "tokio-util",
@@ -13408,8 +13327,6 @@ dependencies = [
  "tts",
  "url",
  "uuid",
- "vello",
- "vello_encoding",
  "walkdir",
  "wayland-client",
  "wayland-protocols",
@@ -13417,7 +13334,6 @@ dependencies = [
  "wayland-protocols-wlr",
  "wgpu",
  "windows-vm",
- "winit",
  "wire-frame",
  "word-processor",
  "workspace-hack",
@@ -13591,13 +13507,15 @@ dependencies = [
  "tilo-app",
  "tilo-automerge",
  "tilo-content",
+ "tilo-files",
+ "tilo-paths",
  "tilo-rich-text",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-vello-encoding",
+ "tilo-winit",
  "tracing",
  "uuid",
- "vello",
- "vello_encoding",
- "winit",
  "workspace-hack",
  "zip",
 ]
@@ -13736,9 +13654,9 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -13987,7 +13905,6 @@ version = "0.1.2"
 dependencies = [
  "app-cli",
  "app-host",
- "atomic-file",
  "automerge",
  "blake3",
  "bounded-command",
@@ -14009,13 +13926,13 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
+ "tilo-files",
  "tilo-net",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "toml 1.0.6+spec-1.1.0",
  "tracing",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -14545,13 +14462,13 @@ dependencies = [
  "tilo-automerge",
  "tilo-content",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "unicode-segmentation",
  "unicode-width",
  "uuid",
- "vello",
  "vte",
- "winit",
  "workspace-hack",
  "xdg-paths",
 ]
@@ -14571,15 +14488,14 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
- "settings-store",
  "taffy",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -14692,6 +14608,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-accesskit-winit"
+version = "0.34.0"
+dependencies = [
+ "accesskit",
+ "accesskit_ios",
+ "accesskit_macos",
+ "accesskit_unix",
+ "accesskit_windows",
+ "raw-window-handle",
+ "tilo-winit",
+]
+
+[[package]]
 name = "tilo-action-broker"
 version = "0.1.0"
 dependencies = [
@@ -14791,7 +14720,10 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-automerge",
+ "tilo-files",
  "tilo-resource",
+ "tilo-runner-native",
+ "tilo-runner-web",
  "tilo-search",
  "tilo-ui",
  "tracing",
@@ -14815,16 +14747,20 @@ dependencies = [
  "quote",
  "registry-client",
  "registry-types",
+ "serde",
  "serde_json",
  "serde_yaml",
+ "sha2 0.11.0",
  "syn 2.0.117",
  "tempfile",
  "tilo-app-package",
+ "tilo-caps",
  "tilo-headless-schema",
  "tilo-test-env",
  "tilo-ui-graph",
  "toml 1.0.6+spec-1.1.0",
  "workspace-hack",
+ "zip",
 ]
 
 [[package]]
@@ -15018,15 +14954,15 @@ dependencies = [
  "tilo-relay-protocol",
  "tilo-ui",
  "tilo-user-identity",
+ "tilo-vello",
+ "tilo-winit",
  "tokio",
  "uuid",
- "vello",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
  "web-time",
  "wgpu",
- "winit",
  "word-processor",
  "workspace-hack",
 ]
@@ -15038,6 +14974,17 @@ dependencies = [
  "thiserror 2.0.18",
  "tilo-media",
  "tracing",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-caps"
+version = "0.1.0"
+dependencies = [
+ "tilo-files",
+ "tilo-paths",
+ "tilo-process",
+ "tilo-rt",
  "workspace-hack",
 ]
 
@@ -15318,10 +15265,10 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-resource",
  "tilo-ui",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "word-processor",
  "workspace-hack",
 ]
@@ -15455,6 +15402,7 @@ dependencies = [
  "tempfile",
  "tilo-clock",
  "tilo-paths",
+ "url",
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
@@ -15499,11 +15447,11 @@ dependencies = [
  "tilo-notify",
  "tilo-rt",
  "tilo-secrets",
+ "tilo-winit",
  "tokio",
  "tracing",
  "tts",
  "unic-langid",
- "winit",
  "workspace-hack",
  "zbus",
 ]
@@ -15728,6 +15676,7 @@ dependencies = [
  "bytes",
  "futures-util",
  "http",
+ "iroh",
  "js-sys",
  "rcgen",
  "reqwest",
@@ -15749,6 +15698,7 @@ dependencies = [
  "wasm-bindgen-futures",
  "web-sys",
  "web-transport-quinn",
+ "wire-frame",
  "workspace-hack",
 ]
 
@@ -15829,6 +15779,7 @@ dependencies = [
  "serde",
  "tempfile",
  "thiserror 2.0.18",
+ "tilo-paths",
  "tilo-test-env",
  "workspace-hack",
 ]
@@ -16194,6 +16145,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-runner-native"
+version = "0.1.0"
+dependencies = [
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
+name = "tilo-runner-web"
+version = "0.1.0"
+dependencies = [
+ "tilo-ui",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-runtime"
 version = "0.1.0"
 dependencies = [
@@ -16337,12 +16304,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-typst-fonts"
+version = "0.1.0"
+dependencies = [
+ "typst-assets",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-ui"
 version = "0.1.0"
 dependencies = [
  "accesskit",
  "accesskit_android",
- "accesskit_winit",
  "adblock",
  "advisory-lock",
  "app-state",
@@ -16405,16 +16379,19 @@ dependencies = [
  "tempfile",
  "thiserror 2.0.18",
  "threshold-identity",
+ "tilo-accesskit-winit",
  "tilo-actions",
  "tilo-appearance",
  "tilo-automerge",
  "tilo-content",
  "tilo-desktop-model",
+ "tilo-files",
  "tilo-font-catalog",
  "tilo-headless-schema",
  "tilo-host",
  "tilo-host-search",
  "tilo-media",
+ "tilo-paths",
  "tilo-resource",
  "tilo-rt",
  "tilo-seal",
@@ -16422,6 +16399,9 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui-graph",
+ "tilo-vello",
+ "tilo-vello-encoding",
+ "tilo-winit",
  "tokio",
  "tokio-util",
  "tracing",
@@ -16434,16 +16414,12 @@ dependencies = [
  "unicode-script",
  "url",
  "uuid",
- "vello",
- "vello_encoding",
  "wgpu",
  "wgpu-hal",
  "windows 0.62.2",
  "windows-sys 0.61.2",
- "winit",
  "wire-frame",
  "workspace-hack",
- "xdg-paths",
  "zbus",
  "zeroize",
 ]
@@ -16500,6 +16476,46 @@ dependencies = [
  "tilo-secrets",
  "workspace-hack",
  "zeroize",
+]
+
+[[package]]
+name = "tilo-vello"
+version = "0.9.0"
+dependencies = [
+ "bytemuck",
+ "futures-intrusive",
+ "log",
+ "peniko",
+ "png",
+ "skrifa 0.42.1",
+ "smallvec",
+ "static_assertions",
+ "thiserror 2.0.18",
+ "tilo-vello-encoding",
+ "tilo-vello-shaders",
+ "wgpu",
+]
+
+[[package]]
+name = "tilo-vello-encoding"
+version = "0.9.0"
+dependencies = [
+ "bytemuck",
+ "guillotiere",
+ "peniko",
+ "skrifa 0.42.1",
+ "smallvec",
+]
+
+[[package]]
+name = "tilo-vello-shaders"
+version = "0.9.0"
+dependencies = [
+ "bytemuck",
+ "log",
+ "naga",
+ "thiserror 2.0.18",
+ "tilo-vello-encoding",
 ]
 
 [[package]]
@@ -16575,6 +16591,56 @@ dependencies = [
  "tilo-vm-protocol",
  "uuid",
  "workspace-hack",
+]
+
+[[package]]
+name = "tilo-winit"
+version = "0.30.13"
+dependencies = [
+ "ahash",
+ "android-activity",
+ "atomic-waker",
+ "bitflags 2.11.0",
+ "block2 0.5.1",
+ "bytemuck",
+ "calloop",
+ "cfg_aliases 0.2.2",
+ "concurrent-queue",
+ "core-foundation 0.9.4",
+ "core-graphics",
+ "cursor-icon",
+ "dpi",
+ "js-sys",
+ "libc",
+ "memmap2",
+ "ndk",
+ "objc2 0.5.2",
+ "objc2-app-kit 0.2.2",
+ "objc2-foundation 0.2.2",
+ "objc2-ui-kit",
+ "orbclient",
+ "percent-encoding",
+ "pin-project",
+ "raw-window-handle",
+ "redox_syscall 0.4.1",
+ "rustix 0.38.44",
+ "sctk-adwaita",
+ "smithay-client-toolkit",
+ "smol_str 0.3.6",
+ "tracing",
+ "unicode-segmentation",
+ "wasm-bindgen",
+ "wasm-bindgen-futures",
+ "wayland-backend",
+ "wayland-client",
+ "wayland-protocols",
+ "wayland-protocols-plasma",
+ "web-sys",
+ "web-time",
+ "windows-sys 0.52.0",
+ "x11-dl",
+ "x11rb",
+ "xkbcommon-dl",
 ]
 
 [[package]]
@@ -17033,7 +17099,6 @@ checksum = "756daf9b1013ebe47a8776667b466417e2d4c5679d441c26230efd9ef78692db"
 name = "totp"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "data-encoding",
  "data-encoding-macro",
@@ -17052,12 +17117,13 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zeroize",
 ]
 
@@ -17234,19 +17300,16 @@ name = "tube"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "atomic-file",
  "automerge",
  "base64",
  "blake3",
  "bounded-command",
  "flate2",
  "fnv",
+ "getrandom 0.4.3",
  "hex",
- "private-fs",
- "reqwest",
  "runtime-dylib",
  "runtime-identity",
- "runtime-portal-xdg",
  "rustypipe",
  "serde",
  "serde_json",
@@ -17257,18 +17320,20 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-clock",
+ "tilo-files",
  "tilo-media",
  "tilo-net",
+ "tilo-paths",
+ "tilo-secrets",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-vello-encoding",
+ "tilo-winit",
  "tracing",
  "tracing-subscriber",
  "uuid",
- "vello",
- "vello_encoding",
- "winit",
  "wire-frame",
  "workspace-hack",
- "xdg-paths",
  "zeroize",
 ]
 
@@ -17359,16 +17424,17 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
+ "tilo-typst-fonts",
+ "tilo-vello",
+ "tilo-winit",
  "tiny-skia",
  "typst",
- "typst-assets",
  "typst-layout",
  "typst-pdf",
  "typst-render",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -17719,9 +17785,9 @@ dependencies = [
  "tilo-automerge",
  "tilo-resource",
  "tilo-ui",
- "vello",
+ "tilo-vello",
+ "tilo-winit",
  "wgpu",
- "winit",
  "workspace-hack",
 ]
 
@@ -18043,24 +18109,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "vello"
-version = "0.9.0"
-dependencies = [
- "bytemuck",
- "futures-intrusive",
- "log",
- "peniko",
- "png",
- "skrifa 0.42.1",
- "smallvec",
- "static_assertions",
- "thiserror 2.0.18",
- "vello_encoding",
- "vello_shaders",
- "wgpu",
-]
-
-[[package]]
 name = "vello_common"
 version = "0.0.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -18088,28 +18136,6 @@ dependencies = [
  "hashbrown 0.17.1",
  "png",
  "vello_common",
-]
-
-[[package]]
-name = "vello_encoding"
-version = "0.9.0"
-dependencies = [
- "bytemuck",
- "guillotiere",
- "peniko",
- "skrifa 0.42.1",
- "smallvec",
-]
-
-[[package]]
-name = "vello_shaders"
-version = "0.9.0"
-dependencies = [
- "bytemuck",
- "log",
- "naga",
- "thiserror 2.0.18",
- "vello_encoding",
 ]
 
 [[package]]
@@ -18144,14 +18170,15 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
  "tilo-media",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -18164,17 +18191,18 @@ dependencies = [
  "runtime-dylib",
  "serde",
  "serde_json",
- "settings-store",
  "taffy",
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
  "tilo-clock",
+ "tilo-files",
  "tilo-media",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -18193,7 +18221,6 @@ dependencies = [
 name = "vpn"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
  "automerge",
  "bounded-command",
  "os-actions",
@@ -18205,12 +18232,13 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
+ "tilo-files",
+ "tilo-paths",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
- "xdg-paths",
  "zeroize",
 ]
 
@@ -18628,11 +18656,9 @@ version = "0.1.0"
 dependencies = [
  "automerge",
  "chrono",
- "reqwest",
  "runtime-dylib",
  "serde",
  "serde_json",
- "settings-store",
  "taffy",
  "tilo-actions",
  "tilo-app",
@@ -18640,10 +18666,10 @@ dependencies = [
  "tilo-clock",
  "tilo-net",
  "tilo-test-env",
+ "tilo-vello",
+ "tilo-winit",
  "tracing-subscriber",
  "uuid",
- "vello",
- "winit",
  "workspace-hack",
 ]
 
@@ -18911,18 +18937,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "which"
-version = "4.4.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
-dependencies = [
- "either",
- "home",
- "once_cell",
- "rustix 0.38.44",
-]
-
-[[package]]
 name = "whoami"
 version = "2.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -19019,9 +19033,8 @@ dependencies = [
  "tempfile",
  "tilo-actions",
  "tilo-app",
- "tilo-clock",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
 ]
 
@@ -19506,50 +19519,7 @@ checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
 name = "winit"
 version = "0.30.13"
 dependencies = [
- "ahash",
- "android-activity",
- "atomic-waker",
- "bitflags 2.11.0",
- "block2 0.5.1",
- "bytemuck",
- "calloop",
- "cfg_aliases 0.2.2",
- "concurrent-queue",
- "core-foundation 0.9.4",
- "core-graphics",
- "cursor-icon",
- "dpi",
- "js-sys",
- "libc",
- "memmap2",
- "ndk",
- "objc2 0.5.2",
- "objc2-app-kit 0.2.2",
- "objc2-foundation 0.2.2",
- "objc2-ui-kit",
- "orbclient",
- "percent-encoding",
- "pin-project",
- "raw-window-handle",
- "redox_syscall 0.4.1",
- "rustix 0.38.44",
- "sctk-adwaita",
- "smithay-client-toolkit",
- "smol_str 0.3.6",
- "tracing",
- "unicode-segmentation",
- "wasm-bindgen",
- "wasm-bindgen-futures",
- "wayland-backend",
- "wayland-client",
- "wayland-protocols",
- "wayland-protocols-plasma",
- "web-sys",
- "web-time",
- "windows-sys 0.52.0",
- "x11-dl",
- "x11rb",
- "xkbcommon-dl",
+ "tilo-winit",
 ]
 
 [[package]]
@@ -19651,15 +19621,15 @@ dependencies = [
  "tilo-actions",
  "tilo-app",
  "tilo-automerge",
- "tilo-clock",
  "tilo-content",
+ "tilo-files",
+ "tilo-paths",
  "tilo-resource",
  "tilo-rich-text",
  "tilo-test-env",
- "vello",
- "winit",
+ "tilo-vello",
+ "tilo-winit",
  "workspace-hack",
- "xdg-paths",
 ]
 
 [[package]]
@@ -19879,6 +19849,7 @@ dependencies = [
  "tracing-core",
  "tracing-subscriber",
  "ttf-parser",
+ "typst-assets",
  "unic-langid",
  "unic-langid-impl",
  "unicode-bidi",

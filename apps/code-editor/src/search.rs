@@ -643,8 +643,8 @@ mod tests {
         let mut job = start(d.path(), q("needle"));
         assert_eq!(job.query().needle, "needle");
         let mut hits = Vec::new();
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             for msg in job.drain() {
                 match msg {
                     Msg::Hits(h) => hits.extend(h),

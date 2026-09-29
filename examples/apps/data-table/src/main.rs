@@ -1,9 +1,8 @@
-//! The app's entry point: the live window, and the standard `--shots`,
-//! `--headless-drive` and `--native-audit` modes, from one declaration.
+//! The app's entry point on every target: the live window and the standard
+//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,
+//! registration with the page runtime on the web.
 
 #[cfg(feature = "thin")]
 extern crate runtime_dylib;
 
-fn main() {
-    ui::framework::run::<example_data_table::App>();
-}
+ui::main!(example_data_table::App);

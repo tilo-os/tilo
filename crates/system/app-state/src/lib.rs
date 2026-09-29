@@ -950,7 +950,7 @@ fn sync_directory_ancestors(
     // folder, not an environment variable), the app sandbox on Android
     // (`ui::android_main!` makes it `$HOME`), and the room directory the
     // Linux launcher binds at `/run/tilo/app` beneath a Landlock boundary.
-    let profile_root = xdg_paths::home().and_then(|path| fs::canonicalize(path).ok());
+    let profile_root = tilo_paths::home().and_then(|path| fs::canonicalize(path).ok());
     for path in physical.ancestors() {
         visit(path)?;
         open_directory(path, true)

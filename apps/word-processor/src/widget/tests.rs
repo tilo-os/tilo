@@ -9112,8 +9112,8 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-release-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -9199,8 +9199,8 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-recovery-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));

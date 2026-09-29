@@ -23,6 +23,7 @@ use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
 pub mod android;
+pub mod capability_usage;
 pub mod ci;
 mod dev_reload;
 pub mod examples;
@@ -33,6 +34,7 @@ pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod targets;
 pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
@@ -4115,7 +4117,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        &["framework::run::<", "LaunchSpec::new"],
+        &["ui::main!", "framework::run::<", "LaunchSpec::new"],
         &mut checks,
     );
     let draws_nothing = manifest
@@ -4880,7 +4882,7 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let resource_kinds = resource_kinds::declared_in(&spec.app_dir)?;
+    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
     let manifest = signed_manifest(
         &spec,
         request,
@@ -6643,7 +6645,8 @@ fn provide_runtime_host(app_dir: &Path) {
     let _ = DEV_RUNTIME.set(runtime);
 }
 
-fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+/// `cargo metadata` for the app at `app_dir`, with its dependencies resolved.
+fn cargo_metadata(app_dir: &Path) -> Result<serde_json::Value> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = ProcessCommand::new(&cargo)
         .args(["metadata", "--format-version", "1", "--manifest-path"])
@@ -6655,8 +6658,12 @@ fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
     if !output.status.success() {
         bail!("cargo metadata failed with {}", output.status);
     }
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    serde_json::from_slice(&output.stdout).context("parsing cargo metadata")
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let metadata = cargo_metadata(app_dir)?;
     let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
         anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
     })?;
@@ -9319,20 +9326,19 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
                 |crates| crates.join("runtime/runtime-dylib"),
             );
             // CI rejects a workspace member that cargo-hakari has not been
-            // told about. The hack's feature set is native, so it and the
-            // full SDK stay off the web build (`build --platform web`), which
-            // links the app against the portable toolkit.
-            let sdk = sdk_path.to_string_lossy();
+            // told about. The hack's feature set is native, so it stays off
+            // the web build (`build --platform web`); the SDK's default
+            // features select nothing there.
             let _ = write!(
                 manifest,
-                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\n\
+                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\
+                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\n\
                  [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\n\
-                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\
+                 # The workspace-hack's native feature set does not build for wasm32.\n\
                  workspace-hack = {{ version = \"0.1\" }}\n\n\
-                 [target.'cfg(target_arch = \"wasm32\")'.dependencies]\n\
-                 ui = {{ package = \"tilo-app\", path = {sdk:?}, default-features = false }}\n\n\
                  [lints]\nworkspace = true\n",
                 runtime = runtime_path.to_string_lossy(),
+                sdk = sdk_path.to_string_lossy(),
             );
         }
         AppSdk::Standalone(standalone) => {
@@ -9387,7 +9393,7 @@ fn app_lib(spec: &AppSpec) -> String {
 
 fn app_main(spec: &AppSpec) -> String {
     format!(
-        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
+        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nui::main!({crate_name}::App);\n",
         crate_name = spec.crate_name,
     )
 }
@@ -9564,6 +9570,19 @@ fn app_readme(spec: &AppSpec) -> String {
         out,
         "\nEvery command accepts `--json` and then writes one JSON document to stdout, for scripts and agents."
     );
+    let _ = writeln!(
+        out,
+        "\nThe same source runs on Linux, macOS and the web; `--target` picks the platform (each builds on its own host OS, the web on any):\n"
+    );
+    let _ = writeln!(out, "```bash");
+    let _ = writeln!(out, "tilo-app run --target linux");
+    let _ = writeln!(out, "tilo-app run --target macos");
+    let _ = writeln!(out, "tilo-app run --target web");
+    let _ = writeln!(out, "tilo-app build --target macos");
+    let _ = writeln!(out, "tilo-app package --target linux");
+    let _ = writeln!(out, "tilo-app package --target macos");
+    let _ = writeln!(out, "tilo-app package --target web");
+    let _ = writeln!(out, "```");
     let _ = writeln!(
         out,
         "\nCargo remains available directly with `cargo test` and `cargo run`."

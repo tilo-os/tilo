@@ -475,7 +475,7 @@ fn create_native_renderer(device_handle: &crate::gpu::DeviceHandle) -> Result<Re
             // Diagnostic/low-end fallback: CPU coarse stages with the same
             // GPU fine raster. Kept opt-in until the benchmark proves it is
             // faster on a device; the default remains the GPU pipeline.
-            use_cpu: std::env::var_os("QUICK_UI_VELLO_CPU").is_some(),
+            use_cpu: crate::env::var_os("TILO_UI_VELLO_CPU").is_some(),
             // Every frame below renders with `AaConfig::Area`. Advertising
             // 8x/16x MSAA as well only compiles and retains shader variants
             // this framework never selects, increasing startup and GPU

@@ -208,7 +208,7 @@ impl Link {
     ///
     /// # Errors
     /// Returns a publication/transport error or exhaustion of the supplied deadline.
-    pub fn complete_publications(&mut self, deadline: Option<std::time::Instant>) -> Result<()> {
+    pub fn complete_publications(&mut self, deadline: Option<ui::time::Instant>) -> Result<()> {
         let publication = std::mem::replace(&mut self.last_publication, LastPublication::None);
         let result = match publication {
             LastPublication::None => return Ok(()),
@@ -237,12 +237,12 @@ impl Link {
     /// `Err`).
     pub fn recv(&mut self, timeout: Duration) -> Result<Option<CollabEvent>> {
         const RECV_POLL: Duration = Duration::from_millis(1);
-        let deadline = std::time::Instant::now() + timeout;
+        let deadline = ui::time::now() + timeout;
         loop {
             if let Some(event) = take_next_polled(&mut self.pending, self.manager.poll()) {
                 return Ok(Some(event));
             }
-            let now = std::time::Instant::now();
+            let now = ui::time::now();
             if now >= deadline {
                 return Ok(None);
             }
@@ -269,10 +269,10 @@ impl Link {
     /// Returns an error when the broker refuses the request, the link fails,
     /// or no correlated reply arrives before the deadline.
     pub fn wait_enrolled_reply(&mut self, request_id: u64) -> Result<()> {
-        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        let deadline = ui::time::now() + Duration::from_secs(10);
         let mut deferred = Vec::new();
         let result = loop {
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 break Err(anyhow::anyhow!("enrolled RPC acknowledgement uncertain"));
             }
             match self.recv(Duration::from_millis(20))? {
@@ -335,8 +335,7 @@ mod tests {
     #[test]
     fn idle_link_needs_no_completion_protocol_or_extra_deadline() {
         let mut link = peer_link();
-        link.complete_publications(Some(std::time::Instant::now()))
-            .unwrap();
+        link.complete_publications(Some(ui::time::now())).unwrap();
     }
 
     #[test]
