@@ -265,8 +265,11 @@ def main() -> int:
                 "dependents on the other owner's crate: " + ", ".join(clashing)
             )
     if failing:
-        print(f"error: marked publishable but blocked: {', '.join(failing)}", file=sys.stderr)
-        return 1
+        # A report lists what blocks publication; only a publishing run fails on it.
+        level = "note" if args.report_only else "error"
+        print(f"{level}: marked publishable but blocked: {', '.join(failing)}", file=sys.stderr)
+        if not args.report_only:
+            return 1
     if args.report_only or not publishable:
         return 0
     # Not --locked: the forks' dev-dependencies join the (restored) lock file.
