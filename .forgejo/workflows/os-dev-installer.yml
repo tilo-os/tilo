@@ -1,0 +1,83 @@
+name: Build / OS dev installer
+
+# Build a disposable WHPX installer medium from an already published unsigned
+# ARM64 OS image. This is an on-demand development artifact: local tilo-vm runs
+# the install scenarios, while release signing and reproduction stay separate.
+on:
+  workflow_dispatch:
+    inputs:
+      os_image:
+        description: "Exact ARM64 dev OS image (registry.tilo.so/tilo/tilo-ci@sha256:<digest>)"
+        required: true
+        type: string
+
+concurrency:
+  group: os-dev-installer-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  medium:
+    runs-on: runner-large-arm64
+    timeout-minutes: 120
+    env:
+      TILO_DISTROBOX: ""
+      TILO_LOCAL_TAG: dev-installer-${{ github.run_id }}
+      TILO_OUTPUT: ${{ runner.temp }}/tilo-dev-installer
+      TILO_IMAGE: ${{ github.event.inputs.os_image }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Require a native ARM64 host and an immutable dev image
+        run: |
+          set -euo pipefail
+          ./os/dev/assert-native-arch.sh aarch64
+          [[ "$TILO_IMAGE" =~ ^registry\.tilo\.so/tilo/tilo-ci@sha256:[0-9a-f]{64}$ ]] || {
+            echo '::error::os_image must pin one published ARM64 dev image by digest'; exit 1;
+          }
+      - name: Install native disk builder dependencies
+        run: |
+          set -euo pipefail
+          sudo -n true
+          if command -v apt-get >/dev/null; then
+            export DEBIAN_FRONTEND=noninteractive
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+              btrfs-progs cryptsetup dosfstools e2fsprogs fdisk jq mtools \
+              podman fuse-overlayfs qemu-utils skopeo slirp4netns uidmap util-linux zstd
+          elif command -v dnf >/dev/null; then
+            sudo -n dnf --setopt=retries=3 install -y \
+              btrfs-progs cryptsetup dosfstools e2fsprogs jq mtools \
+              podman fuse-overlayfs qemu-img skopeo slirp4netns shadow-utils util-linux zstd
+          else
+            echo '::error::native ARM64 runner must provide apt-get or dnf'; exit 1
+          fi
+          command -v debugfs losetup mattrib mkfs.vfat podman qemu-img skopeo zstd >/dev/null
+      - name: Pull the published dev image and build its installer overlay
+        run: |
+          set -euo pipefail
+          podman pull "$TILO_IMAGE"
+          test "$(podman image inspect "$TILO_IMAGE" --format '{{.Architecture}}')" = arm64
+          source_revision="$(podman image inspect "$TILO_IMAGE" --format '{{index .Labels "org.opencontainers.image.revision"}}')"
+          [[ "$source_revision" =~ ^[0-9a-f]{40}$ ]] || {
+            echo '::error::dev image does not identify its source revision'; exit 1;
+          }
+          printf 'base_image=%s\nbase_source=%s\nbuild_source=%s\n' \
+            "$TILO_IMAGE" "$source_revision" "$GITHUB_SHA" > dev-installer-source.txt
+          ./os/dev/build-custom-installer.sh --reuse-image-installer
+      - name: Pack the sparse medium once for Windows WHPX
+        run: |
+          set -euo pipefail
+          medium="$TILO_OUTPUT/installer/qcow2/disk.qcow2"
+          test -s "$medium"
+          mkdir -p dist/dev-installer
+          output=dist/dev-installer/tilo-dev-installer-aarch64.qcow2.zst
+          zstd --threads=0 -1 --sparse -f "$medium" -o "$output"
+          (cd dist/dev-installer && sha256sum "$(basename "$output")") > "$output.sha256"
+          printf '%s  tilo-dev-installer-aarch64.qcow2\n' \
+            "$(sha256sum "$medium" | awk '{print $1}')" \
+            > dist/dev-installer/tilo-dev-installer-aarch64.qcow2.sha256
+          mv dev-installer-source.txt dist/dev-installer/source.txt
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        with:
+          name: tilo-dev-installer-aarch64-${{ github.run_id }}
+          path: dist/dev-installer/
+          if-no-files-found: error
