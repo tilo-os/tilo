@@ -9960,6 +9960,7 @@ mod tests {
 
         shell_network_spawns_with_default_keypair();
         home_peer_registry_survives_restart_and_only_admits_matching_identity_rooms();
+        cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms();
         home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id();
         home_peer_registry_defaults_to_the_active_identity_root();
         live_registry_refresh_connects_a_newly_approved_home_peer();
