@@ -67,6 +67,7 @@ fi
 # when asked; the image still carries no SSH server.
 if grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then' "$workflow" \
    && grep -Fq './os/dev/validation-access.sh prepare "$TILO_RUN/validation" "$TILO_IMAGE" "$RPMS_REF"' "$workflow" \
+   && grep -Fq 'if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic && '\''${{ matrix.arch }}'\'' == aarch64 ]]; then' "$workflow" \
    && grep -Fq './os/tests/validation_drive_qemu.sh' "$workflow" \
    && grep -Fq 'disk_args+=(--etc-overlay "$TILO_VALIDATION_ETC")' "$build" \
    && grep -Fq 'openssh-server' "$repo/os/scripts/verify-runtime-crypto-packages.sh" \

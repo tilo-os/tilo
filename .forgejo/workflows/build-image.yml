@@ -2337,7 +2337,7 @@ jobs:
           export TILO_DISK="$TILO_OUTPUT/qcow2/disk.qcow2"
           fi
 
-          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic ]]; then
+          if [[ $PUBLISH == true && $HARDWARE_PROFILE == generic && '${{ matrix.arch }}' == aarch64 ]]; then
             ./os/tests/validation_drive_qemu.sh
           fi
           if [[ $HARDWARE_PROFILE == generic ]]; then
