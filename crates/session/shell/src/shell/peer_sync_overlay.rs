@@ -11,6 +11,7 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::text_render::TextRenderer;
 
 use crate::shell::i18n::{t, t_args};
@@ -770,8 +771,13 @@ impl PeerSyncOverlay {
         let mut y = rect.y0 + pad;
         let title_size = tokens.typography.scale.base.max(14.0);
         let body_size = tokens.typography.scale.xs.max(10.0);
-        let name_size = tokens.typography.scale.sm.max(12.0);
-        let avail = rect.width() - pad * 2.0;
+        let m = SheetMetrics {
+            rect,
+            pad,
+            avail: rect.width() - pad * 2.0,
+            body: body_size,
+            name: tokens.typography.scale.sm.max(12.0),
+        };
         let title = t(if self.state.invite_review_open {
             "peer-sync-title-review"
         } else if self.state.invite_name.is_some() {
@@ -790,34 +796,17 @@ impl PeerSyncOverlay {
             None,
         );
         y += f64::from(title_size) + 14.0;
-        y = self.draw_body(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            pad,
-            y,
-            body_size,
-            name_size,
-            avail,
-        );
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        y = self.draw_body(&mut ctx, &m, y);
         if self.state.invite_name.is_some() && !self.state.pending_invitations.is_empty() {
-            y = self.draw_pending_invitations(
-                scene,
-                transform,
-                text_renderer,
-                theme,
-                rect,
-                pad,
-                y,
-                body_size,
-            );
+            y = self.draw_pending_invitations(&mut ctx, &m, y);
         }
         if let Some(status) = self.state.status.as_deref() {
-            let status = text_renderer.elide_to_width(status, body_size, f64_to_f32(avail));
-            text_renderer.draw_text(
-                scene,
+            let status = ctx
+                .text
+                .elide_to_width(status, body_size, f64_to_f32(m.avail));
+            ctx.text.draw_text(
+                ctx.scene,
                 &status,
                 body_size,
                 colors.text_primary,
@@ -825,24 +814,18 @@ impl PeerSyncOverlay {
                 None,
             );
         }
-        self.draw_buttons(scene, transform, text_renderer, theme, rect, pad, body_size);
+        self.draw_buttons(&mut ctx, &m);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode invite rows need the same compact paint context as the card"
-    )]
     fn draw_pending_invitations(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
+        m: &SheetMetrics,
         mut y: f64,
-        body: f32,
     ) -> f64 {
+        let (rect, pad, body) = (m.rect, m.pad, m.body);
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let total = self.state.pending_invitations.len();
         let end = self.pending_offset.saturating_add(3).min(total);
@@ -918,28 +901,11 @@ impl PeerSyncOverlay {
                     cancel,
                 ),
             ] {
-                let label = label.as_str();
-                ui::surface::card(
-                    scene,
-                    transform,
+                Self::draw_row_button(
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     button_rect,
-                    button_rect.height() / 2.0,
-                    colors.lift(0.35),
-                );
-                let (width, height) = text.measure(label, body, None);
-                text.draw_text(
-                    scene,
-                    label,
+                    label.as_str(),
                     body,
-                    colors.text_primary,
-                    transform.pre_translate(
-                        (
-                            button_rect.center().x - f64::from(width) / 2.0,
-                            button_rect.center().y - f64::from(height) / 2.0,
-                        )
-                            .into(),
-                    ),
-                    None,
                 );
                 self.button_rects.push((button, button_rect));
             }
@@ -948,99 +914,76 @@ impl PeerSyncOverlay {
         y
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Invite-body variants share render context, card geometry, padding, vertical cursor, text sizes, and available width."
-    )]
-    fn draw_body(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        y: f64,
-        body: f32,
-        name: f32,
-        avail: f64,
-    ) -> f64 {
+    /// A pill button inside a pending-invitation row: its lift and its
+    /// centred label.
+    fn draw_row_button(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, size: f32) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let colors = &theme.tokens.colors;
+        ui::surface::card(
+            scene,
+            transform,
+            rect,
+            rect.height() / 2.0,
+            colors.lift(0.35),
+        );
+        let (width, height) = text.measure(label, size, None);
+        text.draw_text(
+            scene,
+            label,
+            size,
+            colors.text_primary,
+            transform.pre_translate(
+                (
+                    rect.center().x - f64::from(width) / 2.0,
+                    rect.center().y - f64::from(height) / 2.0,
+                )
+                    .into(),
+            ),
+            None,
+        );
+    }
+
+    fn draw_body(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, y: f64) -> f64 {
         let invite_name = self.state.invite_name.clone();
         if let Some(typed) = invite_name.as_deref() {
             if self.state.invite_review_open {
-                self.draw_invite_review(scene, transform, text, theme, rect, pad, y, body, avail)
+                self.draw_invite_review(ctx, m, y)
             } else {
                 let y = draw_naming(
-                    scene,
-                    transform,
-                    text,
-                    theme,
-                    rect,
-                    pad,
+                    ctx,
+                    m,
                     y,
-                    body,
-                    name,
-                    avail,
                     typed,
                     self.state.invite_recipient_path,
                     self.state.invite_recipient_key.as_ref(),
                 );
-                let y =
-                    self.draw_recipient_choices(scene, transform, text, theme, rect, pad, y, body);
-                self.draw_role_choices(scene, transform, text, theme, rect, pad, y, body)
+                let y = self.draw_recipient_choices(ctx, m, y);
+                self.draw_role_choices(ctx, m, y)
             }
         } else if let Some(token) = self.state.invite_token.as_deref() {
-            draw_invite(
-                scene,
-                transform,
-                text,
-                theme,
-                rect,
-                pad,
-                y,
-                avail,
-                token,
-                self.state.invite_for.as_deref(),
-            )
+            draw_invite(ctx, m, y, token, self.state.invite_for.as_deref())
         } else {
-            draw_receiving(
-                scene,
-                transform,
-                text,
-                theme,
-                rect,
-                pad,
-                y,
-                body,
-                name,
-                avail,
-                self.state.connect_input.as_deref().unwrap_or(""),
-            )
+            draw_receiving(ctx, m, y, self.state.connect_input.as_deref().unwrap_or(""))
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
-    )]
     fn draw_recipient_choices(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
+        ctx: &mut PaintCtx<'_>,
+        m: &SheetMetrics,
         mut y: f64,
-        body: f32,
     ) -> f64 {
-        let colors = &theme.tokens.colors;
-        text.draw_text(
-            scene,
+        let SheetMetrics {
+            rect, pad, body, ..
+        } = *m;
+        let colors = &ctx.theme.tokens.colors;
+        ctx.text.draw_text(
+            ctx.scene,
             &t("peer-sync-recipient-heading"),
             body,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
+            ctx.transform.pre_translate((rect.x0 + pad, y).into()),
             None,
         );
         y += f64::from(body) + 7.0;
@@ -1054,10 +997,7 @@ impl PeerSyncOverlay {
             let selected = self.state.invite_recipient_path == InviteRecipientPath::Known
                 && self.state.invite_recipient_key == Some(person.user_public_key);
             self.draw_choice(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 choice,
                 &format!("{} · {}", person.name, person.verification),
                 selected,
@@ -1068,10 +1008,7 @@ impl PeerSyncOverlay {
         }
         let choice = Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 30.0);
         self.draw_choice(
-            scene,
-            transform,
-            text,
-            theme,
+            ctx,
             choice,
             &t("peer-sync-recipient-new"),
             self.state.invite_recipient_path == InviteRecipientPath::New,
@@ -1081,28 +1018,17 @@ impl PeerSyncOverlay {
         choice.y1 + 12.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
-    )]
-    fn draw_role_choices(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        mut y: f64,
-        body: f32,
-    ) -> f64 {
-        let colors = &theme.tokens.colors;
-        text.draw_text(
-            scene,
+    fn draw_role_choices(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
+        let SheetMetrics {
+            rect, pad, body, ..
+        } = *m;
+        let colors = &ctx.theme.tokens.colors;
+        ctx.text.draw_text(
+            ctx.scene,
             &t("peer-sync-role-heading"),
             body,
             colors.text_dim,
-            transform.pre_translate((rect.x0 + pad, y).into()),
+            ctx.transform.pre_translate((rect.x0 + pad, y).into()),
             None,
         );
         y += f64::from(body) + 7.0;
@@ -1118,10 +1044,7 @@ impl PeerSyncOverlay {
             let x0 = rect.x0 + pad + (width + gap) * column;
             let choice = Rect::new(x0, y, x0 + width, y + 32.0);
             self.draw_choice(
-                scene,
-                transform,
-                text,
-                theme,
+                ctx,
                 choice,
                 &label,
                 self.state.invite_role == role,
@@ -1132,22 +1055,16 @@ impl PeerSyncOverlay {
         y + 32.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate-mode renderer keeps scene, theme, typography, and card geometry in one pass"
-    )]
-    fn draw_invite_review(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        mut y: f64,
-        body: f32,
-        avail: f64,
-    ) -> f64 {
+    fn draw_invite_review(&self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64) -> f64 {
+        let SheetMetrics {
+            rect,
+            pad,
+            body,
+            avail,
+            ..
+        } = *m;
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let key = self.state.invite_recipient_key.as_ref();
         let workspace = self.state.invite_context.workspace_name.as_str();
@@ -1212,22 +1129,17 @@ impl PeerSyncOverlay {
         y + f64::from(body) + 10.0
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Invite choices paint from render context, bounds, label, selected state, and text size while registering a specific button action."
-    )]
     fn draw_choice(
         &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
         label: &str,
         selected: bool,
         button: Button,
         body: f32,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         // Selector role (HIG §9.3): the chosen recipient or role is a lift
         // with the tier's hairline, never an accent fill (the accent means
@@ -1269,22 +1181,12 @@ impl PeerSyncOverlay {
         self.button_rects.push((button, rect));
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching draw_body's own \
-                  allow just above in this impl; a context struct would only move the \
-                  count rather than shrink it for a single call site"
-    )]
-    fn draw_buttons(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        pad: f64,
-        body: f32,
-    ) {
+    fn draw_buttons(&mut self, ctx: &mut PaintCtx<'_>, m: &SheetMetrics) {
+        let SheetMetrics {
+            rect, pad, body, ..
+        } = *m;
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let buttons: Vec<(String, Button)> = if self.state.invite_review_open {
             vec![
                 (t("peer-sync-create-invite"), Button::CreateInvite),
@@ -1370,6 +1272,17 @@ impl PeerSyncOverlay {
     }
 }
 
+/// The sheet's card, its inner padding and content width, and the body and
+/// name type sizes every section of one paint pass lays out against.
+#[derive(Clone, Copy)]
+struct SheetMetrics {
+    rect: Rect,
+    pad: f64,
+    avail: f64,
+    body: f32,
+    name: f32,
+}
+
 fn card_rect(host: Rect, state: &PeerSyncSnapshot) -> Rect {
     // A sheet with a form in it takes the sheet width (HIG §9.6), shrinking
     // inside the panel padding on a narrow host rather than a bespoke
@@ -1431,9 +1344,7 @@ fn identity_fingerprint(key: &[u8; 32]) -> String {
 /// How long until `expiry`, as the unit and count the expiry messages
 /// select on.
 fn time_until(expiry: u64) -> (&'static str, u64) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs());
+    let now = tilo_clock::unix_now();
     match expiry.saturating_sub(now) {
         0 => ("now", 0),
         s if s < 120 => ("seconds", s),
@@ -1484,25 +1395,23 @@ fn elide_token(token: &str) -> String {
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Invite naming needs render context, field geometry and text sizes, typed name, recipient mode, and optional recipient identity."
-)]
 fn draw_naming(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    pad: f64,
+    ctx: &mut PaintCtx<'_>,
+    m: &SheetMetrics,
     mut y: f64,
-    body: f32,
-    name: f32,
-    avail: f64,
     typed: &str,
     recipient_path: InviteRecipientPath,
     recipient: Option<&[u8; 32]>,
 ) -> f64 {
+    let SheetMetrics {
+        rect,
+        pad,
+        avail,
+        body,
+        name,
+    } = *m;
+    let (scene, transform, text, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
     text.draw_text(
         scene,
@@ -1598,22 +1507,16 @@ fn draw_naming(
     y + f64::from(body) + 10.0
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "An issued invite paints its recipient summary and fingerprint from render context, card geometry, token, and optional recipient name."
-)]
 fn draw_invite(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    pad: f64,
+    ctx: &mut PaintCtx<'_>,
+    m: &SheetMetrics,
     mut y: f64,
-    avail: f64,
     token: &str,
     invite_for: Option<&str>,
 ) -> f64 {
+    let SheetMetrics {
+        rect, pad, avail, ..
+    } = *m;
     let parsed = parse_invite(token);
     let anyone = t("peer-sync-invite-anyone");
     let who = invite_for.unwrap_or(&anyone);
@@ -1625,10 +1528,7 @@ fn draw_invite(
         )
     });
     y = draw_person(
-        scene,
-        transform,
-        text,
-        theme,
+        ctx,
         Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
         who,
         &sub,
@@ -1636,10 +1536,7 @@ fn draw_invite(
     ) + 12.0;
     if let Some(invite) = parsed {
         y = draw_code(
-            scene,
-            transform,
-            text,
-            theme,
+            ctx,
             Point::new(rect.x0 + pad, y),
             &peer_fingerprint(&invite.owner_peer_id),
             avail,
@@ -1648,30 +1545,17 @@ fn draw_invite(
     y
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Receiving an invite uses render context, card geometry and text sizes, available width, and the pasted token to paint its parse state."
-)]
-fn draw_receiving(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    pad: f64,
-    mut y: f64,
-    body: f32,
-    name: f32,
-    avail: f64,
-    typed: &str,
-) -> f64 {
-    let colors = &theme.tokens.colors;
+fn draw_receiving(ctx: &mut PaintCtx<'_>, m: &SheetMetrics, mut y: f64, typed: &str) -> f64 {
+    let SheetMetrics {
+        rect,
+        pad,
+        avail,
+        body,
+        name,
+    } = *m;
     if let Some(invite) = parse_invite(typed) {
         y = draw_person(
-            scene,
-            transform,
-            text,
-            theme,
+            ctx,
             Rect::new(rect.x0 + pad, y, rect.x1 - pad, y + 44.0),
             &t("peer-sync-invite-received"),
             &role_and_expiry(
@@ -1682,15 +1566,15 @@ fn draw_receiving(
             false,
         ) + 12.0;
         return draw_code(
-            scene,
-            transform,
-            text,
-            theme,
+            ctx,
             Point::new(rect.x0 + pad, y),
             &peer_fingerprint(&invite.owner_peer_id),
             avail,
         );
     }
+    let (scene, transform, text, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+    let colors = &theme.tokens.colors;
     let line = if typed.is_empty() {
         t("peer-sync-paste-invite-hint")
     } else {
@@ -1730,20 +1614,9 @@ fn draw_receiving(
     y
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Invite-person rows combine render context and bounds with primary/secondary labels and named-versus-anonymous avatar state."
-)]
-fn draw_person(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    who: &str,
-    sub: &str,
-    named: bool,
-) -> f64 {
+fn draw_person(ctx: &mut PaintCtx<'_>, rect: Rect, who: &str, sub: &str, named: bool) -> f64 {
+    let (scene, transform, text, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
     let center = Point::new(rect.x0 + 16.0, rect.y0 + 18.0);
     if named {
@@ -1799,15 +1672,9 @@ fn draw_person(
     rect.y0 + 2.0 + f64::from(ns) + 6.0 + f64::from(ss)
 }
 
-fn draw_code(
-    scene: &mut Scene,
-    transform: Affine,
-    text: &mut TextRenderer,
-    theme: &Theme,
-    at: Point,
-    code: &str,
-    avail: f64,
-) -> f64 {
+fn draw_code(ctx: &mut PaintCtx<'_>, at: Point, code: &str, avail: f64) -> f64 {
+    let (scene, transform, text, theme) =
+        (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
     let colors = &theme.tokens.colors;
     let size = theme.tokens.typography.scale.lg.max(15.0);
     let (_, fh) = text.measure(code, size, None);

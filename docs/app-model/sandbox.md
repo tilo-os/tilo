@@ -319,7 +319,8 @@ After all three layers, your `main()` sees:
 - `TILO_PARTICIPATION` — `read-only` or `author`, when a workspace-scoped
   capability names you. Absent otherwise.
 - `HTTPS_PROXY` / `ALL_PROXY` / `TILO_NET_GATE` — only when your egress is
-  filtered to a host allowlist.
+  filtered to a host allowlist. On macOS the proxy variables name the gate
+  and `TILO_NET_GATE` is absent.
 - `TILO_WORKSPACE_ID` — the workspace the compositor opened you into, as a
   UUID. Two things read it: `runtime::is_tilo_native()` only asks whether it
   is set, and the UI toolkit uses the value as the collaboration cluster id.
@@ -381,11 +382,61 @@ because Seatbelt matches real paths (`/tmp` is `/private/tmp`).
 | Payload | Read, map-executable and exec. Never writable, even under a broader user grant |
 | Runtime dylibs | Read and map-executable |
 | Container | Read and write, never exec: `~/Library/Application Support/Tilo/tilo-rooms/<room>/<package>`, which is also `HOME`, `XDG_*` and `TMPDIR` |
+| Shader cache | Read and write, never exec: the app's own directory below the per-user cache directory, `…/C/so.tilo+<room>+<package>`. The launcher sets `DIRHELPER_USER_DIR_SUFFIX` so `confstr(_CS_DARWIN_USER_CACHE_DIR)` names it, and Metal keeps compiled shaders there across launches. No app reaches another's |
 | User grants | `ro_paths` read, `rw_paths` read and write |
+| Picked files | Read and write, never exec, of exactly what the person picked in a chooser the runtime showed (below) |
+| Camera, microphone | No device and no TCC service; frames and samples arrive over an inherited socket from the runtime (below) |
 | Network: off | No sockets beyond `AF_UNIX` creation. No connect or bind, IP or filesystem |
-| Network: allowlist | Connect to the egress gate's Unix socket only (`TILO_NET_GATE`) |
+| Network: allowlist | Connect to one loopback port only: the egress gate the launcher runs for this launch, named by `HTTP(S)_PROXY` and `ALL_PROXY` |
 | Network: host | IP in and out, the system resolver, `trustd`. Filesystem sockets such as an `ssh-agent` stay closed |
 | Service descriptors | Inherited from the runtime at fixed numbers. Every other descriptor is closed by `POSIX_SPAWN_CLOEXEC_DEFAULT` |
+
+**Choosing files.** A panel the app opened itself would run inside its
+sandbox: it would show the disk, and the app could then open nothing it
+picked. So `tilo_dialogs::system_picker()` in a Seatbelt app asks the
+runtime instead, over a socket it inherits (`TILO_FILE_PICKER_FD`). The
+runtime shows `NSOpenPanel` or `NSSavePanel` in a helper process of its own,
+outside the sandbox, and answers each picked path with a sandbox extension:
+the kernel-signed token App Sandbox's own panels hand out. The app consumes
+it, and the profile's one extension rule then lets that path, and nothing
+else, through for the rest of the process's life. The app says what kind of
+chooser it wants and never names a path. A Save destination is created empty
+before it is granted, since only an existing file can be. It is granted
+with exactly one sibling, `.<name>.tilo-save`
+(`tilo_dialogs::portal::save_sibling`), so an app saves atomically by
+writing that and renaming it over the destination
+(`tilo_dialogs::portal::replace_saved`); nothing else in the folder is
+writable, so an app that picks its own temporary name cannot save that way.
+A grant does not outlive the process.
+
+**Camera and microphone.** The runtime, which holds the TCC permission,
+captures on the app's behalf. The app inherits a control socket
+(`TILO_SVC_CAPTURE_FD`); `tilo_capture::VideoCapture::open_camera` and
+`AudioCapture::open_microphone` use it by themselves in such an app, so
+its code is the same everywhere. Each request sends one end of a fresh
+socket pair with it, and the runtime answers on that end, granted or
+refused, then streams RGBA frames or `f32` samples until the app drops the
+capture or the grant goes (`tilo_capture::broker`). The app names a device
+and a format, never a device handle. What the runtime allows:
+
+1. Only a device the manifest declares: `[sandbox.portals] camera =
+   "via-host"` or `microphone = "via-host"`. Anything else is refused
+   without asking anyone.
+2. The person's decision for this app in this workspace, kept in the
+   runtime profile (`state/device-grants`, `tilo_capture::grants`). The
+   first request asks them in a native alert the runtime shows outside the
+   sandbox, in their language (the runtime's Fluent catalogue), with
+   "Don't Allow" as the default; the answer, either way, is kept.
+3. A revoked grant ends a running capture within a frame and asks again
+   next time. Every decision is a resource with a `revoke` action on the
+   profile's `console.sock`, the door a person's assistive tool, a script
+   or an agent uses: `tilo-control --socket <profile>/console.sock actions
+   list`, then `actions invoke runtime revoke@device-grant:<device>:<room>:<app>`.
+   Any process may also call `DeviceGrants::revoke`: the file is the truth.
+
+The runtime captures through the crate's AVFoundation backend and links no
+GStreamer; `Runtime.entitlements` gives the signed `tilo-runtime` the camera
+and microphone, and `Info.plist` says why when macOS asks.
 
 The profile is applied by `/usr/bin/sandbox-exec`, which is SIP-protected.
 It runs a preflight first, against a target that cannot exist. If the
@@ -402,15 +453,15 @@ nothing is ever started unsandboxed.
   user clients, which are a large kernel attack surface that no profile
   can narrow. Mach services the profile allows (WindowServer, fonts,
   pasteboard) are reachable IPC surface as well.
-- Device grants (camera, microphone) are not honoured under Seatbelt.
-  macOS gates them through TCC, and the profile grants no TCC service,
-  so the app is denied rather than widened.
-- An allowlisted network under Seatbelt reaches only the gate's Unix
-  socket. There is no network namespace in which to run the loopback
-  relay, so `HTTP_PROXY`/`ALL_PROXY`-style clients are offline until the
-  app talks to `TILO_NET_GATE` directly.
-- Metal's shader cache under `/var/folders/…/C` is not writable, so
-  shaders recompile on each launch.
+- A camera or microphone is never opened by the app: macOS gates them
+  through TCC, which the profile grants no service of. It is brokered
+  instead (below).
+- An allowlisted network under Seatbelt has no empty namespace behind it,
+  so the gate listens on a loopback TCP port instead of a Unix socket, and
+  the profile admits that one port. Any local process can reach the port;
+  that grants nothing, because an unconfined process already has the
+  network and the gate reaches only what the allowlist names. There is no
+  `TILO_NET_GATE` on macOS.
 - A process whose ad-hoc signature claims the App Sandbox entitlement
   gets Seatbelt, and then `libsystem_secinit` tries to apply App Sandbox
   on top. That aborts the process, which fails closed.

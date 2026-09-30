@@ -167,14 +167,6 @@ fn sidecar(root: &Path, agent: &str) -> Option<PathBuf> {
     safe.then(|| root.join("agent-history").join(format!("{agent}.jsonl")))
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |elapsed| {
-            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
-        })
-}
-
 /// Read one agent's notes (a missing or damaged line is skipped).
 pub(crate) fn read_notes(root: &Path, agent: &str) -> Vec<StepNote> {
     let Some(path) = sidecar(root, agent) else {
@@ -204,7 +196,7 @@ pub(crate) fn note(root: &Path, agent: &str, mut note: StepNote) {
         return;
     }
     if note.at_ms == 0 {
-        note.at_ms = now_ms();
+        note.at_ms = tilo_clock::unix_now_ms();
     }
     let result = (|| -> std::io::Result<()> {
         if let Some(dir) = path.parent() {
@@ -219,9 +211,7 @@ pub(crate) fn note(root: &Path, agent: &str, mut note: StepNote) {
                 .filter_map(|n| serde_json::to_string(n).ok())
                 .map(|line| line + "\n")
                 .collect();
-            let temporary = path.with_extension("jsonl.tmp");
-            std::fs::write(&temporary, text)?;
-            return std::fs::rename(temporary, &path);
+            return atomic_file::write(&path, text.as_bytes());
         }
         let mut file = std::fs::OpenOptions::new()
             .create(true)

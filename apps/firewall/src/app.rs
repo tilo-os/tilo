@@ -13,6 +13,7 @@
 //! edits so two instances pointed at one collab socket edit the same ruleset.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,6 +28,7 @@ use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
 use ui::chrome::{
     PANEL_BORDER_ALPHA, SelectionState, chrome_hairline, panel_border, panel_ground, selection_tier,
 };
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -711,7 +713,7 @@ impl FirewallApp {
     /// executor (a pinned actor + committed change, so it replays byte-identically
     /// on peers), exactly as the palette does. The document heads captured just
     /// before the first action of an event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     /// The action mutates its addressed shared document field; we then adopt
     /// the result back into the in-memory view so the next frame paints it, and
     /// remember the JSON so `sync` doesn't re-adopt our own write as a remote
@@ -1405,14 +1407,16 @@ impl FirewallApp {
         let mut ft: Option<NodeId> = None;
         input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            &mut ft,
-            NodeId::new(0),
-            taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: NodeId::new(0),
+                taffy,
+            },
         );
         handled
     }
@@ -1445,6 +1449,11 @@ fn selected_on(ground: Color) -> (Color, Color) {
 }
 
 impl Widget for FirewallApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "firewall.apply",
@@ -1454,7 +1463,8 @@ impl Widget for FirewallApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             // Adopt an existing shared config, or publish the one we read
             // from the host. We only ever publish REAL data: a config we
@@ -1468,14 +1478,7 @@ impl Widget for FirewallApp {
                     if self.config.zone(self.selected_zone).is_none() {
                         self.selected_zone = self.config.default_zone;
                     }
-                    // A legacy JSON document is accepted once, then promoted
-                    // to native maps before any visible control can dispatch.
-                    let snapshot = if FirewallDoc::has_native(state) {
-                        self.config.to_json()
-                    } else {
-                        FirewallDoc::store(state, &self.config)
-                    };
-                    self.last_json = Some(snapshot);
+                    self.last_json = Some(self.config.to_json());
                 } else {
                     self.status = "Shared firewall configuration was rejected as invalid".into();
                 }
@@ -1612,58 +1615,46 @@ impl Widget for FirewallApp {
         self.draw(scene, t, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             WindowEvent::KeyboardInput { .. } => {
-                self.handle_key(event, *modifiers, state, path, handled, taffy);
+                self.handle_key(
+                    event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.taffy,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_click(
-                    self.last_cursor,
-                    state,
-                    handled,
-                    scale_factor,
-                    *modifiers,
-                    path,
-                    taffy,
-                    event,
-                );
+                self.handle_click(event, ctx, self.last_cursor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1672,20 +1663,20 @@ impl Widget for FirewallApp {
                 Self::forward_to_input(
                     &mut self.form.port,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
                 Self::forward_to_input(
                     &mut self.form.source,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    path,
-                    taffy,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.taffy,
                 );
             }
             _ => {}
@@ -1813,116 +1804,29 @@ impl Widget for FirewallApp {
         self.rail.is_animating()
     }
 
-    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    #[allow(
-        clippy::expect_used,
-        reason = "the empty string operation payload is always serializable"
-    )]
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if !self.available {
-            return vec![
-                tilo_actions::Resource::new(
-                    "firewall.recovery",
-                    "firewall.recovery",
-                    "Firewall service recovery",
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "retry",
-                        "Retry firewalld connection",
-                        tilo_actions::OperationKind::Effect,
-                        "firewall.retry",
-                        &"",
-                    )
-                    .expect("firewall retry payload is serializable")
-                    .with_contract(tilo_actions::ActionContract {
-                        retry: tilo_actions::RetryPolicy::Idempotent,
-                        discovery: tilo_actions::DiscoveryScope::Launchable,
-                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                        result: tilo_actions::ResultSpec::Job,
-                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
-                        ..tilo_actions::ActionContract::default()
-                    }),
-                ),
-            ];
-        }
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(root) = resources.first_mut() {
-            root.actions.push(
-                tilo_actions::ActionSpec::operation(
-                    "apply",
-                    "Apply firewall configuration",
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &"",
-                )
-                .expect("firewall apply payload is serializable")
-                .with_contract(tilo_actions::ActionContract {
-                    permission: tilo_actions::PermissionRequirement::Admin,
-                    risk: tilo_actions::RiskLevel::Privileged,
-                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
-                    retry: tilo_actions::RetryPolicy::Idempotent,
-                    discovery: tilo_actions::DiscoveryScope::Launchable,
-                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
-                    result: tilo_actions::ResultSpec::Job,
-                    ..tilo_actions::ActionContract::default()
-                }),
-            );
-        }
-        resources
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        _payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        match type_id {
-            "firewall.apply" | "firewall.set-enabled" | "firewall.set-panic" | "firewall.retry" => {
-                Err("firewall effects require the lifecycle-capable operation host".into())
-            }
-            _ => Ok(false),
-        }
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        if self.pending_effect.is_some() {
-            return Err("another firewall operation is still running".into());
-        }
-        let effect = match type_id {
-            "firewall.retry" => FirewallEffect::Retry,
-            _ if !self.available => return Err("Firewall service is unavailable".into()),
-            "firewall.apply" => FirewallEffect::Apply,
-            "firewall.set-enabled" => FirewallEffect::SetEnabled(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            "firewall.set-panic" => FirewallEffect::SetPanic(
-                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
-            ),
-            _ => return Ok(None),
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(None)
     }
 
     fn poll_resource_operation(
@@ -1958,9 +1862,10 @@ impl Widget for FirewallApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "firewall.retry" && matches!(action, A11yAction::Activate) {
             self.retry_connect(state);
             return true;
@@ -2037,12 +1942,111 @@ impl Widget for FirewallApp {
         }
         false
     }
+}
 
+impl ui::resources::PublishesResources for FirewallApp {
+    /// Publish the open configuration + its zones/rules so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    #[allow(
+        clippy::expect_used,
+        reason = "the empty string operation payload is always serializable"
+    )]
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        if !self.available {
+            return vec![
+                tilo_actions::Resource::new(
+                    "firewall.recovery",
+                    "firewall.recovery",
+                    "Firewall service recovery",
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "retry",
+                        "Retry firewalld connection",
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.retry",
+                        &"",
+                    )
+                    .expect("firewall retry payload is serializable")
+                    .with_contract(tilo_actions::ActionContract {
+                        retry: tilo_actions::RetryPolicy::Idempotent,
+                        discovery: tilo_actions::DiscoveryScope::Launchable,
+                        execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                        result: tilo_actions::ResultSpec::Job,
+                        tags: vec!["security".into(), "firewall".into(), "recovery".into()],
+                        ..tilo_actions::ActionContract::default()
+                    }),
+                ),
+            ];
+        }
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if let Some(root) = resources.first_mut() {
+            root.actions.push(
+                tilo_actions::ActionSpec::operation(
+                    "apply",
+                    "Apply firewall configuration",
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &"",
+                )
+                .expect("firewall apply payload is serializable")
+                .with_contract(tilo_actions::ActionContract {
+                    permission: tilo_actions::PermissionRequirement::Admin,
+                    risk: tilo_actions::RiskLevel::Privileged,
+                    confirmation: tilo_actions::ConfirmationPolicy::Confirm,
+                    retry: tilo_actions::RetryPolicy::Idempotent,
+                    discovery: tilo_actions::DiscoveryScope::Launchable,
+                    execution: tilo_actions::ExecutionMode::Background { cancellable: true },
+                    result: tilo_actions::ResultSpec::Job,
+                    ..tilo_actions::ActionContract::default()
+                }),
+            );
+        }
+        resources
+    }
+}
+
+impl ui::undo::CommittedActions for FirewallApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its firewall action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
+    }
+}
+
+impl FirewallApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.pending_effect.is_some() {
+            return Err("another firewall operation is still running".into());
+        }
+        let effect = match type_id {
+            "firewall.retry" => FirewallEffect::Retry,
+            _ if !self.available => return Err("Firewall service is unavailable".into()),
+            "firewall.apply" => FirewallEffect::Apply,
+            "firewall.set-enabled" => FirewallEffect::SetEnabled(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            "firewall.set-panic" => FirewallEffect::SetPanic(
+                serde_json::from_slice(payload).map_err(|error| error.to_string())?,
+            ),
+            _ => return Ok(None),
+        };
+        self.pending_effect = Some(PendingFirewallEffect { invocation, effect });
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2314,55 +2318,29 @@ impl FirewallApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the click-dispatch entry point threading the shared event/input context; \
-                  splitting the body into handle_click_* helpers (below) is what keeps this \
-                  one under the line-length lint, not shrinking its argument list further"
-    )]
-    fn handle_click(
-        &mut self,
-        p: Point,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
-        event: &WindowEvent,
-    ) {
+    fn handle_click(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>, p: Point) {
         // Nothing is interactive while firewalld is unavailable — there is
         // no real config to edit or apply.
         if !self.available {
             if self.layout.recover_btn.contains(p) {
-                self.retry_connect(state);
-                *handled = true;
+                self.retry_connect(ctx.state);
+                *ctx.handled = true;
             }
             return;
         }
 
         let l = self.layout.clone();
 
-        if self.handle_click_rail(p, &l, handled) {
+        if self.handle_click_rail(p, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_primary(p, state, &l, handled) {
+        if self.handle_click_primary(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_form(p, state, &l, handled) {
+        if self.handle_click_form(p, ctx.state, &l, ctx.handled) {
             return;
         }
-        if self.handle_click_text_field(
-            p,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            taffy,
-            &l,
-            handled,
-        ) {
+        if self.handle_click_text_field(event, ctx, p, &l) {
             return;
         }
 
@@ -2571,35 +2549,25 @@ impl FirewallApp {
 
     /// Port/source text fields: focus + forward the press for caret
     /// placement. Returns whether the click was consumed here.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same shared event/input context as handle_click, split out only \
-                  to keep handle_click itself under the line-length lint"
-    )]
     fn handle_click_text_field(
         &mut self,
-        p: Point,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
+        p: Point,
         l: &Layout,
-        handled: &mut bool,
     ) -> bool {
         if !self.form.is_service && l.port_field.contains(p) {
             self.set_form_focus(Some(FocusField::Port));
             Self::forward_to_input(
                 &mut self.form.port,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         if l.source_field.contains(p) {
@@ -2607,13 +2575,13 @@ impl FirewallApp {
             Self::forward_to_input(
                 &mut self.form.source,
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                taffy,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.taffy,
             );
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -2723,20 +2691,15 @@ impl FirewallApp {
         let card = Rect::new(cx, cy, cx + cw, cy + ch);
         paint::card(scene, t, card, CARD_R, theme.tokens.colors.surfaces.raised);
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "firewalld unavailable",
             18.0,
             theme.text_primary,
-            card.x0 + 24.0,
-            card.y0 + 26.0,
+            Point::new(card.x0 + 24.0, card.y0 + 26.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             if self.status.is_empty() {
                 "The firewalld service is not installed or not running."
             } else {
@@ -2748,30 +2711,23 @@ impl FirewallApp {
             } else {
                 theme.tokens.colors.semantic.danger
             },
-            card.x0 + 24.0,
-            card.y0 + 62.0,
+            Point::new(card.x0 + 24.0, card.y0 + 62.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "No live firewall is displayed, and no rules have been changed.",
             13.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 106.0,
+            Point::new(card.x0 + 24.0, card.y0 + 106.0),
             cw - 48.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "Start or authorize firewalld, then retry (keyboard: R).",
             12.0,
             theme.text_dim,
-            card.x0 + 24.0,
-            card.y0 + 132.0,
+            Point::new(card.x0 + 24.0, card.y0 + 132.0),
             cw - 48.0,
         );
         Button::paint(
@@ -2865,16 +2821,15 @@ impl FirewallApp {
             let sub_max = (ctrl_left - sub_x).max(80.0);
             let shown = tr.elide_to_width(&sub, 13.0, sub_max as f32);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 13.0,
                 sub_color,
-                sub_x,
-                h.y0,
-                h.height(),
-                sub_max,
+                Rect {
+                    x0: sub_x,
+                    x1: sub_x + sub_max,
+                    ..h
+                },
             );
         }
     }
@@ -2901,15 +2856,14 @@ impl FirewallApp {
                 Mode::DryRun => "dry-run",
             };
             paint::label_right_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 mode_txt,
                 11.0,
                 theme.text_dim,
-                l.enable_pill.x0 - 10.0,
-                h.y0,
-                h.height(),
+                Rect {
+                    x1: l.enable_pill.x0 - 10.0,
+                    ..h
+                },
             );
         }
 
@@ -2939,16 +2893,15 @@ impl FirewallApp {
         );
         let w = paint::text_width(tr, pill_txt, 12.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             pill_txt,
             12.0,
             pill_fg,
-            l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
-            l.enable_pill.y0,
-            l.enable_pill.height(),
-            w + 2.0,
+            Rect {
+                x0: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0,
+                x1: l.enable_pill.x0 + (l.enable_pill.width() - w) / 2.0 + w + 2.0,
+                ..l.enable_pill
+            },
         );
 
         // Panic and Apply are the shared button face: rest edge, hover and
@@ -3027,14 +2980,11 @@ impl FirewallApp {
             ),
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "ZONES",
             11.0,
             theme.text_dim,
-            rail.x0 + 18.0,
-            rail.y0 + 18.0,
+            Point::new(rail.x0 + 18.0, rail.y0 + 18.0),
             120.0,
         );
 
@@ -3048,10 +2998,6 @@ impl FirewallApp {
     /// edge, HIG §9.3 — the accent stays for the *live* default zone's chip),
     /// the trust dot, the name and the active chip or rule count. Split out
     /// of [`Self::draw_rail`] to keep it under the line budget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "scene/t/tr/theme is the fixed draw-call boilerplate; the rest is this row's zone, rect and the rail's selected face"
-    )]
     fn draw_rail_zone_row(
         &self,
         scene: &mut Scene,
@@ -3093,48 +3039,45 @@ impl FirewallApp {
             theme.text_dim
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             kind.name(),
             14.0,
             name_color,
-            rect.x0 + 30.0,
-            rect.y0,
-            rect.height(),
-            120.0,
+            Rect {
+                x0: rect.x0 + 30.0,
+                x1: rect.x0 + 30.0 + 120.0,
+                ..rect
+            },
         );
 
         // Active marker chip.
         if is_default {
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "active",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                rect.x1 - 52.0,
-                cy,
-                6.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 6.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(rect.x1 - 52.0, cy),
             );
         } else if let Some(z) = self.config.zone(kind) {
             // Rule + service count.
             let n = z.rules.len() + z.services.len();
             if n > 0 {
                 paint::label_right_v(
-                    tr,
-                    scene,
-                    t,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     &n.to_string(),
                     11.0,
                     theme.text_dim,
-                    rect.x1 - 8.0,
-                    rect.y0,
-                    rect.height(),
+                    Rect {
+                        x1: rect.x1 - 8.0,
+                        ..rect
+                    },
                 );
             }
         }
@@ -3182,14 +3125,11 @@ impl FirewallApp {
         inset_x: f64,
     ) {
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.selected_zone.name(),
             22.0,
             theme.text_primary,
-            inset_x,
-            card.y0 + PAD,
+            Point::new(inset_x, card.y0 + PAD),
             260.0,
         );
         let (title_w, title_h) = tr.measure(self.selected_zone.name(), 22.0, None);
@@ -3197,18 +3137,20 @@ impl FirewallApp {
             // The chip rides the title's measured centre line rather than a
             // nominal offset, so it stays beside the name at every text scale.
             let _ = paint::chip(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "ACTIVE ZONE",
-                9.0,
-                theme.tokens.colors.on_surface(theme.accent_primary).ink,
-                theme.accent_primary,
-                inset_x + f64::from(title_w) + S3,
-                card.y0 + PAD + f64::from(title_h) / 2.0,
-                7.0,
-                16.0,
-                8.0,
+                &paint::ChipStyle {
+                    size: 9.0,
+                    ink: theme.tokens.colors.on_surface(theme.accent_primary).ink,
+                    fill: theme.accent_primary,
+                    pad_x: 7.0,
+                    height: 16.0,
+                    radius: 8.0,
+                },
+                Point::new(
+                    inset_x + f64::from(title_w) + S3,
+                    card.y0 + PAD + f64::from(title_h) / 2.0,
+                ),
             );
         }
         // The description follows the title's measured line, the chips
@@ -3219,14 +3161,11 @@ impl FirewallApp {
             (card.width() - 2.0 * PAD) as f32,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &shown,
             12.0,
             theme.text_dim,
-            inset_x,
-            card.y0 + self.metrics.desc_top(),
+            Point::new(inset_x, card.y0 + self.metrics.desc_top()),
             card.width() - 2.0 * PAD,
         );
     }
@@ -3282,11 +3221,6 @@ impl FirewallApp {
     /// A two-tier stat: a dim caption with a coloured value beneath, framed
     /// in a soft chip filling `rect` (sized by `Metrics::measure` from the
     /// same caption/value).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a single-call-site draw primitive; bundling position/color/text into a \
-                  struct would only add construction boilerplate for no real readability gain"
-    )]
     fn stat_chip(
         scene: &mut Scene,
         t: Affine,
@@ -3308,25 +3242,19 @@ impl FirewallApp {
         let stack_h = f64::from(cap_h) + f64::from(val_h);
         let cap_top = rect.y0 + (rect.height() - stack_h) / 2.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             caption,
             9.0,
             theme.text_dim,
-            rect.x0 + 10.0,
-            cap_top,
+            Point::new(rect.x0 + 10.0, cap_top),
             inner + 2.0,
         );
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             value,
             13.0,
             value_color,
-            rect.x0 + 10.0,
-            cap_top + f64::from(cap_h),
+            Point::new(rect.x0 + 10.0, cap_top + f64::from(cap_h)),
             inner + 2.0,
         );
     }
@@ -3357,16 +3285,16 @@ impl FirewallApp {
         // control at phone widths.
         if l.content_seg.is_empty() {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Rules",
                 15.0,
                 theme.text_primary,
-                l.summary.x0,
-                y0,
-                first_seg.height(),
-                120.0,
+                Rect::new(
+                    l.summary.x0,
+                    y0,
+                    l.summary.x0 + 120.0,
+                    y0 + first_seg.height(),
+                ),
             );
         }
         let labels = [
@@ -3444,14 +3372,11 @@ impl FirewallApp {
 
         if l.rule_rows.is_empty() {
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "No rules match this filter.",
                 13.0,
                 theme.text_dim,
-                cols.text,
-                table.y0 + head_h + PAD,
+                Point::new(cols.text, table.y0 + head_h + PAD),
                 300.0,
             );
             return;
@@ -3464,17 +3389,12 @@ impl FirewallApp {
             let Some(rule) = z.rules.iter().find(|r| r.id == row.id) else {
                 continue;
             };
-            self.draw_table_row(scene, t, tr, theme, l, cols, row, rule);
+            self.draw_table_row(&mut PaintCtx::new(scene, t, tr, theme), l, cols, row, rule);
         }
     }
 
     /// Column headers — five columns collapse to two labels when narrow —
     /// and the separator line beneath them.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one call site; the caption band height comes from the measured metrics \
-                  the row layout was built with"
-    )]
     fn draw_table_header(
         scene: &mut Scene,
         t: Affine,
@@ -3493,25 +3413,56 @@ impl FirewallApp {
         let hh = head_h;
         let hc = theme.text_dim;
         if l.narrow {
-            paint::label_v(tr, scene, t, "RULE", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
-        } else {
-            paint::label_v(tr, scene, t, "TARGET", 10.0, hc, cols.text, hy0, hh, 200.0);
-            paint::label_v(tr, scene, t, "PROTO", 10.0, hc, cols.proto, hy0, hh, 80.0);
-            paint::label_v(tr, scene, t, "ACTION", 10.0, hc, cols.action, hy0, hh, 80.0);
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "RULE",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
+        } else {
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "TARGET",
+                10.0,
+                hc,
+                Rect::new(cols.text, hy0, cols.text + 200.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "PROTO",
+                10.0,
+                hc,
+                Rect::new(cols.proto, hy0, cols.proto + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ACTION",
+                10.0,
+                hc,
+                Rect::new(cols.action, hy0, cols.action + 80.0, hy0 + hh),
+            );
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "SOURCE",
                 10.0,
                 hc,
-                cols.source,
-                hy0,
-                hh,
-                160.0,
+                Rect::new(cols.source, hy0, cols.source + 160.0, hy0 + hh),
             );
-            paint::label_v(tr, scene, t, "ON", 10.0, hc, cols.ctrl, hy0, hh, 60.0);
+            paint::label_v(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                "ON",
+                10.0,
+                hc,
+                Rect::new(cols.ctrl, hy0, cols.ctrl + 60.0, hy0 + hh),
+            );
         }
         // The caption rule is derived against the table it sits in and inset
         // `S3` from the card edge (HIG §9.5), never run into the radius.
@@ -3528,50 +3479,40 @@ impl FirewallApp {
 
     /// One rule row: selection highlight, narrow/wide content, then the
     /// shared toggle + delete controls and row separator.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint orchestrator threading the shared scene/transform/theme plus \
-                  this row's own geometry and data; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row(
         &self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         l: &Layout,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
     ) {
+        let theme = ctx.theme;
         let selected = self.selected_rule == Some(row.id);
         if selected {
             // Selected row: a step measured against the raised table card it
             // sits on, with a derived ring — not an accent ring, and not
             // `selection_tier`'s lift, which is the card's own colour on light.
             let (fill, edge) = selected_on(theme.tokens.colors.surfaces.raised);
-            paint::fill_round(scene, t, row.rect, 8.0, fill);
-            scene.stroke(
+            paint::fill_round(ctx.scene, ctx.transform, row.rect, 8.0, fill);
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
-                t,
+                ctx.transform,
                 edge,
                 None,
                 &ui::surface::edge_outline(row.rect, 8.0),
             );
         }
         let style = RowStyle::for_rule(theme, rule);
-        let src = rule.source_label();
-
         if l.narrow {
-            Self::draw_table_row_narrow(scene, t, tr, &self.metrics, cols, row, rule, &style, src);
+            self.draw_table_row_narrow(ctx, cols, row, rule, &style);
         } else {
-            Self::draw_table_row_wide(scene, t, tr, cols, row, rule, &style, src);
+            Self::draw_table_row_wide(ctx, cols, row, rule, &style);
         }
 
         Self::draw_table_row_controls(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             theme,
             row,
             rule.enabled,
@@ -3581,29 +3522,21 @@ impl FirewallApp {
 
     /// Two-line row: target + action on top, proto · source beneath. Used
     /// when the table is too narrow for five columns abreast.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_narrow(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        m: &Metrics,
+        &self,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let (m, src) = (&self.metrics, rule.source_label());
         // First-line centre and second-line top follow the measured 14px
         // label, as the row height the layout built does.
         let dot_y = row.rect.y0 + m.rule_dot_y;
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cols.dot, dot_y),
             3.0,
             if style.dim {
@@ -3615,33 +3548,29 @@ impl FirewallApp {
         // Action chip on the top line, right-aligned 8px before the toggle
         // (a fixed left edge ran under the toggle once the label doubled);
         // the target label elides against the chip.
-        let chip_w = paint::text_width(tr, style.action_text, 11.0) + 16.0;
+        let chip_w = paint::text_width(ctx.text, style.action_text, 11.0) + 16.0;
         let chip_x = row.toggle.x0 - 8.0 - chip_w;
         let label_max = chip_x - cols.text - 8.0;
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cols.text,
-            row.rect.y0 + 10.0,
+            Point::new(cols.text, row.rect.y0 + 10.0),
             label_max.max(40.0),
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            chip_x,
-            dot_y,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(chip_x, dot_y),
         );
         // Second line: proto · source.
         let sub = if src == "anywhere" {
@@ -3650,35 +3579,24 @@ impl FirewallApp {
             format!("{} · {}", rule.matcher.proto_label(), src)
         };
         paint::label(
-            tr,
-            scene,
-            t,
+            ctx,
             &sub,
             12.0,
             style.secondary,
-            cols.text,
-            row.rect.y0 + m.rule_sub_top,
+            Point::new(cols.text, row.rect.y0 + m.rule_sub_top),
             row.rect.width() - 30.0,
         );
     }
 
     /// Five columns abreast: target, proto, action chip, source.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "per-row paint helper threading the shared scene/transform plus this row's \
-                  own geometry and precomputed style; a single call site, so bundling further \
-                  would only add boilerplate"
-    )]
     fn draw_table_row_wide(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         cols: RuleColumns,
         row: &RuleRow,
         rule: &Rule,
         style: &RowStyle,
-        src: &str,
     ) {
+        let src = rule.source_label();
         let RuleColumns {
             dot: cx_dot,
             text: cx_text,
@@ -3689,8 +3607,8 @@ impl FirewallApp {
         } = cols;
         let cy = f64::midpoint(row.rect.y0, row.rect.y1);
         paint::dot(
-            scene,
-            t,
+            ctx.scene,
+            ctx.transform,
             Point::new(cx_dot, cy),
             3.0,
             if style.dim {
@@ -3700,42 +3618,39 @@ impl FirewallApp {
             },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.label(),
             14.0,
             style.primary,
-            cx_text,
-            row.rect.y0,
-            row.rect.height(),
-            cx_proto - cx_text - 4.0,
+            Rect {
+                x0: cx_text,
+                x1: cx_proto - 4.0,
+                ..row.rect
+            },
         );
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             &rule.matcher.proto_label(),
             12.0,
             style.secondary,
-            cx_proto,
-            row.rect.y0,
-            row.rect.height(),
-            60.0,
+            Rect {
+                x0: cx_proto,
+                x1: cx_proto + 60.0,
+                ..row.rect
+            },
         );
         let _ = paint::chip(
-            tr,
-            scene,
-            t,
+            ctx,
             style.action_text,
-            11.0,
-            style.action_color,
-            alpha(style.action_color, 40),
-            cx_action,
-            cy,
-            8.0,
-            20.0,
-            6.0,
+            &paint::ChipStyle {
+                size: 11.0,
+                ink: style.action_color,
+                fill: alpha(style.action_color, 40),
+                pad_x: 8.0,
+                height: 20.0,
+                radius: 6.0,
+            },
+            Point::new(cx_action, cy),
         );
         let src_color = if src == "anywhere" {
             style.secondary
@@ -3743,16 +3658,15 @@ impl FirewallApp {
             style.primary
         };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            ctx,
             src,
             12.0,
             src_color,
-            cx_source,
-            row.rect.y0,
-            row.rect.height(),
-            cx_ctrl - cx_source - 8.0,
+            Rect {
+                x0: cx_source,
+                x1: cx_ctrl - 8.0,
+                ..row.rect
+            },
         );
     }
 
@@ -3857,27 +3771,23 @@ impl FirewallApp {
         // same offsets `layout_center` uses for `svc_top`).
         let header_h = if l.compact_services { 38.0 } else { 48.0 };
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             "SERVICES",
             11.0,
             theme.text_dim,
-            panel.x0 + 16.0,
-            panel.y0,
-            header_h,
-            120.0,
+            Rect::new(
+                panel.x0 + 16.0,
+                panel.y0,
+                panel.x0 + 16.0 + 120.0,
+                panel.y0 + header_h,
+            ),
         );
         paint::label_right_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &format!("{on_count} enabled"),
             11.0,
             theme.accent_primary,
-            panel.x1 - 16.0,
-            panel.y0,
-            header_h,
+            Rect::new(panel.x0, panel.y0, panel.x1 - 16.0, panel.y0 + header_h),
         );
 
         let Some(z) = self.config.zone(self.selected_zone) else {
@@ -3893,35 +3803,32 @@ impl FirewallApp {
             }
             let compact = l.compact_services;
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 def.name,
                 if compact { 13.0 } else { 14.0 },
                 theme.text_primary,
-                row.x0 + 10.0,
-                row.y0 + if compact { 3.0 } else { 5.0 },
+                Point::new(row.x0 + 10.0, row.y0 + if compact { 3.0 } else { 5.0 }),
                 row.width() - 60.0,
             );
             let detail = format!("{}/{}", def.ports, def.proto);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &detail,
                 10.0,
                 theme.text_dim,
-                if compact {
-                    row.x0 + 118.0
-                } else {
-                    row.x0 + 10.0
-                },
-                row.y0
-                    + if compact {
-                        5.0
+                Point::new(
+                    if compact {
+                        row.x0 + 118.0
                     } else {
-                        self.metrics.svc_detail_top
+                        row.x0 + 10.0
                     },
+                    row.y0
+                        + if compact {
+                            5.0
+                        } else {
+                            self.metrics.svc_detail_top
+                        },
+                ),
                 if compact {
                     row.width() - 180.0
                 } else {
@@ -3946,14 +3853,11 @@ impl FirewallApp {
 
         let title = format!("Add rule to {}", self.selected_zone.name());
         paint::label(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             &title,
             13.0,
             theme.accent_primary,
-            card.x0 + PAD,
-            card.y0 + S3,
+            Point::new(card.x0 + PAD, card.y0 + S3),
             300.0,
         );
 
@@ -4020,14 +3924,11 @@ impl FirewallApp {
             };
             let shown = tr.elide_to_width(&self.status, 11.0, (card.width() - 32.0) as f32);
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &shown,
                 11.0,
                 status_color,
-                card.x0 + 16.0,
-                status_y,
+                Point::new(card.x0 + 16.0, status_y),
                 card.width() - 32.0,
             );
         }
@@ -4069,16 +3970,15 @@ impl FirewallApp {
         paint::card(scene, t, well, 7.0, theme.tokens.colors.surfaces.base);
         let w = paint::text_width(tr, name, 13.0);
         paint::label_v(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, theme),
             name,
             13.0,
             theme.text_primary,
-            well.x0 + (well.width() - w) / 2.0,
-            well.y0,
-            well.height(),
-            w + 2.0,
+            Rect {
+                x0: well.x0 + (well.width() - w) / 2.0,
+                x1: well.x0 + (well.width() - w) / 2.0 + w + 2.0,
+                ..well
+            },
         );
     }
 
@@ -4098,28 +3998,27 @@ impl FirewallApp {
             // The caption sits in the gap the layout left above the field
             // (`form_source_gap`), ending 2px above the field's top edge.
             paint::label(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 11.0,
                 theme.text_dim,
-                l.source_field.x0,
-                l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                Point::new(
+                    l.source_field.x0,
+                    l.source_field.y0 - self.metrics.form_source_gap + 10.0,
+                ),
                 120.0,
             );
         } else {
             paint::label_v(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 "Source",
                 12.0,
                 theme.text_dim,
-                card.x0 + 16.0,
-                l.source_field.y0,
-                l.source_field.height(),
-                60.0,
+                Rect {
+                    x0: card.x0 + 16.0,
+                    x1: card.x0 + 16.0 + 60.0,
+                    ..l.source_field
+                },
             );
         }
         self.form.source.draw(scene, t, tr, theme, presence);
@@ -4247,7 +4146,7 @@ mod tests {
                 child.action_target.as_deref() == Some("firewall.retry")
                     && child.name.as_deref() == Some("Retry connection to firewalld")
             }));
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources[0].kind, "firewall.recovery");
             assert!(
                 resources[0]
@@ -4862,7 +4761,7 @@ mod tests {
             let id = a.selected_zone_ref().unwrap().rules[0].id;
 
             // The palette's delete spec for this exact rule.
-            let resources = Widget::resources(&a, &doc);
+            let resources = ui::resources::resources(&a, &doc);
             let spec_encoded = resources[0]
                 .children
                 .iter()
@@ -4904,12 +4803,14 @@ mod tests {
             app.sync(&mut doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "firewall.apply",
-                    &serde_json::to_vec(&"").unwrap(),
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "firewall.apply",
+                        &serde_json::to_vec(&"").unwrap(),
+                    ),
+                    &mut doc,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -4936,12 +4837,14 @@ mod tests {
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &automerge::ROOT);
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                "firewall.apply",
-                &serde_json::to_vec(&"").unwrap(),
-                &doc,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "firewall.apply",
+                    &serde_json::to_vec(&"").unwrap(),
+                ),
+                &mut doc,
                 &automerge::ROOT,
             )
             .unwrap();

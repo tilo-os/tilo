@@ -48,6 +48,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::time::Duration;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -57,7 +58,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Dropdown, ProgressBar, Row, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::codec_pack::{CodecAction, CodecPackStatus, PackState};
 use crate::prefs::{SystemPrefs, UpdatePrefs};
@@ -2355,7 +2356,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for UpdatesPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -2464,33 +2466,12 @@ impl Widget for UpdatesPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -3057,14 +3038,14 @@ mod tests {
         doc: &mut AutoCommit,
         pending: impl Fn(&UpdatesPane) -> bool,
     ) {
-        let deadline = std::time::Instant::now() + GATE_TIMEOUT;
+        let deadline = ui::time::now() + GATE_TIMEOUT;
         loop {
             pane.sync(doc, &automerge::ROOT);
             if !pending(pane) {
                 return;
             }
             assert!(
-                std::time::Instant::now() < deadline,
+                ui::time::now() < deadline,
                 "background worker never reported"
             );
             std::thread::sleep(Duration::from_millis(1));

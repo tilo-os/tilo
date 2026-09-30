@@ -31,15 +31,69 @@ compiles faster. Driving is the same `tilo-control` story as on the host, throug
 driving, storage, platforms and troubleshooting; its source is
 `crates/dev/tilo-vm/guide/`.
 
+Image-level changes (`os/`, units, packages) move the VM onto a new image
+instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
+`--from local` for one that is not pushed yet (`tilo-vm guide images`). The
+`Build / OS dev` workflow builds every main push and every pull request that
+touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
+main also moves `tilo-vm:main-ci` to its newest dev images.
+`Release / OS` builds signed, reproduced releases only: tags, the nightly run
+and a `release` dispatch of main.
+
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
+`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
+`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
+not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
+disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
+(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
+and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
+systemctl reboot` moves it to main's newest dev image.
+
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
 does; `tilo-vm guide fedora-loop` maps its commands.
 
+### Board dev images on real hardware
+
+A board dev image is the board layer (`os/Containerfile.board`: firmware, device
+tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
+the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
+UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
+aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
+installs the flashable disk:
+
+| Board | Image of one build | Moving tag (main) |
+| --- | --- | --- |
+| Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
+
+The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
+disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
+from the firmware boot menu:
+
+```sh
+curl -fLO <disk URL from the job summary>
+sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
+```
+
+The installed system follows the moving tag, so later builds of main arrive with:
+
+```sh
+sudo bootc upgrade && sudo systemctl reboot
+# or one particular build:
+sudo bootc switch registry.tilo.so/tilo/tilo-vm:main-<sha7>-lenovo-83ed && sudo systemctl reboot
+```
+
 ## Routine delivery workflow
 
 Routine changes land through pull requests to `main`. Each PR head revision gets
-its own affected-package check and fast-quality lint result; those runs are keyed
-to the exact event and commit and are not cancelled when a newer commit arrives.
+its own affected-package check and fast-quality lint result. Both test the head
+merged onto the tip of its base branch (`main`, or the lower branch of a stack)
+at the time the run starts, and select affected packages against that tip, so a
+PR is checked as it would land. A PR that conflicts with
+`main` fails there; merge `main` into the branch. A newer commit on the PR
+cancels the older revision's runs; every push to `main` keeps its own.
 
 A ready (non-draft) PR lands by itself: within a minute of both required checks
 passing on its current head, the lander merges it with a merge commit. The
@@ -93,7 +147,7 @@ disabled during alpha; tags do not enable those lanes.
 ## Fast checks before assembly
 
 For a native integration test without a full workspace dispatch, use
-**Development / focused native test** (`focused-test.yml`). Select a full source
+**Dev / focused test** (`dev-focused-test.yml`). Select a full source
 commit SHA, one Cargo package, integration target and exact Rust test path. For
 example: package `shell`, target `it`, test
 `concept_parity_spec::overview_add_workspace::overview_add_workspace_button_renders_and_click_appends_workspace`.
@@ -116,7 +170,7 @@ and submit directly through the scheduler (replace the example package and SHA):
 ```sh
 jq -n --rawfile tests cases.json --arg source FULL_SOURCE_SHA \
   '{ref:"main",inputs:{source_sha:$source,package:"shell",operation:"test",target_kind:"lib",test_names:$tests}}' \
-  | fgj api -X POST repos/tilo/tilo/actions/workflows/focused-test.yml/dispatches --hostname code.tilo.so
+  | fgj api -X POST repos/tilo/tilo/actions/workflows/dev-focused-test.yml/dispatches --hostname code.tilo.so
 ```
 
 Use this structured request for lists: the installed `fgj workflow run` does not
@@ -370,30 +424,20 @@ pkg-config --modversion glib-2.0 gstreamer-1.0 gstreamer-app-1.0
 
 ### Android app host
 
-[`build-apk.sh`](docs/android.md) needs two toolchains. The Rust library is
-cross-compiled with Android NDK r29. `rcargo`'s builder and the Fedora 44
-development image (`dist/dev/Containerfile.fedora44`) carry it, with the
-`CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*` variables
-that point Cargo at its clang. Elsewhere, install the same release and set
-those variables as the image does, plus:
+`tilo-app build --platform android` ([docs/android.md](docs/android.md)) needs
+the Android SDK (build-tools 36.1.0, platform android-36, platform-tools), NDK
+r29 with the two Android Rust targets, a JDK 17 or newer and `zip`/`unzip`.
+`tilo-app doctor --platform android` names each missing piece with its fix,
+and `tilo-app setup android` installs the SDK side into `$ANDROID_HOME`
+(default `~/Android/Sdk`) and adds the Rust targets.
 
-```bash
-rustup target add aarch64-linux-android x86_64-linux-android
-```
-
-`tools/ci/install-android-ndk.sh` does both in a CI or image build.
-
-The Java side and the packaging use the Android SDK at `$ANDROID_HOME`
-(default `~/Android/Sdk`), a JDK 17 or newer for `javac` and `keytool`, and
-`zip`:
-
-```bash
-sdkmanager 'build-tools;36.1.0' 'platforms;android-36'
-```
-
-An NDK under `$ANDROID_NDK_HOME` or the SDK's `ndk/` also provides the
-`llvm-strip` that drops DWARF from the packaged library. Testing needs `adb`
-(`platform-tools`) and an `x86_64` emulator image or a device.
+The builder image and the Fedora 44 development image
+(`dist/dev/Containerfile.fedora44`) carry the NDK at `/opt/android-ndk`, with
+the `CARGO_TARGET_*_LINUX_ANDROID_LINKER`, `CC_*`, `CXX_*` and `AR_*`
+variables that point Cargo at its clang; `tools/ci/install-android-ndk.sh`
+does the same in a CI or image build. Elsewhere the CLI finds an NDK under
+`$ANDROID_NDK_HOME` or the SDK's `ndk/` and sets those variables itself.
+Testing needs `adb` and an `x86_64` emulator image or a device.
 
 ### Native Windows development
 
@@ -410,20 +454,23 @@ application build command.
 From PowerShell at the workspace root:
 
 ```powershell
-cargo check --locked -p ui --tests --features portal
+capnp --version
+cargo check --locked -p ui --tests
 cargo run --locked -p calculator
 cargo run --locked -p notes
 ```
 
 Windows rendering defaults to Direct3D 12. `WGPU_BACKEND` remains an explicit
-developer override. Apps use the shared `portal` feature for native Open, Save,
-multiple-file and folder dialogs, with results delivered on the existing picker
-channel. To exercise the host picker without opening or modifying a document:
+developer override. `ui::portal` opens the native Open, Save, multiple-file and
+folder dialogs (`tilo-dialogs` selects the Common Item Dialogs on Windows, the
+panels on macOS and the XDG portal on Linux; apps enable no feature), with
+results delivered on the existing picker channel. To exercise the host picker
+without opening or modifying a document:
 
 ```powershell
-cargo run --locked -p ui-examples --example native-file-picker --features portal -- open
-# Also accepts: multiple, directory, save
-cargo test --locked -p ui --lib --features portal portal::
+cargo run --locked -p tilo-dialogs --example pick -- open
+# Also accepts: multiple, directory, save, uri URL
+cargo test --locked -p tilo-dialogs
 ```
 
 The example reports the selected path; even its Save mode does not write a file.
@@ -537,7 +584,7 @@ the OS. The default `filesystem` feature adds the namespace, FUSE projection,
 service protocols and their integration tests.
 
 ```powershell
-cargo test --locked -p fs --no-default-features --lib
+cargo test --locked -p tilo-fs --no-default-features --lib
 cargo test --locked -p scratchpad --all-targets
 ```
 
@@ -1056,7 +1103,7 @@ output, from any command. Point `TMPDIR` at real disk for large parallel builds.
 
 ```bash
 cargo build -p shell            # or ui, fs, terminal, file-explorer, browser
-cargo test -p fs
+cargo test -p tilo-fs
 cargo test -p shell --lib room_activity      # scope it; the compile dominates
 cargo check -p shell --tests                 # before finishing
 ```
@@ -1115,9 +1162,10 @@ takes a narrow `#[allow]` whose reason says why that is safe there.
 ### Running tests like CI
 
 CI runs tests with `cargo nextest run --profile ci`: every test in its own
-process, one retry, a JUnit report in `target/nextest/ci/junit.xml`. The job
-summary lists every test that only passed on retry (FLAKY) or was retried
-before failing; treat a FLAKY entry as a bug, not as noise. Each run goes
+process, no retry, a JUnit report in `target/nextest/ci/junit.xml`. A failure
+on the first run fails the job. The summary still lists slow tests, and any
+case that only passed on a retry if a profile turns retries back on; treat
+that as a bug, not as noise. Each run goes
 through `tools/with-test-environment.sh` (directly, or via `tools/test-env.sh`),
 which sets `LANG=C.UTF-8` and
 `TZ=UTC`, points `HOME` and every XDG base directory at a fresh temporary tree
@@ -1130,10 +1178,10 @@ Reproduce that locally with:
 
 ```bash
 scripts/test-local.sh                            # the workspace, visual goldens excluded
-scripts/test-local.sh -p fs -p tilo-ui           # selected packages
-scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
+scripts/test-local.sh -p tilo-fs -p tilo-ui           # selected packages
+scripts/test-local.sh -p tilo-fs -- checked_restore   # arguments after -- go to nextest run
 scripts/test-local.sh --goldens                  # only the visual goldens
-CARGO=rcargo scripts/test-local.sh -p fs         # compile remotely, run here
+CARGO=my-cargo scripts/test-local.sh -p tilo-fs  # any cargo drop-in compiles, run here
 ```
 
 It compiles in your environment, then runs the compiled tests (through
@@ -1200,19 +1248,19 @@ next changed.
 **The native data plane (Tier 1).** `fs --test native_tier1` and
 `fs-native --test it` need root, two dedicated Btrfs volumes and a kernel with
 pre-content fanotify events (6.14 or later, `CONFIG_FANOTIFY_ACCESS_PERMISSIONS`).
-`tools/native-tier1.sh` builds both as you (remotely with `TILO_CARGO=rcargo`),
+`tools/native-tier1.sh` builds both as you (with `$TILO_CARGO`, default `cargo`),
 makes two loop-mounted Btrfs stores, runs every test once as root through
 `sudo -n` with `TILO_REQUIRE_FANOTIFY=1`, and removes the stores and mounts
 again:
 
 ```bash
-TILO_CARGO=rcargo tools/native-tier1.sh                      # both suites
-TILO_CARGO=rcargo TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
+tools/native-tier1.sh                                        # both suites
+TILO_NATIVE_TIER1_TARGETS=fs:native_tier1 \
     tools/native-tier1.sh sqlite --nocapture                 # one scenario
 ```
 
-`rcargo test --local` cannot run them: its distrobox is a rootless user
-namespace, which gets neither a filesystem mark on a Btrfs store nor a
+A rootless container (a distrobox, a build container) cannot run them: a
+rootless user namespace gets neither a filesystem mark on a Btrfs store nor a
 pre-content group. `sqlite3` and `git` must be on your `PATH`, which the root
 run inherits.
 
@@ -1284,6 +1332,21 @@ sudo dist/rpm/usroverlay-install.sh --arm-devel
 sudo dist/rpm/usroverlay-install.sh --disarm-devel
 sudo dist/rpm/usroverlay-install.sh --uninstall
 ```
+
+To move an existing install to the current checkout, use the helper instead. It
+builds, names the packages after the commit (`tilo-session-0.1.12-0.202609271530.git5764267571`),
+refuses RPMs left over from another commit, and swaps whatever `tilo-session*`
+packages are layered in one `rpm-ostree` transaction, keeping `-devel` only if
+it was there:
+
+```bash
+dist/rpm/host-update.sh               # build HEAD and stage it for the next boot
+dist/rpm/host-update.sh --apply-live  # also make it the running /usr; just log out
+dist/rpm/host-update.sh --no-cargo    # repackage binaries already in target/release
+```
+
+`--apply-live` refuses while a Tilo session is running on the machine. Builds go
+through the `cargo` on your `PATH`, so any cargo drop-in on it is used.
 
 Either way, log **out** (not lock) afterwards: the greeter reads
 `/usr/share/wayland-sessions` when it starts, so a new entry appears at the next
@@ -1478,6 +1541,12 @@ on the staged Rust files, workspace membership
 lint `#[allow]` policy, `#[ignore]` reasons, integration-test module
 declarations, conflict markers, `dbg!` and secrets. Compilation and tests run in
 CI (`.forgejo/workflows/check.yml`).
+
+A vendored crate under `vendor/` is upstream's code, carried as it ships: the
+added-code checks (`#[ignore]` reasons, `#[allow]` placement, `dbg!`) and
+rustfmt skip it. rustfmt also skips a generated source, one with an
+`@generated` marker in its first five lines (capnpc-rust bindings, tilo-app
+registries); CI's `tools/ci/check-changed-rustfmt.sh` applies the same rule.
 
 The hook refuses a staged `Cargo.lock` change with no `Cargo.toml` beside it,
 except a declared single-crate update. Name the `cargo update` you ran (several

@@ -277,6 +277,149 @@ pub enum Envelope {
         /// Human-readable reason (for tracing / logging).
         reason: String,
     },
+
+    /// A [`Envelope::Delta`] whose author wants to know when the host has
+    /// made it durable. The host admits it exactly like a `Delta`, fans it
+    /// out to other subscribers as a plain `Delta`, and answers the author
+    /// with [`Envelope::Committed`] once it is persisted, or
+    /// [`Envelope::CommitRefused`]. Only the author sees either answer, so
+    /// peers that predate these variants never receive them.
+    Commit {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Author-chosen id echoed in the answer. Resending the same commit
+        /// after a reconnect reuses it.
+        op: [u8; 16],
+        /// Must equal the authenticated device.
+        author_device_public_key: [u8; 32],
+        /// Authored-at nanoseconds since epoch (metadata only).
+        authored_at_ns: u64,
+        /// The same body an `Envelope::Delta` carries.
+        #[serde(with = "serde_bytes")]
+        delta: Vec<u8>,
+    },
+
+    /// The host persisted commit `op` of this connection. `seq` is the
+    /// host's order for the workspace: later commits get larger values.
+    Committed {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Host order of the commit within the workspace.
+        seq: u64,
+    },
+
+    /// The host did not admit commit `op`. Nothing was persisted or fanned
+    /// out.
+    CommitRefused {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The commit's id.
+        op: [u8; 16],
+        /// Human-readable reason (for tracing / logging).
+        reason: String,
+    },
+
+    /// Join the workspace's live plane. Requires an accepted `Subscribe` on
+    /// the same connection. The host answers with one
+    /// [`Envelope::LiveMember`] per current live member, then relays their
+    /// [`Envelope::Live`] frames.
+    LiveJoin {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// Leave the workspace's live plane.
+    LiveLeave {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// One ephemeral live frame ([`crate::live::LiveFrame`] bytes). The host
+    /// validates and rate-limits it, stamps `from_device_public_key` from
+    /// the authenticated connection, forwards it to the other live members
+    /// and never stores it.
+    Live {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Publishing device, stamped by the host. Whatever a sender puts
+        /// here is overwritten.
+        from_device_public_key: [u8; 32],
+        /// Canonical [`crate::live::LiveFrame`] encoding.
+        #[serde(with = "serde_bytes")]
+        frame: Vec<u8>,
+    },
+
+    /// A device joined (`active`) or left the workspace's live plane.
+    LiveMember {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The device.
+        device_public_key: [u8; 32],
+        /// Whether it is now a live member.
+        active: bool,
+    },
+
+    /// A `Subscribe` that resumes: the host replays only what this device
+    /// has not received since `position` (a [`Envelope::Position`] it
+    /// issued to this device), or everything when it cannot honour the
+    /// position, and then follows the subscriber's durable deliveries with
+    /// `Position`s. Sent only to a host that advertised resumable sessions.
+    SubscribeFrom {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The last position received for this workspace, if any.
+        position: Option<Vec<u8>>,
+    },
+
+    /// Everything the host delivered to this subscriber so far. Opaque and
+    /// host-authenticated; present it to [`Envelope::SubscribeFrom`] after
+    /// a reconnect. Only subscribers that used `SubscribeFrom` receive it.
+    Position {
+        /// Workspace id.
+        workspace_id: u64,
+        /// The position.
+        position: Vec<u8>,
+    },
+
+    /// This device answers [`Envelope::CompactRequest`]s for
+    /// `workspace_id` while its subscription lasts. Sent only to a host
+    /// that advertised compaction.
+    CompactVolunteer {
+        /// Workspace id.
+        workspace_id: u64,
+    },
+
+    /// The host holds a long sealed tail for one route and asks this member
+    /// for a snapshot of it and a
+    /// [`crate::compaction::CoverageStatement`]. Sent only to volunteers.
+    CompactRequest {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Echoed in the statement.
+        request: [u8; 16],
+        /// The route's application.
+        app_id: String,
+        /// The route's room.
+        cluster_id: String,
+        /// The route's record.
+        record: String,
+    },
+
+    /// A member's answer to [`Envelope::CompactRequest`], sent after the
+    /// snapshot's commits.
+    Compacted {
+        /// Workspace id.
+        workspace_id: u64,
+        /// Encoded [`crate::compaction::CoverageStatement`].
+        #[serde(with = "serde_bytes")]
+        statement: Vec<u8>,
+        /// The member's device signature over
+        /// [`crate::compaction::signing_bytes`] of `statement`.
+        #[serde(with = "crate::sig64")]
+        signature: [u8; 64],
+    },
 }
 
 /// Version of the [`Envelope::RemoteAction`] kind this build routes. The

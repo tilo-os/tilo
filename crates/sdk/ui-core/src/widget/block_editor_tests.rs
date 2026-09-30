@@ -303,14 +303,16 @@ fn image_attachments_size_reserve_and_guard_their_source() {
             let mut handled = false;
             editor.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &automerge::ROOT,
-                &mut handled,
-                &mut None,
-                NodeId::new(0),
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: NodeId::new(0),
+                    taffy: &tree,
+                },
             );
             assert!(handled);
             assert_eq!(editor.blocks[0].text(), source);
@@ -331,14 +333,16 @@ fn image_attachments_size_reserve_and_guard_their_source() {
         editor.begin_action_intercept();
         editor.handle_event(
             &event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            NodeId::new(0),
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: NodeId::new(0),
+                taffy: &tree,
+            },
         );
         assert_eq!(
             editor.blocks[0].text(),
@@ -525,14 +529,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut focus_target = None;
             e.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
         }
         assert_eq!(
@@ -581,14 +587,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut ft = None;
             e.handle_event(
                 ev,
-                1.0,
-                &ctrl_shift,
-                &mut state,
-                &root,
-                &mut handled,
-                &mut ft,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &ctrl_shift,
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
         };
 
@@ -646,14 +654,16 @@ fn pointer_and_keyboard_move_focus_and_selection_across_blocks() {
             let mut focus_target = None;
             editor.handle_event(
                 event,
-                1.0,
-                &Modifiers::default(),
-                &mut state,
-                &root,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut state,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy: &taffy,
+                },
             );
             assert!(handled);
         };
@@ -770,7 +780,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         let mut ed = BlockEditor::new();
         ed.set_blocks(vec![Block::paragraph("hello world")]);
         ed.focus_block(0, CursorPlacement::Byte(3));
-        match ed.presence_payload() {
+        match crate::presence::capability::presence_payload(&ed) {
             Some((key, PresencePayload::Caret { pos })) => {
                 assert_eq!(key, block_presence_key(&ed.blocks[0].id));
                 assert_eq!(pos, 3);
@@ -794,7 +804,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         );
 
         assert_eq!(
-            ed.presence_payload(),
+            crate::presence::capability::presence_payload(&ed),
             Some((
                 document_selection_presence_key(&ed.blocks[0].id, 2),
                 PresencePayload::Selection { start: 2, end: 3 },
@@ -806,7 +816,7 @@ fn presence_payload_reports_caret_selection_or_nothing() {
         let mut ed = BlockEditor::new();
         ed.set_blocks(vec![Block::paragraph("hi")]);
         // set_blocks leaves the editor unfocused.
-        assert!(ed.presence_payload().is_none());
+        assert!(crate::presence::capability::presence_payload(&ed).is_none());
     }
 
     presence_payload_reports_focused_block_caret();
@@ -862,11 +872,14 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(e.blocks()[0].line.cursor_pos(), 6);
         assert_eq!(e.document_selection(), None);
         assert!(
-            Widget::needs_commit(&e),
+            crate::undo::needs_commit(&e),
             "replacement arms one undo boundary"
         );
-        Widget::on_commit(&mut e);
-        assert!(!Widget::needs_commit(&e), "the boundary is rising-edge");
+        crate::undo::on_commit(&mut e);
+        assert!(
+            !crate::undo::needs_commit(&e),
+            "the boundary is rising-edge"
+        );
     }
 
     fn multiline_paste_replaces_range_and_uses_enter_continuation_kinds() {
@@ -920,14 +933,16 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
             let mut focus_target = None;
             editor.handle_event(
                 event,
-                1.0,
-                &modifiers,
-                state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                NodeId::new(0),
-                taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: NodeId::new(0),
+                    taffy,
+                },
             );
             assert!(handled);
         }
@@ -963,7 +978,7 @@ fn cross_block_selection_copies_deletes_pastes_and_replaces_coherently() {
         assert_eq!(editor.blocks().len(), 1);
         assert_eq!(editor.blocks()[0].text(), "X");
         assert_eq!(editor.blocks()[0].kind, BlockKind::Paragraph);
-        assert!(Widget::needs_commit(&editor));
+        assert!(crate::undo::needs_commit(&editor));
     }
 
     fn cross_block_replacement_syncs_as_one_coherent_document_state() {
@@ -1331,7 +1346,7 @@ fn code_fences_copy_highlight_and_render_formulas() {
         editor.commit_visual_formula_edit(0, 0, crate::math::FormulaSyntax::Typst);
         assert!(editor.blocks[0].text().starts_with("vec("));
         assert!(editor.blocks[0].text().ends_with('+'));
-        assert!(Widget::needs_commit(&editor));
+        assert!(crate::undo::needs_commit(&editor));
     }
 
     code_copy_targets_are_bounded_and_copy_complete_runs();
@@ -2131,7 +2146,7 @@ fn find_matches_unicode_safely_and_navigates_without_editing() {
         editor.step_find(true);
         assert_eq!(editor.focused_index(), Some(1));
         assert_eq!(editor.to_markdown(), before);
-        assert!(!editor.needs_commit());
+        assert!(!crate::undo::needs_commit(&editor));
     }
 
     find_ranges_are_case_insensitive_and_unicode_byte_safe();
@@ -2177,7 +2192,7 @@ fn remote_caret_follows_its_block_id_across_inserted_blocks() {
     ]);
     let target = ed.blocks[1].id.clone();
     ed.focus_block(1, CursorPlacement::Byte(4));
-    let Some((published, _)) = ed.presence_payload() else {
+    let Some((published, _)) = crate::presence::capability::presence_payload(&ed) else {
         panic!("focused block publishes a caret");
     };
     assert_eq!(published, block_presence_key(&target));
@@ -2283,14 +2298,16 @@ fn focused_block_ime_repaints_after_an_idle_paint() {
     let mut handled = false;
     editor.handle_event(
         &WindowEvent::Ime(winit::event::Ime::Preedit("candidate".into(), Some((0, 9)))),
-        1.0,
-        &Modifiers::default(),
-        &mut AutoCommit::new(),
-        &automerge::ROOT,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut AutoCommit::new(),
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(handled);
     assert!(

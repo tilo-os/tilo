@@ -14,7 +14,7 @@ format-provider-abi = { path = "../format-provider-abi" }
 wasmi = { version = "1.1", default-features = false, features = ["std"] }
 # Host entropy for the providers' `tilo_fp.fill_random` import.
 getrandom.workspace = true
-tokio = { workspace = true, features = ["macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
+tokio = { workspace = true, features = ["rt", "macros", "net", "io-util", "fs", "signal", "time", "sync", "process"] }
 tokio-util.workspace = true
 futures = { workspace = true, default-features = true }
 
@@ -25,7 +25,7 @@ capnp-rpc.workspace = true
 
 serde.workspace = true
 toml.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 notify.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

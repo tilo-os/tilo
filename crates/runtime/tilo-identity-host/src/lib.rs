@@ -4,7 +4,8 @@
 //! [`broker`] to sign for them, and it answers only for the identity the
 //! [`registry`] selected for their workspace, only while this device holds a
 //! valid, enrolled, non-revoked certificate ([`device_fleet`],
-//! [`certificates`]). [`provisioning`] creates that chain.
+//! [`certificates`]). [`provisioning`] creates that chain, and [`custody`]
+//! selects the certificate this device presents to the hosts of each room.
 //!
 //! Hosts supply their committed workspaces and channel service through
 //! [`broker::WorkspaceMembership`] and [`broker::ChannelKeySource`].
@@ -22,6 +23,7 @@
 
 pub mod broker;
 pub mod certificates;
+pub mod custody;
 pub mod device_fleet;
 pub mod provisioning;
 pub mod registry;

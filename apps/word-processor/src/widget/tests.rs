@@ -1,7 +1,7 @@
 use super::*;
 use automerge::transaction::Transactable;
 use std::fmt::Write as _;
-use taffy::AvailableSpace;
+use ui::headless::Framed;
 use ui::permissions::PermissionContext;
 
 /// Minimal, valid 2×3 RGB PNG shared by image layout, accessibility, portal,
@@ -249,7 +249,7 @@ fn native_edits_keep_views_provenance_and_the_real_caret_text() {
         let mut wp = WordProcessorWidget::new();
         wp.lifecycle.needs_commit = true;
 
-        let context = wp.take_commit_context().expect("native edit provenance");
+        let context = ui::undo::take_commit_context(&mut wp).expect("native edit provenance");
         assert_eq!(context.action_label, "Edit document");
         assert_eq!(
             context.app.as_ref().map(|app| app.id.as_str()),
@@ -297,7 +297,7 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
     {
         let mut report = WordProcessorWidget::new();
         assert!(
-            report.record_intent().is_none(),
+            ui::record::capability::record_intent(&report).is_none(),
             "an untitled document names no record"
         );
         let report_path = std::env::temp_dir().join("report.odt");
@@ -307,10 +307,9 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
         let mut minutes = WordProcessorWidget::new();
         minutes.set_file(minutes_path, WpFormat::Markdown);
 
-        let a = report
-            .record_intent()
-            .expect("an open file names its record");
-        let b = minutes.record_intent().expect("and so does the other");
+        let a =
+            ui::record::capability::record_intent(&report).expect("an open file names its record");
+        let b = ui::record::capability::record_intent(&minutes).expect("and so does the other");
         assert_eq!(a.id, ui::RecordId::for_file(&report_path));
         assert_eq!(a.kind, ui::RecordKind::new("document"));
         assert_ne!(a.id, b.id, "two files are never one record");
@@ -322,73 +321,53 @@ fn resources_navigate_by_stable_ranges_and_files_are_records() {
     }
 }
 
-pub(super) fn pipeline_draw(wp: &mut WordProcessorWidget, state: &mut ui::State, w: u32, h: u32) {
-    pipeline_draw_themed(wp, state, w, h, &Theme::dark());
+/// Mount `wp` over `state` in a [`FrameHarness`](ui::headless::FrameHarness)
+/// and run its first frame at `w`×`h` under the dark theme.
+pub(super) fn mount(
+    state: ui::State,
+    wp: WordProcessorWidget,
+    w: u32,
+    h: u32,
+) -> Framed<WordProcessorWidget> {
+    mount_themed(state, wp, w, h, &Theme::dark())
+}
+
+/// Like [`mount`] but runs the first frame under `theme`.
+pub(super) fn mount_themed(
+    state: ui::State,
+    wp: WordProcessorWidget,
+    w: u32,
+    h: u32,
+    theme: &Theme,
+) -> Framed<WordProcessorWidget> {
+    Framed::new(state, wp, (w, h), theme.clone())
+}
+
+/// Run one frame at `w`×`h` under the dark theme that recomposes the whole
+/// layout tree, and hand back the widget and its document for what follows.
+pub(super) fn pipeline_draw(
+    framed: &mut Framed<WordProcessorWidget>,
+    w: u32,
+    h: u32,
+) -> (&mut WordProcessorWidget, &mut ui::State) {
+    pipeline_draw_themed(framed, w, h, &Theme::dark());
+    Framed::split(framed)
 }
 
 /// Like [`pipeline_draw`] but renders under an explicit [`Theme`] so tests
 /// can exercise the real five-pass draw path under light/dark/high-contrast
 /// palettes. Returns the widget's resolved chrome palette for inspection.
 pub(super) fn pipeline_draw_themed(
-    wp: &mut WordProcessorWidget,
-    state: &mut ui::State,
+    framed: &mut Framed<WordProcessorWidget>,
     w: u32,
     h: u32,
     theme: &Theme,
 ) -> ChromeColors {
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-
-    wp.sync(&mut state.doc, &state.root);
-    let child = wp.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_u32(w)),
-                    height: Dimension::length(num::f32_of_u32(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
-                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    wp.apply_layout(&taffy, child, Point::ORIGIN);
-    let mut scene = Scene::new();
-    wp.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        theme,
-        &presence,
-        &permission,
-    );
+    Framed::harness_mut(framed)
+        .relayout_themed((w, h), theme.clone())
+        .expect("the frame settles");
     // `draw` resolves the chrome palette from `theme` into `wp.chrome`.
-    wp.chrome
+    framed.chrome
 }
 
 /// Build a small populated doc (heading + paragraph) so a draw exercises the
@@ -497,8 +476,8 @@ fn chrome_follows_the_theme_while_paper_stays_readable() {
     // widget) without panicking under light, dark, AND high-contrast palettes.
     {
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-            let (mut state, mut wp) = populated();
-            let cc = pipeline_draw_themed(&mut wp, &mut state, 1100, 760, &theme);
+            let (state, wp) = populated();
+            let cc = mount_themed(state, wp, 1100, 760, &theme).chrome;
             // The widget's live chrome must equal the theme's mapping — i.e. the
             // production `draw` resolved it from the passed-in `theme`.
             assert_eq!(cc.canvas, theme.tokens.colors.surfaces.base);
@@ -520,15 +499,17 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         wp.model_mut().insert_str(&mut state.doc, "Hello");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "World");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert_eq!(wp.laid.len(), 2, "draw laid out both paragraphs");
     }
 
     // Phase: large_body_uses_a_bounded_viewport_cache_while_find_remains_complete.
     {
-        let mut state = large_body();
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let state = large_body();
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         assert_eq!(wp.body_order.len(), VIEWPORT_BLOCK_WINDOW * 4);
         assert!(
@@ -549,7 +530,7 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
         drop(all);
 
         wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert!(wp.body_window_start > 0, "scrolling loads a later window");
         assert!(wp.blocks.len() <= VIEWPORT_BLOCK_WINDOW);
         assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
@@ -614,15 +595,16 @@ fn drawing_lays_out_every_block_within_a_bounded_viewport() {
 
 #[test]
 fn deep_scrolling_keeps_visible_text_loaded() {
-    let mut state = large_body();
+    let state = large_body();
     let mut wp = WordProcessorWidget::new();
     wp.view.auto_fit_page = false;
+    let mut framed = mount(state, wp, 1000, 700);
     for zoom in [0.5, 1.0, 2.0] {
-        wp.zoom.set(zoom);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        framed.zoom.set(zoom);
+        pipeline_draw(&mut framed, 1000, 700);
         for fraction in [0.75, 0.5, 0.25, 0.0] {
-            wp.scroll_y = wp.max_scroll * fraction;
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            framed.scroll_y = framed.max_scroll * fraction;
+            let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
             assert!(
                 wp.laid.iter().any(|l| {
                     let top =
@@ -640,17 +622,18 @@ fn deep_scrolling_keeps_visible_text_loaded() {
 
 #[test]
 fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
-    let mut state = large_body();
-    let mut wp = WordProcessorWidget::new();
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let state = large_body();
+    let wp = WordProcessorWidget::new();
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, _) = Framed::split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
     let cold_shapes = wp.dbg_layout_misses;
     assert!(cold_shapes >= VIEWPORT_BLOCK_WINDOW);
     let distant_scroll = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
     wp.scroll_y = distant_scroll;
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     wp.scroll_y = 0.0;
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     assert_eq!(
         wp.dbg_layout_misses, 0,
         "returning to the previous viewport should reuse its text shaping"
@@ -659,12 +642,12 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     assert!(wp.layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
     assert!(wp.recent_layout_cache.len() <= VIEWPORT_BLOCK_WINDOW);
     wp.scroll_y = distant_scroll;
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
-    with_doc(&mut state, |dm| {
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+    with_doc(state, |dm| {
         dm.splice_text(&first, 0, 0, "Updated ");
     });
     wp.scroll_y = 0.0;
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     assert_eq!(
         wp.dbg_layout_misses, 1,
         "changed offscreen text must be reshaped"
@@ -677,18 +660,19 @@ fn returning_to_recent_text_reuses_shapes_and_refreshes_edited_words() {
     );
     // A third distinct viewport must not evict the immediately previous one.
     for position in [distant_scroll / 2.0, distant_scroll, distant_scroll / 2.0] {
-        wp.scroll_y = position;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        framed.scroll_y = position;
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert!(wp.layout_cache.len() + wp.recent_layout_cache.len() <= 2 * VIEWPORT_BLOCK_WINDOW);
     }
-    assert_eq!(wp.dbg_layout_misses, 0);
+    assert_eq!(framed.dbg_layout_misses, 0);
 }
 
 #[test]
 fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
-    let mut state = large_body();
-    let mut wp = WordProcessorWidget::new();
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let state = large_body();
+    let wp = WordProcessorWidget::new();
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, _) = Framed::split(&mut framed);
     let first = wp.body_order.id_at(0).unwrap().to_owned();
     let deep = wp
         .body_order
@@ -700,7 +684,7 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
         offset: 0,
     });
     wp.scroll_y = num::f64_of_usize(VIEWPORT_BLOCK_WINDOW * 3) * ESTIMATED_BLOCK_EXTENT;
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     let mut handled = false;
     wp.handle_mouse_wheel(
         &MouseScrollDelta::LineDelta(0.0, 100_000.0),
@@ -710,7 +694,7 @@ fn scrolling_to_top_restores_first_blocks_without_moving_deep_caret() {
     );
     assert!(handled);
     assert_eq!(wp.scroll_y, 0.0);
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     assert_eq!(
         wp.inner.caret.block, deep,
         "scrolling must not relocate the insertion point"
@@ -777,7 +761,7 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
         wp.refresh_blocks(&mut state.doc);
 
         // What the palette would dispatch, resolved before the button fires.
-        let resources = Widget::resources(&wp, &state.doc);
+        let resources = ui::resources::resources(&wp, &state.doc);
         let from_palette = spec_encoded(&resources[0], "insert-table");
 
         // The toolbar button drives the same operation.
@@ -825,18 +809,18 @@ fn toolbar_and_palette_actions_dispatch_through_their_specs() {
             before,
             "the affordance mutated the document"
         );
-        let bracket = Widget::take_committed_action(&mut wp).expect("an undo bracket was armed");
+        let bracket = ui::undo::take_committed_action(&mut wp).expect("an undo bracket was armed");
         assert_eq!(
             bracket, before,
             "the boundary brackets the pre-affordance heads"
         );
         assert!(
-            Widget::take_committed_action(&mut wp).is_none(),
+            ui::undo::take_committed_action(&mut wp).is_none(),
             "the bracket is rising-edge (cleared on read)"
         );
 
         // It is the same EncodedAction the palette's align-center spec builds.
-        let resources = Widget::resources(&wp, &state.doc);
+        let resources = ui::resources::resources(&wp, &state.doc);
         let from_palette = spec_encoded(&resources[0], "align-center");
         assert_eq!(
             dispatched.payload, from_palette.payload,
@@ -1045,7 +1029,8 @@ fn character_marks_shape_their_spans() {
         wp.model_mut().insert_str(&mut state.doc, long);
 
         // Single-spaced layout via the production draw pass.
-        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let mut framed = mount(state, wp, 700, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let single_h = wp
             .laid
             .iter()
@@ -1066,7 +1051,7 @@ fn character_marks_shape_their_spans() {
             2.0,
             "line_spacing=2.0 read from the block attr the layout pass uses"
         );
-        pipeline_draw(&mut wp, &mut state, 700, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 700, 700);
         let double_h = wp
             .laid
             .iter()
@@ -1096,7 +1081,8 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
             .insert_str(&mut state.doc, "Second paragraph here");
 
         // Cold frame: the cache is empty, so every block is shaped (a miss).
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert_eq!(wp.dbg_layout_hits, 0, "cold draw cannot reuse anything");
         assert_eq!(
             wp.dbg_layout_misses, 2,
@@ -1106,7 +1092,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
 
         // Warm frame, no edits: every block's key matches, so all are reused and
         // nothing is re-shaped — this is the per-frame O(n) shaping we eliminated.
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         assert_eq!(
             wp.dbg_layout_hits, 2,
             "unchanged re-draw reuses every cached layout"
@@ -1119,7 +1105,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
         // Edit one block (caret is in the 2nd paragraph): only that block's key
         // changes, so only it re-shapes; the untouched block is still reused.
         wp.model_mut().insert_str(&mut state.doc, "!");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert_eq!(
             wp.dbg_layout_misses, 1,
             "only the edited block is re-shaped"
@@ -1130,7 +1116,7 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
         // window size does not — only the margins do). Wrap width is part of the
         // key, so every block must re-shape at the new measure.
         wp.margins = Edges::uniform(140.0);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert_eq!(
             wp.dbg_layout_misses, 2,
             "a wrap-width change re-shapes every block"
@@ -1161,8 +1147,9 @@ fn headings_draw_bold_and_unchanged_blocks_reuse_their_layout() {
                 )
                 .unwrap();
         }
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(wp.laid.len() >= 2);
         assert!(wp.blocks.iter().any(|b| b.kind == "heading"));
         assert!(
@@ -1184,7 +1171,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "A paragraph");
         wp.view.styles_panel_visible = true;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         // An explicitly-open panel renders clickable targets.
         assert!(wp.view.styles_panel_visible);
@@ -1212,7 +1200,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         wp.model_mut().insert_str(&mut state.doc, "first");
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut().insert_str(&mut state.doc, "second");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         let before = wp.model().stylesheet(&state.doc).get("body").size;
         // Bump the body style's size via the panel stepper.
@@ -1225,7 +1214,7 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         );
 
         // Both paragraphs are Body, so both re-render at the new size.
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert_eq!(wp.laid.len(), 2);
         assert!(
             wp.laid.iter().all(|l| (l.size - after).abs() < 0.01),
@@ -1239,7 +1228,8 @@ fn the_styles_panel_picks_edits_and_commits_styles() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "x");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Click-to-type: focus the Size field, type "40".
         wp.editing_field = Some(NumField::Size);
@@ -1268,7 +1258,8 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
         wp.set_styles_panel_open(true);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         let n_before = wp.sheet.order().len();
         wp.apply_panel_hit(&mut state.doc, PanelHit::NewStyle);
@@ -1290,7 +1281,8 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
     // Deleting a custom style removes it from the document's sheet and reassigns
     // the block that used it (so no dangling style ref remains).
     {
-        let (mut wp, mut state, custom_id) = doc_with_custom_style();
+        let (mut framed, custom_id) = doc_with_custom_style();
+        let (wp, state) = Framed::split(&mut framed);
         assert!(
             wp.sheet.styles.contains_key(&custom_id),
             "custom style present before delete"
@@ -1342,7 +1334,8 @@ fn custom_styles_are_created_deleted_and_sized_in_one_place() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Body text");
         wp.view.styles_panel_visible = true;
-        pipeline_draw(&mut wp, &mut state, 1800, 700);
+        let mut framed = mount(state, wp, 1800, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         let panel_size_fields = wp
             .panel_hits
@@ -1395,7 +1388,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         // Use a desktop width at which the complete command set is genuinely
         // visible. At medium widths the compact toolbar intentionally moves
         // lower-frequency commands into More (covered below).
-        pipeline_draw(&mut wp, &mut state, 1800, 760);
+        let mut framed = mount(state, wp, 1800, 760);
+        let (wp, _) = Framed::split(&mut framed);
 
         let actions: Vec<ToolAction> = wp.toolbar.iter().map(|(a, _)| *a).collect();
         // Character formatting + the direct font-size nudges are present.
@@ -1477,7 +1471,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "colour me");
-        pipeline_draw(&mut wp, &mut state, 1280, 760);
+        let mut framed = mount(state, wp, 1280, 760);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(wp.use_compact_toolbar(1280.0));
 
         wp.apply_tool(&mut state.doc, ToolAction::More);
@@ -1499,7 +1494,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             .swatch_rect(3)
             .expect("shared picker lays out each swatch")
             .center();
-        left_click(&mut wp, &mut state, swatch);
+        left_click(wp, state, swatch);
         wp.refresh_blocks(&mut state.doc);
         assert_eq!(wp.current_text_color(), Some(STYLE_PALETTE[3]));
     }
@@ -1512,7 +1507,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "colour me");
-        pipeline_draw(&mut wp, &mut state, 760, 800);
+        let mut framed = mount(state, wp, 760, 800);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Pointer clear for text colour.
         wp.apply_tool(
@@ -1521,7 +1517,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
         let pointer_clear = wp.compact_swatch_palette.clear_rect().center();
-        left_click(&mut wp, &mut state, pointer_clear);
+        left_click(wp, state, pointer_clear);
         assert_eq!(wp.current_text_color(), None);
 
         // Keyboard clear for text colour. Tab moves focus from the shared
@@ -1532,9 +1528,9 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
         let expected_clear_bounds = wp.compact_swatch_palette.clear_rect();
-        press_named(&mut wp, &mut state, NamedKey::Tab);
-        assert_compact_clear_footer(&wp, &t("picker-text-color"), expected_clear_bounds, true);
-        press_named(&mut wp, &mut state, NamedKey::Space);
+        press_named(wp, state, NamedKey::Tab);
+        assert_compact_clear_footer(wp, &t("picker-text-color"), expected_clear_bounds, true);
+        press_named(wp, state, NamedKey::Space);
         assert_eq!(wp.current_text_color(), None);
 
         // AT clear for text colour routes through the same ToolAction helper.
@@ -1544,20 +1540,20 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         );
         wp.open_compact_swatch_palette(PaletteKind::Text);
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Focus,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut state.doc,
             &state.root,
         ));
         assert_compact_clear_footer(
-            &wp,
+            wp,
             &t("picker-text-color"),
             wp.compact_swatch_palette.clear_rect(),
             true,
         );
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut state.doc,
@@ -1573,7 +1569,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
         let highlight_pointer_clear = wp.compact_swatch_palette.clear_rect().center();
-        left_click(&mut wp, &mut state, highlight_pointer_clear);
+        left_click(wp, state, highlight_pointer_clear);
         assert_eq!(wp.current_highlight_color(), None);
 
         wp.apply_tool(
@@ -1581,8 +1577,8 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
             ToolAction::Highlight(Some(HIGHLIGHT_PALETTE[3])),
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
-        press_named(&mut wp, &mut state, NamedKey::Tab);
-        press_named(&mut wp, &mut state, NamedKey::Enter);
+        press_named(wp, state, NamedKey::Tab);
+        press_named(wp, state, NamedKey::Enter);
         assert_eq!(wp.current_highlight_color(), None);
 
         wp.apply_tool(
@@ -1591,7 +1587,7 @@ fn the_toolbar_keeps_character_formatting_and_every_colour_action() {
         );
         wp.open_compact_swatch_palette(PaletteKind::Highlight);
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&"compact-swatch:clear")],
             &mut state.doc,
@@ -1637,7 +1633,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "centre me");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert_eq!(
             wp.current_align(),
             "left",
@@ -1667,7 +1664,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "spaced");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(
             (wp.model().caret_line_spacing(&state.doc) - 1.0).abs() < 1e-9,
             "single spacing by default"
@@ -1691,7 +1689,8 @@ fn the_panel_applies_paragraph_alignment_and_spacing() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "para");
         wp.set_styles_panel_open(true);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
         for a in ["left", "center", "right", "justify"] {
@@ -1734,7 +1733,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "make me a heading");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         let block_kind = |wp: &WordProcessorWidget, st: &ui::State| -> (String, Option<i64>) {
             let c = wp.model().containers.clone().unwrap();
@@ -1751,15 +1751,15 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         };
 
         // A fresh paragraph starts as `paragraph` and is absent from the outline.
-        assert_eq!(block_kind(&wp, &state).0, "paragraph");
+        assert_eq!(block_kind(wp, state).0, "paragraph");
         assert!(wp.outline_entries().is_empty(), "no headings yet");
 
         // Pick "Heading 1" from the panel → a REAL heading (kind + level), and it
         // now appears in the document outline / TOC source.
         wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("heading1".into()));
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         assert_eq!(
-            block_kind(&wp, &state),
+            block_kind(wp, state),
             ("heading".into(), Some(1)),
             "picker made it a level-1 heading"
         );
@@ -1772,7 +1772,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         // Pick "List Item" → a real list item (not a heading anymore).
         wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("list".into()));
         assert_eq!(
-            block_kind(&wp, &state).0,
+            block_kind(wp, state).0,
             "list_item",
             "picker made it a list item"
         );
@@ -1784,7 +1784,7 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         // Pick "Body" → back to a plain paragraph.
         wp.apply_panel_hit(&mut state.doc, PanelHit::Pick("body".into()));
         assert_eq!(
-            block_kind(&wp, &state).0,
+            block_kind(wp, state).0,
             "paragraph",
             "picker restored the paragraph kind"
         );
@@ -1799,7 +1799,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "Hello");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         let style_size = wp.model().stylesheet(&state.doc).get("body").size;
         let base = wp.current_font_size();
@@ -1828,7 +1829,8 @@ fn paragraph_kind_font_size_and_bold_apply_from_panel_and_toolbar() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "bold me");
         wp.model_mut().select_all(&state.doc);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.mark_active_in_selection("strong"), "not bold yet");
 
         wp.apply_tool(&mut state.doc, ToolAction::Bold);
@@ -1922,8 +1924,9 @@ fn list_markers_indent_number_and_grow_by_level() {
             dm.splice_text(&cc, 0, 0, "c");
             dm.set_attr(&cc, "level", 2_i64);
         });
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         let la = wp.laid.iter().find(|l| l.text == "a").unwrap();
         let lb = wp.laid.iter().find(|l| l.text == "b").unwrap();
@@ -1959,8 +1962,9 @@ fn list_markers_indent_number_and_grow_by_level() {
                 prev = Some(id);
             }
         });
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
         let num = |t: &str| {
             wp.laid
                 .iter()
@@ -2017,7 +2021,8 @@ fn long_documents_paginate_across_discrete_pages() {
             );
             wp.model_mut().enter(&mut state.doc);
         }
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         // The canvas top sits below the (wrapped) toolbar AND the ruler band
         // (on by default) — the real offset the pagination cursor starts from.
@@ -2089,7 +2094,8 @@ fn long_documents_paginate_across_discrete_pages() {
         }
         let para = para.trim_end().to_string();
         wp.model_mut().insert_str(&mut state.doc, &para);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
@@ -2176,7 +2182,8 @@ fn long_documents_paginate_across_discrete_pages() {
         wp.model_mut().insert_page_break(&mut state.doc);
         wp.model_mut()
             .insert_str(&mut state.doc, "This paragraph is forced onto page two.");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         let ruler_h = if wp.view.ruler_visible { RULER_H } else { 0.0 };
         let page_top = wp.toolbar_height(1000.0) + ruler_h + PAGE_TOP;
@@ -2239,7 +2246,8 @@ fn caret_hit_on_a_carried_line_returns_the_right_offset() {
     }
     let para = para.trim_end().to_string();
     wp.model_mut().insert_str(&mut state.doc, &para);
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, _) = Framed::split(&mut framed);
 
     let bid = wp.blocks[0].id.clone();
     // The carried-over slice (the first one on page 2 for this block).
@@ -2332,7 +2340,8 @@ fn page_fields_and_margins_resolve_per_page_and_persist() {
             );
             wp.model_mut().enter(&mut state.doc);
         }
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         // The footer is loaded from the snapshot and spans >1 page.
         assert_eq!(
@@ -2463,14 +2472,16 @@ fn press_named_with_modifiers(
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -2487,14 +2498,16 @@ fn pinch(
             delta,
             phase,
         },
-        1.0,
-        &Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     handled
 }
@@ -2510,7 +2523,8 @@ fn mouse_selection_follows_the_pointer_across_lines_and_paragraphs() {
             &mut state.doc,
             &"A paragraph with several words across visual lines. ".repeat(12),
         );
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         let laid = wp.laid[0].clone();
         let bands = wp.layout_cache[&laid.id].1.logical_line_bands(0);
         assert!(bands.len() > 2);
@@ -2540,9 +2554,10 @@ fn mouse_selection_follows_the_pointer_across_lines_and_paragraphs() {
             }
             wp.inner.insert_str(&mut state.doc, "abcdefghijk");
         }
+        let mut framed = mount(state, wp, 1000, 700);
         for zoom in [0.5, 1.0, 2.0] {
-            wp.set_zoom(zoom);
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            framed.set_zoom(zoom);
+            let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
             let first = wp.laid[0].clone();
             let second = wp.laid[1].clone();
             let gap_start = first.y_top + first.height;
@@ -2592,49 +2607,51 @@ fn trackpad_pinch_zooms_smoothly_within_its_bounds() {
     // Phase: trackpad_pinch_zooms_smoothly_and_keeps_the_reading_position.
     {
         use winit::event::TouchPhase;
-        let (mut state, mut wp) = populated();
+        let (state, mut wp) = populated();
         wp.set_zoom(1.0);
         wp.scroll_y = 100.0;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.pointer = Point::new(500.0, 300.0);
         let before = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
         let heads = state.doc.get_heads();
-        assert!(pinch(&mut wp, &mut state, 0.025, TouchPhase::Moved));
+        assert!(pinch(wp, state, 0.025, TouchPhase::Moved));
         assert!((wp.zoom.factor() - 1.025).abs() < 1e-9);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         let after = wp.scroll_y + (wp.pointer.y - wp.zoom.anchor().y) / wp.zoom.factor();
         assert!((before - after).abs() < 1e-6);
         assert!(!wp.view.auto_fit_page);
         assert_eq!(state.doc.get_heads(), heads);
         assert_ne!(wp.save_status, DocumentSaveStatus::Modified);
-        assert!(pinch(&mut wp, &mut state, -0.05, TouchPhase::Moved));
+        assert!(pinch(wp, state, -0.05, TouchPhase::Moved));
         assert!(wp.zoom.factor() < 1.025);
     }
 
     // Phase: trackpad_pinch_respects_overlays_bounds_and_invalid_deltas.
     {
         use winit::event::TouchPhase;
-        let (mut state, mut wp) = populated();
+        let (state, mut wp) = populated();
         wp.set_zoom(1.0);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.pointer = Point::new(500.0, 300.0);
         for delta in [f64::NAN, f64::INFINITY] {
-            pinch(&mut wp, &mut state, delta, TouchPhase::Moved);
+            pinch(wp, state, delta, TouchPhase::Moved);
             assert_eq!(wp.zoom.factor(), 1.0);
         }
-        pinch(&mut wp, &mut state, 0.5, TouchPhase::Cancelled);
+        pinch(wp, state, 0.5, TouchPhase::Cancelled);
         assert_eq!(wp.zoom.factor(), 1.0);
         wp.open_template_picker();
-        assert!(pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+        assert!(pinch(wp, state, 0.5, TouchPhase::Moved));
         assert_eq!(wp.zoom.factor(), 1.0);
         wp.template_picker.close();
         wp.pointer = Point::new(20.0, 20.0);
-        assert!(!pinch(&mut wp, &mut state, 0.5, TouchPhase::Moved));
+        assert!(!pinch(wp, state, 0.5, TouchPhase::Moved));
         assert_eq!(wp.zoom.factor(), 1.0);
         wp.pointer = Point::new(500.0, 300.0);
-        pinch(&mut wp, &mut state, 20.0, TouchPhase::Moved);
+        pinch(wp, state, 20.0, TouchPhase::Moved);
         assert_eq!(wp.zoom.factor(), ZOOM_MAX);
-        pinch(&mut wp, &mut state, -2.0, TouchPhase::Moved);
+        pinch(wp, state, -2.0, TouchPhase::Moved);
         assert_eq!(wp.zoom.factor(), ZOOM_MIN);
     }
 }
@@ -2653,11 +2670,12 @@ fn native_text_shortcuts_move_by_words_and_lines() {
         ] {
             let (mut state, mut wp) = bound();
             wp.inner.insert_str(&mut state.doc, "Hello café");
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let mut framed = mount(state, wp, 1000, 700);
+            let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
             wp.open_template_picker();
-            press_named(&mut wp, &mut state, NamedKey::Escape);
-            press_named_with_modifiers(&mut wp, &mut state, NamedKey::ArrowLeft, mods.into());
+            press_named(wp, state, NamedKey::Escape);
+            press_named_with_modifiers(wp, state, NamedKey::ArrowLeft, mods.into());
             assert_eq!(wp.inner.selection_text(&state.doc), expected);
             assert_eq!(wp.inner.current_text(&state.doc), "Hello café");
             assert!(
@@ -2673,12 +2691,13 @@ fn native_text_shortcuts_move_by_words_and_lines() {
         for (text, selected) in [("hello   ", "  "), ("hello!!!", "!!")] {
             let (mut state, mut wp) = bound();
             wp.inner.insert_str(&mut state.doc, text);
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let mut framed = mount(state, wp, 1000, 700);
+            let (wp, state) = Framed::split(&mut framed);
             wp.inner.caret.offset = 6;
             wp.lifecycle.focused = true;
             press_named_with_modifiers(
-                &mut wp,
-                &mut state,
+                wp,
+                state,
                 NamedKey::ArrowRight,
                 (ModifiersState::ALT | ModifiersState::SHIFT).into(),
             );
@@ -2692,12 +2711,13 @@ fn native_text_shortcuts_move_by_words_and_lines() {
         use winit::keyboard::ModifiersState;
         let (mut state, mut wp) = bound();
         wp.inner.insert_str(&mut state.doc, "東京京都大阪");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.inner.caret.offset = 2;
         wp.lifecycle.focused = true;
         press_named_with_modifiers(
-            &mut wp,
-            &mut state,
+            wp,
+            state,
             NamedKey::ArrowRight,
             (ModifiersState::ALT | ModifiersState::SHIFT).into(),
         );
@@ -2738,10 +2758,11 @@ fn native_text_shortcuts_delete_and_stop_at_visual_lines() {
             wp.inner.insert_str(&mut state.doc, &text);
             wp.inner.caret.offset = 2;
             wp.lifecycle.focused = true;
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let mut framed = mount(state, wp, 1000, 700);
+            let (wp, state) = Framed::split(&mut framed);
             press_named_with_modifiers(
-                &mut wp,
-                &mut state,
+                wp,
+                state,
                 NamedKey::ArrowRight,
                 (ModifiersState::SUPER | ModifiersState::SHIFT).into(),
             );
@@ -2764,7 +2785,8 @@ fn clicking_header_band_routes_typing_into_the_header() {
     let (mut state, mut wp) = bound();
     // Put some content in the body first (proves it is not what gets edited).
     wp.model_mut().insert_str(&mut state.doc, "body text");
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
     assert_eq!(
         wp.model().region(),
         Region::Body,
@@ -2782,7 +2804,7 @@ fn clicking_header_band_routes_typing_into_the_header() {
         wp.zoom.anchor().y + (centre_content.y - wp.zoom.anchor().y) * wp.zoom.factor(),
     );
 
-    left_click(&mut wp, &mut state, screen);
+    left_click(wp, state, screen);
     assert_eq!(
         wp.model().region(),
         Region::Header,
@@ -2791,18 +2813,18 @@ fn clicking_header_band_routes_typing_into_the_header() {
 
     // Type into the header — production keyboard path.
     for ch in "My Title".chars() {
-        type_char(&mut wp, &mut state, ch);
+        type_char(wp, state, ch);
     }
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
     // Assert on the materialized HEADER snapshot (the production path).
     assert_eq!(
-        header_text(&wp, &state),
+        header_text(wp, state),
         vec!["My Title".to_string()],
         "typed text landed in the header container"
     );
     assert_eq!(
-        body_text(&wp, &state),
+        body_text(wp, state),
         vec!["body text".to_string()],
         "the body is untouched"
     );
@@ -2813,24 +2835,24 @@ fn clicking_header_band_routes_typing_into_the_header() {
     );
 
     // Escape returns to the body; typing then edits the body again.
-    press_named(&mut wp, &mut state, NamedKey::Escape);
+    press_named(wp, state, NamedKey::Escape);
     assert_eq!(
         wp.model().region(),
         Region::Body,
         "Escape exits header editing"
     );
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
     wp.model_mut().move_end(&state.doc);
     for ch in "!".chars() {
-        type_char(&mut wp, &mut state, ch);
+        type_char(wp, state, ch);
     }
     assert_eq!(
-        body_text(&wp, &state),
+        body_text(wp, state),
         vec!["body text!".to_string()],
         "after Escape, typing edits the body"
     );
     assert_eq!(
-        header_text(&wp, &state),
+        header_text(wp, state),
         vec!["My Title".to_string()],
         "the header keeps its content"
     );
@@ -2854,56 +2876,7 @@ fn header_edit_mode_renders_a_frame() {
         wp.model_mut().insert_str(&mut state.doc, &ch.to_string());
     }
     let (w, h) = (1000u32, 700u32);
-    let theme = Theme::dark();
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut tr = TextRenderer::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    wp.sync(&mut state.doc, &state.root);
-    let child = wp.build_layout(&mut taffy, &theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_u32(w)),
-                    height: Dimension::length(num::f32_of_u32(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
-                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    wp.apply_layout(&taffy, child, Point::ORIGIN);
-    let mut scene = Scene::new();
-    wp.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        &theme,
-        &presence,
-        &permission,
-    );
+    let wp = mount(state, wp, w, h);
     // The header band laid out for the active context (so its caret + chrome
     // are part of this frame).
     assert!(
@@ -2919,7 +2892,7 @@ fn header_edit_mode_renders_a_frame() {
         )
     });
     ui::offscreen::OffscreenRenderer::new(w, h).render_png(
-        &scene,
+        Framed::harness(&wp).scene(),
         Color::from_rgb8(0x20, 0x22, 0x28),
         std::path::Path::new(&out),
     );
@@ -2945,7 +2918,8 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
         wp.model_mut().insert_image_bytes(&mut state.doc, TEST_PNG);
         // Re-sync so the widget's block/blob caches see the new image block.
         wp.sync(&mut state.doc, &state.root);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.laid.iter().any(|l| l.kind == "image"),
             "an image block was laid out"
@@ -2969,9 +2943,10 @@ fn inserted_images_lay_out_draw_and_honour_their_size() {
             dm.set_attr(&img, "width", 200_i64);
             dm.set_attr(&img, "height", 120_i64);
         });
-        let mut wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::new();
         wp.model().content_store().put(TEST_PNG).unwrap();
-        pipeline_draw(&mut wp, &mut state, 1100, 900);
+        let mut framed = mount(state, wp, 1100, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         let img = wp
             .laid
@@ -3025,9 +3000,10 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow beside the floated image to its left",
             );
         });
-        let mut wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::new();
         wp.model().content_store().put(TEST_PNG).unwrap();
-        pipeline_draw(&mut wp, &mut state, 1100, 900);
+        let mut framed = mount(state, wp, 1100, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         let reference = wp
             .laid
@@ -3105,9 +3081,10 @@ fn floated_images_narrow_and_offset_the_following_paragraph() {
                 "this paragraph should flow to the right of the floated image",
             );
         });
-        let mut wp = WordProcessorWidget::new();
+        let wp = WordProcessorWidget::new();
         wp.model().content_store().put(TEST_PNG).unwrap();
-        pipeline_draw(&mut wp, &mut state, 1100, 900);
+        let mut framed = mount(state, wp, 1100, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         let reference = wp
             .laid
@@ -3162,7 +3139,8 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "zoom me");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         // At 100% the content transform is the identity scale (no magnification).
         let base = Affine::IDENTITY;
@@ -3206,7 +3184,8 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
         wp.model_mut().enter(&mut state.doc);
         wp.model_mut()
             .insert_str(&mut state.doc, "second paragraph");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         // A content-space point inside the second block (its `Laid` rect lives in
         // unscaled content coordinates regardless of zoom).
@@ -3231,7 +3210,7 @@ fn zoom_scales_about_the_anchor_and_keeps_clicks_on_the_same_caret() {
         // the production inverse (`pointer_to_content`) must recover the click,
         // so `handle_event`'s caret hit-test lands on the same block + offset.
         assert!(wp.set_zoom(1.75));
-        pipeline_draw(&mut wp, &mut state, 1000, 700); // recompute `zoom_anchor`
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700); // recompute `zoom_anchor`
         let screen_pt = wp.content_transform(Affine::IDENTITY) * content_pt;
         let recovered = wp.pointer_to_content(screen_pt);
         assert!(
@@ -3295,7 +3274,8 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         let mut state = ui::State::new();
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Every zoom button sits inside the toolbar band, not a bottom strip.
         let tb_h = wp.toolbar_height(1000.0);
@@ -3320,8 +3300,8 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         };
 
         // Click + : zoom in one step.
-        let p = center(&wp, 2);
-        left_click(&mut wp, &mut state, p);
+        let p = center(wp, 2);
+        left_click(wp, state, p);
         assert!(
             (wp.zoom.factor() - (1.0 + ZOOM_STEP)).abs() < 1e-6,
             "clicking + zooms in one step: {}",
@@ -3329,9 +3309,9 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         );
 
         // Click − : back to 100%.
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, 0);
-        left_click(&mut wp, &mut state, p);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+        let p = center(wp, 0);
+        left_click(wp, state, p);
         assert!(
             (wp.zoom.factor() - 1.0).abs() < 1e-6,
             "clicking − zooms out one step: {}",
@@ -3340,9 +3320,9 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
 
         // Click the percentage chip: reset to 100% from any zoom.
         wp.set_zoom(1.6);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
-        let p = center(&wp, 1);
-        left_click(&mut wp, &mut state, p);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
+        let p = center(wp, 1);
+        left_click(wp, state, p);
         assert!(
             (wp.zoom.factor() - 1.0).abs() < 1e-9,
             "clicking the % chip resets to 100%: {}",
@@ -3356,8 +3336,9 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
     // same component method as a pointer press.
     {
         crate::i18n::set_locale("en-US");
-        let (mut state, mut wp) = populated();
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let (state, wp) = populated();
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, state) = Framed::split(&mut framed);
 
         let tree = wp.accessibility_tree();
         let toolbar = tree
@@ -3375,7 +3356,7 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         assert!(zoom_in.node.bounds.is_some());
 
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&ZoomControl::TARGET_IN)],
             &mut state.doc,
@@ -3387,7 +3368,7 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
         );
 
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&ZoomControl::TARGET_RESET)],
             &mut state.doc,
@@ -3408,11 +3389,12 @@ fn the_zoom_stepper_drives_zoom_and_the_scroll_range() {
             );
             wp.model_mut().enter(&mut state.doc);
         }
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         let scroll_1x = wp.max_scroll;
         assert!(scroll_1x > 0.0, "the document already overflows at 100%");
         wp.set_zoom(2.0);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
         assert!(
             wp.max_scroll > scroll_1x,
             "zooming in enlarges the content, so there is more to scroll"
@@ -3496,7 +3478,8 @@ fn the_toolbar_packs_or_wraps_to_its_width() {
             (wide - TOOLBAR_H).abs() < 1e-9,
             "the complete desktop toolbar still fits a single row when shown"
         );
-        pipeline_draw(&mut wp, &mut state, 760, 700);
+        let mut framed = mount(state, wp, 760, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.page_rect.y0 >= narrow + PAGE_TOP,
             "the page is laid below the single-row compact toolbar"
@@ -3510,10 +3493,10 @@ fn the_toolbar_packs_or_wraps_to_its_width() {
 fn enlarged_and_phone_layouts_keep_controls_fitting() {
     // Phase: enlarged_toolbar_controls_fit_their_labels.
     {
-        let (mut state, mut wp) = populated();
+        let (state, wp) = populated();
         let mut theme = Theme::dark();
         theme.text_scale = 2.0;
-        pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+        let wp = mount_themed(state, wp, 480, 600, &theme);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
         let specs = wp.toolbar_button_specs(true);
@@ -3535,10 +3518,10 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
 
     // Phase: enlarged_layout_controls_fit_their_labels.
     {
-        let (mut state, mut wp) = populated();
+        let (state, wp) = populated();
         let mut theme = Theme::dark();
         theme.text_scale = 2.0;
-        pipeline_draw_themed(&mut wp, &mut state, 480, 600, &theme);
+        let wp = mount_themed(state, wp, 480, 600, &theme);
         let mut tr = TextRenderer::new();
         tr.set_text_scale(2.0);
         for ((_, rect), label) in wp
@@ -3567,7 +3550,7 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
         wp.model_mut()
             .insert_str(&mut state.doc, "A readable large-text document");
         let theme = Theme::dark().with_text_scale(2.0);
-        pipeline_draw_themed(&mut wp, &mut state, 390, 844, &theme);
+        let wp = mount_themed(state, wp, 390, 844, &theme);
 
         let row_height = ui::chrome::toolbar::metrics(2.0).row_height;
         assert_eq!(
@@ -3622,11 +3605,12 @@ fn enlarged_and_phone_layouts_keep_controls_fitting() {
 fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
     // Phase: document_status_stays_in_bottom_chrome_at_narrow_and_wide_zoomed_widths.
     {
-        let (mut state, mut wp) = populated();
+        let (state, wp) = populated();
+        let mut framed = mount(state, wp, 700, 900);
         for (width, zoom) in [(700_u32, 0.81), (1100, 1.0)] {
-            wp.view.auto_fit_page = false;
-            wp.zoom.set(zoom);
-            pipeline_draw(&mut wp, &mut state, width, 900);
+            framed.view.auto_fit_page = false;
+            framed.zoom.set(zoom);
+            let (wp, _) = pipeline_draw(&mut framed, width, 900);
             let bar = Rect::new(0.0, 868.0, f64::from(width), 900.0);
             let label = wp.status_count_label();
             let rect = WordProcessorWidget::layout_bar_status_rect(
@@ -3654,7 +3638,8 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut()
             .insert_str(&mut state.doc, "Readable narrow document");
-        pipeline_draw(&mut wp, &mut state, 640, 800);
+        let mut framed = mount(state, wp, 640, 800);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.zoom.factor() < 1.0,
             "narrow canvas automatically fits paper"
@@ -3673,7 +3658,7 @@ fn narrow_and_zoomed_windows_keep_status_and_page_fitting() {
         );
 
         wp.set_zoom(1.0);
-        pipeline_draw(&mut wp, &mut state, 640, 800);
+        let (wp, _) = pipeline_draw(&mut framed, 640, 800);
         assert_eq!(wp.zoom.factor(), 1.0, "explicit zoom disables auto-fit");
     }
 }
@@ -3696,7 +3681,8 @@ fn chrome_never_crowds_the_document_canvas() {
         // At a full desktop width, buttons and swatches share one row. The
         // compact toolbar intentionally moves swatches into More, so testing
         // this at 1200px would exercise the wrong responsive mode.
-        pipeline_draw(&mut wp, &mut state, 1800, 760);
+        let mut framed = mount(state, wp, 1800, 760);
+        let (wp, _) = Framed::split(&mut framed);
 
         let rect_of =
             |a: fn(&ToolAction) -> bool| wp.toolbar.iter().find(|(x, _)| a(x)).map(|(_, r)| *r);
@@ -3739,9 +3725,10 @@ fn chrome_never_crowds_the_document_canvas() {
         // ordinary displays — a 1280-wide screen split three ways is the
         // narrow end, and is where the panel currently wins.
         for (w, h) in [(1400_u32, 900_u32), (960, 800), (640, 700), (426, 700)] {
-            let (mut state, mut wp) = bound();
+            let (state, mut wp) = bound();
             wp.view.styles_panel_visible = true;
-            pipeline_draw(&mut wp, &mut state, w, h);
+            let mut framed = mount(state, wp, w, h);
+            let (wp, _) = Framed::split(&mut framed);
             assert!(
                 wp.view.styles_panel_visible,
                 "precondition: the explicitly-open panel is the one under test",
@@ -3784,7 +3771,8 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         // surrounding words are valid, so exactly one span is expected.
         wp.model_mut()
             .insert_str(&mut state.doc, "teh quick brown fox");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
 
         let l = wp
             .laid
@@ -3837,7 +3825,8 @@ fn spellcheck_marks_misspellings_per_language_and_caches_by_block() {
         assert!(!wp.spellcheck_enabled(), "toggle turns it OFF");
         // With the toggle off, a draw must not even build the dictionary (the lazy
         // OnceLock stays untouched for this widget — the per-widget handle is None).
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.dict.is_none(),
             "spell-check off skips dictionary construction"
@@ -4154,12 +4143,13 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Hello world");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.inner.select_all(&state.doc);
         let selected = wp.inner.selection_text(&state.doc);
         let caret = wp.inner.caret.clone();
         let anchor = wp.inner.selection_anchor.clone();
-        let point = first_block_start_point(&wp);
+        let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [300.0, 300.0]);
         assert_eq!(wp.inner.selection_text(&state.doc), selected);
         assert_eq!(wp.inner.caret, caret);
@@ -4173,7 +4163,8 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
         for style_menu in [false, true] {
             let (mut state, mut wp) = bound();
             wp.model_mut().insert_str(&mut state.doc, "Keep my draft");
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let mut framed = mount(state, wp, 1000, 700);
+            let (wp, state) = Framed::split(&mut framed);
             wp.lifecycle.focused = true;
             wp.inner.select_all(&state.doc);
             let style_count = wp.sheet.order().len();
@@ -4182,13 +4173,13 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
             } else {
                 wp.open_toolbar_overflow();
             }
-            press_named(&mut wp, &mut state, NamedKey::Backspace);
+            press_named(wp, state, NamedKey::Backspace);
             assert_eq!(
-                first_block(&wp, &state).map(|b| b.text),
+                first_block(wp, state).map(|b| b.text),
                 Some("Keep my draft".into())
             );
-            press_named(&mut wp, &mut state, NamedKey::ArrowDown);
-            press_named(&mut wp, &mut state, NamedKey::Enter);
+            press_named(wp, state, NamedKey::ArrowDown);
+            press_named(wp, state, NamedKey::Enter);
             assert!(!wp.context_menu.is_open());
             assert!(!wp.style_menu.is_open());
             if style_menu {
@@ -4204,7 +4195,7 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
                 );
             }
             assert_eq!(
-                first_block(&wp, &state).map(|b| b.text),
+                first_block(wp, state).map(|b| b.text),
                 Some("Keep my draft".into())
             );
         }
@@ -4214,8 +4205,9 @@ fn context_menus_preserve_the_selection_and_capture_editing_keys() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Hello world");
-        pipeline_draw(&mut wp, &mut state, 600, 400);
-        let point = first_block_start_point(&wp);
+        let mut framed = mount(state, wp, 600, 400);
+        let (wp, state) = Framed::split(&mut framed);
+        let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [598.0, 398.0]);
         let mut scene = Scene::new();
         wp.draw_overlay(
@@ -4251,13 +4243,14 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
             wp.inner.insert_str(&mut state.doc, "Keep this edit");
             state.commit_action(None, None);
             let containers = wp.inner.containers.clone().unwrap();
-            pipeline_draw(&mut wp, &mut state, 1000, 700);
+            let mut framed = mount(state, wp, 1000, 700);
             match menu_kind {
-                0 => wp.open_template_picker(),
-                1 => wp.open_toolbar_overflow(),
-                _ => wp.style_menu.open("body", Point::new(300.0, 300.0)),
+                0 => framed.open_template_picker(),
+                1 => framed.open_toolbar_overflow(),
+                _ => framed.style_menu.open("body", Point::new(300.0, 300.0)),
             }
-            let mut driver = ui::headless::Driver::new(state, Box::new(wp), (1000, 700));
+            let driver = Framed::harness_mut(&mut framed);
+            driver.relayout();
             // Ctrl+Z is the host undo binding under these conventions; on a macOS
             // build host the default conventions bind undo to Cmd instead.
             driver.set_platform_conventions(ui::PlatformConventions::new(ui::Platform::Linux));
@@ -4284,9 +4277,10 @@ fn host_undo_and_right_click_leave_an_open_menus_selection_alone() {
     {
         let (mut state, mut wp) = bound();
         wp.inner.insert_str(&mut state.doc, "Hello world");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.inner.select_all(&state.doc);
-        let mut point = first_block_start_point(&wp);
+        let mut point = first_block_start_point(wp);
         point.x += 400.0; // hit testing clamps the text's right edge to its end offset
         wp.open_context_menu(&state.doc, point, [500.0, 300.0]);
         assert_eq!(wp.inner.selection_text(&state.doc), "Hello world");
@@ -4318,7 +4312,8 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         wp.sync(&mut state.doc, &state.root);
         // "qwordz" is not a real word → flagged. Followed by a valid word.
         wp.model_mut().insert_str(&mut state.doc, "qwordz quick");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let id = wp.blocks[0].id.clone();
         assert_eq!(
             wp.block_spell_spans(&id, "qwordz quick"),
@@ -4327,7 +4322,7 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         );
 
         // Right-click on the first word.
-        let pt = first_block_start_point(&wp);
+        let pt = first_block_start_point(wp);
         wp.open_context_menu(
             &state.doc,
             pt,
@@ -4386,9 +4381,10 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         wp.sync(&mut state.doc, &state.root);
         // "teh" suggests "the".
         wp.model_mut().insert_str(&mut state.doc, "teh end");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
-        let pt = first_block_start_point(&wp);
+        let pt = first_block_start_point(wp);
         wp.open_context_menu(
             &state.doc,
             pt,
@@ -4437,13 +4433,14 @@ fn right_click_spelling_offers_dictionary_suggestions_and_copy() {
         let mut wp = WordProcessorWidget::new();
         wp.sync(&mut state.doc, &state.root);
         wp.model_mut().insert_str(&mut state.doc, "hello world");
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(
             !wp.model().has_selection(),
             "precondition: nothing selected"
         );
 
-        let pt = first_block_start_point(&wp);
+        let pt = first_block_start_point(wp);
         wp.open_context_menu(
             &state.doc,
             pt,
@@ -4507,9 +4504,10 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
     // Phase: footnote_renders_superscript_marker_and_note_text_in_page_area.
     {
         // Body "Hello world" with a footnote reference after "Hello" (idx 5).
-        let mut state = author_doc_with_footnote("Hello world", 5, "A clarifying footnote.");
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let state = author_doc_with_footnote("Hello world", 5, "A clarifying footnote.");
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         // The note materialized into the widget as a footnote.
         assert_eq!(wp.notes.len(), 1, "one note materialized");
@@ -4582,8 +4580,9 @@ fn footnotes_render_in_the_page_area_numbered_in_document_order() {
         }
         state.doc.commit();
 
-        let mut wp = WordProcessorWidget::new();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let wp = WordProcessorWidget::new();
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         let nums = note_numbering(&wp.blocks);
         assert_eq!(
@@ -4640,7 +4639,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
     // Phase: comment_range_computes_a_highlight_rect.
     {
         // "hello world" with a comment over the word "world" (chars 6..11).
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -4650,7 +4649,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             dm.add_comment(&bid, 6, 11, "Ada", "Reword this");
         }
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         // The comment is materialized and anchored to the body range.
         assert_eq!(
@@ -4693,7 +4693,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
 
     // Phase: review_reply_affordance_opens_the_durable_thread.
     {
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         let comment;
         {
             let mut dm = qdoc::model::DocMut {
@@ -4706,7 +4706,8 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             assert!(reply.is_some(), "reply attaches to the stable parent id");
         }
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert_eq!(wp.review.comments()[0].replies.len(), 1);
 
         wp.dispatch_review_action(
@@ -4721,7 +4722,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
 
         // The reply field is the SDK editor: plain Enter starts a paragraph,
         // Ctrl+Enter sends the reply as written, and the field clears.
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         {
             // The thread panel paints in the top layer, which lays out its field.
             let mut tr = TextRenderer::new();
@@ -4734,23 +4735,23 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             );
         }
         for ch in "Done".chars() {
-            type_char(&mut wp, &mut state, ch);
+            type_char(wp, state, ch);
         }
-        press_named(&mut wp, &mut state, NamedKey::Enter);
+        press_named(wp, state, NamedKey::Enter);
         for ch in "Thanks".chars() {
-            type_char(&mut wp, &mut state, ch);
+            type_char(wp, state, ch);
         }
         assert_eq!(
             wp.thread_reply.widget().source().plain_text(),
             "Done\nThanks"
         );
         press_named_with_modifiers(
-            &mut wp,
-            &mut state,
+            wp,
+            state,
             NamedKey::Enter,
             Modifiers::from(winit::keyboard::ModifiersState::CONTROL),
         );
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         let thread = after.comments.iter().find(|cm| cm.id == comment).unwrap();
         assert_eq!(thread.replies.len(), 2, "the reply was sent");
         let reply = thread
@@ -4771,14 +4772,14 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
         assert_eq!(wp.thread_comment.as_deref(), Some(comment.as_str()));
 
         // Escape in the field closes the thread.
-        press_named(&mut wp, &mut state, NamedKey::Escape);
+        press_named(wp, state, NamedKey::Escape);
         assert!(wp.thread_comment.is_none());
     }
 
     // Phase: deleting_comment_removes_it_and_clears_the_highlight.
     {
         // "hello world" with a comment over "world" (chars 6..11).
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         let cid = {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -4788,10 +4789,11 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
             dm.add_comment(&bid, 6, 11, "Ada", "Reword this")
         };
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Before: the comment is in the snapshot and its highlight range is present.
-        let before = snapshot(&state, &c);
+        let before = snapshot(state, &c);
         assert!(
             before.comments.iter().any(|cm| cm.id == cid),
             "the comment exists before resolve"
@@ -4808,7 +4810,7 @@ fn comments_highlight_open_threads_and_delete_cleanly() {
 
         // After: gone from `comments`, and the anchoring `comment` mark (the
         // highlight band) is cleared from the block. Body text is untouched.
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
         assert!(
             !after.comments.iter().any(|cm| cm.id == cid),
@@ -4837,7 +4839,7 @@ fn tracked_changes_render_and_accept_individually() {
     {
         // "keep gone": flag "keep" (0..4) as a tracked insertion and "gone" (5..9)
         // as a tracked deletion, via the production tracked-change helpers.
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let (ins_id, del_id);
         {
             let mut dm = qdoc::DocMut {
@@ -4852,7 +4854,8 @@ fn tracked_changes_render_and_accept_individually() {
             del_id = dm.track_delete(&bid, 5, 9, "Ada", "");
         }
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
 
         // Both changes materialize with their kinds.
         assert_eq!(
@@ -4933,7 +4936,7 @@ fn tracked_changes_render_and_accept_individually() {
     // Phase: accepting_tracked_insertion_clears_its_ins_mark.
     {
         // "keep gone": flag "keep" (0..4) as a tracked insertion.
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let ins_id = {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -4945,11 +4948,12 @@ fn tracked_changes_render_and_accept_individually() {
             id
         };
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Before: the change is reported in the materialized snapshot, and the
         // block carries a decoration range over "keep".
-        let before = snapshot(&state, &c);
+        let before = snapshot(state, &c);
         assert!(
             before.changes.iter().any(|ch| ch.id == ins_id),
             "the insertion is a tracked change before accept"
@@ -4967,7 +4971,7 @@ fn tracked_changes_render_and_accept_individually() {
 
         // After: the text is kept, but the `ins` mark + change record are gone —
         // the run is no longer reported as a tracked change anywhere.
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
         assert_eq!(
             b.text, "keep gone",
@@ -4993,7 +4997,7 @@ fn tracked_changes_render_and_accept_individually() {
         // qdoc semantics: ACCEPTING a deletion applies it (removes the struck text);
         // REJECTING keeps the text and drops the `del` mark. We assert both arms
         // on the materialized snapshot (the production read path).
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let del_id = {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -5003,10 +5007,11 @@ fn tracked_changes_render_and_accept_individually() {
             dm.track_delete(&bid, 5, 9, "Ada", "")
         };
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Before: the struck text is still present + reported as a change.
-        let before = snapshot(&state, &c);
+        let before = snapshot(state, &c);
         assert!(
             before.changes.iter().any(|ch| ch.id == del_id),
             "the deletion is a tracked change before accept"
@@ -5019,7 +5024,7 @@ fn tracked_changes_render_and_accept_individually() {
         // Accept the deletion: the struck text is removed.
         wp.dispatch_review_action(ReviewAction::AcceptChange(del_id.clone()), &mut state.doc);
 
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
         assert_eq!(
             b.text, "keep ",
@@ -5051,7 +5056,7 @@ fn tracked_changes_reject_and_accept_all() {
     {
         // The inverse arm: rejecting a tracked deletion keeps the text (the author
         // chose NOT to delete) and clears the `del` strike.
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let del_id = {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -5061,11 +5066,12 @@ fn tracked_changes_reject_and_accept_all() {
             dm.track_delete(&bid, 5, 9, "Ada", "")
         };
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, state) = Framed::split(&mut framed);
 
         wp.dispatch_review_action(ReviewAction::RejectChange(del_id.clone()), &mut state.doc);
 
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         let b = after.blocks.iter().find(|b| b.id == bid).unwrap();
         assert_eq!(b.text, "keep gone", "rejecting a deletion keeps the text");
         assert!(
@@ -5081,7 +5087,7 @@ fn tracked_changes_reject_and_accept_all() {
     // Phase: accept_all_clears_every_tracked_change.
     {
         // Two changes: an insertion over "keep" and a deletion over "gone".
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -5093,9 +5099,10 @@ fn tracked_changes_reject_and_accept_all() {
             dm.track_delete(&bid, 5, 9, "Ada", "");
         }
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, state) = Framed::split(&mut framed);
         assert_eq!(
-            snapshot(&state, &c).changes.len(),
+            snapshot(state, &c).changes.len(),
             2,
             "two tracked changes before Accept All"
         );
@@ -5104,7 +5111,7 @@ fn tracked_changes_reject_and_accept_all() {
 
         // Every change is gone; accepting the insertion kept "keep" and accepting
         // the deletion removed "gone".
-        let after = snapshot(&state, &c);
+        let after = snapshot(state, &c);
         assert!(
             after.changes.is_empty(),
             "no tracked changes remain after Accept All"
@@ -5134,7 +5141,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         // A drawn frame with one comment + one tracked change populates clickable
         // affordances in `review_hits` (the production hit list the left-click
         // handler dispatches through).
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("keep gone");
         let (cid, ins_id);
         {
             let mut dm = qdoc::DocMut {
@@ -5147,7 +5154,8 @@ fn review_markup_registers_card_hits_and_toggles_off() {
             dm.add_change_mark(qdoc::ChangeKind::Ins, &bid, 5, 9, &ins_id);
         }
         state.doc.commit();
-        pipeline_draw(&mut wp, &mut state, 1200, 900);
+        let mut framed = mount(state, wp, 1200, 900);
+        let (wp, state) = Framed::split(&mut framed);
 
         let has = |pred: &dyn Fn(&ReviewAction) -> bool| {
             wp.review
@@ -5196,14 +5204,14 @@ fn review_markup_registers_card_hits_and_toggles_off() {
         let resolve_target = review_action_target(&ReviewAction::ResolveComment(cid.clone()));
         let root = state.root.clone();
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&resolve_target)],
             &mut state.doc,
             &root,
         ));
         assert!(
-            snapshot(&state, &c)
+            snapshot(state, &c)
                 .comments
                 .iter()
                 .all(|comment| comment.id != cid),
@@ -5213,7 +5221,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
     // Phase: markup_toggle_hides_comment_ranges_and_changes.
     {
-        let (mut wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
+        let (wp, mut state, c, mut ids, bid) = doc_with_paragraph("hello world");
         {
             let mut dm = qdoc::DocMut {
                 doc: &mut state.doc,
@@ -5228,7 +5236,8 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
         // Default ON: a comment marker is collected for the right-margin card.
         assert!(wp.markup_enabled(), "markup defaults ON");
-        pipeline_draw(&mut wp, &mut state, 1000, 900);
+        let mut framed = mount(state, wp, 1000, 900);
+        let (wp, _) = Framed::split(&mut framed);
         let b = wp.blocks.iter().find(|b| b.id == bid).unwrap().clone();
         assert_eq!(
             block_comment_ranges(&b).len(),
@@ -5252,7 +5261,7 @@ fn review_markup_registers_card_hits_and_toggles_off() {
 
 /// Build a document with several headings (some on later pages) interleaved
 /// with body paragraphs, returning `(wp, state)` already drawn at `w×h`.
-fn doc_with_headings(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
+fn doc_with_headings(w: u32, h: u32) -> Framed<WordProcessorWidget> {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
@@ -5282,8 +5291,7 @@ fn doc_with_headings(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
     }
     add_heading(&mut wp, &mut state, "Conclusion", 1);
     wp.model_mut().insert_str(&mut state.doc, "The end.");
-    pipeline_draw(&mut wp, &mut state, w, h);
-    (wp, state)
+    mount(state, wp, w, h)
 }
 
 /// The outline has one entry per heading with levels in order, and generating a TOC inserts one marked
@@ -5292,7 +5300,7 @@ fn doc_with_headings(w: u32, h: u32) -> (WordProcessorWidget, ui::State) {
 fn the_outline_and_toc_follow_the_headings() {
     // Phase: outline_has_one_entry_per_heading_with_levels_in_order.
     {
-        let (wp, _state) = doc_with_headings(1000, 700);
+        let wp = doc_with_headings(1000, 700);
         let entries = wp.outline_entries();
         assert_eq!(
             entries.iter().map(|e| e.text.as_str()).collect::<Vec<_>>(),
@@ -5308,7 +5316,8 @@ fn the_outline_and_toc_follow_the_headings() {
 
     // Phase: generate_toc_inserts_one_marked_block_per_heading.
     {
-        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let mut framed = doc_with_headings(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let heading_count = wp.outline_entries().len();
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
 
@@ -5351,14 +5360,16 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
             device_id: unsafe { std::mem::zeroed() },
             position: (pt.x, pt.y).into(),
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     wp.handle_event(
         &WindowEvent::MouseInput {
@@ -5366,24 +5377,27 @@ pub(super) fn left_click(wp: &mut WordProcessorWidget, state: &mut ui::State, pt
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
 #[test]
 fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
-    let (mut wp, mut state) = doc_with_headings(1000, 700);
+    let mut framed = doc_with_headings(1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
     // Open the outline pane and redraw so its clickable entries are built.
     wp.apply_tool(&mut state.doc, ToolAction::ToggleOutline);
     assert!(wp.outline.is_open(), "outline toggled on");
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
 
     // The last heading ("Conclusion") is far down; it should be off-screen at
     // the top of the document.
@@ -5401,14 +5415,14 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
     let row_y =
         wp.toolbar_height(1000.0) + 14.0 + 18.0 + num::f64_of_usize(entry_index) * 24.0 + 12.0;
     let pt = Point::new(30.0, row_y);
-    left_click(&mut wp, &mut state, pt);
+    left_click(wp, state, pt);
     assert!(
         wp.scroll_y > 0.0,
         "clicking a far-down heading scrolls the document"
     );
 
     // After redrawing at the new scroll, the heading is laid within the canvas.
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
+    let (wp, _) = pipeline_draw(&mut framed, 1000, 700);
     let canvas_top = wp.toolbar_height(1000.0);
     // The bottom status strip is gone (its readout floats as a bubble); the
     // canvas now runs down to the top of the layout bar.
@@ -5430,10 +5444,11 @@ fn clicking_an_outline_entry_scrolls_the_heading_into_view() {
 fn regenerating_the_toc_replaces_it_and_confirms() {
     // Phase: regenerating_toc_replaces_rather_than_duplicating.
     {
-        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let mut framed = doc_with_headings(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let heading_count = wp.outline_entries().len();
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         // Regenerate.
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
 
@@ -5460,7 +5475,8 @@ fn regenerating_the_toc_replaces_it_and_confirms() {
     // Generating a TOC leaves a visible confirmation toast (the button used to
     // give no feedback at all).
     {
-        let (mut wp, mut state) = doc_with_headings(1000, 700);
+        let mut framed = doc_with_headings(1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(wp.toast.is_none(), "no toast before the action");
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
         assert!(
@@ -5504,8 +5520,9 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
     // Phase: new_menu_button_is_in_the_toolbar.
     // The "New ▾" toolbar button is present and registered as a click target.
     {
-        let (mut state, mut wp) = bound();
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (state, wp) = bound();
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, _) = Framed::split(&mut framed);
         assert!(
             wp.toolbar.iter().any(|(a, _)| *a == ToolAction::NewMenu),
             "the New ▾ button is a registered toolbar action"
@@ -5515,8 +5532,9 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
     // Phase: template_menu_hover_paints_feedback_in_both_themes.
     {
         for theme in [Theme::dark(), Theme::light()] {
-            let (mut state, mut wp) = bound();
-            pipeline_draw_themed(&mut wp, &mut state, 1200, 700, &theme);
+            let (state, wp) = bound();
+            let mut framed = mount_themed(state, wp, 1200, 700, &theme);
+            let (wp, state) = Framed::split(&mut framed);
             wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
             let mut tr = TextRenderer::new();
             let mut before = Scene::new();
@@ -5538,14 +5556,16 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
                     device_id: unsafe { std::mem::zeroed() },
                     position: (point.x * 2.0, point.y * 2.0).into(),
                 },
-                2.0,
-                &Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut None,
-                NodeId::new(0),
-                &TaffyTree::new(),
+                &mut ui::widget::EventCtx {
+                    scale_factor: 2.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut None,
+                    node_id: NodeId::new(0),
+                    taffy: &TaffyTree::new(),
+                },
             );
             let mut after = Scene::new();
             wp.draw_overlay(
@@ -5562,8 +5582,7 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
             assert!(wp.lifecycle.dirty, "hover must request a repaint");
             if let Some(dir) = std::env::var_os("TILO_WP_REVIEW_SHOTS") {
                 render_review_png(
-                    &mut wp,
-                    &mut state,
+                    &mut framed,
                     1200,
                     700,
                     std::path::Path::new(&dir),
@@ -5578,24 +5597,22 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "Draft");
         wp.refresh_blocks(&mut state.doc);
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.lifecycle.focused = true;
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
-        press_named(&mut wp, &mut state, NamedKey::Backspace);
-        assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
-            Some("Draft".into())
-        );
+        press_named(wp, state, NamedKey::Backspace);
+        assert_eq!(first_block(wp, state).map(|b| b.text), Some("Draft".into()));
         for _ in 0..3 {
-            press_named(&mut wp, &mut state, NamedKey::ArrowDown);
+            press_named(wp, state, NamedKey::ArrowDown);
         }
-        press_named(&mut wp, &mut state, NamedKey::Enter);
+        press_named(wp, state, NamedKey::Enter);
         assert!(
             !wp.template_picker.is_open(),
             "Enter chooses and closes the menu"
         );
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Report Title".into())
         );
     }
@@ -5611,17 +5628,18 @@ fn the_new_menu_paints_feedback_and_selects_by_keyboard() {
 fn templates_replace_the_document_only_when_chosen() {
     // Phase: template_menu_pointer_selection_and_dismissal_use_the_overlay.
     {
-        let (mut state, mut wp) = bound();
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let (state, wp) = bound();
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
         let report = wp
             .template_picker
             .item_center(crate::Template::Report)
             .expect("Report has a live menu row");
-        left_click(&mut wp, &mut state, report);
+        left_click(wp, state, report);
         assert!(!wp.template_picker.is_open());
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Report Title".into())
         );
 
@@ -5632,7 +5650,7 @@ fn templates_replace_the_document_only_when_chosen() {
             "reopening clears the old highlight"
         );
         wp.lifecycle.focused = false;
-        press_named(&mut wp, &mut state, NamedKey::Escape);
+        press_named(wp, state, NamedKey::Escape);
         assert!(
             !wp.template_picker.is_open(),
             "Escape works even without editor focus"
@@ -5640,7 +5658,7 @@ fn templates_replace_the_document_only_when_chosen() {
 
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
         let caret = wp.inner.caret.clone();
-        left_click(&mut wp, &mut state, Point::new(900.0, 500.0));
+        left_click(wp, state, Point::new(900.0, 500.0));
         assert!(!wp.template_picker.is_open());
         assert_eq!(
             wp.inner.caret, caret,
@@ -5687,7 +5705,8 @@ fn templates_replace_the_document_only_when_chosen() {
 
         // Draw once to establish the real toolbar anchor, then open the picker
         // via the toolbar action.
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::NewMenu);
         assert!(wp.template_picker.is_open(), "the New ▾ picker opens");
 
@@ -5705,7 +5724,7 @@ fn templates_replace_the_document_only_when_chosen() {
             "the picker closes after a selection"
         );
 
-        let first = first_block(&wp, &state).expect("the templated document has a first block");
+        let first = first_block(wp, state).expect("the templated document has a first block");
         assert_eq!(
             first.kind, "heading",
             "the report template opens with a heading"
@@ -5772,14 +5791,16 @@ fn type_char(wp: &mut WordProcessorWidget, state: &mut ui::State, ch: char) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -5902,7 +5923,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
     // copy exists for the open document; Restore re-imports its content in place.
     {
         let dir = temp_dir("restore");
-        let (mut state, mut wp) = bound();
+        let (state, mut wp) = bound();
         wp.set_recovery_dir(dir.clone());
         let doc_path = dir.join("notes.md");
         wp.set_file(doc_path, WpFormat::Markdown);
@@ -5920,14 +5941,15 @@ fn recovery_autosaves_restores_and_discards_per_document() {
 
         // Draw so the banner's Restore/Discard buttons are registered, then click
         // Restore through the production handler.
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let rrect = wp
             .recovery
             .restore_button_rect()
             .expect("Restore button is drawn");
         left_click(
-            &mut wp,
-            &mut state,
+            wp,
+            state,
             Point::new(
                 f64::midpoint(rrect.x0, rrect.x1),
                 f64::midpoint(rrect.y0, rrect.y1),
@@ -5939,7 +5961,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
             "the banner is dismissed after Restore"
         );
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Recovered Heading".to_string()),
             "Restore re-imported the recovery copy into the live document"
         );
@@ -5964,14 +5986,15 @@ fn recovery_autosaves_restores_and_discards_per_document() {
         std::fs::write(&rp, b"# Stale\n").unwrap();
         assert!(wp.check_for_recovery());
 
-        pipeline_draw(&mut wp, &mut state, 1200, 700);
+        let mut framed = mount(state, wp, 1200, 700);
+        let (wp, state) = Framed::split(&mut framed);
         let drect = wp
             .recovery
             .discard_button_rect()
             .expect("Discard button is drawn");
         left_click(
-            &mut wp,
-            &mut state,
+            wp,
+            state,
             Point::new(
                 f64::midpoint(drect.x0, drect.x1),
                 f64::midpoint(drect.y0, drect.y1),
@@ -5981,7 +6004,7 @@ fn recovery_autosaves_restores_and_discards_per_document() {
         assert!(!wp.recovery.is_active(), "Discard dismisses the banner");
         assert!(!rp.exists(), "Discard deletes the recovery file");
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Keep me".to_string()),
             "Discard leaves the open document untouched"
         );
@@ -6039,14 +6062,16 @@ fn press_tab(wp: &mut WordProcessorWidget, state: &mut ui::State) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -6081,7 +6106,8 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
             .set_block_indent(&mut state.doc, &block, 40.0);
         wp.model_mut()
             .set_block_first_line_indent(&mut state.doc, &block, 18.0);
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, _) = Framed::split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6121,7 +6147,7 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
 
         // Zooming in moves the markers further from the anchor by the zoom factor.
         wp.set_zoom(2.0);
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let (wp, _) = pipeline_draw(&mut framed, 1200, 760);
         let anchor = wp.zoom.anchor().x;
         let zoomed = wp.ruler_markers(wp.page_rect.x0, wp.page_rect.width());
         let zx = |m: RulerMarker| {
@@ -6146,7 +6172,8 @@ fn the_ruler_tracks_margins_indent_and_zoom() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "para");
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, state) = Framed::split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6203,7 +6230,8 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "indent me");
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, state) = Framed::split(&mut framed);
         let block = wp.model().caret().block.clone();
         let x_before = wp.laid.iter().find(|l| l.id == block).unwrap().text_x;
 
@@ -6234,7 +6262,7 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
         );
 
         // A redraw reflows the paragraph's text-left by the new indent.
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let (wp, _) = pipeline_draw(&mut framed, 1200, 760);
         let x_after = wp.laid.iter().find(|l| l.id == block).unwrap().text_x;
         assert!(
             (x_after - x_before - 60.0).abs() < 1.0,
@@ -6248,7 +6276,8 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "ab");
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, state) = Framed::split(&mut framed);
         let block = wp.model().caret().block.clone();
         assert!(
             wp.model().block_tab_stops(&state.doc, &block).is_empty(),
@@ -6274,7 +6303,7 @@ fn ruler_drags_and_clicks_set_indents_and_tab_stops() {
         // Caret at end of "ab". Tab advances to the stop (records a tab char).
         wp.model_mut().move_end(&state.doc);
         let off_before = wp.model().caret().offset;
-        press_tab(&mut wp, &mut state);
+        press_tab(wp, state);
         let off_after = wp.model().caret().offset;
         assert_eq!(
             off_after,
@@ -6302,8 +6331,9 @@ fn tab_stops_insert_spaces_without_stops_and_drag_off_to_remove() {
     {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "x");
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
-        press_tab(&mut wp, &mut state);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, state) = Framed::split(&mut framed);
+        press_tab(wp, state);
         assert!(
             wp.model().current_text(&state.doc).contains("    "),
             "no stops → Tab inserts spaces as before"
@@ -6318,7 +6348,8 @@ fn tab_stops_insert_spaces_without_stops_and_drag_off_to_remove() {
         let block = wp.model().caret().block.clone();
         wp.model_mut()
             .set_block_tab_stops(&mut state.doc, &block, &[150.0]);
-        pipeline_draw(&mut wp, &mut state, 1200, 760);
+        let mut framed = mount(state, wp, 1200, 760);
+        let (wp, state) = Framed::split(&mut framed);
 
         let page_x = wp.page_rect.x0;
         let page_w = wp.page_rect.width();
@@ -6547,8 +6578,9 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
         // the test doesn't depend on the host's `LANG` (nextest runs each test
         // in its own process, so this can't leak into a sibling test).
         crate::i18n::set_locale("en-US");
-        let (mut state, mut wp) = populated();
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let (state, wp) = populated();
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, state) = Framed::split(&mut framed);
         // Re-sync so the tree reflects the drawn toolbar.
         wp.sync(&mut state.doc, &state.root);
 
@@ -6576,7 +6608,7 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
             "the toolbar contains actionable button nodes",
         );
 
-        let exported = Widget::accessibility(&wp).expect("exported semantics");
+        let exported = Widget::accessibility(&*wp).expect("exported semantics");
         let exported_toolbar = exported
             .children
             .iter()
@@ -6589,12 +6621,13 @@ fn accessibility_exposes_and_activates_real_toolbar_buttons() {
 
     // Phase: accessibility_activation_uses_the_real_toolbar_path.
     {
-        let (mut state, mut wp) = populated();
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let (state, wp) = populated();
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, state) = Framed::split(&mut framed);
         assert!(!wp.view.styles_panel_visible);
         let target = "word-processor.toolbar:toggle-styles".to_string();
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
             &mut state.doc,
@@ -6625,11 +6658,10 @@ fn first_block_id(wp: &WordProcessorWidget) -> String {
 /// A populated, focused widget that has been drawn once (so `self.laid` +
 /// `self.layout_cache` are live and `remote_presence_overlays` is
 /// meaningful).
-fn drawn_focused() -> (ui::State, WordProcessorWidget) {
-    let (mut state, mut wp) = populated();
+fn drawn_focused() -> Framed<WordProcessorWidget> {
+    let (state, mut wp) = populated();
     wp.set_focus(true);
-    pipeline_draw(&mut wp, &mut state, 1100, 760);
-    (state, wp)
+    mount(state, wp, 1100, 760)
 }
 
 /// Remote presence is a no-op without peers, and a peer's caret is labelled with their name or, unnamed,
@@ -6641,7 +6673,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // caret/selection overlays — proving the collab render path is a strict
     // no-op when there are no peers, so single-user editing is unchanged.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let presence = PresenceCtx::empty();
         let (carets, selections) = wp.remote_presence_overlays(&presence);
         assert!(carets.is_empty(), "no remote carets without peers");
@@ -6653,7 +6685,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // the room's assigned name for the peer's transport id, never the raw id
     // itself (which reads as noise like `peer@5537458103208628978`).
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let block_id = first_block_id(&wp);
         let peer = "peer@5537458103208628978";
 
@@ -6675,7 +6707,7 @@ fn remote_carets_are_labelled_by_peer_name_or_id() {
     // not a person who does not exist. An unlabelled caret is honest;
     // an invented name is a claim about who is in the room.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let block_id = first_block_id(&wp);
         let peer = "peer@5537458103208628978";
 
@@ -6700,7 +6732,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // `draw` consumes presence and maps a remote byte offset onto on-screen
     // caret geometry via the production `caret_geometry` path.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let block_id = first_block_id(&wp);
 
         let mut presence = PresenceCtx::empty();
@@ -6744,7 +6776,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // rectangles (a single-line selection is one rect), mapped through the same
     // `selection_rects` geometry the local selection uses.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let block_id = first_block_id(&wp);
 
         let mut presence = PresenceCtx::empty();
@@ -6772,7 +6804,7 @@ fn remote_carets_and_selections_resolve_to_screen_rects() {
     // A degenerate (empty) remote selection range produces no highlight rects —
     // the render guards against a zero-width selection painting a stray band.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         let block_id = first_block_id(&wp);
 
         let mut presence = PresenceCtx::empty();
@@ -6797,7 +6829,7 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
     // Two peers on DIFFERENT blocks each get their own caret overlay, attributed
     // to the right user — the per-block key keeps them from colliding.
     {
-        let (_state, wp) = drawn_focused();
+        let wp = drawn_focused();
         assert!(
             wp.laid.len() >= 2,
             "the populated doc lays out at least two blocks"
@@ -6830,62 +6862,16 @@ fn remote_peers_resolve_independently_and_draw_through_production() {
     // without panicking AND the resolver agrees — i.e. the production draw and
     // the asserted helper are the same path, not a parallel re-implementation.
     {
-        let (mut state, mut wp) = drawn_focused();
-        let block_id = first_block_id(&wp);
+        let mut framed = drawn_focused();
+        let block_id = first_block_id(&framed);
 
         let mut presence = PresenceCtx::empty();
         presence.set_remote_caret("charlie".into(), block_presence_key(false, &block_id), 2);
 
         // Run the REAL five-pass draw with the populated presence (the same call
         // the App makes each frame). It must paint without panicking.
-        let permission = PermissionContext::permissive();
-        let mut tr = TextRenderer::new();
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        wp.sync(&mut state.doc, &state.root);
-        let child = wp.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1100.0),
-                        height: Dimension::length(760.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(1100.0),
-                        height: AvailableSpace::Definite(760.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        wp.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        wp.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &Theme::dark(),
-            &presence,
-            &permission,
-        );
+        Framed::harness_mut(&mut framed).set_presence_context(presence.clone());
+        let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
 
         // After the production draw, the resolver (which the draw itself called)
         // reports the same single remote caret — proving the draw consumed it.
@@ -6911,7 +6897,7 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
     // it straight into the layout geometry). The App polls this each frame and
     // broadcasts the diff to peers.
     {
-        let (mut state, mut wp) = populated();
+        let (state, mut wp) = populated();
         wp.set_focus(true);
         // Move the caret to char offset 3 of the caret block.
         let block = wp.model().caret().block.clone();
@@ -6920,9 +6906,10 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
             offset: 3,
         });
         // A draw populates the block cache (needed for char→byte conversion).
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, _) = Framed::split(&mut framed);
 
-        match wp.presence_payload() {
+        match ui::presence::capability::presence_payload(wp) {
             Some((key, ui::PresencePayload::Caret { pos })) => {
                 assert_eq!(
                     key,
@@ -6940,16 +6927,17 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
     // A selection takes priority over the bare caret in the outbound payload,
     // reported as a byte range over the caret block.
     {
-        let (mut state, mut wp) = populated();
+        let (state, mut wp) = populated();
         wp.set_focus(true);
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, _) = Framed::split(&mut framed);
         // Select chars [1, 4) of the caret block.
-        select_range(&mut wp, 1, 4);
+        select_range(wp, 1, 4);
         // Re-draw so the selection is reflected in the cached block views.
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let (wp, _) = pipeline_draw(&mut framed, 1100, 760);
 
         let block = wp.model().caret().block.clone();
-        match wp.presence_payload() {
+        match ui::presence::capability::presence_payload(wp) {
             Some((key, ui::PresencePayload::Selection { start, end })) => {
                 assert_eq!(key, block_presence_key(false, &block));
                 assert_eq!((start, end), (1, 4), "selection reported as a byte range");
@@ -6962,11 +6950,12 @@ fn the_presence_payload_reports_focus_caret_and_selection() {
     // An unfocused widget broadcasts no presence (so a background editor doesn't
     // flood peers with a stale caret).
     {
-        let (mut state, mut wp) = populated();
-        pipeline_draw(&mut wp, &mut state, 1100, 760);
+        let (state, wp) = populated();
+        let mut framed = mount(state, wp, 1100, 760);
+        let (wp, _) = Framed::split(&mut framed);
         wp.set_focus(false);
         assert!(
-            wp.presence_payload().is_none(),
+            ui::presence::capability::presence_payload(wp).is_none(),
             "no presence while unfocused"
         );
     }
@@ -7224,17 +7213,18 @@ fn file_ux_never_replaces_a_draft_without_a_decision() {
         let (mut state, mut wp) = bound();
         wp.inner.insert_str(&mut state.doc, "Unsaved work");
         wp.save_status = DocumentSaveStatus::Modified;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
         wp.open_template_picker();
-        press_named(&mut wp, &mut state, NamedKey::ArrowDown);
-        press_named(&mut wp, &mut state, NamedKey::Enter);
+        press_named(wp, state, NamedKey::ArrowDown);
+        press_named(wp, state, NamedKey::Enter);
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Unsaved work".into())
         );
-        press_named(&mut wp, &mut state, NamedKey::Escape);
+        press_named(wp, state, NamedKey::Escape);
         assert_eq!(
-            first_block(&wp, &state).map(|b| b.text),
+            first_block(wp, state).map(|b| b.text),
             Some("Unsaved work".into())
         );
         assert_eq!(wp.save_status, DocumentSaveStatus::Modified);
@@ -7761,8 +7751,8 @@ fn dropped_and_selected_images_expose_their_controls() {
     // caret is first seated under the pointer, so the image lands next to the
     // paragraph the file was dropped on — not wherever the caret happened to be.
     {
-        let (mut wp, mut state) = doc_with_headings(1000, 700);
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = doc_with_headings(1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         // Pick a body paragraph well down the page to drop onto.
         let target = wp
             .laid
@@ -7784,30 +7774,34 @@ fn dropped_and_selected_images_expose_their_controls() {
                 device_id: unsafe { std::mem::zeroed() },
                 position: (drop_pt.x, drop_pt.y).into(),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let path = temp_png("drop");
         wp.handle_event(
             &WindowEvent::DroppedFile(path.clone()),
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let _ = std::fs::remove_file(&path);
         assert_eq!(
-            image_block_count(&wp, &state),
+            image_block_count(wp, state),
             1,
             "the dropped file inserts one image"
         );
@@ -7838,7 +7832,7 @@ fn dropped_and_selected_images_expose_their_controls() {
     // Phase: selected_image_shows_resize_and_flip_controls.
     // A selected image exposes resize + flip controls in the panel.
     {
-        let (wp, _state, _id) = doc_with_selected_image();
+        let (wp, _id) = doc_with_selected_image();
         assert!(wp.selected_image_id().is_some(), "the image is selected");
         let has = |want: &PanelHit| wp.panel_hits.iter().any(|(_, h)| h == want);
         assert!(
@@ -7859,8 +7853,8 @@ fn dropped_and_selected_images_expose_their_controls() {
     // full-width geometry must hold in the 390px overlay, where a label/control
     // collision is otherwise easy to miss in a desktop-only test.
     {
-        let (mut wp, mut state, _id) = doc_with_selected_image();
-        pipeline_draw(&mut wp, &mut state, 390, 844);
+        let (mut framed, _id) = doc_with_selected_image();
+        let (wp, _) = pipeline_draw(&mut framed, 390, 844);
 
         let rect_for = |want: PanelHit| {
             wp.panel_hits
@@ -7894,7 +7888,7 @@ fn dropped_and_selected_images_expose_their_controls() {
 /// Insert an image (via the model), select it (caret on the image block), draw
 /// so the panel builds its controls, then return the widget + state ready for
 /// the resize / flip tests.
-fn doc_with_selected_image() -> (WordProcessorWidget, ui::State, String) {
+fn doc_with_selected_image() -> (Framed<WordProcessorWidget>, String) {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
@@ -7915,13 +7909,16 @@ fn doc_with_selected_image() -> (WordProcessorWidget, ui::State, String) {
         offset: 0,
     });
     wp.set_styles_panel_open(true);
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
-    (wp, state, img_id)
+    (mount(state, wp, 1000, 700), img_id)
 }
 
 /// Image position controls are named, described and @-actionable, and a selected image resizes and
 /// flips from the panel.
 #[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
+)]
 fn image_controls_are_named_and_resize_and_flip() {
     // Phase: image_position_controls_are_named_described_and_at_actionable.
     // Compact visual labels are backed by explicit screen-reader names and
@@ -7931,7 +7928,8 @@ fn image_controls_are_named_and_resize_and_flip() {
         use ui::a11y::Role;
 
         crate::i18n::set_locale("en-US");
-        let (mut wp, mut state, _id) = doc_with_selected_image();
+        let (mut framed, _id) = doc_with_selected_image();
+        let (wp, state) = Framed::split(&mut framed);
         let tree = wp.accessibility_tree();
         let group = tree
             .children
@@ -7961,7 +7959,7 @@ fn image_controls_are_named_and_resize_and_flip() {
 
         let target = "word-processor.image-placement:left".to_string();
         assert!(Widget::perform_action_at(
-            &mut wp,
+            wp,
             &ui::a11y::Action::Activate,
             &[ui::a11y::hash_key(&target)],
             &mut state.doc,
@@ -7987,7 +7985,8 @@ fn image_controls_are_named_and_resize_and_flip() {
     // Clicking the panel's "Larger" control resizes the selected image (its
     // explicit width grows), driven through the production panel-hit path.
     {
-        let (mut wp, mut state, id) = doc_with_selected_image();
+        let (mut framed, id) = doc_with_selected_image();
+        let (wp, state) = Framed::split(&mut framed);
         let (larger_rect, _) = wp
             .panel_hits
             .iter()
@@ -7998,7 +7997,7 @@ fn image_controls_are_named_and_resize_and_flip() {
             f64::midpoint(larger_rect.x0, larger_rect.x1),
             f64::midpoint(larger_rect.y0, larger_rect.y1),
         );
-        left_click(&mut wp, &mut state, pt);
+        left_click(wp, state, pt);
         let (w, _h) = wp
             .model()
             .image_size(&state.doc, &id)
@@ -8013,7 +8012,8 @@ fn image_controls_are_named_and_resize_and_flip() {
     // Clicking the panel's "Flip Horizontal" control mirrors the selected image
     // (sets its `flip_h` attr) through the production path.
     {
-        let (mut wp, mut state, id) = doc_with_selected_image();
+        let (mut framed, id) = doc_with_selected_image();
+        let (wp, state) = Framed::split(&mut framed);
         let (flip_rect, _) = wp
             .panel_hits
             .iter()
@@ -8024,7 +8024,7 @@ fn image_controls_are_named_and_resize_and_flip() {
             f64::midpoint(flip_rect.x0, flip_rect.x1),
             f64::midpoint(flip_rect.y0, flip_rect.y1),
         );
-        left_click(&mut wp, &mut state, pt);
+        left_click(wp, state, pt);
         let c = wp.model().containers.clone().unwrap();
         let flipped = qdoc::model::materialize(&state.doc, &c)
             .blocks
@@ -8041,7 +8041,7 @@ fn image_controls_are_named_and_resize_and_flip() {
 // ---- paragraph-style delete / duplicate context menu ------------------
 
 /// A doc with one custom paragraph style applied to its (only) paragraph.
-fn doc_with_custom_style() -> (WordProcessorWidget, ui::State, String) {
+fn doc_with_custom_style() -> (Framed<WordProcessorWidget>, String) {
     let mut state = ui::State::new();
     let mut wp = WordProcessorWidget::new();
     wp.sync(&mut state.doc, &state.root);
@@ -8054,8 +8054,7 @@ fn doc_with_custom_style() -> (WordProcessorWidget, ui::State, String) {
         .expect("duplicate body");
     wp.model_mut().set_block_style(&mut state.doc, &new_id);
     wp.sync(&mut state.doc, &state.root);
-    pipeline_draw(&mut wp, &mut state, 1000, 700);
-    (wp, state, new_id)
+    (mount(state, wp, 1000, 700), new_id)
 }
 
 // ---- style size and direct character size stay distinct ----------------
@@ -8075,7 +8074,8 @@ fn the_colour_picker_applies_and_cancels_previews() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "colour me");
         wp.view.styles_panel_visible = true;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, state) = Framed::split(&mut framed);
 
         // Click the "Custom…" affordance to open the picker.
         let (open_rect, _) = wp
@@ -8085,8 +8085,8 @@ fn the_colour_picker_applies_and_cancels_previews() {
             .expect("a 'Custom…' colour affordance in the inspector")
             .clone();
         left_click(
-            &mut wp,
-            &mut state,
+            wp,
+            state,
             Point::new(
                 f64::midpoint(open_rect.x0, open_rect.x1),
                 f64::midpoint(open_rect.y0, open_rect.y1),
@@ -8117,14 +8117,16 @@ fn the_colour_picker_applies_and_cancels_previews() {
                 device_id: unsafe { std::mem::zeroed() },
                 position: (sv_pt.x, sv_pt.y).into(),
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         wp.handle_event(
             &WindowEvent::MouseInput {
@@ -8132,14 +8134,16 @@ fn the_colour_picker_applies_and_cancels_previews() {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let style_after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_ne!(
@@ -8151,9 +8155,10 @@ fn the_colour_picker_applies_and_cancels_previews() {
     // Phase: color_picker_cancel_reverts_the_previewed_colour.
     // Escape cancels the confirm-mode picker and restores the opening colour.
     {
-        let (mut state, mut wp) = bound();
-        let before = preview_custom_colour(&mut wp, &mut state);
-        press_named(&mut wp, &mut state, NamedKey::Escape);
+        let (state, wp) = bound();
+        let (mut framed, before) = preview_custom_colour(state, wp);
+        let (wp, state) = Framed::split(&mut framed);
+        press_named(wp, state, NamedKey::Escape);
         assert!(!wp.color_picker.is_open(), "Escape closes the picker");
         assert_eq!(
             wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
@@ -8164,11 +8169,15 @@ fn the_colour_picker_applies_and_cancels_previews() {
 }
 
 /// Open the picker on a styled paragraph and preview a colour from its SV
-/// square; returns the style colour before the preview.
-fn preview_custom_colour(wp: &mut WordProcessorWidget, state: &mut ui::State) -> Option<[u8; 3]> {
+/// square; returns the mounted widget and the style colour before the preview.
+fn preview_custom_colour(
+    mut state: ui::State,
+    mut wp: WordProcessorWidget,
+) -> (Framed<WordProcessorWidget>, Option<[u8; 3]>) {
     wp.model_mut().insert_str(&mut state.doc, "preview me");
     wp.view.styles_panel_visible = true;
-    pipeline_draw(wp, state, 1000, 700);
+    let mut framed = mount(state, wp, 1000, 700);
+    let (wp, state) = Framed::split(&mut framed);
     wp.open_color_picker();
     assert!(wp.color_picker.is_open(), "Custom… opens the picker");
     wp.color_picker.layout(wp.rect, wp.panel_rect);
@@ -8187,21 +8196,23 @@ fn preview_custom_colour(wp: &mut WordProcessorWidget, state: &mut ui::State) ->
             state: ElementState::Released,
             button: MouseButton::Left,
         },
-        1.0,
-        &Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert_ne!(
         wp.focused_style_key().map(|k| wp.sheet.get(&k).color),
         before,
         "the pending colour previews on the style"
     );
-    before
+    (framed, before)
 }
 
 /// Done keeps the previewed colour and an outside click dismisses the popover.
@@ -8210,15 +8221,16 @@ fn the_colour_picker_keeps_or_dismisses_its_preview() {
     // Phase: color_picker_done_keeps_the_previewed_colour.
     // Done keeps the previewed colour.
     {
-        let (mut state, mut wp) = bound();
-        let before = preview_custom_colour(&mut wp, &mut state);
+        let (state, wp) = bound();
+        let (mut framed, before) = preview_custom_colour(state, wp);
+        let (wp, state) = Framed::split(&mut framed);
         let previewed = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         let done = wp
             .color_picker
             .part("color_picker.done")
             .expect("a confirm-mode picker has a Done button");
         wp.color_picker.layout(wp.rect, wp.panel_rect);
-        left_click(&mut wp, &mut state, done.center());
+        left_click(wp, state, done.center());
         assert!(!wp.color_picker.is_open(), "Done closes the picker");
         let after = wp.focused_style_key().map(|k| wp.sheet.get(&k).color);
         assert_eq!(after, previewed, "Done keeps the preview");
@@ -8231,12 +8243,13 @@ fn the_colour_picker_keeps_or_dismisses_its_preview() {
         let (mut state, mut wp) = bound();
         wp.model_mut().insert_str(&mut state.doc, "x");
         wp.view.styles_panel_visible = true;
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let mut framed = mount(state, wp, 1000, 700);
+        let (wp, _) = Framed::split(&mut framed);
         wp.open_color_picker();
         assert!(wp.color_picker.is_open());
-        pipeline_draw(&mut wp, &mut state, 1000, 700);
+        let (wp, state) = pipeline_draw(&mut framed, 1000, 700);
         // Click far away from the popover (top-left corner of the canvas).
-        left_click(&mut wp, &mut state, Point::new(80.0, 400.0));
+        left_click(wp, state, Point::new(80.0, 400.0));
         assert!(
             !wp.color_picker.is_open(),
             "an outside click closes the colour picker"
@@ -8255,7 +8268,7 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
         "Annotated text {}",
         "wrapped words for pagination ".repeat(220)
     );
-    let (mut wp, mut state, c, mut ids, first) = doc_with_paragraph(&body);
+    let (wp, mut state, c, mut ids, first) = doc_with_paragraph(&body);
     {
         let mut dm = qdoc::DocMut {
             doc: &mut state.doc,
@@ -8287,7 +8300,8 @@ fn clipped_document_text_matches_reference_raster_and_preserves_review_state() {
         }
     }
     let (w, h) = (900, 1100);
-    pipeline_draw(&mut wp, &mut state, w, h);
+    let mut framed = mount(state, wp, w, h);
+    let (wp, _) = Framed::split(&mut framed);
     wp.view.auto_fit_page = false;
     let mut tr = TextRenderer::new();
     let mut renderer = ui::offscreen::OffscreenRenderer::new(w, h);
@@ -8402,21 +8416,21 @@ fn review_shot_dir() -> std::path::PathBuf {
         .expect("set TILO_WP_REVIEW_SHOTS=<dir> to choose where review shots are written")
 }
 
-/// Run the full five-pass + overlay draw and write a PNG to `dir/name.png`.
-fn render_review_png(
-    wp: &mut WordProcessorWidget,
-    state: &mut ui::State,
+/// Run one frame and write it as a PNG to `dir/name.png`, handing back the
+/// widget and its document for what follows.
+fn render_review_png<'a>(
+    framed: &'a mut Framed<WordProcessorWidget>,
     w: u32,
     h: u32,
     dir: &std::path::Path,
     name: &str,
-) {
-    render_review_png_themed(wp, state, w, h, dir, name, &Theme::dark());
+) -> (&'a mut WordProcessorWidget, &'a mut ui::State) {
+    render_review_png_themed(framed, w, h, dir, name, &Theme::dark());
+    Framed::split(framed)
 }
 
 fn render_review_png_themed(
-    wp: &mut WordProcessorWidget,
-    state: &mut ui::State,
+    framed: &mut Framed<WordProcessorWidget>,
     w: u32,
     h: u32,
     dir: &std::path::Path,
@@ -8424,60 +8438,10 @@ fn render_review_png_themed(
     theme: &Theme,
 ) {
     use ui::offscreen::OffscreenRenderer;
-    let presence = PresenceCtx::empty();
-    let permission = PermissionContext::permissive();
-    let mut tr = TextRenderer::new();
-    tr.set_text_scale(theme.text_scale);
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    wp.sync(&mut state.doc, &state.root);
-    let child = wp.build_layout(&mut taffy, theme, &mut node_map);
-    let root = taffy
-        .new_with_children(
-            Style {
-                size: Size {
-                    width: Dimension::length(num::f32_of_u32(w)),
-                    height: Dimension::length(num::f32_of_u32(h)),
-                },
-                ..Default::default()
-            },
-            &[child],
-        )
-        .unwrap();
-    {
-        let measure_map = node_map.clone();
-        let trr = &mut tr;
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: AvailableSpace::Definite(num::f32_of_u32(w)),
-                    height: AvailableSpace::Definite(num::f32_of_u32(h)),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, trr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-    }
-    wp.apply_layout(&taffy, child, Point::ORIGIN);
-    let mut scene = Scene::new();
-    wp.draw_with_presence(
-        &mut scene,
-        Affine::IDENTITY,
-        &mut tr,
-        theme,
-        &presence,
-        &permission,
-    );
-    wp.draw_overlay(&mut scene, Affine::IDENTITY, &mut tr, theme, &presence);
+    pipeline_draw_themed(framed, w, h, theme);
     std::fs::create_dir_all(dir).ok();
     OffscreenRenderer::new(w, h).render_png(
-        &scene,
+        Framed::harness(framed).scene(),
         Color::from_rgb8(0x20, 0x22, 0x28),
         dir.join(format!("{name}.png")),
     );
@@ -8497,22 +8461,22 @@ fn menu_ux_review_shots() {
         wp.inner.insert_str(&mut state.doc, "Keep my unsaved draft");
         wp.save_status = DocumentSaveStatus::Modified;
         wp.request_template(&mut state.doc, crate::Template::Report);
+        let mut framed = mount_themed(state, wp, width, 600, &theme);
         render_review_png_themed(
-            &mut wp,
-            &mut state,
+            &mut framed,
             width,
             600,
             dir,
             &format!("unsaved-{name}"),
             &theme,
         );
+        let (wp, state) = Framed::split(&mut framed);
         wp.resolve_unsaved_choice(&mut state.doc, UnsavedChoice::Cancel);
-        let point = first_block_start_point(&wp);
+        let point = first_block_start_point(wp);
         wp.open_context_menu(&state.doc, point, [num::f32_of_u32(width) - 2.0, 598.0]);
         wp.context_menu.focus_first_action();
         render_review_png_themed(
-            &mut wp,
-            &mut state,
+            &mut framed,
             width,
             600,
             dir,
@@ -8538,12 +8502,14 @@ fn render_review_shots() {
             &mut state.doc,
             "Body paragraph with some words to fill the line nicely.",
         );
-        render_review_png(&mut wp, &mut state, w, h, &dir, "toolbar");
+        let mut framed = mount(state, wp, w, h);
+        render_review_png(&mut framed, w, h, &dir, "toolbar");
     }
 
     // 2a. Style context menu on a CUSTOM style: Delete + Duplicate.
     {
-        let (mut wp, mut state, custom_id) = doc_with_custom_style();
+        let (mut framed, custom_id) = doc_with_custom_style();
+        let (wp, _) = Framed::split(&mut framed);
         // Anchor the menu over the custom chip in the panel.
         let anchor = wp
             .panel_hits
@@ -8553,12 +8519,13 @@ fn render_review_shots() {
                 Point::new(r.x0 + 10.0, r.y1 + 2.0)
             });
         wp.style_menu.open(&custom_id, anchor);
-        render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-custom");
+        render_review_png(&mut framed, w, h, &dir, "style-menu-custom");
     }
 
     // 2b. Style context menu on a BUILT-IN style: Duplicate only.
     {
-        let (mut wp, mut state, _id) = doc_with_custom_style();
+        let (mut framed, _id) = doc_with_custom_style();
+        let (wp, _) = Framed::split(&mut framed);
         let anchor = wp
             .panel_hits
             .iter()
@@ -8567,25 +8534,27 @@ fn render_review_shots() {
                 Point::new(r.x0 + 10.0, r.y1 + 2.0)
             });
         wp.style_menu.open("body", anchor);
-        render_review_png(&mut wp, &mut state, w, h, &dir, "style-menu-builtin");
+        render_review_png(&mut framed, w, h, &dir, "style-menu-builtin");
     }
 
     // 3. Selected image with resize + flip controls in the panel. Give it a
     //    visible display size (the fixture PNG is 2×3) so the selection box +
     //    handles read in the shot.
     {
-        let (mut wp, mut state, id) = doc_with_selected_image();
+        let (mut framed, id) = doc_with_selected_image();
+        let (wp, state) = Framed::split(&mut framed);
         wp.model_mut()
             .set_image_size(&mut state.doc, &id, 300.0, 200.0);
         wp.model_mut().flip_image(&mut state.doc, &id, true);
-        render_review_png(&mut wp, &mut state, w, h, &dir, "image-selected");
+        render_review_png(&mut framed, w, h, &dir, "image-selected");
     }
 
     // 4. Generated table of contents (+ its confirmation toast).
     {
-        let (mut wp, mut state) = doc_with_headings(w, h);
+        let mut framed = doc_with_headings(w, h);
+        let (wp, state) = Framed::split(&mut framed);
         wp.apply_tool(&mut state.doc, ToolAction::InsertToc);
-        render_review_png(&mut wp, &mut state, w, h, &dir, "toc");
+        render_review_png(&mut framed, w, h, &dir, "toc");
     }
 
     // 5. The shared ColorPicker popover, opened from the style inspector.
@@ -8594,15 +8563,16 @@ fn render_review_shots() {
         wp.model_mut()
             .insert_str(&mut state.doc, "colour this paragraph");
         wp.view.styles_panel_visible = true;
-        pipeline_draw(&mut wp, &mut state, w, h);
+        let mut framed = mount(state, wp, w, h);
+        let (wp, _) = Framed::split(&mut framed);
         wp.open_color_picker();
-        render_review_png(&mut wp, &mut state, w, h, &dir, "color-picker");
+        render_review_png(&mut framed, w, h, &dir, "color-picker");
     }
 
     // 6. Comment and tracked-change margin cards from the extracted review
     // component, including its Resolve and Accept/Reject action faces.
     {
-        let (mut wp, mut state, c, mut ids, bid) =
+        let (wp, mut state, c, mut ids, bid) =
             doc_with_paragraph("Keep this passage and review the ending.");
         {
             let mut doc = qdoc::DocMut {
@@ -8615,7 +8585,8 @@ fn render_review_shots() {
             doc.add_change_mark(qdoc::ChangeKind::Ins, &bid, 29, 39, &change);
         }
         state.doc.commit();
-        render_review_png(&mut wp, &mut state, w, h, &dir, "review-overlay");
+        let mut framed = mount(state, wp, w, h);
+        render_review_png(&mut framed, w, h, &dir, "review-overlay");
     }
 }
 
@@ -8641,55 +8612,28 @@ fn render_responsive_review_shots() {
     );
     wp.set_focus(true);
 
-    render_review_png(
-        &mut wp,
-        &mut state,
-        1280,
-        800,
-        &dir,
-        "responsive-1280-focus",
-    );
-    render_review_png(&mut wp, &mut state, 1800, 900, &dir, "responsive-1800-full");
-    render_review_png(&mut wp, &mut state, 760, 800, &dir, "responsive-760-narrow");
+    let mut framed = mount(state, wp, 1280, 800);
+    render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-focus");
+    render_review_png(&mut framed, 1800, 900, &dir, "responsive-1800-full");
+    render_review_png(&mut framed, 760, 800, &dir, "responsive-760-narrow");
 
     // The menu is opened through the same toolbar action as a pointer or
     // screen-reader activation, proving compact colour/highlight commands
     // remain discoverable rather than merely existing in code.
-    render_review_png(
-        &mut wp,
-        &mut state,
-        1280,
-        800,
-        &dir,
-        "responsive-1280-before-more",
-    );
+    let (wp, state) =
+        render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-before-more");
     wp.apply_tool(&mut state.doc, ToolAction::More);
-    render_review_png(&mut wp, &mut state, 1280, 800, &dir, "responsive-1280-more");
+    let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-more");
     wp.context_menu.close();
     wp.pointer = Point::new(410.0, TOOLBAR_H);
     wp.open_compact_swatch_palette(PaletteKind::Text);
-    render_review_png(
-        &mut wp,
-        &mut state,
-        1280,
-        800,
-        &dir,
-        "responsive-1280-text-palette",
-    );
+    let (wp, _) = render_review_png(&mut framed, 1280, 800, &dir, "responsive-1280-text-palette");
     wp.compact_swatch_palette.close();
-    render_review_png(
-        &mut wp,
-        &mut state,
-        760,
-        800,
-        &dir,
-        "responsive-760-before-palette",
-    );
+    let (wp, _) = render_review_png(&mut framed, 760, 800, &dir, "responsive-760-before-palette");
     wp.pointer = Point::new(400.0, TOOLBAR_H);
     wp.open_compact_swatch_palette(PaletteKind::Highlight);
     render_review_png(
-        &mut wp,
-        &mut state,
+        &mut framed,
         760,
         800,
         &dir,
@@ -8836,10 +8780,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             crate::open_document(&source, tilo_content::ContentStore::memory()).unwrap();
         wp.set_recovery_dir(dir.clone());
         wp.sync(&mut state.doc, &state.root);
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         wp.model_mut().insert_str(&mut state.doc, "unsaved ");
         wp.save_status = DocumentSaveStatus::Modified;
-        let before = wp.unsaved_documents(&state.doc);
+        let before = ui::component_lifecycle::unsaved_documents(&wp, &state.doc);
         assert_eq!(before.len(), 1);
         let pending_ops = state.doc.pending_ops();
         let invocation = tilo_actions::InvocationId::new();
@@ -8851,7 +8795,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             wp.poll_resource_operation(invocation, false, &state.doc, &state.root),
             Some(tilo_actions::InvocationUpdate::Cancelled { .. })
         ));
-        assert_eq!(wp.unsaved_documents(&state.doc), before);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
+            before
+        );
         assert_eq!(state.doc.pending_ops(), pending_ops);
         let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::SaveAs {
             path: Some(dir.to_string_lossy().into_owned()),
@@ -8870,7 +8817,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             )
             .is_err()
         );
-        assert_eq!(wp.unsaved_documents(&state.doc), before);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc),
+            before
+        );
         assert_eq!(std::fs::read_to_string(&source).unwrap(), "original source");
         let payload =
             serde_json::to_vec(&crate::actions::WordProcessorOperation::Save { path: None })
@@ -8889,7 +8839,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Completed(_))
         ));
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         assert!(
             std::fs::read_to_string(&source)
                 .unwrap()
@@ -8913,7 +8863,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         wp.sync(&mut state.doc, &state.root);
         assert_eq!(state.doc.pending_ops(), 0);
         assert_eq!(wp.blocks, saved_projection);
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         std::fs::remove_dir_all(dir).unwrap();
     }
 
@@ -8932,7 +8882,7 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
         state.commit_action(None, None);
         wp.try_write_to_current_path(&state.doc).unwrap();
         let saved_bytes = std::fs::read(&source).unwrap();
-        assert!(wp.unsaved_documents(&state.doc).is_empty());
+        assert!(ui::component_lifecycle::unsaved_documents(&wp, &state.doc).is_empty());
         assert!(
             state.undo(None, None).is_some(),
             "use the host State undo service"
@@ -8942,7 +8892,10 @@ fn canonical_saves_preserve_links_permissions_and_close_requirements() {
             "host undo bypasses widget event bookkeeping"
         );
         let before = state.doc.pending_ops();
-        assert_eq!(wp.unsaved_documents(&state.doc).len(), 1);
+        assert_eq!(
+            ui::component_lifecycle::unsaved_documents(&wp, &state.doc).len(),
+            1
+        );
         assert_eq!(
             state.doc.pending_ops(),
             before,
@@ -8969,31 +8922,27 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
         keyboard::ModifiersState,
     };
 
-    let (mut first_state, mut first) = populated();
-    let (mut second_state, mut second) = populated();
-    for (writer, state) in [
-        (&mut first, &mut first_state),
-        (&mut second, &mut second_state),
-    ] {
+    let drawn_at_rest = || {
+        let (state, mut writer) = populated();
         writer.set_zoom(1.0);
-        pipeline_draw(writer, state, 1000, 700);
-        writer.pointer = Point::new(500.0, 300.0);
-    }
+        let mut framed = mount(state, writer, 1000, 700);
+        framed.pointer = Point::new(500.0, 300.0);
+        framed
+    };
+    let mut first_framed = drawn_at_rest();
+    let mut second_framed = drawn_at_rest();
+    let (first, first_state) = Framed::split(&mut first_framed);
+    let (second, second_state) = Framed::split(&mut second_framed);
 
     // The first visible Writer is stale/unfocused; the selected second Writer
     // must receive the same native pinch after the first declines it.
     first.set_focus(false);
     second.set_focus(true);
     assert!(
-        !pinch(&mut first, &mut first_state, 0.025, TouchPhase::Moved),
+        !pinch(first, first_state, 0.025, TouchPhase::Moved),
         "an unfocused Writer must leave pinch for the selected sibling"
     );
-    assert!(pinch(
-        &mut second,
-        &mut second_state,
-        0.025,
-        TouchPhase::Moved
-    ));
+    assert!(pinch(second, second_state, 0.025, TouchPhase::Moved));
     assert_eq!(first.zoom.factor(), 1.0);
     assert_eq!(second.zoom.factor(), 1.025);
 
@@ -9009,14 +8958,16 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut first_handled = false;
     first.handle_event(
         &ctrl_wheel,
-        1.0,
-        &ctrl,
-        &mut first_state.doc,
-        &first_state.root,
-        &mut first_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut first_state.doc,
+            path: &first_state.root,
+            handled: &mut first_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(
         !first_handled,
@@ -9026,14 +8977,16 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut second_handled = false;
     second.handle_event(
         &ctrl_wheel,
-        1.0,
-        &ctrl,
-        &mut second_state.doc,
-        &second_state.root,
-        &mut second_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &ctrl,
+            state: &mut second_state.doc,
+            path: &second_state.root,
+            handled: &mut second_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(second_handled, "the focused Writer owns Ctrl+wheel zoom");
     assert_eq!(
@@ -9046,12 +8999,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     // native pinch while the second document remains exactly unchanged.
     first.set_focus(true);
     second.set_focus(false);
-    assert!(pinch(
-        &mut first,
-        &mut first_state,
-        0.025,
-        TouchPhase::Moved
-    ));
+    assert!(pinch(first, first_state, 0.025, TouchPhase::Moved));
     assert_eq!(first.zoom.factor(), 1.025);
     assert_eq!(second.zoom.factor(), 1.1);
 
@@ -9072,32 +9020,24 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
     let mut plain_handled = false;
     first.handle_event(
         &plain_wheel,
-        1.0,
-        &Modifiers::default(),
-        &mut first_state.doc,
-        &first_state.root,
-        &mut plain_handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut first_state.doc,
+            path: &first_state.root,
+            handled: &mut plain_handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(plain_handled, "plain wheel remains pointer-routed");
     assert!(
         first.scroll_y > first_scroll_before,
         "plain wheel pans overflow"
     );
-    assert!(!pinch(
-        &mut first,
-        &mut first_state,
-        0.025,
-        TouchPhase::Moved
-    ));
-    assert!(!pinch(
-        &mut second,
-        &mut second_state,
-        0.025,
-        TouchPhase::Moved
-    ));
+    assert!(!pinch(first, first_state, 0.025, TouchPhase::Moved));
+    assert!(!pinch(second, second_state, 0.025, TouchPhase::Moved));
     assert_eq!(first.zoom.factor(), first_before);
     assert_eq!(second.zoom.factor(), second_before);
 }
@@ -9107,7 +9047,7 @@ fn pinch_and_ctrl_wheel_only_zoom_the_host_focused_writer() {
 /// agent-written (130-byte id) paragraphs still show carets and selections.
 #[test]
 fn a_digest_addressed_remote_caret_resolves_to_its_block() {
-    let (_state, wp) = drawn_focused();
+    let wp = drawn_focused();
     let block_id = first_block_id(&wp);
     let digest = block_presence_key(false, &block_id).digest_form().unwrap();
     assert!(is_scope_digest_key(&digest));
@@ -9142,7 +9082,7 @@ fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draf
     wp.editing_field = Some(NumField::Size);
     wp.pending_resource_open = Some((invocation, PathBuf::from("pending.md")));
     wp.resource_file_invocation = Some(invocation);
-    assert!(wp.release_record_scope().is_err());
+    assert!(ui::record::capability::release_record_scope(&mut wp).is_err());
     assert!(wp.pending_resource_open.is_some());
     assert_eq!(wp.resource_file_invocation, Some(invocation));
     assert_eq!(wp.path, Some(selected.clone()));
@@ -9156,7 +9096,7 @@ fn owner_release_refuses_active_edit_then_detaches_file_work_without_losing_draf
         invocation,
         output: tilo_actions::ActionOutput::default(),
     });
-    wp.release_record_scope().unwrap();
+    ui::record::capability::release_record_scope(&mut wp).unwrap();
     assert!(wp.pending_resource_open.is_none());
     assert!(wp.pending_replacement.is_none());
     assert!(!wp.replace_after_save);
@@ -9172,8 +9112,8 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-release-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -9245,6 +9185,12 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
         tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
             .is_none()
     );
+    // The records' writer commits in the background: every write lands and
+    // the writer stops before its directory goes.
+    drop(tile);
+    store.flush();
+    drop(store);
+    drop(owners);
     std::fs::remove_dir_all(directory).unwrap();
 }
 
@@ -9254,15 +9200,13 @@ fn tile_host_preserves_completed_direct_open_result_across_record_intent_release
     reason = "the controlled Open, refusal, managed Escape event and one-shot result form one lifecycle proof"
 )]
 fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, Size, TaffyTree};
     use winit::keyboard::{NativeKeyCode, PhysicalKey};
 
     let directory = std::env::temp_dir().join(format!(
         "tilo-owner-recovery-{}-{}",
         std::process::id(),
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap()
             .as_nanos()
     ));
@@ -9303,8 +9247,8 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     let word_processor_ptr = std::ptr::from_mut(word_processor.as_mut());
     let mut tile = ui::widget::TileHost::new(ui::widget::TileContent::App(word_processor));
     tile.bind_record(store, first);
-    let mut outer = AutoCommit::new();
-    tile.sync(&mut outer, &automerge::ROOT);
+    let mut state = ui::State::new();
+    tile.sync(&mut state.doc, &state.root);
 
     let invocation = tilo_actions::InvocationId::new();
     let payload = serde_json::to_vec(&crate::actions::WordProcessorOperation::Open {
@@ -9319,38 +9263,27 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
                 crate::actions::WORD_PROCESSOR_OPERATION_TYPE,
                 &payload
             ),
-            &mut outer,
-            &automerge::ROOT
+            &mut state.doc,
+            &state.root
         )
         .unwrap(),
         Some(ui::widget::ResourceOperationStart::Accepted)
     ));
-    tile.sync(&mut outer, &automerge::ROOT);
+    tile.sync(&mut state.doc, &state.root);
     // SAFETY: the boxed Writer allocation remains owned by `tile` for the
     // rest of this test; no reference survives a widget callback.
     unsafe {
         (*word_processor_ptr).editing_field = Some(NumField::Size);
         (*word_processor_ptr).edit_buf = "24".into();
     }
-    tile.sync(&mut outer, &automerge::ROOT);
+    tile.sync(&mut state.doc, &state.root);
     assert!(tile.record_transition_error().is_some());
     let status = tile
         .accessibility()
         .expect("transition refusal is accessible");
     assert_eq!(status.name.as_deref(), Some("Document switch blocked"));
 
-    let mut tree = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let node = tile.build_layout(&mut tree, &ui::Theme::default(), &mut nodes);
-    tree.compute_layout(
-        node,
-        Size {
-            width: AvailableSpace::Definite(1000.0),
-            height: AvailableSpace::Definite(700.0),
-        },
-    )
-    .unwrap();
-    tile.apply_layout(&tree, node, vello::kurbo::Point::ZERO);
+    let mut tile = Framed::new(state, tile, (1000, 700), ui::Theme::default());
 
     let mut key: KeyEvent = unsafe { std::mem::zeroed() };
     key.physical_key = PhysicalKey::Unidentified(NativeKeyCode::Unidentified);
@@ -9359,36 +9292,28 @@ fn tile_host_routes_escape_to_old_writer_draft_before_retrying_open_handoff() {
     key.location = winit::keyboard::KeyLocation::Standard;
     key.state = ElementState::Pressed;
     key.repeat = false;
-    let mut handled = false;
-    let mut focus = None;
-    tile.handle_event(
+    let handled = Framed::harness_mut(&mut tile).dispatch_to_root_with(
         &WindowEvent::KeyboardInput {
             device_id: unsafe { std::mem::zeroed() },
             event: key,
             is_synthetic: false,
         },
-        1.0,
         &Modifiers::default(),
-        &mut outer,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &tree,
     );
     assert!(handled);
     // SAFETY: same stable boxed allocation as above.
     assert!(unsafe { (*word_processor_ptr).editing_field.is_none() });
 
-    tile.sync(&mut outer, &automerge::ROOT);
+    let (tile, state) = Framed::split(&mut tile);
+    tile.sync(&mut state.doc, &state.root);
     assert!(tile.record_transition_error().is_none());
     assert!(matches!(
-        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT),
+        tile.poll_resource_operation(invocation, false, &state.doc, &state.root),
         Some(tilo_actions::InvocationUpdate::Succeeded { invocation: completed, .. })
             if completed == invocation
     ));
     assert!(
-        tile.poll_resource_operation(invocation, false, &outer, &automerge::ROOT)
+        tile.poll_resource_operation(invocation, false, &state.doc, &state.root)
             .is_none()
     );
     std::fs::remove_dir_all(directory).unwrap();

@@ -141,16 +141,16 @@ fn wrapped_caret_geometry_and_arrow_navigation_follow_visual_rows() {
 
     eprintln!("phase wrapped_paragraph_arrow_navigation_visits_each_visual_row");
     {
-        let (mut editor, tree, node, mut renderer) = block_layout_fixture(
+        let mut editor = block_layout_fixture(
             "A paragraph that needs several visual lines at this narrow width and must keep its caret within the paragraph until its final row.\n\nNext paragraph",
             210.0,
         );
         editor.set_focus(true);
         editor.focus_block(0, ui::widget::CursorPlacement::Start);
-        block_scene(&mut editor, &mut renderer);
+        block_scene(&mut editor);
         let initial = editor.blocks()[0].line.caret_rect(&Theme::dark(), 0);
-        block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowDown));
-        block_scene(&mut editor, &mut renderer);
+        block_event(&mut editor, named_key(NamedKey::ArrowDown));
+        block_scene(&mut editor);
         assert_eq!(
             editor.focused_index(),
             Some(0),
@@ -164,19 +164,19 @@ fn wrapped_caret_geometry_and_arrow_navigation_follow_visual_rows() {
             0.0,
             "auto-height paragraphs do not scroll internally"
         );
-        block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowUp));
+        block_event(&mut editor, named_key(NamedKey::ArrowUp));
         assert_eq!(editor.focused_index(), Some(0));
         assert_eq!(editor.blocks()[0].line.cursor_pos(), 0);
         for _ in 0..20 {
             if editor.focused_index() == Some(1) {
                 break;
             }
-            block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowDown));
-            block_scene(&mut editor, &mut renderer);
+            block_event(&mut editor, named_key(NamedKey::ArrowDown));
+            block_scene(&mut editor);
         }
         assert_eq!(editor.focused_index(), Some(1));
-        block_event(&mut editor, &tree, node, named_key(NamedKey::ArrowUp));
-        block_scene(&mut editor, &mut renderer);
+        block_event(&mut editor, named_key(NamedKey::ArrowUp));
+        block_scene(&mut editor);
         assert_eq!(editor.focused_index(), Some(0));
         let line = &editor.blocks()[0].line;
         assert!(
@@ -187,22 +187,16 @@ fn wrapped_caret_geometry_and_arrow_navigation_follow_visual_rows() {
 
     eprintln!("phase modal_caret_suppression_preserves_editor_state_and_restores_caret");
     {
-        let (mut editor, _, _, mut renderer) = block_layout_fixture("Editable note", 400.0);
+        let mut editor = block_layout_fixture("Editable note", 400.0);
         editor.focus_block(0, ui::widget::CursorPlacement::End);
         editor.set_focus(true);
         let before = (
             editor.blocks()[0].line.cursor_pos(),
             editor.blocks()[0].line.selection_range(),
         );
-        let visible = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        let visible = block_scene(&mut editor).encoding().draw_tags.len();
         editor.suppress_caret_paint(true);
-        let hidden = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        let hidden = block_scene(&mut editor).encoding().draw_tags.len();
         assert_eq!(
             visible,
             hidden + 1,
@@ -217,34 +211,15 @@ fn wrapped_caret_geometry_and_arrow_navigation_follow_visual_rows() {
             before
         );
         editor.suppress_caret_paint(false);
-        assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
-            visible
-        );
+        assert_eq!(block_scene(&mut editor).encoding().draw_tags.len(), visible);
     }
 }
 
-fn block_gesture_fixture() -> (
-    ui::widget::BlockEditor,
-    TaffyTree<()>,
-    NodeId,
-    ui::TextRenderer,
-) {
+fn block_gesture_fixture() -> Framed<ui::widget::BlockEditor> {
     block_layout_fixture("first\n\nsecond\n\nthird\n\nfourth", 400.0)
 }
 
-fn block_layout_fixture(
-    markdown: &str,
-    width: f32,
-) -> (
-    ui::widget::BlockEditor,
-    TaffyTree<()>,
-    NodeId,
-    ui::TextRenderer,
-) {
+fn block_layout_fixture(markdown: &str, width: f32) -> Framed<ui::widget::BlockEditor> {
     layout_block_editor(
         ui::widget::BlockEditor::from_markdown(markdown).with_wrap_lines(true),
         width,
@@ -252,40 +227,17 @@ fn block_layout_fixture(
 }
 
 fn layout_block_editor(
-    mut editor: ui::widget::BlockEditor,
+    editor: ui::widget::BlockEditor,
     width: f32,
-) -> (
-    ui::widget::BlockEditor,
-    TaffyTree<()>,
-    NodeId,
-    ui::TextRenderer,
-) {
-    let mut tree = TaffyTree::new();
-    let mut nodes = HashMap::new();
-    let node = editor.build_layout(&mut tree, &Theme::dark(), &mut nodes);
-    let mut renderer = crate::component_support::renderer();
-    tree.compute_layout_with_measure(
-        node,
-        Size {
-            width: AvailableSpace::Definite(width),
-            height: AvailableSpace::MaxContent,
-        },
-        |known, available, node, _, _| {
-            nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
-                (**ptr).measure(known, available, &mut renderer)
-            })
-        },
-    )
-    .unwrap();
-    editor.apply_layout(&tree, node, Point::new(50.0, 50.0));
-    editor.draw(
-        &mut Scene::new(),
-        Affine::IDENTITY,
-        &mut renderer,
-        &Theme::dark(),
-        &PresenceCtx::empty(),
-    );
-    (editor, tree, node, renderer)
+) -> Framed<ui::widget::BlockEditor> {
+    crate::component_support::framed_block_editor(editor, width, (50.0, 50.0), Theme::dark())
+}
+
+/// Lay an edited editor out again from scratch.
+fn relayout_block_editor(editor: &mut Framed<ui::widget::BlockEditor>) {
+    Framed::harness_mut(editor)
+        .recompose()
+        .expect("the block editor lays out");
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -298,7 +250,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
             "```python\nfirst()\nkept()\n```\n\n```python\nother()\n```\n",
         )));
-        let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+        let mut editor = layout_block_editor(editor, 600.0);
         let targets = |editor: &BlockEditor| {
             editor
                 .accessibility()
@@ -321,15 +273,15 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             &mut state,
             &automerge::ROOT,
         ));
-        let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+        relayout_block_editor(&mut editor);
         assert_eq!(editor.blocks()[0].text(), "other()");
         assert_eq!(targets(&editor), vec![before[1].clone(), before[0].clone()]);
         editor.blocks_mut().remove(1);
-        let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+        relayout_block_editor(&mut editor);
         assert_eq!(editor.blocks()[1].text(), "kept()");
         assert_eq!(targets(&editor), vec![before[1].clone(), before[0].clone()]);
         editor.blocks_mut().remove(1);
-        let (mut editor, _, _, _) = layout_block_editor(editor, 600.0);
+        relayout_block_editor(&mut editor);
         assert_eq!(targets(&editor), vec![before[1].clone()]);
         assert!(
             !editor.perform_semantic_action(
@@ -349,7 +301,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         editor.set_blocks(notes::markdown::specs_to_blocks(&notes::markdown::parse(
             source,
         )));
-        let (editor, _, _, _) = layout_block_editor(editor, 500.0);
+        let editor = layout_block_editor(editor, 500.0);
         let blocks = editor.blocks();
         assert_eq!(blocks.len(), 4);
         assert_eq!(
@@ -387,7 +339,7 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
         ] {
             let mut editor = BlockEditor::new().with_wrap_lines(true);
             editor.set_blocks(vec![block]);
-            let (mut editor, tree, node, mut renderer) = layout_block_editor(editor, 400.0);
+            let mut editor = layout_block_editor(editor, 400.0);
             assert!(
                 (editor.content_bottom() - editor.get_rect().y1).abs() < 0.01,
                 "scroll extent includes complete image/table/embed, not just its source line"
@@ -395,14 +347,11 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
             let line = editor.blocks()[0].line.get_rect();
             let x = line.x0 - 14.0;
             let y = line.y0 + 12.0;
-            block_event(&mut editor, &tree, node, cursor_moved(x, y));
-            let idle = block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len();
-            block_event(&mut editor, &tree, node, mouse_press());
-            block_event(&mut editor, &tree, node, cursor_moved(x + 30.0, y + 40.0));
-            let dragged = block_scene(&mut editor, &mut renderer);
+            block_event(&mut editor, cursor_moved(x, y));
+            let idle = block_scene(&mut editor).encoding().draw_tags.len();
+            block_event(&mut editor, mouse_press());
+            block_event(&mut editor, cursor_moved(x + 30.0, y + 40.0));
+            let dragged = block_scene(&mut editor);
             assert!(
                 dragged.encoding().draw_tags.len() > idle + 4,
                 "floating preview must contain real rich-block content"
@@ -470,12 +419,12 @@ fn rich_blocks_render_insets_copy_actions_and_contiguous_code() {
 fn editor_typing_selection_and_block_promotion_use_the_event_path() {
     eprintln!("phase backward_selection_at_block_start_deletes_text_without_merging_blocks");
     {
-        let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+        let mut editor = block_gesture_fixture();
         editor.set_focus(true);
         editor.focus_block(1, ui::widget::CursorPlacement::Start);
         editor.blocks_mut()[1].line.inner_mut().set_selection(6, 0);
-        block_scene(&mut editor, &mut renderer);
-        block_event(&mut editor, &tree, node, named_key(NamedKey::Backspace));
+        block_scene(&mut editor);
+        block_event(&mut editor, named_key(NamedKey::Backspace));
         assert_eq!(editor.blocks().len(), 4);
         assert_eq!(editor.blocks()[0].text(), "first");
         assert_eq!(editor.blocks()[1].text(), "");
@@ -737,35 +686,15 @@ fn editor_typing_selection_and_block_promotion_use_the_event_path() {
     clippy::needless_pass_by_value,
     reason = "test helper owns each synthetic event for immediate dispatch"
 )]
-fn block_event(
-    editor: &mut ui::widget::BlockEditor,
-    tree: &TaffyTree<()>,
-    node: NodeId,
-    event: WindowEvent,
-) {
-    editor.handle_event(
-        &event,
-        1.0,
-        &Modifiers::default(),
-        &mut automerge::AutoCommit::new(),
-        &automerge::ROOT,
-        &mut false,
-        &mut None,
-        node,
-        tree,
-    );
+fn block_event(editor: &mut Framed<ui::widget::BlockEditor>, event: WindowEvent) {
+    Framed::harness_mut(editor).dispatch_to_root_with(&event, &Modifiers::default());
 }
 
-fn block_scene(editor: &mut ui::widget::BlockEditor, renderer: &mut ui::TextRenderer) -> Scene {
-    let mut scene = Scene::new();
-    editor.draw(
-        &mut scene,
-        Affine::IDENTITY,
-        renderer,
-        &Theme::dark(),
-        &PresenceCtx::empty(),
-    );
-    scene
+/// Run a frame and return the scene it drew.
+fn block_scene(editor: &mut Framed<ui::widget::BlockEditor>) -> Scene {
+    let harness = Framed::harness_mut(editor);
+    harness.relayout();
+    harness.scene().clone()
 }
 
 #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
@@ -773,119 +702,73 @@ fn block_scene(editor: &mut ui::widget::BlockEditor, renderer: &mut ui::TextRend
 fn block_handles_and_drags_preview_drop_and_cancel_safely() {
     eprintln!("phase unfocused_block_handles_paint_on_hover_and_clear_on_pointer_exit");
     {
-        let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
-        let idle = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        let mut editor = block_gesture_fixture();
+        let idle = block_scene(&mut editor).encoding().draw_tags.len();
         let row = editor.blocks()[0].line.get_rect();
-        block_event(
-            &mut editor,
-            &tree,
-            node,
-            cursor_moved(row.center().x, row.center().y),
-        );
-        let hovered = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        block_event(&mut editor, cursor_moved(row.center().x, row.center().y));
+        let hovered = block_scene(&mut editor).encoding().draw_tags.len();
         assert_eq!(
             hovered,
             idle + 6,
             "only the hovered block gets six handle dots"
         );
-        block_event(
-            &mut editor,
-            &tree,
-            node,
-            cursor_moved(row.x0 - 14.0, row.center().y),
-        );
+        block_event(&mut editor, cursor_moved(row.x0 - 14.0, row.center().y));
         assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
+            block_scene(&mut editor).encoding().draw_tags.len(),
             hovered + 1,
             "handle remains reachable and gains one hover background across its gutter"
         );
         block_event(
             &mut editor,
-            &tree,
-            node,
             WindowEvent::CursorLeft {
                 device_id: unsafe { std::mem::zeroed() },
             },
         );
-        assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
-            idle
-        );
+        assert_eq!(block_scene(&mut editor).encoding().draw_tags.len(), idle);
     }
 
     eprintln!("phase caret_block_handle_stays_visible_after_pointer_exit_and_follows_focus");
     {
-        let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+        let mut editor = block_gesture_fixture();
         // Isolate handle paint from the independently tested insertion caret.
         editor.suppress_caret_paint(true);
         editor.set_focus(false);
-        let idle = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        let idle = block_scene(&mut editor).encoding().draw_tags.len();
         editor.focus_block(1, ui::widget::CursorPlacement::End);
         editor.set_focus(true);
         block_event(
             &mut editor,
-            &tree,
-            node,
             WindowEvent::CursorLeft {
                 device_id: unsafe { std::mem::zeroed() },
             },
         );
         assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
+            block_scene(&mut editor).encoding().draw_tags.len(),
             idle + 6,
             "the caret block retains its handle away from the pointer"
         );
         let first = editor.blocks()[0].line.get_rect().center();
-        block_event(&mut editor, &tree, node, cursor_moved(first.x, first.y));
+        block_event(&mut editor, cursor_moved(first.x, first.y));
         assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
+            block_scene(&mut editor).encoding().draw_tags.len(),
             idle + 12,
             "a different hovered block also gets a handle"
         );
         editor.focus_block(0, ui::widget::CursorPlacement::End);
         assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
+            block_scene(&mut editor).encoding().draw_tags.len(),
             idle + 6,
             "moving the caret removes the old block handle without duplicating the hovered handle"
         );
         block_event(
             &mut editor,
-            &tree,
-            node,
             WindowEvent::CursorLeft {
                 device_id: unsafe { std::mem::zeroed() },
             },
         );
         editor.set_focus(false);
         assert_eq!(
-            block_scene(&mut editor, &mut renderer)
-                .encoding()
-                .draw_tags
-                .len(),
+            block_scene(&mut editor).encoding().draw_tags.len(),
             idle,
             "leaving the editor hides its caret handle"
         );
@@ -893,24 +776,16 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
 
     eprintln!("phase block_drag_previews_motion_and_drops_in_the_nearby_gap");
     {
-        let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+        let mut editor = block_gesture_fixture();
         let first = editor.blocks()[0].line.get_rect();
         let second = editor.blocks()[1].line.get_rect();
         let third = editor.blocks()[2].line.get_rect();
-        block_event(
-            &mut editor,
-            &tree,
-            node,
-            cursor_moved(first.x0 - 14.0, first.center().y),
-        );
-        block_event(&mut editor, &tree, node, mouse_press());
-        let before = block_scene(&mut editor, &mut renderer)
-            .encoding()
-            .draw_tags
-            .len();
+        block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+        block_event(&mut editor, mouse_press());
+        let before = block_scene(&mut editor).encoding().draw_tags.len();
         let gap = f64::midpoint(second.y0, first.y1);
-        block_event(&mut editor, &tree, node, cursor_moved(first.x0 - 14.0, gap));
-        let preview = block_scene(&mut editor, &mut renderer);
+        block_event(&mut editor, cursor_moved(first.x0 - 14.0, gap));
+        let preview = block_scene(&mut editor);
         assert!(
             preview.encoding().draw_tags.len() > before + 2,
             "drag must paint the source text preview, not just an insertion rule"
@@ -932,15 +807,10 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             "the insertion marker must remain visible above the opaque drag preview"
         );
         let transforms = format!("{:?}", preview.encoding().transforms);
-        block_event(&mut editor, &tree, node, cursor_moved(first.x0 - 10.0, gap));
+        block_event(&mut editor, cursor_moved(first.x0 - 10.0, gap));
         assert_ne!(
             transforms,
-            format!(
-                "{:?}",
-                block_scene(&mut editor, &mut renderer)
-                    .encoding()
-                    .transforms
-            ),
+            format!("{:?}", block_scene(&mut editor).encoding().transforms),
             "preview follows motion within the same target"
         );
         assert_eq!(
@@ -950,8 +820,6 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
         );
         block_event(
             &mut editor,
-            &tree,
-            node,
             WindowEvent::MouseInput {
                 device_id: unsafe { std::mem::zeroed() },
                 state: ElementState::Released,
@@ -979,24 +847,14 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
             Block::numbered(0, "Parent B"),
             Block::bullet(1, "Child B"),
         ]);
-        let (mut editor, tree, node, mut renderer) = layout_block_editor(editor, 400.0);
+        let mut editor = layout_block_editor(editor, 400.0);
         let root_x = editor.get_rect().x0;
         let first = editor.blocks()[0].line.get_rect();
         let last = editor.blocks()[3].line.get_rect();
-        block_event(
-            &mut editor,
-            &tree,
-            node,
-            cursor_moved(root_x - 14.0, first.center().y),
-        );
-        block_event(&mut editor, &tree, node, mouse_press());
-        block_event(
-            &mut editor,
-            &tree,
-            node,
-            cursor_moved(root_x - 14.0, last.center().y),
-        );
-        let scene = block_scene(&mut editor, &mut renderer);
+        block_event(&mut editor, cursor_moved(root_x - 14.0, first.center().y));
+        block_event(&mut editor, mouse_press());
+        block_event(&mut editor, cursor_moved(root_x - 14.0, last.center().y));
+        let scene = block_scene(&mut editor);
         let mut expected_marker = Scene::new();
         expected_marker.fill(
             vello::peniko::Fill::NonZero,
@@ -1017,28 +875,16 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
     eprintln!("phase block_drag_escape_and_focus_loss_preserve_order");
     {
         for cancel in [named_key(NamedKey::Escape), WindowEvent::Focused(false)] {
-            let (mut editor, tree, node, mut renderer) = block_gesture_fixture();
+            let mut editor = block_gesture_fixture();
             let first = editor.blocks()[0].line.get_rect();
             let last = editor.blocks()[3].line.get_rect();
+            block_event(&mut editor, cursor_moved(first.x0 - 14.0, first.center().y));
+            block_event(&mut editor, mouse_press());
+            block_event(&mut editor, cursor_moved(first.x0 - 14.0, last.center().y));
+            block_scene(&mut editor);
+            block_event(&mut editor, cancel);
             block_event(
                 &mut editor,
-                &tree,
-                node,
-                cursor_moved(first.x0 - 14.0, first.center().y),
-            );
-            block_event(&mut editor, &tree, node, mouse_press());
-            block_event(
-                &mut editor,
-                &tree,
-                node,
-                cursor_moved(first.x0 - 14.0, last.center().y),
-            );
-            block_scene(&mut editor, &mut renderer);
-            block_event(&mut editor, &tree, node, cancel);
-            block_event(
-                &mut editor,
-                &tree,
-                node,
                 WindowEvent::MouseInput {
                     device_id: unsafe { std::mem::zeroed() },
                     state: ElementState::Released,
@@ -1057,7 +903,7 @@ fn block_handles_and_drags_preview_drop_and_cancel_safely() {
     }
 }
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect};
+use vello::kurbo::{Affine, Rect};
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, SmolStr};
 

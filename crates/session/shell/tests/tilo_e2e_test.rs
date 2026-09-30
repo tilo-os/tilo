@@ -672,14 +672,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         };
         bar.handle_event(
             &cm,
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let mi = WindowEvent::MouseInput {
             device_id: unsafe { std::mem::zeroed() },
@@ -688,14 +690,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         };
         bar.handle_event(
             &mi,
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(
@@ -710,14 +714,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
         let mut handled2 = false;
         bar.handle_event(
             &mi,
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled2,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled2,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         assert!(handled2);
         assert!(
@@ -746,14 +752,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
                 device_id: unsafe { std::mem::zeroed() },
                 position: PhysicalPosition::new(1599.0, 1.0),
             },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         bar.handle_event(
             &WindowEvent::MouseInput {
@@ -761,14 +769,16 @@ fn root_clicks_and_drops_toggle_overlays_and_bump_revisions() {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
             },
-            1.0,
-            &modifiers,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert!(
@@ -1045,11 +1055,6 @@ fn topbar_with_overview_btn_hit() -> (
 /// pair reaches the widget tree. Split out of
 /// [`full_root_click_toggles_overview_via_topbar_button`] to keep it under
 /// the line limit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "mirrors Widget::handle_event's own parameter list, forwarded verbatim from the \
-              test harness"
-)]
 fn click_full_root(
     root: &mut Box<dyn Widget>,
     taffy: &taffy::TaffyTree<()>,
@@ -1070,14 +1075,16 @@ fn click_full_root(
     let mut handled = false;
     root.handle_event(
         &cm,
-        1.0,
-        &modifiers,
-        state,
-        root_path,
-        &mut handled,
-        focus,
-        root_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state,
+            path: root_path,
+            handled: &mut handled,
+            focus_target: focus,
+            node_id: root_node,
+            taffy,
+        },
     );
 
     let mi = WindowEvent::MouseInput {
@@ -1088,13 +1095,15 @@ fn click_full_root(
     let mut handled = false;
     root.handle_event(
         &mi,
-        1.0,
-        &modifiers,
-        state,
-        root_path,
-        &mut handled,
-        focus,
-        root_node,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state,
+            path: root_path,
+            handled: &mut handled,
+            focus_target: focus,
+            node_id: root_node,
+            taffy,
+        },
     );
 }

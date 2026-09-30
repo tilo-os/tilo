@@ -6,11 +6,12 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now;
 use ui::doc::{read_bool, read_str};
+use ui::time::{Duration, Instant, SystemTime};
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::transaction::Transactable;
 use taffy::{NodeId, TaffyTree};
 use tilo_relay_protocol::config::CheckpointPrefixRecovery;
 use tilo_relay_protocol::{DeviceRole, RelayConfig, ReplicationIntent};
@@ -19,7 +20,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, TextInput, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::continuity::{Capability, ContinuityPrivacy};
 use crate::widgets::{
@@ -253,7 +254,7 @@ fn workspace_key(id: u64) -> String {
 }
 
 fn discover_workspaces(config: &RelayConfig) -> Vec<DiscoveredWorkspace> {
-    let path = xdg_paths::config_dir().map_or_else(
+    let path = tilo_paths::config_dir().map_or_else(
         || PathBuf::from("state.json"),
         |dir| dir.join("tilo/state.json"),
     );
@@ -431,12 +432,13 @@ fn load_home_peer_last_seen() -> HashMap<String, u64> {
 
 fn save_home_peer_last_seen(last_seen: &HashMap<String, u64>) {
     if let Ok(bytes) = serde_json::to_vec_pretty(last_seen) {
-        let _ = atomic_file::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
+        let _ =
+            tilo_files::native::atomic::write_with_mode(&home_peer_health_path(), &bytes, 0o600);
     }
 }
 
 fn last_seen_label(last_seen_ms: u64) -> String {
-    let now_ms = SystemTime::now()
+    let now_ms = ui::time::wall()
         .duration_since(SystemTime::UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
@@ -471,7 +473,7 @@ pub(crate) fn identity_root() -> PathBuf {
             if PathBuf::from("/var/lib/tilo/device").is_dir() {
                 PathBuf::from("/var/lib/tilo")
             } else {
-                xdg_paths::data_dir()
+                tilo_paths::data_dir()
                     .unwrap_or_else(|| PathBuf::from(".local/share"))
                     .join("tilo")
             }
@@ -522,7 +524,7 @@ impl DeviceMeshPane {
                 format!("Configuration could not be read: {error}"),
             ),
         };
-        let runtime_status = RelayRuntimeStatus::read(&config, SystemTime::now());
+        let runtime_status = RelayRuntimeStatus::read(&config, ui::time::wall());
         let discovered_workspaces = discover_workspaces(&config);
         let home_peers = registered_home_peers();
         let (personal_devices, personal_device_error) = match crate::device_fleet::list() {
@@ -570,7 +572,7 @@ impl DeviceMeshPane {
             pairing_discovery: false,
             pairing_candidate: None,
             pairing_target: PairingTarget::HomePeer,
-            next_status_refresh: Instant::now() + STATUS_REFRESH_INTERVAL,
+            next_status_refresh: ui::time::now() + STATUS_REFRESH_INTERVAL,
             composed: None,
             rect: Rect::ZERO,
             command_state: None,
@@ -612,7 +614,7 @@ impl DeviceMeshPane {
         // The periodic runtime-status poll is wall-clock driven; on a loaded
         // machine its interval can elapse between construction and the first
         // sync and flag a rebuild no test action caused.
-        pane.next_status_refresh = Instant::now() + Duration::from_secs(24 * 60 * 60);
+        pane.next_status_refresh = ui::time::now() + Duration::from_secs(24 * 60 * 60);
         pane
     }
 
@@ -750,13 +752,13 @@ impl DeviceMeshPane {
     }
 
     fn refresh_runtime_status(&mut self) {
-        let status = RelayRuntimeStatus::read(&self.config, SystemTime::now());
+        let status = RelayRuntimeStatus::read(&self.config, ui::time::wall());
         if status != self.runtime_status {
             self.runtime_status = status;
             self.structure_dirty = true;
         }
         self.refresh_roaming_provenance();
-        self.next_status_refresh = Instant::now() + STATUS_REFRESH_INTERVAL;
+        self.next_status_refresh = ui::time::now() + STATUS_REFRESH_INTERVAL;
     }
 
     fn refresh_roaming_provenance(&mut self) {
@@ -811,7 +813,7 @@ impl DeviceMeshPane {
         } else {
             self.config.services.full_content_replication = false;
         }
-        self.next_status_refresh = Instant::now();
+        self.next_status_refresh = ui::time::now();
         true
     }
 
@@ -1765,7 +1767,7 @@ impl DeviceMeshPane {
                                 "Online · Syncing files".into()
                             },
                         );
-                        let now_ms = SystemTime::now()
+                        let now_ms = ui::time::wall()
                             .duration_since(SystemTime::UNIX_EPOCH)
                             .map_or(0, |duration| {
                                 u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
@@ -1809,11 +1811,14 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DeviceMeshPane {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
     #[allow(
         clippy::too_many_lines,
         reason = "one synchronization pass consumes the pane's related role, replication, pairing, device-revocation, and server-management controls atomically"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_background_tasks();
         if let Some(command_state) = &self.command_state
             && let Some(operation) = command_state.get()
@@ -1918,7 +1923,7 @@ impl Widget for DeviceMeshPane {
                 }
             }
         }
-        if Instant::now() >= self.next_status_refresh {
+        if ui::time::now() >= self.next_status_refresh {
             self.refresh_runtime_status();
             self.refresh_one_home_peer();
         }
@@ -1983,36 +1988,15 @@ impl Widget for DeviceMeshPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -2031,20 +2015,6 @@ impl Widget for DeviceMeshPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "devices-sync",
-            "Devices & Sync",
-            "Change device mesh settings",
-        )
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own || self
@@ -2058,7 +2028,7 @@ impl Widget for DeviceMeshPane {
             || self.pairing_child.is_some()
             || self.management_child.is_some()
         {
-            Some(Instant::now() + PROCESS_POLL_INTERVAL)
+            Some(ui::time::now() + PROCESS_POLL_INTERVAL)
         } else {
             shows_advanced_services(self.config.device_role).then_some(self.next_status_refresh)
         }
@@ -2073,11 +2043,27 @@ impl Widget for DeviceMeshPane {
     }
 }
 
+impl ui::undo::UndoPoints for DeviceMeshPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "devices-sync",
+            "Devices & Sync",
+            "Change device mesh settings",
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use settings_store::roaming_provenance::{SCHEMA_VERSION, SettingResolution, WifiResolution};
-    use std::time::Instant;
     use tilo_relay_protocol::WorkspaceBinding;
 
     fn test_ids(widget: &dyn Widget) -> Vec<String> {
@@ -2297,7 +2283,7 @@ mod tests {
                 bounded_command::spawn_prepared(command, None, 64, Duration::from_secs(5)).unwrap(),
             );
 
-            let started = Instant::now();
+            let started = ui::time::now();
             pane.persist();
             pane.poll_background_tasks();
 
@@ -2608,8 +2594,8 @@ mod tests {
             pane.pairing_child = Some(
                 bounded_command::spawn_prepared(Command::new("true"), None, 64, timeout).unwrap(),
             );
-            let deadline = Instant::now() + timeout;
-            while pane.pairing_child.is_some() && Instant::now() < deadline {
+            let deadline = ui::time::now() + timeout;
+            while pane.pairing_child.is_some() && ui::time::now() < deadline {
                 pane.poll_background_tasks();
                 std::thread::sleep(Duration::from_millis(5));
             }

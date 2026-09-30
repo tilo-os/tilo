@@ -42,11 +42,14 @@ display-confirm-keep = Behalten
 display-confirm-revert = Zurücksetzen
 display-rejected = Diese Anordnung konnte nicht angewendet werden: { $reason }
 
-# Eine Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder zurücksetzen
-display-confirm-tool-title = Die von { $tool } angewendeten Anzeigeeinstellungen behalten?
-display-confirm-tool-unknown-title = Die von einem Werkzeug angewendeten Anzeigeeinstellungen behalten?
-display-confirm-always = Änderungen von { $tool } immer behalten
-display-confirm-a11y-description = Ein Anzeigewerkzeug hat deine Bildschirme geändert. Eingabe behält die Änderung, Escape stellt die vorherige Anordnung wieder her.
+# Eine riskante Änderung eines Anzeigewerkzeugs (kanshi, wlr-randr) behalten oder
+# zurücksetzen: eine, die einen Bildschirm schwarz lassen oder den benutzten ausschalten kann
+display-confirm-tool-title = Die Anzeigeänderung von { $tool } behalten?
+display-confirm-tool-unknown-title = Diese Anzeigeänderung behalten?
+display-confirm-always = Behalten und bei { $tool } nicht mehr fragen
+display-confirm-a11y-description = Ein Anzeigewerkzeug hat einen Bildschirm geändert, den du gerade benutzt, oder einen Modus gewählt, den er noch nie gezeigt hat – dabei kann er schwarz bleiben. Eingabe behält die Änderung; Escape oder Abwarten stellt die vorherige Anordnung wieder her.
+display-tool-reapply-refused = { $tool } wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
+display-tool-reapply-refused-unknown = Ein Anzeigewerkzeug wollte eine Anzeigeanordnung erneut anwenden, die du zurückgesetzt hast
 
 # Drahtlose Empfänger, der untere Bereich desselben Blatts
 wireless-heading = Drahtlose Bildschirme
@@ -125,6 +128,8 @@ shortcut-name-attach-tab-left = Tab in die Gruppe links verschieben
 shortcut-name-attach-tab-right = Tab in die Gruppe rechts verschieben
 shortcut-name-move-group-left = Gruppe nach links verschieben
 shortcut-name-move-group-right = Gruppe nach rechts verschieben
+shortcut-name-move-group-to-previous-strip = Gruppe in die Leiste darüber verschieben
+shortcut-name-move-group-to-next-strip = Gruppe in die Leiste darunter verschieben
 shortcut-name-move-group-to-previous-display = Gruppe auf den linken Bildschirm verschieben
 shortcut-name-move-group-to-next-display = Gruppe auf den rechten Bildschirm verschieben
 shortcut-name-resize-narrower = Fenster schmaler machen
@@ -201,12 +206,15 @@ guide-row-move-tab = Tab verschieben
 guide-row-strips = Leisten
 guide-row-workspaces = Arbeitsbereiche
 guide-row-move-group = Gruppe verschieben
+guide-row-move-group-strip = Gruppe in Leiste verschieben
 guide-row-move-window = Fenster verschieben
 guide-row-resize = Größe ändern
 guide-row-quick-settings = Schnelleinstellungen
-guide-touch-intro = Gesten folgen den horizontalen Fenstern und vertikalen Arbeitsbereichen des Desktops.
+guide-touch-intro = Drei Finger bewegen sich entlang der Fenster und zwischen Streifen; vier Finger wechseln den Arbeitsbereich.
 guide-touch-focus-next-window = Nächstes Fenster fokussieren
 guide-touch-focus-previous-window = Vorheriges Fenster fokussieren
+guide-touch-strip-above = Streifen darüber
+guide-touch-strip-below = Streifen darunter
 guide-touch-previous-workspace = Vorheriger Arbeitsbereich
 guide-touch-next-workspace = Nächster Arbeitsbereich
 guide-touch-open-overview = Übersicht öffnen
@@ -578,6 +586,9 @@ host-fabric-speaker-stopped = Wiedergabe auf { $group } beendet
 host-fabric-speaker-playing = Wiedergabe auf { $group }
 host-fabric-speaker-playing-media = Wiedergabe auf { $group }; die Medien laufen weiter von hier
 host-fabric-speaker-left = Dieses Gerät hat { $group } verlassen
+host-fabric-speaker-listen-allowed = { $group } kann mit diesem Mikrofon kalibrieren
+host-fabric-speaker-listen-declined = { $group } verwendet dieses Mikrofon nicht
+host-fabric-speaker-listen-stopped = { $group } kann dieses Mikrofon nicht mehr verwenden
 host-fabric-audio-route-dismissed = Unterbrochene Übertragung { $route } verworfen
 host-fabric-audio-route-stopped = Übertragung { $route } beendet
 host-fabric-input-allowed = { $app } darf diese Eingabe einmal verwenden
@@ -864,8 +875,17 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } Lautsprecher spielt · auswählen zum Beenden
        *[other] { $count } Lautsprecher spielen · auswählen zum Beenden
     }
+qs-devices-speaker-syncing = { $playing } spielen, { $syncing } gleichen die Uhr ab… · auswählen zum Beenden
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } Lautsprecher kann nicht synchron spielen: { $reason } · auswählen zum Beenden
+       *[other] { $count } Lautsprecher können nicht synchron spielen: { $reason } · auswählen zum Beenden
+    }
 qs-devices-speaker-setup-note = Stereopaar oder Raumlautsprecher · öffnet Einstellungen → Lautsprecher
 qs-devices-speaker-membership-note = eingerichtet auf { $leader } · auswählen zum Austreten
+qs-devices-speaker-listen = { $leader } dieses Mikrofon für { $group } verwenden lassen?
+qs-devices-speaker-listen-note = nur während der Lautsprecherkalibrierung · die Aufnahme bleibt hier
+qs-devices-speaker-listen-note-microphone = verwendet { $microphone } · nur während der Lautsprecherkalibrierung · die Aufnahme bleibt hier
+qs-devices-speaker-listener-note = eingerichtet auf { $leader } · auswählen zum Beenden
 qs-devices-another-certified = Ein anderes zertifiziertes Gerät
 qs-devices-requested-allow-once = { $source } hat das angefragt · einmal erlauben oder ablehnen
 qs-devices-audio-app = Audio der fokussierten App · endet, wenn der Fokus wechselt
@@ -874,6 +894,8 @@ qs-devices-certified-device = zertifiziertes Gerät
 qs-devices-audio-awaiting = wartet auf Freigabe mit { $peer } · auswählen zum Beenden
 qs-devices-audio-streaming = streamt mit { $peer } · auswählen zum Beenden
 qs-devices-audio-interrupted = unterbrochen mit { $peer } · auswählen zum Verwerfen
+qs-devices-audio-syncing = gleicht die Uhr mit { $peer } ab… · auswählen zum Beenden
+qs-devices-audio-clock-failed = kann mit { $peer } nicht synchron spielen: { $reason } · auswählen zum Beenden
 qs-devices-capture-share = { $input } dieses Geräts teilen
 qs-devices-capture-requested = { $source } hat das für { $app } angefragt · einmal erlauben oder ablehnen
 qs-devices-capture-use-remote = Entfernte Eingabe verwenden: { $input }
@@ -1063,6 +1085,9 @@ launch-error-registry-unreadable = Die App-Liste konnte nicht gelesen werden. Ve
 launch-error-host-app-refused = Der Desktop-Eintrag dieser App kann nicht gestartet werden.
 launch-failed-launcher-unavailable = Der App-Starter ist nicht verfügbar. Öffne „Anwendungen“ und versuche es erneut.
 launch-failed-stopped = Die App wurde beendet, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
+launch-failed-missing-library = Der App fehlt eine Bibliothek auf diesem System, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-sandbox = Die Sandbox der App konnte nicht eingerichtet werden, daher wurde sie beendet, bevor sie sich öffnete.
+launch-failed-crashed = Die App ist abgestürzt, bevor sie sich öffnete. Öffne „Anwendungen“ und versuche es erneut.
 launch-unnamed-app = Anwendung
 launch-failure-title = { $app } konnte nicht geöffnet werden
 
@@ -1081,7 +1106,7 @@ shell-tab-menu-split-right = Rechts abtrennen
 shell-tab-menu-new-group = In neue Gruppe verschieben
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Anwendung nicht verfügbar
-shell-activity-title = Während du weg warst
+shell-activity-title = Aktivität
 shell-activity-loading = Aktivität im Arbeitsbereich wird geladen …
 
 # Sitzungsmenü
@@ -1279,6 +1304,7 @@ search-session-logout = Von Tilo abmelden
 search-session-logout-detail = Diese Desktop-Sitzung sauber beenden und zur Anmeldung zurückkehren
 search-session-unsaved-work = Eine App hat ungesicherte Arbeit
 search-session-inhibited = { $reason } – schließe die App oder beende zuerst ihre Arbeit.
+search-session-not-offered = Diese Sitzung teilt den Computer mit einem anderen Desktop, der seine Energieverwaltung steuert.
 
 # Suche: Kurzbefehle
 search-shortcut-run-on = Auf { $resource } anwenden
@@ -1361,8 +1387,58 @@ search-action-tab-split-right = Diesen Tab nach rechts teilen
 search-action-tab-split-right-subtitle = Den fokussierten Tab in eine neue Fenstergruppe neben der aktuellen verschieben
 search-action-tab-move-to-new-group = Diesen Tab in eine neue Gruppe verschieben
 search-action-tab-move-to-new-group-subtitle = Den fokussierten Tab in eine neue Fenstergruppe am Ende seiner Leiste verschieben
+search-action-window-focus-previous = Vorheriges Fenster fokussieren
+search-action-window-focus-previous-subtitle = Den Fokus auf das Fenster links in der Leiste setzen
+search-action-window-focus-next = Nächstes Fenster fokussieren
+search-action-window-focus-next-subtitle = Den Fokus auf das Fenster rechts in der Leiste setzen
+search-action-window-focus-nth = Fenster nach Position fokussieren
+search-action-window-focus-nth-subtitle = Den Fokus auf die N-te Fenstergruppe der fokussierten Leiste setzen
+search-action-strip-focus-previous = Zur Leiste darüber
+search-action-strip-focus-previous-subtitle = Den Fokus auf die Leiste darüber in diesem Arbeitsbereich setzen
+search-action-strip-focus-next = Zur Leiste darunter
+search-action-strip-focus-next-subtitle = Den Fokus auf die Leiste darunter in diesem Arbeitsbereich setzen
+search-action-workspace-previous = Zum vorherigen Arbeitsbereich
+search-action-workspace-previous-subtitle = Zum Arbeitsbereich vor diesem wechseln
+search-action-workspace-next = Zum nächsten Arbeitsbereich
+search-action-workspace-next-subtitle = Zum Arbeitsbereich nach diesem wechseln
+search-action-tab-previous = Vorheriger Tab
+search-action-tab-previous-subtitle = Den vorherigen Tab der fokussierten Fenstergruppe fokussieren
+search-action-tab-next = Nächster Tab
+search-action-tab-next-subtitle = Den nächsten Tab der fokussierten Fenstergruppe fokussieren
+search-action-group-move-left = Fenstergruppe nach links verschieben
+search-action-group-move-left-subtitle = Die fokussierte Fenstergruppe in ihrer Leiste um einen Platz nach links verschieben
+search-action-group-move-right = Fenstergruppe nach rechts verschieben
+search-action-group-move-right-subtitle = Die fokussierte Fenstergruppe in ihrer Leiste um einen Platz nach rechts verschieben
+search-action-group-move-to-strip-previous = Fenstergruppe in die Leiste darüber verschieben
+search-action-group-move-to-strip-previous-subtitle = Die fokussierte Fenstergruppe in die Leiste darüber tragen
+search-action-group-move-to-strip-next = Fenstergruppe in die Leiste darunter verschieben
+search-action-group-move-to-strip-next-subtitle = Die fokussierte Fenstergruppe in die Leiste darunter tragen
+search-action-group-move-to-display-previous = Fenstergruppe auf den vorherigen Bildschirm verschieben
+search-action-group-move-to-display-previous-subtitle = Die fokussierte Fenstergruppe auf den linken Bildschirm verschieben
+search-action-group-move-to-display-next = Fenstergruppe auf den nächsten Bildschirm verschieben
+search-action-group-move-to-display-next-subtitle = Die fokussierte Fenstergruppe auf den rechten Bildschirm verschieben
+search-action-group-maximize = Fenstergruppe maximieren oder wiederherstellen
+search-action-group-maximize-subtitle = Die fokussierte Fenstergruppe auf ihren Bildschirm vergrößern oder wiederherstellen
+search-action-group-fullscreen = Vollbild oder wiederherstellen
+search-action-group-fullscreen-subtitle = Das fokussierte Fenster im Vollbild zeigen oder wiederherstellen
+search-action-group-narrower = Fenstergruppe schmaler machen
+search-action-group-narrower-subtitle = Die fokussierte Fenstergruppe um einen Schritt verkleinern
+search-action-group-wider = Fenstergruppe breiter machen
+search-action-group-wider-subtitle = Die fokussierte Fenstergruppe um einen Schritt verbreitern
+search-action-tab-move-to-group-previous = Diesen Tab in die linke Gruppe verschieben
+search-action-tab-move-to-group-previous-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe links verschieben
+search-action-tab-move-to-group-next = Diesen Tab in die rechte Gruppe verschieben
+search-action-tab-move-to-group-next-subtitle = Den fokussierten Tab in die benachbarte Fenstergruppe rechts verschieben
 search-action-notifications-dnd-toggle = „Bitte nicht stören“ umschalten
 search-action-notifications-dnd-toggle-subtitle = Benachrichtigungsbanner stummschalten; zurückgehaltene Benachrichtigungen landen im Verlauf
+search-action-appearance-theme-dark = Dunkles Theme setzen
+search-action-appearance-theme-dark-subtitle = Dunkle Erscheinung für Chrome und Apps verwenden
+search-action-appearance-theme-light = Helles Theme setzen
+search-action-appearance-theme-light-subtitle = Helle Erscheinung für Chrome und Apps verwenden
+search-action-appearance-high-contrast = Hohen Kontrast setzen
+search-action-appearance-high-contrast-subtitle = Kontrast der aktuellen Erscheinung erhöhen
+search-action-appearance-language = Sprache festlegen
+search-action-appearance-language-subtitle = Desktop-Sprache in den Einstellungen ändern
 search-action-identity-connect = Vorhandene Identität hinzufügen
 search-action-identity-connect-subtitle = Identitätszugangsdaten importieren und in diesem Arbeitsbereich verwenden
 search-action-identity-select = Identität in diesem Arbeitsbereich verwenden
@@ -1395,20 +1471,31 @@ search-action-quick-settings-power-profile-set = Energieprofil festlegen
 search-action-quick-settings-power-profile-set-subtitle = Energiesparen, Ausgeglichen oder Leistung für dieses Gerät wählen
 search-action-quick-settings-vpn-set-enabled = VPN ein- oder ausschalten
 search-action-quick-settings-vpn-set-enabled-subtitle = Eine benannte VPN-Verbindung auf diesem Gerät ein- oder ausschalten
+search-action-quick-settings-bluetooth-set-enabled = Bluetooth ein- oder ausschalten
+search-action-quick-settings-bluetooth-set-enabled-subtitle = Das Bluetooth-Funkmodul dieses Geräts ein- oder ausschalten
+search-action-quick-settings-airplane-mode-set-enabled = Flugmodus ein- oder ausschalten
+search-action-quick-settings-airplane-mode-set-enabled-subtitle = Alle Funkverbindungen dieses Geräts aus- oder wieder einschalten
 
 # Suche: Suchquellen und Verwaltungszeilen des Arbeitsbereichs
 search-action-search-provider-set = Suchquelle aktivieren oder deaktivieren
 search-action-search-provider-set-subtitle = Festlegen, welche Quellen in Such- und Agentenergebnissen erscheinen
-search-action-workspace-view-subtitle = Lokale Arbeitsbereichsansicht
+search-action-workspace-switch-subtitle = Zu diesem Arbeitsbereich und seinen Fenstern wechseln
+search-action-activity-catch-up-subtitle = Was andere seit deinem letzten Blick geändert haben
+search-action-activity-tasks-subtitle = Arbeit, die hier Personen und Agenten zugewiesen ist
+search-action-activity-explore-subtitle = Jede Änderung hier, nach Person, App und Zeit
+search-action-activity-replay-subtitle = Schritt für Schritt sehen, wie sich dieser Arbeitsbereich verändert hat
 search-action-quick-settings-unavailable = Der Dienst für die Schnelleinstellungen ist nicht verfügbar
-# Zusätzliche Suchbegriffe für Arbeitsbereichsansichten; nicht angezeigt.
-search-action-workspace-view-keywords = arbeitsbereich aktivität verlauf
+# Zusätzliche Suchbegriffe für Arbeitsbereichswechsel und Aktivitätsansichten; nicht angezeigt.
+search-action-workspace-switch-keywords = wechseln arbeitsbereich gehe switch workspace
+search-action-activity-keywords = aktivität verlauf änderungen zeitleiste wer activity history
 search-action-provider-enable = Suche in { $source } aktivieren
-search-action-provider-enable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung anzeigen
+search-action-provider-enable-subtitle = Ergebnisse aus { $source } in Suche und Agentenerkennung anzeigen
 search-action-provider-disable = Suche in { $source } deaktivieren
-search-action-provider-disable-subtitle = Die Quelle `{ $id }` in Suche und Agentenerkennung ausblenden
+search-action-provider-disable-subtitle = Ergebnisse aus { $source } in Suche und Agentenerkennung ausblenden
 search-action-provider-badge-on = AN
 search-action-provider-badge-off = AUS
+# Wörter, die nach den Ein/Aus-Schaltern einzelner Suchquellen fragen; nicht angezeigt.
+search-action-provider-keywords = suche suchquelle quelle quellen deaktivieren aktivieren search source disable enable
 search-action-governance-subtitle = Signierte Verwaltungsaktion für den aktiven Arbeitsbereich
 search-action-permission-roles-subtitle = Wiederverwendbare Arbeitsbereichsrollen mit minimalen Rechten verwalten
 
@@ -1434,6 +1521,7 @@ search-apps-group-work = Arbeit
 search-apps-group-media = Medien
 search-apps-group-system-tools = Systemwerkzeuge
 search-apps-group-more-apps = Weitere Apps
+search-apps-group-developer-tools = Entwicklerwerkzeuge
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = { $app } öffnen
 search-apps-open-subtitle = { $target } · { $detail }
@@ -1481,6 +1569,11 @@ search-continuity-speaker-play-subtitle = Über jeden bereiten Lautsprecher dies
 search-continuity-speaker-media-subtitle = Hier weiterspielen und den Ton an diese Lautsprechergruppe senden
 search-continuity-speaker-stop = Wiedergabe auf { $group } beenden
 search-continuity-speaker-stop-subtitle = Die Wiedergabe dieser Lautsprechergruppe auf allen Lautsprechern beenden
+search-continuity-speaker-listen-allow = { $group } mit diesem Mikrofon kalibrieren lassen
+search-continuity-speaker-listen-decline = { $group } dieses Mikrofon nicht verwenden lassen
+search-continuity-speaker-listen-subtitle = { $device } möchte beim Kalibrieren der Lautsprecher mit dem Mikrofon dieses Geräts hören
+search-continuity-speaker-listen-stop = { $group } dieses Mikrofon nicht mehr verwenden lassen
+search-continuity-speaker-listen-stop-subtitle = Die auf { $leader } eingerichtete Lautsprecherkalibrierung darf mit diesem Mikrofon hören
 search-continuity-place-left = { $device } links anordnen
 search-continuity-place-right = { $device } rechts anordnen
 search-continuity-place-above = { $device } oberhalb anordnen
@@ -1695,10 +1788,10 @@ onboarding-tour-navigate-intro = Tilo hält den Desktop ruhig, bis du nach etwas
 onboarding-tour-search-title = Suche  ·  Super+K oder Super+Leertaste
 onboarding-tour-search-title-mac = Suche  ·  Befehl+K oder Wahl+Leertaste
 onboarding-tour-search-body = Öffne sie ohne Eingabe, um Erste Schritte, Alltag, Arbeit, Medien und Systemwerkzeuge zu durchstöbern; tippe, um jede App, Datei, Einstellung oder Aktion zu finden.
-onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Wischen mit vier Fingern
+onboarding-tour-overview-title = Übersicht  ·  Super+Tab oder Finger zusammenziehen
 onboarding-tour-overview-body = Sieh alle Arbeitsbereiche und Fenstergruppen und wähle dann mit Auf, Ab und Eingabe einen davon aus.
 onboarding-tour-move-title = Bewegen  ·  Super+Pfeiltasten oder Wischen mit drei Fingern
-onboarding-tour-move-body = Auf und Ab wechseln zwischen Arbeitsbereichen. Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens.
+onboarding-tour-move-body = Links und Rechts springen zwischen gekachelten Fenstern entlang des aktuellen Streifens. Auf und Ab wechseln zum Streifen darüber oder darunter; Super+Bild auf und Bild ab oder Wischen mit vier Fingern wechseln den Arbeitsbereich.
 onboarding-tour-organise-title = Ein Ort für jede Art von Arbeit
 onboarding-tour-organise-intro = Die Anordnung ist einfach, sobald ihre vier Ebenen Namen haben. Tilo merkt sich die Anordnung für dich.
 onboarding-tour-workspace-title = Arbeitsbereich
@@ -2070,9 +2163,7 @@ speaker-error-no-applied-calibration = es gibt keine angewendete Kalibrierung zu
 speaker-error-calibration-unavailable = die Kalibrierung ist nicht verfügbar
 speaker-error-calibration-gone = diese Kalibrierung ist nicht mehr verfügbar
 speaker-error-network-unavailable = das Gerätenetz ist nicht verfügbar
-speaker-error-microphone-invalid = dieses Mikrofon ist ungültig
 speaker-error-calibrate-on-leader = kalibriere diese Gruppe auf dem Gerät, das sie eingerichtet hat
-speaker-error-microphone-unavailable = dieses Mikrofon ist nicht verfügbar
 speaker-error-not-all-ready = alle Lautsprecher müssen vor dem Kalibrieren bereit sein
 speaker-error-request-failed = die Lautsprecheranfrage ist fehlgeschlagen
 speaker-error-app-stopped = diese Anwendung spielt nichts mehr ab
@@ -2080,11 +2171,24 @@ speaker-error-audio-unavailable = der Ton für Lautsprechergruppen ist nicht ver
 speaker-error-other-session = auf diesem Gerät spielt bereits eine andere Lautsprechergruppe
 
 # Lautsprecher für die Kalibrierung messen
-speaker-calibration-reason-remote-microphone = kalibriere mit einem Mikrofon auf dem Gerät, das die Lautsprecher eingerichtet hat
 speaker-calibration-reason-microphone-gone = dieses Mikrofon ist nicht mehr verbunden
 speaker-calibration-reason-output-gone = der Ausgang dieses Lautsprechers ist nicht mehr verbunden
 speaker-calibration-reason-play-failed = das Messsignal konnte nicht abgespielt werden: { $error }
-speaker-calibration-reason-listen-failed = die Aufnahme konnte nicht gestartet werden: { $error }
+speaker-calibration-reason-clock = die Uhr dieses Lautsprechers konnte nicht abgeglichen werden: { $reason }
+clock-sync-failure-media-disabled = die Medien-Übergabe ist auf diesem Gerät ausgeschaltet
+clock-sync-failure-no-reply = das andere Gerät hat auf den Uhrabgleich nicht geantwortet
+now-playing-speakers-playing = Spielt auf { $group }
+now-playing-speakers-connecting = { $group }: verbindet…
+now-playing-speakers-syncing = { $group }: Uhren werden abgeglichen…
+now-playing-speakers-clock-failed = { $group }: kann nicht synchron spielen – { $reason }
+speaker-calibration-reason-not-heard = dort hob sich kein Messsignal vom Rauschen ab
+speaker-calibration-reason-not-allowed = dieses Gerät hat sein Mikrofon nicht freigegeben
+speaker-calibration-reason-out-of-window = die Anfrage kam zu spät auf diesem Gerät an
+speaker-calibration-reason-busy = dieses Mikrofon war mit einem anderen Messsignal beschäftigt
+speaker-calibration-reason-capture-failed = die Aufnahme ist fehlgeschlagen
+speaker-calibration-reason-clock-unknown = die Uhr dieses Geräts ist noch nicht synchronisiert
+speaker-calibration-reason-no-answer = dieses Gerät hat nicht rechtzeitig geantwortet
+speaker-calibration-reason-not-at-seat = kein Mikrofon hat ihn deutlich genug gehört
 speaker-calibration-failed = { $speaker } konnte nicht gemessen werden: { $reason }
 speaker-calibration-cancelled = Die Kalibrierung wurde abgebrochen
 
@@ -2236,3 +2340,12 @@ remote-capture-source-label = { $app } auf zertifiziertem Gerät
 
 # Druckaufträge: der Titel in der Druckwarteschlange, wenn die App keinen angegeben hat
 print-untitled-document = Dokument
+
+a11y-speaker-listen = { $leader } dieses Mikrofon zum Kalibrieren von { $group } verwenden lassen
+a11y-speaker-listen-description = Es nimmt nur auf, während jeder Lautsprecher ein Messsignal spielt; die Aufnahme bleibt auf diesem Gerät, gesendet werden nur Laufzeit und Pegel
+a11y-speaker-listen-allow = Dieses Mikrofon erlauben
+a11y-speaker-listen-decline = Dieses Mikrofon nicht erlauben
+a11y-speaker-listener = { $group } kann mit diesem Mikrofon kalibrieren
+a11y-speaker-listener-description = Die Lautsprecherkalibrierung darf mit diesem Mikrofon hören; aktivieren, um das zu beenden
+speaker-calibration-listening-refused = { $microphone } durfte nicht zuhören, daher kann an deinem Platz nichts gemessen werden
+speaker-error-listening-unavailable = wähle ein Mikrofon, das an deinem Platz zuhören kann

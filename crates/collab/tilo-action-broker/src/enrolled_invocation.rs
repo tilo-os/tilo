@@ -1,9 +1,9 @@
 //! Concrete managed-descriptor installation and private enrolled RPC delivery.
 use super::{
-    AdmittedJoinIdentity, Arc, AsyncMutex, BrokerActor, CapnpBrokerState, CapnpChannelHandle,
-    CrdtRoute, DurableInvocation, EnrolledDurable, InvocationCaller, InvocationJob, InvocationKey,
-    InvocationOwner, PendingWorker, Promise, PublishedAction, PublishedSurface, Rc, WorkerBinding,
-    mpsc, principal_id_for_root,
+    AdmissionProvenance, AdmittedJoinIdentity, Arc, AsyncMutex, BrokerActor, CapnpBrokerState,
+    CapnpChannelHandle, CrdtRoute, DurableInvocation, EnrolledDurable, InvocationCaller,
+    InvocationInputs, InvocationJob, InvocationKey, InvocationOwner, PendingWorker, Promise,
+    PublishedAction, PublishedSurface, Rc, WorkerBinding, mpsc, principal_id_for_root,
 };
 use crate::enrolled_dispatch::{EnrolledConnection, EnrolledDispatchResult};
 
@@ -77,6 +77,7 @@ impl CapnpBrokerState {
                 agent: &connection.facts().binding.agent,
                 delegator: &delegator,
             },
+            self.capped_in(&surface.route.cluster_id, connection.caller()),
             Some(&scopes),
             surface,
             action,
@@ -181,6 +182,7 @@ impl CapnpBrokerState {
             },
         });
         drop(workers);
+        self.worker_admitted.notify_one();
         Ok(facts.channel_id.clone())
     }
     /// The live dispatch witness of an accepted enrolled task on `channel`.
@@ -215,22 +217,21 @@ impl CapnpBrokerState {
         self.enrolled.dispatch(invocation, caller, envelope)
     }
     /// Submit one step of an accepted enrolled task to the host step service.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     pub(super) fn enrolled_task_step(
         &self,
         peer: u64,
         run: u64,
         lease: &str,
         step: u32,
-        target: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<String>,
+        task_action: runtime_collab::TaskAction<'_>,
     ) -> Result<tokio::sync::oneshot::Receiver<crate::enrolled_dispatch::EnrolledStepResult>, String>
     {
+        let runtime_collab::TaskAction {
+            peer_id: target,
+            resource,
+            action,
+            argument,
+        } = task_action;
         let began = std::time::Instant::now();
         let connection = self.enrolled.connection(peer)?;
         let service = self
@@ -252,13 +253,7 @@ impl CapnpBrokerState {
             .find(|a| a.resource == resource && a.action == action)
             .ok_or("task action is no longer published")?;
         let task_id = connection.task(run, lease)?.task_id;
-        self.authorize_enrolled_scoped(
-            &connection,
-            &task_id,
-            &surface,
-            offered,
-            argument.as_deref(),
-        )?;
+        self.authorize_enrolled_scoped(&connection, &task_id, &surface, offered, argument)?;
         let dispatch = connection.capture_task_action(
             run,
             lease,
@@ -279,23 +274,22 @@ impl CapnpBrokerState {
             peer: target,
             resource: resource.into(),
             action: action.into(),
-            argument,
+            argument: argument.map(str::to_owned),
         })
     }
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     pub(super) fn start_enrolled_task_action(
         &self,
         peer: u64,
         run: u64,
         lease: &str,
-        target: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
+        task_action: runtime_collab::TaskAction<'_>,
     ) -> Result<InvocationJob, String> {
+        let runtime_collab::TaskAction {
+            peer_id: target,
+            resource,
+            action,
+            argument,
+        } = task_action;
         let connection = self.enrolled.connection(peer)?;
         let task = connection.task(run, lease)?;
         let surface = self
@@ -336,10 +330,13 @@ impl CapnpBrokerState {
             target,
             resource,
             action,
-            argument,
-            &self.certified_person(&connection.facts().binding.room, connection.caller()),
-            None,
-            Some(context),
+            InvocationInputs {
+                argument,
+                actor: &self
+                    .certified_person(&connection.facts().binding.room, connection.caller()),
+                confirmation_token: None,
+                context: Some(context),
+            },
             Some(owner),
             Some(InvocationCaller::Enrolled(original)),
         )?;
@@ -647,21 +644,25 @@ impl CapnpBrokerState {
         let job = self.dispatch_invocation_from_offered_owned(
             request.binding.peer_id,
             (surface, offered),
-            request.argument.as_deref(),
-            &actor,
-            None,
-            Some(context),
-            None,
-            // An eager surface has no directory revision; the exact offered
-            // action is bound by the request's own revision digest above.
-            None,
-            Some(owner),
-            Some(InvocationCaller::Enrolled(original)),
-            None,
-            Some(EnrolledDurable {
-                invocation,
-                intent: intent.clone(),
-            }),
+            InvocationInputs {
+                argument: request.argument.as_deref(),
+                actor: &actor,
+                confirmation_token: None,
+                context: Some(context),
+            },
+            AdmissionProvenance {
+                durable: None,
+                // An eager surface has no directory revision; the exact offered
+                // action is bound by the request's own revision digest above.
+                revision: None,
+                private_owner: Some(owner),
+                origin: Some(InvocationCaller::Enrolled(original)),
+                retained_time: None,
+                enrolled_durable: Some(EnrolledDurable {
+                    invocation,
+                    intent: intent.clone(),
+                }),
+            },
         )?;
         connection.remember_action(job.id, envelope.message_id.clone(), grant)?;
         drop(job.completion);
@@ -1141,7 +1142,8 @@ mod tests {
                 .iter()
                 .flat_map(|s| s.actions.iter().map(move |a| (s, a)))
                 .filter(|(s, a)| {
-                    authorize_published(&workspace, 10, agent, Some(&scopes), s, a, None).is_ok()
+                    authorize_published(&workspace, 10, agent, false, Some(&scopes), s, a, None)
+                        .is_ok()
                 })
                 .map(|(s, a)| {
                     (

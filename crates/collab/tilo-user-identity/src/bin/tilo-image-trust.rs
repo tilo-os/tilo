@@ -1,11 +1,8 @@
 //! Offline tooling for the human-root -> device -> immutable-image trust chain.
 
 use std::{
-    ffi::CString,
     fs::{DirBuilder, OpenOptions},
     io::{Read, Write},
-    os::fd::FromRawFd as _,
-    os::unix::ffi::OsStrExt as _,
     os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
 };
@@ -23,20 +20,13 @@ use tilo_user_identity::{
 
 const MAX_ARTIFACT_BYTES: u64 = 64 * 1024;
 
+#[cfg(target_os = "linux")]
 fn open_without_symlinks(
     path: &Path,
     flags: libc::c_int,
     mode: libc::mode_t,
 ) -> std::io::Result<std::fs::File> {
-    const RESOLVE_NO_MAGICLINKS: u64 = 0x02;
-    const RESOLVE_NO_SYMLINKS: u64 = 0x04;
-
-    #[repr(C)]
-    struct OpenHow {
-        flags: u64,
-        mode: u64,
-        resolve: u64,
-    }
+    use std::{ffi::CString, os::unix::ffi::OsStrExt as _};
 
     let path = CString::new(path.as_os_str().as_bytes()).map_err(|_| {
         std::io::Error::new(
@@ -44,31 +34,21 @@ fn open_without_symlinks(
             "artifact path contains an embedded NUL byte",
         )
     })?;
-    let flags = u64::try_from(flags)
-        .map_err(|_| std::io::Error::other("open flags are outside the Linux u64 ABI"))?;
-    let how = OpenHow {
-        flags,
-        mode: u64::from(mode),
-        resolve: RESOLVE_NO_MAGICLINKS | RESOLVE_NO_SYMLINKS,
-    };
-    // SAFETY: path and open_how remain live for this syscall. A successful
-    // descriptor is uniquely transferred into File below.
-    let descriptor = unsafe {
-        libc::syscall(
-            libc::SYS_openat2,
-            libc::AT_FDCWD,
-            path.as_ptr(),
-            &raw const how,
-            std::mem::size_of::<OpenHow>(),
-        )
-    };
-    if descriptor < 0 {
-        return Err(std::io::Error::last_os_error());
-    }
-    let descriptor = i32::try_from(descriptor)
-        .map_err(|_| std::io::Error::other("openat2 returned an invalid descriptor"))?;
-    // SAFETY: openat2 returned this owned descriptor and no other File owns it.
-    Ok(unsafe { std::fs::File::from_raw_fd(descriptor) })
+    tilo_user_identity::nofollow::open(None, &path, flags, mode, false)
+}
+
+/// Only Linux's `openat2` refuses symlinks at every step of the path, so
+/// elsewhere the tool opens no artifact.
+#[cfg(not(target_os = "linux"))]
+fn open_without_symlinks(
+    _path: &Path,
+    _flags: libc::c_int,
+    _mode: libc::mode_t,
+) -> std::io::Result<std::fs::File> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "opening an artifact without following symlinks needs Linux's openat2",
+    ))
 }
 
 fn open_readonly_without_symlinks(path: &Path) -> std::io::Result<std::fs::File> {
@@ -951,11 +931,22 @@ fn run() -> Result<(), String> {
     }
 }
 
+#[cfg(target_os = "linux")]
+fn disable_core_dumps() -> bool {
+    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
+    unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) == 0 }
+}
+
+/// No portable equivalent; refusing keeps keys out of core dumps.
+#[cfg(not(target_os = "linux"))]
+fn disable_core_dumps() -> bool {
+    false
+}
+
 fn main() -> std::process::ExitCode {
     // Grant and endorsement commands may load human-root or device keys. Fail
     // before parsing them unless the process can make itself non-dumpable.
-    // SAFETY: PR_SET_DUMPABLE consumes scalar arguments only.
-    if unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 0, 0, 0, 0) } != 0 {
+    if !disable_core_dumps() {
         eprintln!("tilo-image-trust: could not disable core dumps");
         return std::process::ExitCode::FAILURE;
     }

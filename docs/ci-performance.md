@@ -11,7 +11,7 @@ Current deployment and measured startup results are recorded in the
   request full checks on both native architectures (x86-64 and ARM64).
 - `lint.yml` runs formatting, repository policy, dependency policy and dependency
   usage checks on the reserved quality lane with its pinned lean tools image.
-- `nightly.yml` runs the complete workspace, all targets, examples, and live
+- `ci-nightly.yml` runs the complete workspace, all targets, examples, and live
   integration coverage. It is the coverage backstop rather than duplicated on
   every push.
 
@@ -67,6 +67,13 @@ crates, which sccache does not store. The
 standalone check only where the selector requires it), or when all were
 skipped because Rust is not applicable.
 
+A tested package too heavy to share a test job (`DEDICATED_TEST_WEIGHT` in
+`tools/ci/affected_packages.py`; in practice `shell`) gets a test shard of its
+own, which builds and runs its tests in one job beside the balanced shards.
+Splitting it into nextest partitions fed by a separately built archive put two
+runner queue waits in series on the critical path, which cost more than the
+parallel test time saved.
+
 When the selection includes an app with an Android host example (an
 `<app>-android` example; today calculator and notes, so every change to the SDK
 crates beneath them), a separate `android` job lints those examples with
@@ -83,9 +90,8 @@ web core depends on the toolkit and every app of its collection, so every
 change to the SDK crates beneath them), a separate `wasm` job type-checks the
 selected browser crates for `wasm32-unknown-unknown` with `-D warnings`, then
 runs `tools/ci/check-wasm.sh`: each wasm32 build with the packages and
-features its build script uses (the `dylink` core with its app collection, the
-Cloud frontend, the registry verifier), code the default-feature check does not
-compile. Native jobs compile neither code gated to wasm32 nor the browser's
+features its build script uses (the web desktop with every web app, the page
+runtime, the registry verifier), code the per-crate check does not compile. Native jobs compile neither code gated to wasm32 nor the browser's
 view of modules gated away from it. It is a type check, not a build: linking
 needs wasm-bindgen and binaryen. The aggregate requires the job exactly when
 the selector does.
@@ -236,7 +242,7 @@ them to the slot's target tree.
   when the store passes 75%. Checkout gives files new mtimes; the helper
   restores them for blobs a sealed previous job built from, and an unsealed job
   leaves nothing to restore.
-- `release-relay.yml` and `registry-server-image.yml` keep a persistent BuildKit
+- `release-relay.yml` and `release-registry-server.yml` keep a persistent BuildKit
   builder per slot and trust class (`setup-buildx` `persistent`), so the
   compile step's `target/` cache mount and pulled layers survive the job.
   Publications start from a fresh builder.

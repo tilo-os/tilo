@@ -1,7 +1,8 @@
 use std::{cell::RefCell, rc::Rc};
 
 use ui::application::{
-    ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+    ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget,
+    RestoreInput,
 };
 use ui::application_view::InstanceViewStore;
 use ui::bound_dispatch::BoundActionAddress;
@@ -55,13 +56,15 @@ impl Fixture {
     ) -> Result<ui::application::AppComponent, ui::launch::LaunchError> {
         let mut context = HostContext::prepare(
             definition,
-            self.records.clone(),
-            self.views.clone(),
-            DEVICE.into(),
-            instance,
-            self.authority.clone(),
-            UserId("reader".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: self.records.clone(),
+                views: self.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: instance,
+                permissions: self.authority.clone(),
+                author: UserId("reader".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )?;
         host(&mut context);

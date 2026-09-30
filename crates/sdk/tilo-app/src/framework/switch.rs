@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 use ui_core::automerge::{AutoCommit, ObjId};
@@ -10,7 +11,7 @@ use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
 use ui_core::widget::{Element, Widget};
-use ui_core::winit::event::{Modifiers, WindowEvent};
+use ui_core::winit::event::WindowEvent;
 use ui_core::{LocalState, Theme, taffy};
 
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
@@ -57,12 +58,12 @@ impl<K: Clone + PartialEq + 'static> Switch<K> {
 }
 
 impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile();
         self.part.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.part.update(state, path)
     }
 
@@ -90,21 +91,8 @@ impl<K: Clone + PartialEq + 'static> Widget for Switch<K> {
         self.part.draw(scene, transform, text, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.part.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+        self.part.handle_event(event, ctx);
     }
 
     fn wants_pointer_capture(&self) -> bool {

@@ -181,13 +181,13 @@ impl CollabHistoryStore {
     /// Returns an error when `XDG_STATE_HOME` is absent or unusable.
     #[cfg(not(test))]
     pub fn open_for_session() -> std::io::Result<Self> {
-        let state = std::env::var_os("XDG_STATE_HOME").ok_or_else(|| {
+        let state = xdg_paths::env_dir("XDG_STATE_HOME").ok_or_else(|| {
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 "launcher did not provide XDG_STATE_HOME for collaboration history",
             )
         })?;
-        Self::open(PathBuf::from(state).join("tilo/collaboration/history"))
+        Self::open(state.join("tilo/collaboration/history"))
     }
 
     fn log(&mut self, artifact: ArtifactId) -> std::io::Result<&mut ArtifactLog> {

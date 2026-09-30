@@ -39,11 +39,14 @@ display-confirm-keep = Keep
 display-confirm-revert = Revert
 display-rejected = Couldn't apply this layout: { $reason }
 
-# Keep or revert a change a display tool (kanshi, wlr-randr) made
-display-confirm-tool-title = Keep the display settings { $tool } applied?
-display-confirm-tool-unknown-title = Keep the display settings a tool applied?
-display-confirm-always = Always keep changes from { $tool }
-display-confirm-a11y-description = A display tool changed your screens. Enter keeps the change, Escape restores the previous layout.
+# Keep or revert a risky change a display tool (kanshi, wlr-randr) made:
+# one that could leave a screen blank or turn off the one in use
+display-confirm-tool-title = Keep the display change from { $tool }?
+display-confirm-tool-unknown-title = Keep this display change?
+display-confirm-always = Keep, and don't ask again for { $tool }
+display-confirm-a11y-description = A display tool changed a screen you're using, or picked a mode it hasn't shown before, which can leave it blank. Enter keeps the change; Escape, or waiting, restores the previous layout.
+display-tool-reapply-refused = { $tool } tried to reapply a display layout you reverted
+display-tool-reapply-refused-unknown = A display tool tried to reapply a display layout you reverted
 
 # Wireless receivers, the lower section of the same sheet
 wireless-heading = Wireless displays
@@ -122,6 +125,8 @@ shortcut-name-attach-tab-left = Move tab into group on left
 shortcut-name-attach-tab-right = Move tab into group on right
 shortcut-name-move-group-left = Move group left
 shortcut-name-move-group-right = Move group right
+shortcut-name-move-group-to-previous-strip = Move group to strip above
+shortcut-name-move-group-to-next-strip = Move group to strip below
 shortcut-name-move-group-to-previous-display = Move group to display on left
 shortcut-name-move-group-to-next-display = Move group to display on right
 shortcut-name-resize-narrower = Make window narrower
@@ -198,12 +203,15 @@ guide-row-move-tab = Move tab
 guide-row-strips = Strips
 guide-row-workspaces = Workspaces
 guide-row-move-group = Move group
+guide-row-move-group-strip = Move group to strip
 guide-row-move-window = Move window
 guide-row-resize = Resize
 guide-row-quick-settings = Quick settings
-guide-touch-intro = Gestures follow the desktop's horizontal windows and vertical workspaces.
+guide-touch-intro = Three fingers move along windows and between strips; four fingers switch workspaces.
 guide-touch-focus-next-window = Focus next window
 guide-touch-focus-previous-window = Focus previous window
+guide-touch-strip-above = Strip above
+guide-touch-strip-below = Strip below
 guide-touch-previous-workspace = Previous workspace
 guide-touch-next-workspace = Next workspace
 guide-touch-open-overview = Open overview
@@ -575,6 +583,9 @@ host-fabric-speaker-stopped = Stopped playing on { $group }
 host-fabric-speaker-playing = Playing on { $group }
 host-fabric-speaker-playing-media = Playing on { $group }; the media keeps playing from here
 host-fabric-speaker-left = This device left { $group }
+host-fabric-speaker-listen-allowed = { $group } can calibrate with this microphone
+host-fabric-speaker-listen-declined = { $group } will not use this microphone
+host-fabric-speaker-listen-stopped = { $group } can no longer use this microphone
 host-fabric-audio-route-dismissed = Dismissed interrupted { $route }
 host-fabric-audio-route-stopped = Stopped routing { $route }
 host-fabric-input-allowed = Allowed { $app } to use this input once
@@ -861,8 +872,17 @@ qs-devices-speakers-playing = { $count ->
         [one] { $count } speaker playing · select to stop
        *[other] { $count } speakers playing · select to stop
     }
+qs-devices-speaker-syncing = { $playing } playing, { $syncing } syncing clocks… · select to stop
+qs-devices-speaker-clock-failed = { $count ->
+        [one] { $count } speaker can't play in time: { $reason } · select to stop
+       *[other] { $count } speakers can't play in time: { $reason } · select to stop
+    }
 qs-devices-speaker-setup-note = Stereo pair or room speakers · opens Settings → Speakers
 qs-devices-speaker-membership-note = set up on { $leader } · select to leave
+qs-devices-speaker-listen = Let { $leader } use this microphone for { $group }?
+qs-devices-speaker-listen-note = only during speaker calibration · the recording stays here
+qs-devices-speaker-listen-note-microphone = uses { $microphone } · only during speaker calibration · the recording stays here
+qs-devices-speaker-listener-note = set up on { $leader } · select to stop
 qs-devices-another-certified = Another certified device
 qs-devices-requested-allow-once = { $source } requested this · allow once or decline
 qs-devices-audio-app = Focused app audio · stops when focus changes
@@ -871,6 +891,8 @@ qs-devices-certified-device = certified device
 qs-devices-audio-awaiting = waiting for approval with { $peer } · select to stop
 qs-devices-audio-streaming = streaming with { $peer } · select to stop
 qs-devices-audio-interrupted = interrupted with { $peer } · select to dismiss
+qs-devices-audio-syncing = syncing clocks with { $peer }… · select to stop
+qs-devices-audio-clock-failed = can't play in time with { $peer }: { $reason } · select to stop
 qs-devices-capture-share = Share this device's { $input }
 qs-devices-capture-requested = { $source } requested this for { $app } · allow once or decline
 qs-devices-capture-use-remote = Use remote { $input }
@@ -1060,6 +1082,9 @@ launch-error-registry-unreadable = The app list could not be read. Try again.
 launch-error-host-app-refused = This app's desktop entry cannot be started.
 launch-failed-launcher-unavailable = The app launcher is unavailable. Open Applications and try again.
 launch-failed-stopped = The app stopped before opening. Open Applications and try again.
+launch-failed-missing-library = The app needs a library this system doesn't have, so it stopped before opening.
+launch-failed-sandbox = The app's sandbox could not be set up, so it stopped before opening.
+launch-failed-crashed = The app crashed before opening. Open Applications and try again.
 launch-unnamed-app = application
 launch-failure-title = Couldn't open { $app }
 
@@ -1078,7 +1103,7 @@ shell-tab-menu-split-right = Split Right
 shell-tab-menu-new-group = Move to New Group
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
-shell-activity-title = While you were away
+shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
 
 # Session (power) menu
@@ -1276,6 +1301,7 @@ search-session-logout = Log out of Tilo
 search-session-logout-detail = End this desktop session cleanly and return to the display manager
 search-session-unsaved-work = An app has unsaved work
 search-session-inhibited = { $reason } — close the app or finish its work first.
+search-session-not-offered = This session shares the computer with another desktop, which owns its power.
 
 # Search: shortcuts
 search-shortcut-run-on = Run on { $resource }
@@ -1358,8 +1384,58 @@ search-action-tab-split-right = Split this tab to the right
 search-action-tab-split-right-subtitle = Move the focused tab into a new window group beside its current one
 search-action-tab-move-to-new-group = Move this tab to a new group
 search-action-tab-move-to-new-group-subtitle = Move the focused tab into a new window group at the end of its strip
+search-action-window-focus-previous = Focus the previous window
+search-action-window-focus-previous-subtitle = Move focus to the window on the left along the strip
+search-action-window-focus-next = Focus the next window
+search-action-window-focus-next-subtitle = Move focus to the window on the right along the strip
+search-action-window-focus-nth = Focus a window by position
+search-action-window-focus-nth-subtitle = Move focus to the Nth window group of the focused strip
+search-action-strip-focus-previous = Go to the strip above
+search-action-strip-focus-previous-subtitle = Move focus to the strip above in this workspace
+search-action-strip-focus-next = Go to the strip below
+search-action-strip-focus-next-subtitle = Move focus to the strip below in this workspace
+search-action-workspace-previous = Go to the previous workspace
+search-action-workspace-previous-subtitle = Switch to the workspace before this one
+search-action-workspace-next = Go to the next workspace
+search-action-workspace-next-subtitle = Switch to the workspace after this one
+search-action-tab-previous = Previous tab
+search-action-tab-previous-subtitle = Focus the previous tab in the focused window group
+search-action-tab-next = Next tab
+search-action-tab-next-subtitle = Focus the next tab in the focused window group
+search-action-group-move-left = Move window group left
+search-action-group-move-left-subtitle = Move the focused window group one place left in its strip
+search-action-group-move-right = Move window group right
+search-action-group-move-right-subtitle = Move the focused window group one place right in its strip
+search-action-group-move-to-strip-previous = Move window group to the strip above
+search-action-group-move-to-strip-previous-subtitle = Carry the focused window group into the strip above
+search-action-group-move-to-strip-next = Move window group to the strip below
+search-action-group-move-to-strip-next-subtitle = Carry the focused window group into the strip below
+search-action-group-move-to-display-previous = Move window group to the previous display
+search-action-group-move-to-display-previous-subtitle = Move the focused window group onto the display to the left
+search-action-group-move-to-display-next = Move window group to the next display
+search-action-group-move-to-display-next-subtitle = Move the focused window group onto the display to the right
+search-action-group-maximize = Maximize or restore the window group
+search-action-group-maximize-subtitle = Make the focused window group fill its display, or restore it
+search-action-group-fullscreen = Full screen or restore
+search-action-group-fullscreen-subtitle = Show the focused window full screen, or restore it
+search-action-group-narrower = Make the window group narrower
+search-action-group-narrower-subtitle = Shrink the focused window group by one step
+search-action-group-wider = Make the window group wider
+search-action-group-wider-subtitle = Widen the focused window group by one step
+search-action-tab-move-to-group-previous = Move this tab into the group on the left
+search-action-tab-move-to-group-previous-subtitle = Move the focused tab into the neighbouring window group on the left
+search-action-tab-move-to-group-next = Move this tab into the group on the right
+search-action-tab-move-to-group-next-subtitle = Move the focused tab into the neighbouring window group on the right
 search-action-notifications-dnd-toggle = Toggle Do Not Disturb
 search-action-notifications-dnd-toggle-subtitle = Silence notification banners; held notifications go to history
+search-action-appearance-theme-dark = Set dark theme
+search-action-appearance-theme-dark-subtitle = Use the dark appearance for chrome and apps
+search-action-appearance-theme-light = Set light theme
+search-action-appearance-theme-light-subtitle = Use the light appearance for chrome and apps
+search-action-appearance-high-contrast = Set high contrast
+search-action-appearance-high-contrast-subtitle = Increase contrast in the current appearance
+search-action-appearance-language = Set language
+search-action-appearance-language-subtitle = Change the desktop language in settings
 search-action-identity-connect = Add an existing identity
 search-action-identity-connect-subtitle = Import identity credentials and use them in this workspace
 search-action-identity-select = Use identity in this workspace
@@ -1392,20 +1468,31 @@ search-action-quick-settings-power-profile-set = Set power profile
 search-action-quick-settings-power-profile-set-subtitle = Choose saver, balanced, or performance for this device
 search-action-quick-settings-vpn-set-enabled = Set VPN enabled state
 search-action-quick-settings-vpn-set-enabled-subtitle = Enable or disable one named VPN connection on this device
+search-action-quick-settings-bluetooth-set-enabled = Set Bluetooth enabled state
+search-action-quick-settings-bluetooth-set-enabled-subtitle = Power this device's Bluetooth radio on or off
+search-action-quick-settings-airplane-mode-set-enabled = Set airplane mode
+search-action-quick-settings-airplane-mode-set-enabled-subtitle = Turn every wireless radio on this device off or back on
 
 # Search: search sources and workspace governance rows
 search-action-search-provider-set = Enable or disable a search source
 search-action-search-provider-set-subtitle = Customize which providers appear in search and agent results
-search-action-workspace-view-subtitle = Local workspace view
+search-action-workspace-switch-subtitle = Go to this workspace and its windows
+search-action-activity-catch-up-subtitle = What others changed since you last looked
+search-action-activity-tasks-subtitle = Work assigned to people and agents here
+search-action-activity-explore-subtitle = Every change here, by person, app and time
+search-action-activity-replay-subtitle = Step through how this workspace changed
 search-action-quick-settings-unavailable = Quick Settings service is unavailable
-# Extra words a search for a workspace view matches; not shown.
-search-action-workspace-view-keywords = workspace activity history
+# Extra words a search for a workspace switch or Activity view matches; not shown.
+search-action-workspace-switch-keywords = switch workspace go
+search-action-activity-keywords = activity history changes timeline who
 search-action-provider-enable = Enable { $source } search
-search-action-provider-enable-subtitle = Show the `{ $id }` source in search and agent discovery
+search-action-provider-enable-subtitle = Show { $source } results in search and agent discovery
 search-action-provider-disable = Disable { $source } search
-search-action-provider-disable-subtitle = Hide the `{ $id }` source in search and agent discovery
+search-action-provider-disable-subtitle = Hide { $source } results from search and agent discovery
 search-action-provider-badge-on = ON
 search-action-provider-badge-off = OFF
+# Words that ask for the per-source search on/off switches; not shown.
+search-action-provider-keywords = search source sources disable enable
 search-action-governance-subtitle = Signed workspace governance action for the active workspace
 search-action-permission-roles-subtitle = Manage reusable least-privilege workspace roles
 
@@ -1431,6 +1518,7 @@ search-apps-group-work = Work
 search-apps-group-media = Media
 search-apps-group-system-tools = System tools
 search-apps-group-more-apps = More apps
+search-apps-group-developer-tools = Developer tools
 search-apps-detail-grouped = { $group } · { $detail }
 search-apps-open = Open { $app }
 search-apps-open-subtitle = { $target } · { $detail }
@@ -1478,6 +1566,11 @@ search-continuity-speaker-play-subtitle = Play through every ready speaker of th
 search-continuity-speaker-media-subtitle = Keep playing here and send the sound to this speaker group
 search-continuity-speaker-stop = Stop playing on { $group }
 search-continuity-speaker-stop-subtitle = End this speaker group playback on every speaker
+search-continuity-speaker-listen-allow = Let { $group } calibrate with this microphone
+search-continuity-speaker-listen-decline = Do not let { $group } use this microphone
+search-continuity-speaker-listen-subtitle = { $device } asked to listen with this device's microphone while calibrating speakers
+search-continuity-speaker-listen-stop = Stop { $group } using this microphone
+search-continuity-speaker-listen-stop-subtitle = Speaker calibration set up on { $leader } may listen with this microphone
 search-continuity-place-left = Place { $device } left
 search-continuity-place-right = Place { $device } right
 search-continuity-place-above = Place { $device } above
@@ -1692,10 +1785,10 @@ onboarding-tour-navigate-intro = Tilo keeps the desktop calm until you ask for s
 onboarding-tour-search-title = Search  ·  Super+K or Super+Space
 onboarding-tour-search-title-mac = Search  ·  Command+K or Option+Space
 onboarding-tour-search-body = Open it without typing to browse Start here, Everyday, Work, Media, and System tools; type to find any app, file, setting, or action.
-onboarding-tour-overview-title = Overview  ·  Super+Tab or four-finger swipe
+onboarding-tour-overview-title = Overview  ·  Super+Tab or pinch
 onboarding-tour-overview-body = See every workspace and window group, then use Up, Down, and Enter to choose one.
 onboarding-tour-move-title = Move  ·  Super+arrow keys or three-finger swipe
-onboarding-tour-move-body = Up and down switch workspaces. Left and right step between tiled windows along the current strip.
+onboarding-tour-move-body = Left and right step between tiled windows along the current strip. Up and down go to the strip above or below; Super+Page Up and Page Down, or a four-finger swipe, switch workspaces.
 onboarding-tour-organise-title = A place for each kind of work
 onboarding-tour-organise-intro = The layout is simple once its four levels have names. Tilo remembers the arrangement for you.
 onboarding-tour-workspace-title = Workspace
@@ -2067,9 +2160,7 @@ speaker-error-no-applied-calibration = there is no applied calibration to revert
 speaker-error-calibration-unavailable = calibration is unavailable
 speaker-error-calibration-gone = that calibration is no longer available
 speaker-error-network-unavailable = the device network is unavailable
-speaker-error-microphone-invalid = that microphone is not valid
 speaker-error-calibrate-on-leader = calibrate this group on the device that set it up
-speaker-error-microphone-unavailable = that microphone is not available
 speaker-error-not-all-ready = every speaker must be ready before calibrating
 speaker-error-request-failed = the speaker request failed
 speaker-error-app-stopped = that application stopped playing
@@ -2077,11 +2168,24 @@ speaker-error-audio-unavailable = speaker group audio is unavailable
 speaker-error-other-session = another speaker group session is already playing from this device
 
 # Measuring speakers for calibration
-speaker-calibration-reason-remote-microphone = calibrate with a microphone on the device that set up the speakers
 speaker-calibration-reason-microphone-gone = that microphone is no longer connected
 speaker-calibration-reason-output-gone = that speaker's output is no longer connected
 speaker-calibration-reason-play-failed = could not play the sweep: { $error }
-speaker-calibration-reason-listen-failed = could not start listening: { $error }
+speaker-calibration-reason-clock = could not sync clocks with that speaker: { $reason }
+clock-sync-failure-media-disabled = media continuity is off on this device
+clock-sync-failure-no-reply = the other device did not answer clock sync
+now-playing-speakers-playing = Playing on { $group }
+now-playing-speakers-connecting = { $group }: connecting…
+now-playing-speakers-syncing = { $group }: syncing clocks…
+now-playing-speakers-clock-failed = { $group }: can't play in time — { $reason }
+speaker-calibration-reason-not-heard = no sweep stood out of the noise there
+speaker-calibration-reason-not-allowed = that device has not allowed its microphone
+speaker-calibration-reason-out-of-window = the request reached that device too late
+speaker-calibration-reason-busy = that microphone was busy with another sweep
+speaker-calibration-reason-capture-failed = the recording failed
+speaker-calibration-reason-clock-unknown = that device's clock is not synchronised yet
+speaker-calibration-reason-no-answer = that device did not answer in time
+speaker-calibration-reason-not-at-seat = no microphone heard it clearly enough
 speaker-calibration-failed = Could not measure { $speaker }: { $reason }
 speaker-calibration-cancelled = Calibration was cancelled
 
@@ -2233,3 +2337,12 @@ remote-capture-source-label = { $app } on certified device
 
 # Print jobs: the title a print queue shows when the app gave none
 print-untitled-document = Document
+
+a11y-speaker-listen = Let { $leader } use this microphone to calibrate { $group }
+a11y-speaker-listen-description = It records only while each speaker plays a test sweep; the recording stays on this device and only timing and level are sent
+a11y-speaker-listen-allow = Allow this microphone
+a11y-speaker-listen-decline = Do not allow this microphone
+a11y-speaker-listener = { $group } can calibrate with this microphone
+a11y-speaker-listener-description = Speaker calibration may listen with this microphone; activate to stop
+speaker-calibration-listening-refused = { $microphone } was not allowed to listen, so nothing can be measured from where you sit
+speaker-error-listening-unavailable = choose a microphone that can listen where you sit

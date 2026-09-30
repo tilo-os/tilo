@@ -92,6 +92,58 @@ pub(crate) enum Command {
         region: String,
         action: ScrollAction,
     },
+    /// Open an installed app in a new window of the active workspace, as
+    /// the launcher's `desktop:requests#open-<app>` does; on a local desktop,
+    /// with `record`, on that existing record of the app.
+    Open {
+        generation: String,
+        app: String,
+        #[serde(default)]
+        record: Option<String>,
+    },
+    /// Show the active workspace's settings on `tab`, as the top bar does.
+    WorkspaceSettings {
+        generation: String,
+        workspace: String,
+        tab: SettingsTab,
+    },
+    CloseWorkspaceSettings {
+        generation: String,
+        workspace: String,
+    },
+}
+/// A tab of the workspace settings.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum SettingsTab {
+    General,
+    Members,
+    Agents,
+    Permissions,
+    Apps,
+}
+impl From<SettingsTab> for tilo_desktop::workspace_settings::WsTab {
+    fn from(tab: SettingsTab) -> Self {
+        match tab {
+            SettingsTab::General => Self::General,
+            SettingsTab::Members => Self::Members,
+            SettingsTab::Agents => Self::Agents,
+            SettingsTab::Permissions => Self::Permissions,
+            SettingsTab::Apps => Self::Apps,
+        }
+    }
+}
+impl From<tilo_desktop::workspace_settings::WsTab> for SettingsTab {
+    fn from(tab: tilo_desktop::workspace_settings::WsTab) -> Self {
+        use tilo_desktop::workspace_settings::WsTab;
+        match tab {
+            WsTab::General => Self::General,
+            WsTab::Members => Self::Members,
+            WsTab::Agents => Self::Agents,
+            WsTab::Permissions => Self::Permissions,
+            WsTab::Apps => Self::Apps,
+        }
+    }
 }
 impl Command {
     pub fn generation(&self) -> &str {
@@ -106,7 +158,10 @@ impl Command {
             | Self::Strip { generation, .. }
             | Self::Width { generation, .. }
             | Self::Maximize { generation, .. }
-            | Self::Scroll { generation, .. } => generation,
+            | Self::Scroll { generation, .. }
+            | Self::Open { generation, .. }
+            | Self::WorkspaceSettings { generation, .. }
+            | Self::CloseWorkspaceSettings { generation, .. } => generation,
         }
     }
 }
@@ -156,6 +211,29 @@ mod tests {
             assert!(serde_json::from_value::<Command>(wire).is_err());
         }
         assert!(serde_json::from_str::<Command>(r#"{"kind":"workspace-activity","generation":"mount-1","workspace":"1","view":"catchUp"}"#).is_err());
+    }
+    #[test]
+    fn an_open_may_name_an_existing_record() {
+        let open = |wire: &str| {
+            serde_json::from_str::<Command>(wire).map(|command| match command {
+                Command::Open { app, record, .. } => (app, record),
+                _ => unreachable!(),
+            })
+        };
+        assert_eq!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook"}"#).unwrap(),
+            ("so.tilo.ebook".into(), None)
+        );
+        assert_eq!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook","record":"uuid:1"}"#)
+                .unwrap()
+                .1
+                .as_deref(),
+            Some("uuid:1")
+        );
+        assert!(
+            open(r#"{"kind":"open","generation":"g","app":"so.tilo.ebook","record":7}"#).is_err()
+        );
     }
     #[test]
     fn route_round_trips_full_u64_and_rejects_numeric_ids() {

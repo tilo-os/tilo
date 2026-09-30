@@ -14,7 +14,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
 use taffy::{NodeId, TaffyTree};
@@ -41,7 +42,7 @@ use crate::widgets::{Flex, SharedPlayer};
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 fn history_now_ms() -> u64 {
-    SystemTime::now()
+    ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| {
             u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
@@ -58,28 +59,27 @@ fn resolve_history_owner() -> String {
     if let Ok(identity) = runtime_identity::load() {
         return format!("user:{}", hex::encode(identity.group_public_key()));
     }
-    let path = xdg_paths::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("tilo")
-        .join("tube")
-        .join("history-owner");
-    if let Ok(owner) = std::fs::read_to_string(&path)
+    // The app data location: `$XDG_DATA_HOME/tilo` natively, the page's
+    // storage on the web.
+    let store = tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").data())
+        .ok()
+        .zip(tilo_files::VPath::new("tube/history-owner").ok());
+    if let Some((dir, name)) = &store
+        && let Ok(bytes) = tilo_files::blocking::read(dir, name)
+        && let Ok(owner) = String::from_utf8(bytes)
         && owner.starts_with("user:")
         && owner.len() > "user:".len()
     {
         return owner;
     }
     let owner = format!("user:{}", uuid::Uuid::new_v4().simple());
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_ok()
-        && std::fs::write(&path, &owner).is_ok()
+    if let Some((dir, name)) = &store
+        && tilo_files::blocking::write_atomic(dir, name, owner.as_bytes()).is_ok()
     {
         return owner;
     }
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_default();
-    let host = std::env::var("HOSTNAME").unwrap_or_default();
+    let user = tilo_paths::session::user_name().unwrap_or_default();
+    let host = tilo_paths::session::host_name().unwrap_or_default();
     let seed = format!("{user}@{host}");
     if seed == "@" {
         owner
@@ -143,10 +143,16 @@ pub struct TubeApp {
     #[cfg(feature = "grayjay-sync")]
     device_sync_seeded: bool,
 
-    /// The freshly-built shell tree (top bar + nav rail + screen). Rebuilt
-    /// in `build_layout`; raw pointers in the App's `node_map` point into
-    /// it and stay valid until the next rebuild.
+    /// The shell tree (top bar + nav rail + screen). Rebuilt in
+    /// `build_layout` only when the structure, theme or width changed; raw
+    /// pointers in the App's `node_map` point into it and stay valid until
+    /// the next rebuild.
     root_child: Option<Box<dyn Widget>>,
+    /// A structural change the host took from `take_structure_dirty` that
+    /// the next `build_layout` has not rebuilt yet.
+    shell_stale: bool,
+    /// Theme and width the current shell was built for.
+    shell_key: Option<u64>,
     child_node: Option<NodeId>,
     rect: Rect,
 
@@ -301,6 +307,8 @@ impl TubeApp {
             #[cfg(feature = "grayjay-sync")]
             device_sync_seeded: false,
             root_child: None,
+            shell_stale: true,
+            shell_key: None,
             child_node: None,
             rect: Rect::ZERO,
             structure_dirty: false,
@@ -627,7 +635,7 @@ impl TubeApp {
     /// action.  The resulting invocation contains no authority: the app host
     /// resolves the address against a fresh resource tree and enforces the
     /// action's privileged/destructive confirmation contract before calling
-    /// `invoke_resource_operation`.
+    /// `Widget::start_operation`.
     fn queue_device_action(&mut self, action_id: &str, peer_id: Option<&str>) -> bool {
         #[cfg(feature = "grayjay-sync")]
         let root = crate::actions::provide_device_resources(self.device_sync.view());
@@ -936,7 +944,7 @@ impl TubeApp {
     /// within the budget the surface stays as-is (the poster/backdrop shows).
     #[must_use]
     pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
         self.model.route = Route::Watch(video_id.to_string());
         {
             let mut p = self.player.borrow_mut();
@@ -954,13 +962,13 @@ impl TubeApp {
                         doc: &mut automerge::AutoCommit,
                         until: &dyn Fn(&ui::widget::VideoPlayer) -> bool,
                         budget: Duration| {
-                let deadline = Instant::now() + budget;
-                while Instant::now() < deadline {
+                let deadline = ui::time::now() + budget;
+                while ui::time::now() < deadline {
                     p.sync(doc, &root);
                     if until(p) {
                         return true;
                     }
-                    std::thread::sleep(Duration::from_millis(15));
+                    let _ = ui::rt::sleep_thread(Duration::from_millis(15));
                 }
                 false
             };
@@ -1804,11 +1812,11 @@ impl TubeApp {
         if let Some(w) = &self.worker
             && let Err(error) = w.request(req)
         {
-            let rejected = match error {
-                std::sync::mpsc::TrySendError::Full(request)
-                | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+            let (rejected, stopped) = match error {
+                std::sync::mpsc::TrySendError::Full(request) => (request, false),
+                std::sync::mpsc::TrySendError::Disconnected(request) => (request, true),
             };
-            self.request_rejected(&rejected);
+            self.request_rejected(&rejected, stopped);
             return false;
         }
         true
@@ -1817,24 +1825,32 @@ impl TubeApp {
     /// Make bounded-worker saturation explicit. This is a local, retryable
     /// condition, not an offline/network failure, so never falsify the source
     /// provenance while reporting it.
-    fn request_rejected(&mut self, request: &Request) {
+    fn request_rejected(&mut self, request: &Request, stopped: bool) {
         const BUSY: &str = "Too many requests are pending. Please try again.";
+        const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
+        let message = if stopped { STOPPED } else { BUSY };
+        if stopped {
+            self.model.data_source = crate::model::DataSource {
+                live: false,
+                label: "offline".into(),
+            };
+        }
         match request {
             Request::Search { query } => {
                 if self.model.search_query == *query {
                     self.model.search_loading = false;
-                    self.model.search_error = Some(BUSY.to_string());
+                    self.model.search_error = Some(message.to_string());
                 }
             }
             Request::Feed => {
                 self.model.feed_loading = false;
-                self.model.feed_error = Some(BUSY.to_string());
+                self.model.feed_error = Some(message.to_string());
             }
             Request::Branding(_)
             | Request::VideoMeta(_)
             | Request::Channel(_)
             | Request::PlaylistPage(_)
-            | Request::PlayVideo(_) => self.model.push_notice(BUSY),
+            | Request::PlayVideo(_) => self.model.push_notice(message),
         }
         self.structure_dirty = true;
     }
@@ -2290,98 +2306,9 @@ impl TubeApp {
         changed
     }
 
-    /// One-way compatibility import for versions that incorrectly wrote watch
-    /// history into the collaborative document. This is explicitly marked in
-    /// the local store and never deletes/rewrites the shared document: a
-    /// tombstone would not recall its historic Automerge changes or old export
-    /// bytes. New history writes never target this legacy subtree.
-    fn migrate_legacy_shared_history_once(&mut self, state: &AutoCommit) -> bool {
-        if self.history_store.has_legacy_migration_marker() {
-            return false;
-        }
-        let Some((Value::Object(ObjType::Map), tube)) =
-            state.get(&automerge::ROOT, "tube").ok().flatten()
-        else {
-            return false;
-        };
-        let Some((Value::Object(ObjType::Map), private_history)) =
-            state.get(&tube, "private_history").ok().flatten()
-        else {
-            return false;
-        };
-        let Some((Value::Object(ObjType::Map), owner)) = state
-            .get(&private_history, self.model.history_owner.as_str())
-            .ok()
-            .flatten()
-        else {
-            return false;
-        };
-        let cleared_at_ms = state
-            .get(&owner, "clears")
-            .ok()
-            .flatten()
-            .and_then(|(value, clears)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(clears)
-            })
-            .map_or(0, |clears| {
-                state
-                    .keys(&clears)
-                    .filter_map(|id| {
-                        state.get_all(&clears, id.as_str()).ok().and_then(|values| {
-                            values
-                                .into_iter()
-                                .filter_map(|(value, _)| {
-                                    value.as_str().and_then(|value| value.parse::<u64>().ok())
-                                })
-                                .max()
-                        })
-                    })
-                    .max()
-                    .unwrap_or(0)
-            });
-        let records = state
-            .get(&owner, "entries")
-            .ok()
-            .flatten()
-            .and_then(|(value, entries)| {
-                matches!(value, Value::Object(ObjType::Map)).then_some(entries)
-            })
-            .map_or_else(Vec::new, |entries| {
-                state
-                    .keys(&entries)
-                    .filter_map(|video_id| {
-                        let values = state.get_all(&entries, video_id.as_str()).ok()?;
-                        let record = newest_history_record(
-                            values
-                                .into_iter()
-                                .filter_map(|(value, _)| value.as_str().map(str::to_owned))
-                                .filter_map(|value| {
-                                    serde_json::from_str::<HistoryEntryRecord>(&value).ok()
-                                }),
-                        )?;
-                        (record.watched_at_ms > cleared_at_ms).then_some((video_id, record))
-                    })
-                    .collect()
-            });
-        for (video_id, record) in records {
-            if !self.dispatch_history_action(OwnerHistoryAction::SetEntry {
-                video_id,
-                watched_at_ms: record.watched_at_ms,
-                present: record.present,
-                mutation_id: format!("legacy:{}", record.mutation_id),
-            }) {
-                return false;
-            }
-        }
-        tracing::warn!(
-            "migrated legacy shared Tube history locally; existing shared replicas and exports cannot be recalled"
-        );
-        self.dispatch_history_action(OwnerHistoryAction::LegacyMigrationComplete)
-    }
-
     /// Project only the separate owner-local document. This deliberately has
     /// no path through `reconcile_collaborative_actions`: a shared replica is
-    /// never examined for watch history, including legacy `private_history`.
+    /// never examined for watch history.
     fn reconcile_owner_history(&mut self) -> bool {
         let state = self.history_store.document();
         let Some((Value::Object(ObjType::Map), history)) =
@@ -2457,78 +2384,8 @@ impl FullscreenProvider for TubeApp {
     }
 }
 
-impl Widget for TubeApp {
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::TUBE_OPERATION_TYPE]
-    }
-
-    /// Publish the open-resource tree (the playing video + its comments) so the
-    /// host's Ctrl+K action palette scopes to it. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_type::TubeSearchProvider::new(
-            &self.model,
-        ))]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_device_actions
-            .pop_front()
-            .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| self.share_action.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| {
-                self.root_child
-                    .as_mut()
-                    .and_then(|child| child.take_control_invocation())
-            })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = Vec::new();
-        if let Some(action) = &self.play_action {
-            bindings.push(action.metadata("tube.watch.play-pause"));
-        }
-        if let Some(action) = &self.share_action {
-            bindings.push(action.metadata("tube.watch.share"));
-        }
-        if let Some(child) = &self.root_child {
-            bindings.extend(child.control_action_bindings());
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.play_action {
-            action.refresh_availability(allowed);
-        }
-        if let Some(action) = &mut self.share_action {
-            action.refresh_availability(allowed);
-        }
-        if let Some(child) = &mut self.root_child {
-            child.refresh_control_action_availability(allowed);
-        }
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn invoke_resource_operation(
+impl TubeApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -2548,8 +2405,44 @@ impl Widget for TubeApp {
         self.perform_resource_operation(operation);
         Ok(true)
     }
+}
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+impl Widget for TubeApp {
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[crate::actions::TUBE_OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         #[cfg(feature = "grayjay-sync")]
         {
             // Reconcile existing canonical state before comparing imports. A
@@ -2575,9 +2468,6 @@ impl Widget for TubeApp {
             }
         }
         if self.reconcile_collaborative_actions(state) {
-            self.structure_dirty = true;
-        }
-        if self.migrate_legacy_shared_history_once(state) {
             self.structure_dirty = true;
         }
         if self.reconcile_owner_history() {
@@ -2642,9 +2532,26 @@ impl Widget for TubeApp {
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
         // first build runs before any width is known) and rebuild once.
-        self.built_overlay = Some(self.nav_is_overlay());
-        let shell = self.build_shell_themed(theme);
-        self.root_child = Some(shell);
+        // A host may lay out after every input event. Rebuilding then would
+        // drop the hover and press a click is made of.
+        let key = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            format!("{theme:?}").hash(&mut hasher);
+            self.rect.width().to_bits().hash(&mut hasher);
+            hasher.finish()
+        };
+        if self.root_child.is_none()
+            || self.shell_stale
+            || self.structure_dirty
+            || self.shell_key != Some(key)
+        {
+            self.built_overlay = Some(self.nav_is_overlay());
+            let shell = self.build_shell_themed(theme);
+            self.root_child = Some(shell);
+            self.shell_stale = false;
+            self.shell_key = Some(key);
+        }
         #[allow(
             clippy::unwrap_used,
             reason = "root_child was just set to Some(shell) on the line above; \
@@ -2747,18 +2654,7 @@ impl Widget for TubeApp {
         reason = "the Widget::handle_event trait method fans out on WindowEvent kind; each \
                   branch is a short, independent dispatch to an already-extracted helper"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Ctrl+K toggles the global command palette, regardless of focus. This
         // is intercepted before children so a focused text field can't swallow
         // it. `Ctrl+K` opens; a second `Ctrl+K` (or Esc, below) closes.
@@ -2771,7 +2667,7 @@ impl Widget for TubeApp {
                 },
             ..
         } = event
-            && modifiers.state().control_key()
+            && ctx.modifiers.state().control_key()
             && c.eq_ignore_ascii_case("k")
         {
             action::push(
@@ -2782,7 +2678,7 @@ impl Widget for TubeApp {
                     Action::OpenPalette
                 },
             );
-            *handled = true;
+            *ctx.handled = true;
         }
 
         // Enter submits a search regardless of which field has focus.
@@ -2814,11 +2710,11 @@ impl Widget for TubeApp {
             } = event
         {
             let is_back = matches!(logical_key, Key::Named(NamedKey::BrowserBack))
-                || (modifiers.state().alt_key()
+                || (ctx.modifiers.state().alt_key()
                     && matches!(logical_key, Key::Named(NamedKey::ArrowLeft)));
             if is_back && self.nav.can_go_back() {
                 action::push(&self.bus, Action::Back);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -2829,7 +2725,7 @@ impl Widget for TubeApp {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_pointer =
-                    Point::new(position.x / scale_factor, position.y / scale_factor);
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if let Some(ui::NavAction::Back) = self.back_gesture.pointer_move(self.last_pointer)
                     && self.nav.can_go_back()
                 {
@@ -2854,17 +2750,7 @@ impl Widget for TubeApp {
         }
 
         if let Some(c) = &mut self.root_child {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            c.handle_event(event, ctx);
         }
 
         // Esc dismisses an open overlay flap. The live split closes itself on
@@ -2885,12 +2771,12 @@ impl Widget for TubeApp {
             // then an open overlay flap, then finally acts as Back.
             if self.model.palette_open {
                 action::push(&self.bus, Action::ClosePalette);
-                *handled = true;
+                *ctx.handled = true;
             } else if self.nav_is_overlay() && self.sidebar_currently_open() {
                 self.sidebar_open = Some(false);
             } else if self.nav.can_go_back() {
                 action::push(&self.bus, Action::Back);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
 
@@ -2943,13 +2829,13 @@ impl Widget for TubeApp {
                 // boundary used by search, agents and replay. Owner history
                 // is intentionally absent from this public dispatcher.
                 self.actions.dispatch_with_context(
-                    state,
+                    ctx.state,
                     crate::actions::TUBE_ACTION_TYPE,
                     &operation,
                     tilo_actions::ActionContext::for_action("so.tilo.tube", "Tube", &operation),
                 );
             }
-            changed |= self.apply(a, state, path);
+            changed |= self.apply(a, ctx.state, ctx.path);
         }
         // If a just-applied action opened a watch page, kick off real playback
         // (resolve + decode) for it — once. No-op off the watch route / offline.
@@ -2962,7 +2848,7 @@ impl Widget for TubeApp {
         }
     }
 
-    fn on_external_event(&mut self, _payload: &str, _state: &mut AutoCommit, _root: &ObjId) {}
+    fn on_external_event(&mut self, _payload: &str, _state: &mut AppModel, _root: &ModelPath) {}
 
     fn take_structure_dirty(&mut self) -> bool {
         let mut dirty = std::mem::take(&mut self.structure_dirty);
@@ -2982,6 +2868,7 @@ impl Widget for TubeApp {
         if let Some(c) = &mut self.root_child {
             dirty |= c.take_structure_dirty();
         }
+        self.shell_stale |= dirty;
         dirty
     }
 
@@ -3096,6 +2983,73 @@ impl Widget for TubeApp {
     }
 }
 
+impl ui::search::capability::SearchSource for TubeApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_type::TubeSearchProvider::new(
+            &self.model,
+        ))]
+    }
+}
+
+impl ui::resources::PublishesResources for TubeApp {
+    /// Publish the open-resource tree (the playing video + its comments) so the
+    /// host's Ctrl+K action palette scopes to it. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::widget::controls::ActionControls for TubeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_device_actions
+            .pop_front()
+            .or_else(|| self.play_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| self.share_action.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| {
+                self.root_child
+                    .as_mut()
+                    .and_then(|child| ui::widget::controls::take_control_invocation(child.as_mut()))
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = Vec::new();
+        if let Some(action) = &self.play_action {
+            bindings.push(action.metadata("tube.watch.play-pause"));
+        }
+        if let Some(action) = &self.share_action {
+            bindings.push(action.metadata("tube.watch.share"));
+        }
+        if let Some(child) = &self.root_child {
+            bindings.extend(ui::widget::controls::control_action_bindings(
+                child.as_ref(),
+            ));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.play_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(action) = &mut self.share_action {
+            action.refresh_availability(allowed);
+        }
+        if let Some(child) = &mut self.root_child {
+            ui::widget::controls::refresh_control_action_availability(child.as_mut(), allowed);
+        }
+    }
+}
+
+impl ui::undo::CommittedActions for TubeApp {
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -3118,9 +3072,8 @@ mod tests {
         (app, doc)
     }
 
-    fn dispatch_control(app: &mut TubeApp, doc: &AutoCommit) {
-        let intent = app
-            .take_control_invocation()
+    fn dispatch_control(app: &mut TubeApp, doc: &mut AutoCommit) {
+        let intent = ui::widget::controls::take_control_invocation(app)
             .expect("custom control emitted an action-native invocation");
         let resources = <TubeApp as tilo_actions::ResourceProvider>::resources(app, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
@@ -3129,13 +3082,17 @@ mod tests {
             .build_json(&intent.arguments)
             .expect("control arguments satisfy the published contract");
         assert!(
-            app.invoke_resource_operation(
-                spec.kind,
-                &encoded.type_id,
-                &encoded.payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
                 doc,
-                &automerge::ROOT,
+                &automerge::ROOT
             )
+            .map(|started| started.is_some())
             .expect("resource operation dispatch succeeds")
         );
     }
@@ -3162,8 +3119,7 @@ mod tests {
                 .unwrap_or_else(std::sync::PoisonError::into_inner) =
                 "grayjay://secret-invite".into();
             assert!(app.apply(Action::PairDevice, &doc, &automerge::ROOT));
-            let invocation = app
-                .take_control_invocation()
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("visible Pair queues a host-routable invocation");
             assert_eq!(invocation.address.resource, "tube.device-sync");
             assert_eq!(invocation.address.action, "pair");
@@ -3266,7 +3222,7 @@ mod tests {
         }
         // Case `like_toggles_and_share_copies_a_link`.
         {
-            let (mut app, doc) = fresh();
+            let (mut app, mut doc) = fresh();
             let r = automerge::ROOT;
             assert!(!app.model.is_liked("vid_donut"));
             app.apply(Action::ToggleLike("vid_donut".into()), &doc, &r);
@@ -3282,7 +3238,7 @@ mod tests {
 
             app.apply(Action::OpenVideo("vid_donut".into()), &doc, &r);
             app.apply(Action::Share("vid_donut".into()), &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 !app.model.is_liked("vid_donut"),
                 "Share must not like the video"
@@ -3308,7 +3264,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "merged scenario: each former test is a labelled case block with its own fixture"
     )]
-    fn owner_history_stays_local_and_migrates_canonically() {
+    fn owner_history_stays_local_and_imports_canonically() {
         // Case `open_video_navigates_and_records_history`.
         {
             let (mut app, doc) = fresh();
@@ -3423,54 +3379,6 @@ mod tests {
                 "failed local writes do not claim history changed"
             );
         }
-        // Case `legacy_shared_history_is_migrated_once_without_new_shared_writes`.
-        {
-            use automerge::{ScalarValue, transaction::Transactable};
-
-            let (mut app, mut shared) = fresh();
-            app.history_store = OwnerHistoryStore::memory();
-            let tube = shared
-                .put_object(&automerge::ROOT, "tube", ObjType::Map)
-                .expect("tube map");
-            let private = shared
-                .put_object(&tube, "private_history", ObjType::Map)
-                .expect("legacy map");
-            let owner = shared
-                .put_object(&private, app.model.history_owner.as_str(), ObjType::Map)
-                .expect("owner map");
-            let entries = shared
-                .put_object(&owner, "entries", ObjType::Map)
-                .expect("entries map");
-            let legacy_id = "legacy-history-video";
-            let record = HistoryEntryRecord {
-                present: true,
-                watched_at_ms: 7,
-                mutation_id: "old-device:7".into(),
-            };
-            shared
-                .put(
-                    &entries,
-                    legacy_id,
-                    ScalarValue::Str(serde_json::to_string(&record).expect("serializable").into()),
-                )
-                .expect("legacy entry");
-            let before = shared.save();
-            assert!(
-                before
-                    .windows(legacy_id.len())
-                    .any(|window| window == legacy_id.as_bytes())
-            );
-            assert!(app.migrate_legacy_shared_history_once(&shared));
-            assert!(app.reconcile_owner_history());
-            assert_eq!(app.model.history, vec![legacy_id]);
-            assert!(app.history_store.has_legacy_migration_marker());
-            assert!(!app.migrate_legacy_shared_history_once(&shared));
-            assert_eq!(
-                shared.save(),
-                before,
-                "migration never mutates shared history"
-            );
-        }
         // Case `subscription_and_queue_entities_survive_without_cached_metadata`.
         {
             let (mut app, mut doc) = fresh();
@@ -3496,7 +3404,7 @@ mod tests {
             assert!(app.model.is_subscribed(unknown_channel));
             assert!(app.model.is_queued(unknown_video));
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let library = resources[0]
                 .children
                 .iter()
@@ -3639,7 +3547,7 @@ mod tests {
         }
         // Case `toggle_play_drives_the_engine`.
         {
-            let (mut app, doc) = fresh_synth();
+            let (mut app, mut doc) = fresh_synth();
             let r = automerge::ROOT;
             app.model.route = Route::Watch("vid_donut".into());
             app.load_resolved_stream(
@@ -3650,14 +3558,14 @@ mod tests {
             );
             assert!(app.player.borrow().is_playing());
             app.apply(Action::TogglePlay, &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 !app.player.borrow().is_playing(),
                 "TogglePlay paused the engine"
             );
             assert!(!app.model.playing, "the model mirrors the paused engine");
             app.apply(Action::TogglePlay, &doc, &r);
-            dispatch_control(&mut app, &doc);
+            dispatch_control(&mut app, &mut doc);
             assert!(
                 app.player.borrow().is_playing(),
                 "TogglePlay resumed the engine"
@@ -4129,9 +4037,12 @@ mod tests {
             let mut app = TubeApp::empty();
             app.model.search_query = "rust".into();
             app.model.search_loading = true;
-            app.request_rejected(&Request::Search {
-                query: "rust".into(),
-            });
+            app.request_rejected(
+                &Request::Search {
+                    query: "rust".into(),
+                },
+                false,
+            );
             assert!(!app.model.search_loading, "do not leave a stuck skeleton");
             assert!(
                 app.model
@@ -4141,7 +4052,7 @@ mod tests {
             );
 
             app.model.feed_loading = true;
-            app.request_rejected(&Request::Feed);
+            app.request_rejected(&Request::Feed, false);
             assert!(!app.model.feed_loading, "do not leave Home loading forever");
             assert!(
                 app.model

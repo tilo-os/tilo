@@ -14,16 +14,16 @@
 //! animation driver — so tests stay deterministic.
 
 use crate::time::Duration;
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, ButtonFace, Widget};
@@ -529,14 +529,9 @@ pub fn paint_card(
         &mut hit,
     );
     paint_card_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        rect,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
+        Rect::new(rect.x0, rect.y0, text_right, action_top.unwrap_or(rect.y1)),
         card,
-        text_right,
-        action_top.unwrap_or(rect.y1),
         a,
     );
 
@@ -558,10 +553,6 @@ pub fn paint_card(
     hit
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "private immediate-mode helper forwarding the shared card painter context"
-)]
 fn paint_card_actions(
     scene: &mut Scene,
     transform: Affine,
@@ -714,27 +705,15 @@ fn paint_dismiss_button(
 }
 
 /// Paints the text column — optional attribution caption, then the title,
-/// then the optional body — vertically centred in `rect` between its left
-/// pad and `text_right` (the dismiss button's left edge, or the card's own
-/// right pad when there is none).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "private helper with a single call site in `paint_card`, forwarding that \
-              function's own draw parameters plus the two values it already computed"
-)]
-fn paint_card_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    rect: Rect,
-    card: &ToastCard<'_>,
-    text_right: f64,
-    text_bottom: f64,
-    alpha: f32,
-) {
-    let text_x = rect.x0 + CARD_PAD_X;
-    let width_avail = to_f32((text_right - text_x).max(0.0));
+/// then the optional body — vertically centred in `column`, after its left
+/// pad. `column` runs from the card's top-left to the dismiss button's left
+/// edge (or the card's own right pad when there is none) and the top of the
+/// action row (or the card's bottom).
+fn paint_card_text(ctx: &mut PaintCtx<'_>, column: Rect, card: &ToastCard<'_>, alpha: f32) {
+    let theme = ctx.theme;
+    let text_renderer = &mut *ctx.text;
+    let text_x = column.x0 + CARD_PAD_X;
+    let width_avail = to_f32((column.x1 - text_x).max(0.0));
     let caption_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
     let title_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.sm);
     let body_size = renderer_type_size(text_renderer, theme.tokens.typography.scale.xs);
@@ -774,8 +753,8 @@ fn paint_card_text(
         0.0
     };
     let block_h = cap_h + title_h + body_h;
-    let text_height = (text_bottom - rect.y0).max(0.0);
-    let mut ty = rect.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);
+    let text_height = column.height().max(0.0);
+    let mut ty = column.y0 + ((text_height - block_h) / 2.0).max(CARD_PAD_Y);
 
     // `paint_card` deliberately owns a fixed-height notification surface.
     // Wrapping an untrusted summary/body into that surface makes the title
@@ -802,42 +781,35 @@ fn paint_card_text(
     let primary = theme.tokens.colors.text_primary.with_alpha(alpha);
 
     if has_caption {
-        text_renderer.draw_text_weighted(
-            scene,
+        ctx.text(
             caption.as_deref().unwrap_or_default(),
-            caption_size,
+            &TextStyle::new(caption_size).with_weight(TextWeight::Semibold),
             dim,
-            transform.pre_translate(Vec2::new(text_x, ty)),
+            Point::new(text_x, ty),
             Some(width_avail),
-            TextWeight::Semibold,
         );
         ty += cap_h;
     }
-    text_renderer.draw_text_weighted(
-        scene,
+    ctx.text(
         &title,
-        title_size,
+        &TextStyle::new(title_size).with_weight(TextWeight::Semibold),
         primary,
-        transform.pre_translate(Vec2::new(text_x, ty)),
+        Point::new(text_x, ty),
         Some(width_avail),
-        TextWeight::Semibold,
     );
     ty += title_h;
     if has_body {
-        text_renderer.draw_text(
-            scene,
+        ctx.text(
             body.as_deref().unwrap_or_default(),
-            body_size,
+            &TextStyle::new(body_size),
             dim,
-            transform.pre_translate(Vec2::new(text_x, ty)),
+            Point::new(text_x, ty),
             Some(width_avail),
         );
     }
 }
 
 impl Widget for ToastStack {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -907,21 +879,11 @@ impl Widget for ToastStack {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Hover-pause: expiry halts while the pointer is over the stack.
                 let now_hover = !self.toasts.is_empty() && self.card_at(self.last_cursor).is_some();
                 if now_hover != self.hovered {
@@ -936,7 +898,7 @@ impl Widget for ToastStack {
                 if let Some(idx) = self.card_at(self.last_cursor) {
                     self.dismiss(idx);
                     self.hovered = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -970,6 +932,7 @@ impl Widget for ToastStack {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::collections::HashMap;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -1002,14 +965,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

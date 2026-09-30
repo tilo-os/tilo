@@ -104,18 +104,14 @@ impl RecentFiles {
     ///
     /// Returns the I/O error if the list cannot be written.
     pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
         let body = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        let target = dir.join(FILE_NAME);
-        let tmp = dir.join(format!(".{FILE_NAME}.tmp"));
-        std::fs::write(&tmp, body)?;
-        std::fs::rename(tmp, target)
+        atomic_file::write_creating_parent(&dir.join(FILE_NAME), &body)
     }
 }
 
 pub fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |elapsed| {
             u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
         })

@@ -34,7 +34,6 @@
     clippy::struct_excessive_bools,
     clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     clippy::type_complexity,
     clippy::unnecessary_mut_passed,
@@ -168,13 +167,6 @@ pub fn main() -> Result<(), Box<dyn std::error::Error>> {
         return Ok(());
     }
 
-    // Off Linux the imager ships without the desktop portal; its file
-    // choosers are the platform dialogs.
-    #[cfg(not(target_os = "linux"))]
-    ui::host::install_default(
-        ui::host::native::services(Some("so.tilo.imager"))
-            .with_files(std::sync::Arc::new(imager::setup::folders::PlatformDialogs)),
-    );
     ui::launch::run(
         &LaunchSpec::new_with_args("so.tilo.imager", live_root)
             .runtime_attachment(|_| !cfg!(target_os = "windows"))

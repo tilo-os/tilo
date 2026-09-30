@@ -35,7 +35,9 @@ mod media_governance;
 mod native_publication;
 pub use native_publication::NativePublicationCut;
 mod resources;
+mod sealed_compaction;
 pub use media_governance::VerifiedSecurityMetadataOnly;
+pub use sealed_compaction::SealCheckpoint;
 
 #[expect(
     clippy::needless_pass_by_value,
@@ -91,6 +93,11 @@ pub struct GovernedMember {
     pub display_name: Option<String>,
     pub active_device_keys: Vec<[u8; 32]>,
     pub removed: bool,
+    /// Made an administrator by the governance writer: `role` is then
+    /// [`MemberRole::Editor`](crate::join::MemberRole::Editor) with the
+    /// owner's authority over the workspace.
+    #[serde(default)]
+    pub administrator: bool,
 }
 #[derive(Clone, Debug, Default)]
 #[expect(
@@ -203,6 +210,32 @@ struct DurableV5<'a> {
     #[serde(borrow)]
     exact: &'a [u8],
 }
+
+/// V5 and the sealed history of each encrypted record. Written only while a
+/// record holds sealed writes, so every other state keeps its v5 bytes.
+#[derive(Serialize, Deserialize)]
+struct DurableV6<'a> {
+    version: u32,
+    base: DurableV4,
+    #[serde(borrow)]
+    exact: &'a [u8],
+    sealed: SealedHistory,
+}
+/// Each encrypted record's sealed writes, in admission order.
+type SealedHistory = Vec<(Route, Vec<SignedOp>)>;
+
+/// How a local write reaches admission: plain, or sealed and opened by its
+/// key holder once the sealed envelope passed every check.
+pub(crate) enum LocalWrite<'a> {
+    Plain,
+    Opened(&'a mut dyn FnMut(&SignedOp) -> Result<Vec<u8>, String>),
+}
+
+/// Most sealed writes, and their bytes, one record keeps for a key holder.
+/// Past them a key holder compacts the history
+/// ([`StatePeer::compact_sealed_history`]).
+const MAX_SEALED_OPS: usize = 4096;
+const MAX_SEALED_BYTES: usize = 16 * 1024 * 1024;
 
 #[derive(Clone)]
 pub struct StatePeer {
@@ -549,6 +582,32 @@ impl StatePeer {
         key: &SigningKey,
         now: SystemTime,
     ) -> Result<bool, String> {
+        self.set_member_verb(user_public_key, member_verb(role), key, now)
+    }
+
+    /// Make a governed collaborator an administrator of the workspace, with
+    /// the owner's authority over it (never its governance key).
+    /// [`Self::set_member_role`] demotes them again.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::set_member_role`].
+    pub fn set_member_administrator(
+        &mut self,
+        user_public_key: [u8; 32],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.set_member_verb(user_public_key, Verb::Admin, key, now)
+    }
+
+    fn set_member_verb(
+        &mut self,
+        user_public_key: [u8; 32],
+        verb: Verb,
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
         self.require_governance_writer(key, now)?;
         if user_public_key == self.core.authority.user_public_key {
             return Err("owner role cannot be changed through member governance".into());
@@ -581,10 +640,102 @@ impl StatePeer {
         doc.set_actor(automerge::ActorId::from(
             key.verifying_key().to_bytes().to_vec(),
         ));
-        put_member_capability(&mut doc, &caps, user_public_key, role)?;
+        put_member_verb(&mut doc, &caps, user_public_key, verb)?;
         doc.commit();
         let changed = self.apply_governance_doc(doc, &before, key, now)?;
-        Ok(changed && before_role != Some(member_role(role)))
+        let after_role = match verb {
+            Verb::Admin => Role::Owner,
+            Verb::Write => Role::Editor,
+            Verb::Comment => Role::Commenter,
+            Verb::Read | Verb::Invite => Role::Viewer,
+        };
+        Ok(changed && before_role != Some(after_role))
+    }
+
+    /// Remove workspace capabilities the governance writer decided to take
+    /// back, by id. Memberships are removed through member governance.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, an id names a
+    /// membership, or governance cannot be updated.
+    pub fn remove_governed_capabilities(
+        &mut self,
+        ids: &[String],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        let caps = doc
+            .get(ROOT, "capabilities")
+            .map_err(err)?
+            .ok_or("governed capabilities missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for id in ids {
+            if id.starts_with("room-member-v1:") {
+                return Err(format!("capability {id:?} is a membership"));
+            }
+            if doc.get(&caps, id.as_str()).map_err(err)?.is_some() {
+                doc.delete(&caps, id.as_str()).map_err(err)?;
+            }
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
+    }
+
+    /// Write workspace capabilities the governance writer decided, such as
+    /// those an assigned permission profile expands to, keyed by their ids.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `key` is not the governance writer, a capability
+    /// has no id or would replace a membership, or governance cannot be updated.
+    pub fn put_governed_capabilities(
+        &mut self,
+        capabilities: &[CapOverride],
+        key: &SigningKey,
+        now: SystemTime,
+    ) -> Result<bool, String> {
+        self.require_governance_writer(key, now)?;
+        let mut doc = self
+            .core
+            .room_doc
+            .clone()
+            .ok_or("room governance missing")?;
+        let before = doc.get_heads();
+        let caps = doc
+            .get(ROOT, "capabilities")
+            .map_err(err)?
+            .ok_or("governed capabilities missing")?
+            .1;
+        doc.set_actor(automerge::ActorId::from(
+            key.verifying_key().to_bytes().to_vec(),
+        ));
+        for capability in capabilities {
+            if capability.id.trim().is_empty() || capability.id.starts_with("room-member-v1:") {
+                return Err(format!(
+                    "capability {:?} cannot be written as workspace policy",
+                    capability.id
+                ));
+            }
+            doc.put(
+                &caps,
+                capability.id.as_str(),
+                automerge::ScalarValue::Bytes(serde_json::to_vec(capability).map_err(err)?),
+            )
+            .map_err(err)?;
+        }
+        doc.commit();
+        self.apply_governance_doc(doc, &before, key, now)
     }
 
     /// Remove a governed collaborator and revoke their devices.
@@ -718,19 +869,25 @@ impl StatePeer {
             };
             let root = identity.device_cert.user_public_key;
             let person = hex::encode(root);
-            let active_role = room::role_of(
+            let role = room::role_of(
                 policy.owner.as_deref(),
                 &policy.caps,
                 &person,
                 now_secs(now),
-            )
-            .and_then(member_role_from_role);
+            );
+            let administrator = role == Some(Role::Owner);
+            let active_role = if administrator {
+                Some(crate::join::MemberRole::Editor)
+            } else {
+                role.and_then(member_role_from_role)
+            };
             let row = rows.entry(root).or_insert_with(|| GovernedMember {
                 user_public_key: root,
                 role: active_role.unwrap_or(receipt.role),
                 display_name: names.get(id).cloned(),
                 active_device_keys: Vec::new(),
                 removed: active_role.is_none(),
+                administrator,
             });
             if let Some(role) = active_role {
                 row.role = role;
@@ -764,10 +921,6 @@ impl StatePeer {
     ///
     /// Returns an error if the device is not a current governed member at `now` or the
     /// challenge cannot be signed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Keep the membership challenge's authenticated protocol fields explicit"
-    )]
     pub fn membership_challenge(
         &self,
         workspace_id: u64,
@@ -999,8 +1152,20 @@ impl StatePeer {
     pub fn has_governance(&self) -> bool {
         self.core.room_doc.is_some()
     }
+    /// An encrypted record a replica without exact admission evidence could
+    /// only mark, not keep. A v5 replica keeps every sealed write, as its
+    /// ciphertext or, as the key holder, as the plaintext it verified.
     pub fn incomplete_reason(&self) -> Option<String> {
-        self.core.documents.values().any(|entry|entry.encryption_required).then(||"incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into())
+        (!self.core.admission_v5
+            && self
+                .core
+                .documents
+                .values()
+                .any(|entry| entry.encryption_required))
+        .then(|| {
+            "incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden"
+                .into()
+        })
     }
     /// Validated data from this exact snapshot, not an authorization credential.
     /// Missing exact Chat prerequisites and unpromoted local revocations fail
@@ -1660,7 +1825,7 @@ impl StatePeer {
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
         let mut outcome =
-            self.admit_document(source, message, now, false, retained_replay, strict_report)?;
+            self.admit_document(source, message, now, None, retained_replay, strict_report)?;
         if outcome.deferred || self.core.pending.is_empty() {
             return Ok(outcome);
         }
@@ -1701,6 +1866,17 @@ impl StatePeer {
         envelope: collab_types::SignedOp,
         now: SystemTime,
     ) -> Result<ReceiveOutcome, String> {
+        self.admit_local(app, record, envelope, LocalWrite::Plain, now)
+    }
+
+    fn admit_local(
+        &mut self,
+        app: &str,
+        record: &str,
+        envelope: collab_types::SignedOp,
+        write: LocalWrite<'_>,
+        now: SystemTime,
+    ) -> Result<ReceiveOutcome, String> {
         if self.document(app, record).is_none() {
             return Err("local app publication cannot create a record owner".into());
         }
@@ -1715,7 +1891,7 @@ impl StatePeer {
                 envelope: Box::new(envelope),
             },
             now,
-            true,
+            Some(write),
             false,
             false,
         )
@@ -1732,10 +1908,11 @@ impl StatePeer {
         source: [u8; 32],
         message: NeighbourMsg,
         now: SystemTime,
-        local_app: bool,
+        local: Option<LocalWrite<'_>>,
         retained_replay: bool,
         strict_report: bool,
     ) -> Result<AdmissionReport, AdmissionError> {
+        let local_app = local.is_some();
         let NeighbourMsg::AppDocument {
             peer,
             app_id,
@@ -1803,6 +1980,7 @@ impl StatePeer {
                 encryption_required: false,
                 covered: BTreeMap::new(),
                 covered_snapshot: None,
+                sealed: Vec::new(),
             });
         candidate
             .channel
@@ -1851,17 +2029,62 @@ impl StatePeer {
             }
             Err(error) => return Err(err(error).into()),
         }
-        let mutation=match payload {
+        if envelope.op_class == OpClass::Compaction
+            && !matches!(
+                payload,
+                collab_types::WholeDocumentPayload::Encrypted { .. }
+            )
+        {
+            return Err("a document compaction is only ever sealed".into());
+        }
+        let mutation = match (payload, local) {
+            (collab_types::WholeDocumentPayload::Encrypted { .. }, Some(LocalWrite::Opened(open))) => {
+                // Every check on the sealed envelope, its author's signature over
+                // the ciphertext included, passed above: only now is it opened,
+                // and the plaintext takes the normal admission path below.
+                let plaintext = open(&envelope)?;
+                candidate.encryption_required = true;
+                DocumentMutation::decode(&plaintext).map_err(err)?
+            }
+            (_, Some(LocalWrite::Opened(_))) => {
+                return Err("only a sealed write is opened by its key holder".into());
+            }
+            (payload, _) => match payload {
             collab_types::WholeDocumentPayload::Cleartext(mutation) if !candidate.encryption_required=>mutation,
-            collab_types::WholeDocumentPayload::Encrypted{..}=>{
-                // Validate the signed author first, then retain only the missing
-                // prerequisite. Ciphertext has not been applied, so its sequence
-                // is deliberately not advanced until a real MLS group exists.
-                candidate.encryption_required=true;
-                self.core.documents.insert(route,candidate);
-                return Ok(AdmissionReport::new(InputDisposition::RetryLater(MissingPrerequisite::PersistedMls), ReceiveOutcome{metadata_changed:true,incomplete:self.incomplete_reason(),..Default::default()}));
-            },
+            collab_types::WholeDocumentPayload::Encrypted { .. } if !self.core.admission_v5 => {
+                // A replica without exact admission evidence keeps no sealed
+                // history: it only records that the record is encrypted, so a
+                // later plaintext write cannot downgrade it.
+                candidate.encryption_required = true;
+                self.core.documents.insert(route, candidate);
+                return Ok(AdmissionReport::new(
+                    InputDisposition::RetryLater(MissingPrerequisite::PersistedMls),
+                    ReceiveOutcome {
+                        metadata_changed: true,
+                        incomplete: self.incomplete_reason(),
+                        ..Default::default()
+                    },
+                ));
+            }
+            collab_types::WholeDocumentPayload::Encrypted { .. } => {
+                if !route_existed {
+                    return self.defer(
+                        source,
+                        NeighbourMsg::AppDocument {
+                            peer,
+                            app_id: route.app,
+                            cluster_id,
+                            record_id: route.record,
+                            envelope,
+                        },
+                        retained_replay,
+                        MissingPrerequisite::RecordCheckpoint,
+                    );
+                }
+                return self.admit_sealed(route, candidate, validated_channel, *envelope);
+            }
             collab_types::WholeDocumentPayload::Cleartext(_)=>return Err("incomplete: authenticated persisted MLS group required; plaintext downgrade forbidden".into()),
+            },
         };
         candidate.channel = validated_channel;
         if let DocumentMutation::Snapshot(bytes) = &mutation
@@ -2023,6 +2246,110 @@ impl StatePeer {
                 ..Default::default()
             },
         ))
+    }
+    /// Keep a sealed write this replica holds no key for: its author, role,
+    /// route, signature and sequence were checked above (`validated` is the
+    /// record's channel with its sequence), and the ciphertext itself
+    /// becomes the record's durable history, never opened here. A verified
+    /// compaction replaces exactly the writes it covers.
+    fn admit_sealed(
+        &mut self,
+        route: Route,
+        mut candidate: Document,
+        validated: ChannelState,
+        envelope: SignedOp,
+    ) -> Result<AdmissionReport, AdmissionError> {
+        let admitted =
+            DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, &envelope)?;
+        let history = if envelope.op_class == OpClass::Compaction {
+            sealed_compaction::supersede(
+                &candidate.sealed,
+                &candidate.channel.last_seq_per_author,
+                &envelope,
+            )?
+        } else {
+            let mut history = std::mem::take(&mut candidate.sealed);
+            history.push(envelope);
+            history
+        };
+        let held: usize = history.iter().map(|op| op.payload.len()).sum();
+        if history.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
+            return Err(
+                "sealed record history is full; a key holder must compact it (StatePeer::compact_sealed_history)"
+                    .into(),
+            );
+        }
+        let primary = if self.core.admission_v5 {
+            self.core.exact_admissions.insert(&admitted)?;
+            InputDisposition::Accepted(admitted)
+        } else {
+            InputDisposition::MetadataOnly
+        };
+        candidate.channel = validated;
+        candidate.encryption_required = true;
+        candidate.sealed = history;
+        self.core.documents.insert(route, candidate);
+        Ok(AdmissionReport::new(
+            primary,
+            ReceiveOutcome {
+                changed: true,
+                metadata_changed: true,
+                ..Default::default()
+            },
+        ))
+    }
+    /// Reinstall `route`'s stored sealed history, checking every write as it
+    /// was admitted: sealed for this exact route, signed by its author, with
+    /// exact admission evidence and within the record's watermark and bounds.
+    /// A compaction is only ever first and covers none of the later writes.
+    fn restore_sealed(&mut self, route: &Route, ops: Vec<SignedOp>) -> Result<(), String> {
+        let held: usize = ops.iter().map(|op| op.payload.len()).sum();
+        if ops.is_empty() || ops.len() > MAX_SEALED_OPS || held > MAX_SEALED_BYTES {
+            return Err("sealed record history outside its bounds".into());
+        }
+        let document = self
+            .core
+            .documents
+            .get(route)
+            .ok_or("sealed history for a record this state does not hold")?;
+        if !document.encryption_required || !document.sealed.is_empty() {
+            return Err("sealed history for a record that is not encrypted".into());
+        }
+        for op in &ops {
+            collab_types::verify_op(op).map_err(err)?;
+            let payload = collab_types::validate_whole_document_payload_route(
+                &route.app,
+                &self.core.room,
+                &route.record,
+                op,
+            )
+            .map_err(err)?;
+            if !matches!(
+                payload,
+                collab_types::WholeDocumentPayload::Encrypted { .. }
+            ) {
+                return Err("sealed history holds a cleartext write".into());
+            }
+            let admitted =
+                DocumentAdmission::from_op(&self.core.room, &route.app, &route.record, op)
+                    .map_err(err)?;
+            if self.core.exact_admissions.get(&admitted.key) != Some(&admitted.operation_id) {
+                return Err("sealed history lacks exact admission evidence".into());
+            }
+            if document
+                .channel
+                .last_seq_per_author
+                .get(&op.author)
+                .is_none_or(|floor| *floor < op.seq)
+            {
+                return Err("sealed history is ahead of the record's watermark".into());
+            }
+        }
+        sealed_compaction::check_stored(&ops, &document.channel.last_seq_per_author)?;
+        if let Some(document) = self.core.documents.get_mut(route) {
+            document.sealed = ops;
+        }
+        Ok(())
     }
     pub fn room_message(&self) -> NeighbourMsg {
         let changes = self
@@ -2237,6 +2564,44 @@ impl StatePeer {
         };
         Ok((message, coverage))
     }
+    /// An encrypted record this replica keeps as sealed history: no governed
+    /// snapshot can carry it, since a cleartext checkpoint would downgrade it.
+    fn sealed_route(&self, route: &Route) -> bool {
+        self.core
+            .documents
+            .get(route)
+            .is_some_and(|document| document.encryption_required)
+    }
+    /// The governor's receipt for `route`'s sealed history: its last
+    /// checkpoint coverage in `rows`, acknowledging every sealed write this
+    /// replica durably holds through the record's sequence watermarks.
+    /// `None` for a record without checkpoint coverage.
+    fn sealed_receipt(
+        &self,
+        route: &Route,
+        rows: &BTreeMap<String, crate::coverage::Coverage>,
+        generation: u64,
+    ) -> Result<Option<crate::durability::DurableReceipt>, String> {
+        let Some(mut coverage) = rows
+            .get(&crate::coverage::route_key(&route.app, &route.record))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let document = self
+            .core
+            .documents
+            .get(route)
+            .ok_or("sealed receipt for a record this state does not hold")?;
+        for (author, sequence) in &document.channel.last_seq_per_author {
+            let watermark = coverage
+                .watermarks
+                .entry(hex::encode(author.as_bytes()))
+                .or_default();
+            *watermark = (*watermark).max(*sequence);
+        }
+        crate::durability::DurableReceipt::new(coverage, generation).map(Some)
+    }
     fn signed_snapshots_in_place(
         &mut self,
         key: &SigningKey,
@@ -2258,6 +2623,7 @@ impl StatePeer {
             .core
             .documents
             .iter()
+            .filter(|(route, _)| !self.sealed_route(route))
             .map(|(route, entry)| {
                 self.prepare_signed_mutation(
                     &route.app,
@@ -2270,6 +2636,27 @@ impl StatePeer {
             .collect::<Result<Vec<_>, _>>()?;
         let (messages, coverages): (Vec<_>, Vec<_>) = prepared.into_iter().unzip();
         let coverages = coverages.into_iter().flatten().collect::<Vec<_>>();
+        let sealed = self
+            .core
+            .documents
+            .keys()
+            .filter(|route| self.sealed_route(route))
+            .map(|route| (crate::coverage::route_key(&route.app, &route.record), route))
+            .collect::<BTreeMap<_, _>>();
+        let mut sealed_receipts = BTreeMap::new();
+        if let Some(generation) = receipts_at {
+            let rows = crate::coverage::entries(
+                self.core
+                    .room_doc
+                    .as_deref()
+                    .ok_or("missing room governance")?,
+            )?;
+            for (route_key, route) in &sealed {
+                if let Some(receipt) = self.sealed_receipt(route, &rows, generation)? {
+                    sealed_receipts.insert(route_key.clone(), receipt);
+                }
+            }
+        }
         let room = self
             .core
             .room_doc
@@ -2277,14 +2664,16 @@ impl StatePeer {
             .ok_or("missing room governance")?;
         match receipts_at {
             Some(generation) => crate::coverage::put_all_with_receipts(room, coverages, |rows| {
-                rows.iter()
-                    .map(|(route, coverage)| {
-                        Ok((
+                let mut receipts = sealed_receipts;
+                for (route, coverage) in rows {
+                    if !sealed.contains_key(route) {
+                        receipts.insert(
                             route.clone(),
                             crate::durability::DurableReceipt::new(coverage.clone(), generation)?,
-                        ))
-                    })
-                    .collect()
+                        );
+                    }
+                }
+                Ok(receipts)
             })?,
             None if !coverages.is_empty() => crate::coverage::put_all(room, coverages)?,
             None => {}
@@ -2323,6 +2712,7 @@ impl StatePeer {
         let snapshots = candidate.signed_snapshots_in_place(key, now)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
         *self = candidate;
         Ok(messages)
     }
@@ -2348,6 +2738,7 @@ impl StatePeer {
         crate::durability::monotonic(self.core.room_doc.as_deref(), room)?;
         let mut messages = vec![candidate.room_message()];
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(None));
         *self = candidate;
         Ok(messages)
     }
@@ -2367,7 +2758,12 @@ impl StatePeer {
         self.validate_present_media_policy()?;
         let mut messages = Vec::with_capacity(dirty.len());
         let mut coverages = Vec::with_capacity(dirty.len());
+        let mut sealed = Vec::new();
         for (route, bytes) in dirty {
+            if self.sealed_route(route) {
+                sealed.push(route.clone());
+                continue;
+            }
             let (message, coverage) = self.prepare_signed_mutation(
                 &route.app,
                 &route.record,
@@ -2392,6 +2788,21 @@ impl StatePeer {
             coverages.push(coverage.ok_or("missing published coverage")?);
             messages.push(message);
         }
+        let covered = crate::coverage::entries(
+            self.core
+                .room_doc
+                .as_deref()
+                .ok_or("missing room governance")?,
+        )?;
+        let mut sealed_receipts = BTreeMap::new();
+        for route in &sealed {
+            if let Some(receipt) = self.sealed_receipt(route, &covered, generation)? {
+                sealed_receipts.insert(
+                    crate::coverage::route_key(&route.app, &route.record),
+                    receipt,
+                );
+            }
+        }
         crate::coverage::put_all_with_receipts(
             self.core
                 .room_doc
@@ -2399,8 +2810,12 @@ impl StatePeer {
                 .ok_or("missing room governance")?,
             coverages,
             |rows| {
+                receipts.extend(sealed_receipts);
                 for (route, _) in dirty {
                     let route_key = crate::coverage::route_key(&route.app, &route.record);
+                    if sealed.contains(route) {
+                        continue;
+                    }
                     let covered = rows.get(&route_key).ok_or("missing published coverage")?;
                     receipts.insert(
                         route_key,
@@ -2540,6 +2955,7 @@ impl StatePeer {
             });
         }
         messages.extend(snapshots);
+        messages.extend(candidate.own_sealed_publications(Some(before)));
         *self = candidate;
         Ok(messages)
     }
@@ -2703,7 +3119,25 @@ impl StatePeer {
             pending: self.core.pending.clone(),
             pending_bytes: self.core.pending_bytes,
         };
-        if self.core.admission_v5 {
+        let sealed: Vec<_> = self
+            .core
+            .documents
+            .iter()
+            .filter(|(_, entry)| !entry.sealed.is_empty())
+            .map(|(route, entry)| (route.clone(), entry.sealed.clone()))
+            .collect();
+        if self.core.admission_v5 && !sealed.is_empty() {
+            let exact = self.core.exact_admissions.encode().map_err(err)?;
+            postcard::to_allocvec(&DurableV6 {
+                version: 6,
+                base: value,
+                exact: &exact,
+                sealed,
+            })
+            .map_err(err)
+        } else if !sealed.is_empty() {
+            Err("sealed record history requires durable admission v5".into())
+        } else if self.core.admission_v5 {
             let exact = self.core.exact_admissions.encode().map_err(err)?;
             postcard::to_allocvec(&DurableV5 {
                 version: 5,
@@ -2740,6 +3174,7 @@ impl StatePeer {
     ) -> Result<Self, String> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
         let mut exact_admissions = ExactAdmissions::default();
+        let mut sealed = Vec::new();
         let (durable, pending, pending_bytes) = match version {
             4 => {
                 let value: DurableV4 = postcard::from_bytes(bytes).map_err(err)?;
@@ -2752,6 +3187,24 @@ impl StatePeer {
                     return Err("invalid native v5 durable envelope".into());
                 }
                 exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
+                (
+                    value.base.base,
+                    value.base.pending,
+                    value.base.pending_bytes,
+                )
+            }
+            6 => {
+                let (value, tail): (DurableV6<'_>, _) =
+                    postcard::take_from_bytes(bytes).map_err(err)?;
+                if !tail.is_empty()
+                    || value.version != 6
+                    || value.base.version != 4
+                    || value.sealed.is_empty()
+                {
+                    return Err("invalid native v6 durable envelope".into());
+                }
+                exact_admissions = ExactAdmissions::decode(value.exact).map_err(err)?;
+                sealed = value.sealed;
                 (
                     value.base.base,
                     value.base.pending,
@@ -2784,7 +3237,7 @@ impl StatePeer {
                 pending_bytes,
                 checkpoint_times: BTreeMap::new(),
                 exact_admissions,
-                admission_v5: version == 5,
+                admission_v5: version >= 5,
                 native_cut_publisher: None,
                 _retention: (),
             },
@@ -2830,8 +3283,12 @@ impl StatePeer {
                     encryption_required: document.encryption_required,
                     covered: document.covered,
                     covered_snapshot: document.covered_snapshot.map(AcceptedCheckpoint::new),
+                    sealed: Vec::new(),
                 },
             );
+        }
+        for (route, ops) in sealed {
+            peer.restore_sealed(&route, ops)?;
         }
         if let Some(policy) = peer.validate_present_media_policy()? {
             let doc = peer.core.room_doc.as_deref().ok_or("missing room")?.clone();
@@ -2899,14 +3356,6 @@ pub(crate) struct RedemptionReceipt {
     pub(crate) role: crate::join::MemberRole,
 }
 
-fn member_role(role: crate::join::MemberRole) -> Role {
-    match role {
-        crate::join::MemberRole::Viewer => Role::Viewer,
-        crate::join::MemberRole::Commenter => Role::Commenter,
-        crate::join::MemberRole::Editor => Role::Editor,
-    }
-}
-
 fn member_role_from_role(role: Role) -> Option<crate::join::MemberRole> {
     match role {
         Role::Viewer => Some(crate::join::MemberRole::Viewer),
@@ -2933,6 +3382,15 @@ pub(crate) fn put_member_capability(
     capabilities: &automerge::ObjId,
     user_public_key: [u8; 32],
     role: crate::join::MemberRole,
+) -> Result<(), String> {
+    put_member_verb(doc, capabilities, user_public_key, member_verb(role))
+}
+
+fn put_member_verb(
+    doc: &mut AutoCommit,
+    capabilities: &automerge::ObjId,
+    user_public_key: [u8; 32],
+    verb: Verb,
 ) -> Result<(), String> {
     let id = member_capability_id(user_public_key);
     let person = hex::encode(user_public_key);
@@ -2962,7 +3420,7 @@ pub(crate) fn put_member_capability(
     let cap = CapOverride::grant(
         Subject::User(Ed25519PublicKey::from_bytes(user_public_key)),
         Scope::Workspace,
-        member_verb(role),
+        verb,
     )
     .with_id(id.clone());
     doc.put(
@@ -3183,6 +3641,12 @@ mod delivery_admission_resource_tests {
 #[path = "state/media_tests.rs"]
 mod room_media_native_tests;
 
+#[cfg(test)]
+#[path = "state/sealed_compaction_tests.rs"]
+mod sealed_compaction_tests;
+#[cfg(test)]
+#[path = "state/sealed_tests.rs"]
+mod sealed_tests;
 #[cfg(test)]
 #[path = "state/superseded_checkpoint_tests.rs"]
 mod superseded_checkpoint_tests;

@@ -49,7 +49,9 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         let due = app.last_theme_store_check + Duration::from_millis(750);
         assert!(app.reconcile_configured_theme_with(
             due,
-            || Some(crate::time::SystemTime::UNIX_EPOCH),
+            || Some(settings_store::SettingsStamp::Modified(
+                std::time::SystemTime::UNIX_EPOCH
+            )),
             |app| {
                 app.accessibility.base_theme = Theme::light();
             },
@@ -77,7 +79,9 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
             due,
             || {
                 checks.set(checks.get() + 1);
-                Some(crate::time::SystemTime::UNIX_EPOCH)
+                Some(settings_store::SettingsStamp::Modified(
+                    std::time::SystemTime::UNIX_EPOCH,
+                ))
             },
             |app| {
                 applies.set(applies.get() + 1);
@@ -113,7 +117,9 @@ fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
         let start = app.last_theme_store_check;
         let checks = std::cell::Cell::new(0);
         let applies = std::cell::Cell::new(0);
-        let stamp = Some(crate::time::SystemTime::UNIX_EPOCH);
+        let stamp = Some(settings_store::SettingsStamp::Modified(
+            std::time::SystemTime::UNIX_EPOCH,
+        ));
         for (millis, source_stamp, expected_checks, expected_applies, expected_changed) in [
             (749, stamp, 0, 0, false),
             (750, stamp, 1, 1, true),

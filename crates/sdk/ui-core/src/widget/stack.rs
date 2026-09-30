@@ -4,7 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -62,15 +62,14 @@ impl Stack {
 }
 
 impl Widget for Stack {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for child in &mut self.children {
-            child.sync(state, path);
-        }
-    }
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
 
     /// Not short-circuited — a child that skipped its pass would miss a
     /// frame of state.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for child in &mut self.children {
             changed |= child.update(state, path);
@@ -147,35 +146,14 @@ impl Widget for Stack {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         // Reverse order: top-most first.
         for (child_widget, &child_node) in
             self.children.iter_mut().rev().zip(child_nodes.iter().rev())
         {
-            child_widget.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
-            if *handled {
+            child_widget.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -223,20 +201,6 @@ impl Widget for Stack {
             .fold(false, |acc, d| acc || d)
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -262,7 +226,7 @@ impl Widget for Stack {
             );
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -275,11 +239,29 @@ impl Widget for Stack {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Stack {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Stack {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }

@@ -8,7 +8,7 @@
 
 use std::time::{Duration, Instant};
 
-use settings_store::display_identify::{IdentifyRequest, display_numbers};
+use settings_store::display_identify::{IDENTIFY_MS, IdentifyRequest, display_numbers};
 use settings_store::hardware::DisplayHardwareSnapshot;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
@@ -48,13 +48,13 @@ impl DisplayIdentify {
             return false;
         }
         self.seen = Some(request.requested_unix_ms);
-        let Some(remaining) = request.remaining_ms(tilo_clock::unix_now_ms()) else {
+        if !request.is_fresh(tilo_clock::unix_now_ms()) {
             return false;
-        };
+        }
         self.start(
             outputs,
             DisplayHardwareSnapshot::load().as_ref(),
-            Duration::from_millis(remaining),
+            Duration::from_millis(IDENTIFY_MS),
             now,
         );
         true
@@ -247,6 +247,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: mode,
+            scale: 1.0,
             builtin,
             sink_hdr: false,
             hdr_unavailable_reason: None,

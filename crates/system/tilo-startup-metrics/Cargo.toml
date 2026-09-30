@@ -3,12 +3,16 @@ name = "tilo-startup-metrics"
 version = "0.1.0"
 edition = "2024"
 license.workspace = true
-publish = false
+publish = true
+repository.workspace = true
+homepage.workspace = true
+description = "Lightweight startup-timing capture for Tilo apps."
 
 [features]
 test-support = []
 
 [dependencies]
+tilo-atomic-file = { version = "0.1.0", path = "../atomic-file" }
 web-time = { version = "1", features = ["serde"] }
 serde.workspace = true
 serde_json.workspace = true

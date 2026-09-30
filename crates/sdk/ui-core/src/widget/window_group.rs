@@ -7,10 +7,11 @@ use crate::theme::Theme;
 use crate::time::{Duration, Instant};
 use crate::widget::TaffyTreeExt;
 use crate::widget::tabs::CLOSE_FADE_MS;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     FloatingSurfaceProvider, TabBar, TabDescriptor, TileContent, TileHost, Widget,
 };
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use std::collections::HashMap;
 use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -171,7 +172,7 @@ const MAXIMIZED_CHIP_H: f64 = 22.0;
 /// Narrowest the `[app title]` chip is drawn, so a one-letter title still
 /// reads as a chip rather than a dot.
 const MAXIMIZED_TITLE_CHIP_MIN_W: f64 = 80.0;
-/// Width of the `[Restore]` chip: icon slot, gap, label, end pads.
+/// Narrowest the `[Restore]` chip is drawn; a longer label widens it.
 const MAXIMIZED_RESTORE_CHIP_W: f64 = 76.0;
 /// Side of the lucide glyph slot inside the maximized chips — the same
 /// 14 px the tab pills' app glyphs and action chips use.
@@ -268,7 +269,13 @@ impl WindowGroup {
         width: WindowWidth,
     ) -> Self {
         let descs = tabs.iter().map(|(d, _)| d.clone()).collect();
-        let hosts = tabs.into_iter().map(|(d, h)| (d.id, h)).collect();
+        let hosts = tabs
+            .into_iter()
+            .map(|(d, h)| {
+                h.set_panic_scope(d.id);
+                (d.id, h)
+            })
+            .collect();
         let mut bar = TabBar::new(&format!("g{id}"), descs, active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -627,6 +634,7 @@ impl WindowGroup {
         self.bar.insert_tab(idx, desc);
         let clamped = idx.min(self.hosts.len());
         host.start_spawn_animation();
+        host.set_panic_scope(id);
         self.hosts.insert(clamped, (id, host));
     }
 
@@ -652,6 +660,7 @@ impl WindowGroup {
     pub fn from_detached(id: u64, desc: TabDescriptor, host: TileHost, width: WindowWidth) -> Self {
         let active_id = desc.id;
         let tab_id = desc.id;
+        host.set_panic_scope(tab_id);
         let mut bar = TabBar::new(&format!("g{id}"), vec![desc], active_id);
         bar.set_drag_overlay_owned_by_parent(true);
         Self {
@@ -794,8 +803,8 @@ impl WindowGroup {
         self.bar.take_activation()
     }
 
-    /// The bar's `active_id` is the authoritative copy (the shell's
-    /// per-frame harvest mirrors it into the persisted tree), so a
+    /// The bar's `active_id` is the authoritative copy (the shell
+    /// flushes it into the persisted tree after input), so a
     /// programmatic focus jump must land here, not only in the tree.
     pub fn set_active_tab(&mut self, id: u64) -> bool {
         if !self.bar.tabs().iter().any(|t| t.id == id) {
@@ -893,7 +902,7 @@ impl WindowGroup {
         self.bar.close_rect_for_tests(tab_id)
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn tile_kind_labels_for_tests(&self) -> Vec<String> {
         self.hosts.iter().map(|(_, h)| h.kind_string()).collect()
     }
@@ -1096,7 +1105,8 @@ impl WindowGroup {
             self.closing_hosts.remove(&id);
             if let Some(idx) = self.hosts.iter().position(|(i, _)| *i == id) {
                 let (_, mut host) = self.hosts.remove(idx);
-                self.close_reports.extend(host.close_components());
+                self.close_reports
+                    .extend(crate::component_lifecycle::close_components(&mut host));
             }
             self.bar.finalize_close(id);
         }
@@ -1422,7 +1432,12 @@ impl WindowGroup {
         let close_w = pill_h;
         let close_x0 = self.rect.x1 - close_w - pad;
         self.close_rect = Rect::new(close_x0, y0, close_x0 + close_w, y0 + pill_h);
-        let restore_w = MAXIMIZED_RESTORE_CHIP_W;
+        let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
+        let (lw, lh) = tr.measure(&label, title_size, None);
+        let icon_inset = f64::from(theme.tokens.spacing.s2);
+        // Icon slot, gap, label, end pad: a longer translation widens the chip.
+        let restore_w = MAXIMIZED_RESTORE_CHIP_W
+            .max(icon_inset + MAXIMIZED_ICON_PX + icon_inset + f64::from(lw) + icon_inset);
         let restore_x0 = close_x0 - restore_w - f64::from(theme.tokens.spacing.s1);
         self.restore_rect = Rect::new(restore_x0, y0, restore_x0 + restore_w, y0 + pill_h);
 
@@ -1447,7 +1462,6 @@ impl WindowGroup {
         // chip's edge, `MAXIMIZED_ICON_PX` a side and centred on the chip's
         // centre line, with the label one `spacing.s2` after it — the same
         // icon → gap → label rhythm a tab pill uses.
-        let icon_inset = f64::from(theme.tokens.spacing.s2);
         let icon_x0 = self.restore_rect.x0 + icon_inset;
         let icon_slot = Rect::new(
             icon_x0,
@@ -1463,8 +1477,6 @@ impl WindowGroup {
             theme.tokens.colors.text_primary,
             icons::LUCIDE_DEFAULT_STROKE_PX,
         );
-        let label = "Restore";
-        let (_lw, lh) = tr.measure(label, title_size, None);
         let lx = icon_slot.x1 + f64::from(theme.tokens.spacing.s2);
         let ly = self.restore_rect.center().y - f64::from(lh) / 2.0;
         // Affine composition is floating-point matrix multiply — it
@@ -1476,7 +1488,7 @@ impl WindowGroup {
         let label_transform = transform * vello::kurbo::Affine::translate((lx, ly));
         tr.draw_text(
             scene,
-            label,
+            &label,
             title_size,
             theme.tokens.colors.text_primary,
             label_transform,
@@ -1674,6 +1686,14 @@ impl FloatingSurfaceProvider for WindowGroup {
 }
 
 impl Widget for WindowGroup {
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::component_lifecycle::ComponentLifecycle
+    );
+
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         (!self.is_closing()).then(|| self.active_tab_id())
     }
@@ -1695,29 +1715,6 @@ impl Widget for WindowGroup {
     // History ownership must cover every retained tab. Closing a group or
     // switching tabs must not hide an inactive document from durability or
     // retire its framework History route.
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.hosts
-            .iter()
-            .flat_map(|(_, host)| host.unsaved_documents(doc))
-            .collect()
-    }
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.checkpoint_components())
-            .collect()
-    }
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.hosts
-            .iter_mut()
-            .flat_map(|(_, host)| host.finish_admitted_close())
-            .collect()
-    }
-    fn has_pending_control_invocation(&self) -> bool {
-        self.hosts
-            .iter()
-            .any(|(_, host)| host.has_pending_control_invocation())
-    }
     #[allow(
         private_interfaces,
         reason = "finite toolkit resource ownership requests"
@@ -1730,22 +1727,6 @@ impl Widget for WindowGroup {
             request.visit(host)?;
         }
         Ok(())
-    }
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        for (_, host) in &self.hosts {
-            host.visit_framework_history(visitor);
-        }
-    }
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        for (_, host) in &mut self.hosts {
-            host.visit_framework_history_mut(visitor);
-        }
     }
 
     // Modal capture and presentation polling follow visible content, never inactive tabs.
@@ -1822,7 +1803,10 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&self.bar);
         }
-        if let Some(host) = self.active_host() {
+        let active = self.bar.active_id();
+        if let Some((id, host)) = self.hosts.iter().find(|(id, _)| *id == active) {
+            // A host swapped in through `host_for_tab_mut` is named here.
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1833,7 +1817,8 @@ impl Widget for WindowGroup {
         if !self.maximized && !self.external_navigation {
             children.push(&mut self.bar);
         }
-        if let Some((_, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+        if let Some((id, host)) = self.hosts.iter_mut().find(|(id, _)| *id == active) {
+            host.set_panic_scope(*id);
             children.push(host);
         }
         children
@@ -1841,7 +1826,8 @@ impl Widget for WindowGroup {
 
     // Read-only resource discovery follows retained owners, including inactive tabs.
     fn for_each_child(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
-        for (_, host) in &self.hosts {
+        for (id, host) in &self.hosts {
+            host.set_panic_scope(*id);
             visitor(host);
         }
     }
@@ -1856,32 +1842,13 @@ impl Widget for WindowGroup {
         }
         Ok(())
     }
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            self.close_reports.extend(child.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        for child in self.hosts.iter_mut().map(|(_, host)| host) {
-            reports.extend(child.take_component_close_reports());
-        }
-        reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.hosts
-            .iter_mut()
-            .map(|(_, host)| host as &mut dyn Widget)
-            .collect()
-    }
 
-    fn sync(&mut self, s: &mut AutoCommit, p: &ObjId) {
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
         if let Some(h) = self.active_host_mut() {
             h.sync(s, p);
         }
     }
-    fn update(&mut self, s: &mut AutoCommit, p: &ObjId) -> bool {
+    fn update(&mut self, s: &mut AppModel, p: &ModelPath) -> bool {
         self.active_host_mut().is_some_and(|h| h.update(s, p))
     }
     fn build_layout(
@@ -2095,19 +2062,8 @@ impl Widget for WindowGroup {
             scene.pop_layer();
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        m: &winit::event::Modifiers,
-        s: &mut AutoCommit,
-        p: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let children = taffy.children(node_id).unwrap_or_default();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let bar_child = (!self.external_navigation)
             .then(|| children.first().copied())
             .flatten();
@@ -2121,31 +2077,22 @@ impl Widget for WindowGroup {
             self.rect.y1,
         );
         if !self.external_navigation
-            && self.handle_direct_input(event, scale_factor, *m, handle_rect)
+            && self.handle_direct_input(event, ctx.scale_factor, *ctx.modifiers, handle_rect)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let Some(bar_child) = bar_child {
-            self.bar.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus_target,
-                bar_child,
-                taffy,
-            );
+            self.bar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, bar_child));
         }
 
         self.sweep_expired_closing_hosts();
         if self.drain_bar_signals() {
-            *handled = true;
+            *ctx.handled = true;
         }
 
-        if *handled {
+        if *ctx.handled {
             return;
         }
         let active_id = self.bar.active_id();
@@ -2153,17 +2100,7 @@ impl Widget for WindowGroup {
             self.hosts.iter_mut().find(|(i, _)| *i == active_id),
             tile_child,
         ) {
-            h.handle_event(
-                event,
-                scale_factor,
-                m,
-                s,
-                p,
-                handled,
-                focus_target,
-                tile_child,
-                taffy,
-            );
+            h.handle_event(event, &mut ctx.reborrow(ctx.path, tile_child));
         }
     }
     fn name(&self) -> &'static str {
@@ -2192,13 +2129,6 @@ impl Widget for WindowGroup {
         self.rect
     }
 
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     /// Mirrors the inter-group [`crate::widget::ResizeHandle`] so both
     /// affordances give the same feedback.
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -2292,10 +2222,81 @@ impl Widget for WindowGroup {
     }
 }
 
+impl crate::component_lifecycle::ComponentLifecycle for WindowGroup {
+    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        self.hosts
+            .iter()
+            .flat_map(|(_, host)| host.unsaved_documents(doc))
+            .collect()
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.checkpoint_components())
+            .collect()
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        self.hosts
+            .iter_mut()
+            .flat_map(|(_, host)| host.finish_admitted_close())
+            .collect()
+    }
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in self.hosts.iter_mut().map(|(_, host)| host) {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+}
+
+impl crate::widget::controls::ActionControls for WindowGroup {
+    fn has_pending_control_invocation(&self) -> bool {
+        self.hosts
+            .iter()
+            .any(|(_, host)| host.has_pending_control_invocation())
+    }
+}
+
+impl crate::history_mode::capability::FrameworkHistoryTopology for WindowGroup {
+    fn visit_framework_history(
+        &self,
+        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        for (_, host) in &self.hosts {
+            host.visit_framework_history(visitor);
+        }
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        for (_, host) in &mut self.hosts {
+            host.visit_framework_history_mut(visitor);
+        }
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for WindowGroup {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.hosts
+            .iter_mut()
+            .map(|(_, host)| host as &mut dyn Widget)
+            .collect()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::widget::{AppKind, TabDescriptor, TileContent};
+    use automerge::ObjId;
 
     #[test]
     fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
@@ -2401,43 +2402,18 @@ mod tests {
     }
 
     impl Widget for RetainedTraversalProbe {
+        crate::provides!(
+            dyn crate::history_mode::capability::FrameworkHistoryTopology,
+            dyn crate::widget::controls::ActionControls,
+            dyn crate::component_lifecycle::ComponentLifecycle
+        );
+
         crate::testing::inert_widget_methods!(
-            sync,
             apply_layout,
             draw,
             get_rect,
             name = "RetainedTraversalProbe"
         );
-        fn unsaved_documents(
-            &self,
-            _: &AutoCommit,
-        ) -> Vec<crate::close_admission::UnsavedDocument> {
-            self.hits.unsaved.set(self.hits.unsaved.get() + 1);
-            vec![]
-        }
-        fn checkpoint_components(&mut self) -> Vec<String> {
-            self.hits.checkpoint.set(self.hits.checkpoint.get() + 1);
-            vec![]
-        }
-        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-            self.hits.finish.set(self.hits.finish.get() + 1);
-            vec![]
-        }
-        fn has_pending_control_invocation(&self) -> bool {
-            self.pending_control
-        }
-        fn visit_framework_history(
-            &self,
-            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-        ) {
-            self.hits.history.set(self.hits.history.get() + 1);
-        }
-        fn visit_framework_history_mut(
-            &mut self,
-            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-        ) {
-            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
-        }
         #[allow(
             private_interfaces,
             reason = "focused retained-owner traversal regression"
@@ -2458,6 +2434,45 @@ mod tests {
             _: &mut HashMap<NodeId, *mut dyn Widget>,
         ) -> NodeId {
             taffy.leaf_node(Style::default())
+        }
+    }
+
+    impl crate::component_lifecycle::ComponentLifecycle for RetainedTraversalProbe {
+        fn unsaved_documents(
+            &self,
+            _: &AutoCommit,
+        ) -> Vec<crate::close_admission::UnsavedDocument> {
+            self.hits.unsaved.set(self.hits.unsaved.get() + 1);
+            vec![]
+        }
+        fn checkpoint_components(&mut self) -> Vec<String> {
+            self.hits.checkpoint.set(self.hits.checkpoint.get() + 1);
+            vec![]
+        }
+        fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+            self.hits.finish.set(self.hits.finish.get() + 1);
+            vec![]
+        }
+    }
+
+    impl crate::widget::controls::ActionControls for RetainedTraversalProbe {
+        fn has_pending_control_invocation(&self) -> bool {
+            self.pending_control
+        }
+    }
+
+    impl crate::history_mode::capability::FrameworkHistoryTopology for RetainedTraversalProbe {
+        fn visit_framework_history(
+            &self,
+            _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+        ) {
+            self.hits.history.set(self.hits.history.get() + 1);
+        }
+        fn visit_framework_history_mut(
+            &mut self,
+            _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+        ) {
+            self.hits.history_mut.set(self.hits.history_mut.get() + 1);
         }
     }
 
@@ -2523,12 +2538,14 @@ mod tests {
         let mut group = WindowGroup::new(10, tabs, 1, WindowWidth::Normal);
         let doc = AutoCommit::new();
 
-        group.unsaved_documents(&doc);
-        group.checkpoint_components();
-        group.finish_admitted_close();
-        group.visit_framework_history(&mut |_, _| {});
-        group.visit_framework_history_mut(&mut |_, _| {});
-        assert!(group.has_pending_control_invocation());
+        crate::component_lifecycle::unsaved_documents(&group, &doc);
+        crate::component_lifecycle::checkpoint_components(&mut group);
+        crate::component_lifecycle::finish_admitted_close(&mut group);
+        crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
+        crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
+        assert!(crate::widget::controls::has_pending_control_invocation(
+            &group
+        ));
         group
             .visit_resource_owners_mut(
                 &mut crate::bound_dispatch::legacy_document::ResourceRequest::Discard,
@@ -2551,7 +2568,6 @@ mod tests {
     }
 
     impl Widget for Starting {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -2568,12 +2584,6 @@ mod tests {
             _tr: &mut TextRenderer,
             _th: &crate::theme::Theme,
             _p: &PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -2759,7 +2769,6 @@ mod tests {
     }
 
     impl Widget for Latching {
-        fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -2776,12 +2785,6 @@ mod tests {
             _tr: &mut TextRenderer,
             _th: &crate::theme::Theme,
             _p: &PresenceCtx,
-        ) {
-        }
-        fn handle_event_ctx(
-            &mut self,
-            _event: &winit::event::WindowEvent,
-            _ctx: &mut crate::widget::EventCtx<'_>,
         ) {
         }
         fn name(&self) -> &'static str {
@@ -2917,14 +2920,16 @@ mod tests {
         let mut handled = false;
         g.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            state,
-            root_id,
-            &mut handled,
-            focus_target,
-            group_node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state,
+                path: root_id,
+                handled: &mut handled,
+                focus_target,
+                node_id: group_node,
+                taffy,
+            },
         );
         handled
     }
@@ -3108,14 +3113,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(g.maximized, "maximize drain must flip the flag");
@@ -3201,14 +3208,16 @@ mod tests {
             let mut focus_target = None;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(g.maximized, "drain must flip maximized true");
@@ -3229,14 +3238,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(!g.maximized, "second drain must flip back to false");
             assert_eq!(
@@ -3325,14 +3336,16 @@ mod tests {
             let mut state = automerge::AutoCommit::new();
             g.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(handled);
@@ -3464,14 +3477,16 @@ mod tests {
                 let mut handled = false;
                 g.handle_event(
                     ev,
-                    1.0,
-                    &mods,
-                    &mut state,
-                    &root_id,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut state,
+                        path: &root_id,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy,
+                    },
                 );
             };
 
@@ -3674,14 +3689,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -3766,14 +3783,16 @@ mod tests {
                 let mut focus_target = None;
                 g.handle_event(
                     &moved,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut state,
-                    &root_id,
-                    &mut handled,
-                    &mut focus_target,
-                    group_node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut state,
+                        path: &root_id,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: group_node,
+                        taffy: &taffy,
+                    },
                 );
 
                 assert_eq!(
@@ -3864,14 +3883,16 @@ mod tests {
             let mut focus_target = None;
             g.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "Ctrl+Shift+P press must be claimed");
             assert!(
@@ -3883,14 +3904,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "second Ctrl+Shift+P press is also claimed");
             assert!(
@@ -3902,14 +3925,16 @@ mod tests {
             let mut handled = false;
             g.handle_event(
                 &event,
-                1.0,
-                &plain_mods,
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &plain_mods,
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !g.bar.is_pinned(active),
@@ -4207,6 +4232,42 @@ mod tests {
             );
             assert_eq!(g.restore_rect.width(), MAXIMIZED_RESTORE_CHIP_W);
         }
+        // Case `the_restore_chip_reads_in_the_desktops_language_and_fits_it`.
+        {
+            use crate::i18n::I18nManager;
+            let restore_width_in = |locale: &str| {
+                I18nManager::init(locale);
+                let mut g = make_group();
+                g.maximized = true;
+                g.rect = Rect::new(0.0, 0.0, 1200.0, 700.0);
+                g.last_cursor = Point::new(600.0, 10.0);
+                let theme = Theme::dark();
+                let mut tr = TextRenderer::new();
+                let mut scene = Scene::new();
+                g.draw_maximized_chrome(&mut scene, Affine::IDENTITY, &mut tr, &theme);
+                let label = crate::i18n::widget_format("widget-maximized-restore", &[]);
+                let size = renderer_type_size(&tr, theme.tokens.typography.scale.xs);
+                let (label_w, _) = tr.measure(&label, size, None);
+                let label_x0 = g.restore_rect.x0
+                    + f64::from(theme.tokens.spacing.s2) * 2.0
+                    + MAXIMIZED_ICON_PX;
+                assert!(
+                    label_x0 + f64::from(label_w) <= g.restore_rect.x1,
+                    "{locale}: `{label}` must fit its chip {:?}",
+                    g.restore_rect
+                );
+                (label, g.restore_rect.width())
+            };
+            let (en, en_w) = restore_width_in("en-US");
+            let (de, de_w) = restore_width_in("de-DE");
+            assert_eq!(en, "Restore");
+            assert_eq!(de, "Wiederherstellen", "the chip reads German under de-DE");
+            assert!(
+                de_w > en_w,
+                "the longer label widens the chip: {de_w} vs {en_w}"
+            );
+            I18nManager::init("en-US");
+        }
     }
 
     #[test]
@@ -4277,14 +4338,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(
@@ -4306,14 +4369,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved2,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !g.has_host(2),
@@ -4376,14 +4441,16 @@ mod tests {
             };
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 g.has_closing_host(1),
@@ -4404,14 +4471,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved2,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 g.is_closing(),
@@ -4567,14 +4636,16 @@ mod tests {
             let root_id = automerge::ROOT;
             g.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(handled, "press must be consumed by the close arm");
@@ -4613,14 +4684,16 @@ mod tests {
             let mut handled2 = false;
             g.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled2,
-                &mut focus_target,
-                group_node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled2,
+                    focus_target: &mut focus_target,
+                    node_id: group_node,
+                    taffy: &taffy,
+                },
             );
 
             assert!(!g.has_host(1), "sweep drops the host once the fade expires");

@@ -771,6 +771,29 @@ fn unschematised_changes_are_named_by_what_they_edited() {
 }
 
 #[test]
+fn a_feed_counts_edited_fields_and_never_shows_their_keys() {
+    let mut doc = AutoCommit::new();
+    doc.put(ROOT, "desktop_counter_v1", 1_u64).unwrap();
+    doc.commit();
+    doc.put(ROOT, "desktop_counter_v1", 2_u64).unwrap();
+    doc.put(ROOT, "contents_owners_v1", "peer").unwrap();
+    doc.commit();
+    doc.delete(ROOT, "contents_owners_v1").unwrap();
+    doc.commit();
+    let summaries = HistorySource::new()
+        .without_field_paths()
+        .entries(&mut doc)
+        .into_iter()
+        .map(|entry| entry.summary)
+        .collect::<Vec<_>>();
+    assert_eq!(
+        summaries,
+        ["Edited 1 field", "Edited 2 fields", "Removed 1 field"]
+    );
+    assert!(summaries.iter().all(|summary| !summary.contains("_v1")));
+}
+
+#[test]
 fn an_action_context_names_its_change_before_any_field_fallback() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "title", "draft").unwrap();
@@ -782,4 +805,117 @@ fn an_action_context_names_its_change_before_any_field_fallback() {
     let last = entries.last().unwrap();
     assert_eq!(Some(last.summary.clone()), context.summary());
     assert!(!last.summary.contains("title"), "{}", last.summary);
+}
+
+#[test]
+fn a_records_genesis_can_be_left_out_of_a_feed_of_what_people_did() {
+    use crate::record::{RecordCheckout, RecordId, RecordKind, RecordOwners, genesis_actor};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::new(RecordId::minted(), RecordKind::new("document"));
+    store.create_record(&checkout).unwrap();
+    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+    let genesis = genesis_actor(&doc).expect("a record names its genesis actor");
+    assert!(
+        tilo_resource::history::versions(&mut doc)
+            .iter()
+            .any(|v| v.actor == genesis.to_hex_string() && v.time_ms == 0),
+        "the genesis is made by the record's derived actor at time zero"
+    );
+    let kept = HistorySource::new().entries(&mut doc);
+    assert_eq!(
+        kept.len(),
+        1,
+        "a document's history keeps the version it was created as"
+    );
+    assert!(kept[0].is_genesis(), "and says it is the genesis");
+    assert_eq!(kept[0].summary, "Created");
+    assert!(
+        !kept[0].is_revertible(),
+        "creation is restored to, not reverted"
+    );
+    assert!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .is_empty()
+    );
+
+    doc.put(ROOT, "title", "Notes").unwrap();
+    tilo_resource::history::commit_stamped_at(&mut doc, T0);
+    let entries = HistorySource::new()
+        .without_record_genesis()
+        .entries(&mut doc);
+    assert_eq!(entries.len(), 1, "only the edit someone made");
+    assert_eq!(entries[0].timestamp, at(T0));
+    assert!(!entries[0].is_genesis());
+    assert_eq!(
+        entries[0].author.identity_short,
+        short_id(&doc.get_actor().to_hex_string())
+    );
+    assert_eq!(genesis_actor(&AutoCommit::new()), None);
+}
+
+#[test]
+fn a_package_primary_documents_genesis_is_left_out_of_a_feed_too() {
+    use crate::record::{RecordCheckout, RecordKind, RecordOwners, genesis_actor};
+    let cache = crate::portable_storage::PortableStorage::new("profile", "device").unwrap();
+    let store = RecordOwners::portable(cache).open("test", "room").unwrap();
+    let checkout = RecordCheckout::package_primary(RecordKind::new("chat"));
+    store
+        .reserve_record(&checkout)
+        .unwrap()
+        .initialize(|doc| {
+            doc.put(ROOT, "categories", "general")
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        })
+        .unwrap();
+    let mut doc = store.read(&checkout.id, AutoCommit::clone).unwrap();
+    assert_eq!(
+        genesis_actor(&doc),
+        None,
+        "a primary document records no identity"
+    );
+    let kept = HistorySource::new().entries(&mut doc);
+    assert_eq!(
+        kept.len(),
+        1,
+        "its own history keeps the version it was created as"
+    );
+    assert!(kept[0].is_genesis());
+    assert!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .is_empty(),
+        "nobody made the root change at time zero"
+    );
+
+    doc.put(ROOT, "categories", "general, voice").unwrap();
+    doc.commit();
+    assert!(
+        !HistorySource::new().entries(&mut doc)[1].is_genesis(),
+        "an edit at time zero is not the genesis"
+    );
+    assert_eq!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut doc)
+            .len(),
+        1,
+        "an edit without a time is still someone's"
+    );
+
+    let mut first = AutoCommit::new();
+    first.put(ROOT, "text", "typed").unwrap();
+    first.commit();
+    assert_eq!(
+        HistorySource::new()
+            .without_record_genesis()
+            .entries(&mut first)
+            .len(),
+        1,
+        "a document's first edit is not a genesis unless its store made it"
+    );
 }

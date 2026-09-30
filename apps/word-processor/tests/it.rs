@@ -28,6 +28,8 @@ mod headless_launch;
 
 #[path = "framework_host.rs"]
 mod framework_host;
+#[path = "framework_read.rs"]
+mod framework_read;
 
 #[path = "framework_undo.rs"]
 mod framework_undo;

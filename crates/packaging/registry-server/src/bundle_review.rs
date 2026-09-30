@@ -45,7 +45,9 @@ impl InspectionPolicy {
             self.max_package_bytes.max(self.max_web_runtime_bytes)
         } else if registry_types::DESKTOP_PLATFORMS.contains(&version.target.platform.as_str()) {
             self.max_package_bytes
-                .max(tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES)
+                .max(tilo_app_package::platform_size_limit(
+                    &version.target.platform,
+                ))
         } else {
             self.max_package_bytes
         }
@@ -107,6 +109,8 @@ pub enum BundleReviewError {
         expected_id: String,
         expected_version: String,
     },
+    #[error("reading uploaded package {version}: {reason}")]
+    Storage { version: String, reason: String },
 }
 
 /// Fetch and inspect every version. The caller approves the unchanged signed
@@ -144,6 +148,60 @@ pub fn fetch_entry_bytes(
         .iter()
         .map(|version| fetch_version_bytes(entry, version, policy))
         .collect()
+}
+
+/// [`fetch_entry_bytes`], reading each version a publisher uploaded to this
+/// registry from `storage` (see [`review_version_bytes`]).
+///
+/// # Errors
+/// As [`fetch_entry_bytes`], or a storage error reading an upload.
+pub fn review_entry_bytes(
+    storage: &crate::Storage,
+    entry: &RegistryEntry,
+    policy: InspectionPolicy,
+) -> Result<Vec<(InspectedVersion, Vec<u8>)>, BundleReviewError> {
+    if entry.versions.is_empty() {
+        return Err(BundleReviewError::NoVersions);
+    }
+    entry
+        .versions
+        .iter()
+        .map(|version| review_version_bytes(storage, entry, version, policy))
+        .collect()
+}
+
+/// [`fetch_version_bytes`], except that a version whose URL is this
+/// registry's `/artifacts/<blake3>.tapp` and whose bytes a publisher uploaded
+/// (`PUT /uploads`) is read from `storage` instead: approval is what makes
+/// that URL serve them. The bytes pass the same inspection either way.
+///
+/// # Errors
+/// As [`fetch_version_bytes`], or a storage error reading the upload.
+pub fn review_version_bytes(
+    storage: &crate::Storage,
+    entry: &RegistryEntry,
+    version: &RegistryVersion,
+    policy: InspectionPolicy,
+) -> Result<(InspectedVersion, Vec<u8>), BundleReviewError> {
+    let digest = version.tapp_blake3_hex.to_ascii_lowercase();
+    if !version
+        .tapp_url
+        .ends_with(&format!("/artifacts/{digest}.tapp"))
+    {
+        return fetch_version_bytes(entry, version, policy);
+    }
+    let uploaded = storage
+        .load_upload(&digest)
+        .map_err(|error| BundleReviewError::Storage {
+            version: version.version.clone(),
+            reason: error.to_string(),
+        })?;
+    let Some(bytes) = uploaded else {
+        return fetch_version_bytes(entry, version, policy);
+    };
+    check_size(version, bytes.len() as u64, policy.download_limit(version))?;
+    let inspection = inspect_bytes(entry, version, &bytes)?;
+    Ok((inspection, bytes))
 }
 
 /// Fetch and verify one signed version while retaining its exact bytes.
@@ -342,7 +400,10 @@ pub fn inspect_bytes(
     match version.target.platform.as_str() {
         registry_types::TILO_OS_PLATFORM => check_native_target(version, &meta.manifest)?,
         registry_types::WEB_PLATFORM => check_web_target(version, &meta.manifest, bytes.len())?,
-        registry_types::WINDOWS_PLATFORM | registry_types::MACOS_PLATFORM => {
+        registry_types::LINUX_PLATFORM
+        | registry_types::WINDOWS_PLATFORM
+        | registry_types::MACOS_PLATFORM
+        | registry_types::ANDROID_PLATFORM => {
             check_desktop_target(version, &meta.manifest, bytes.len())?;
         }
         _ => {
@@ -377,19 +438,21 @@ fn check_web_target(
     Ok(())
 }
 
-/// A Windows or macOS build is a self-contained executable: its signed
-/// `[target]` names the version exactly, under the desktop size limit.
+/// A Linux, Windows, macOS or Android build is a self-contained executable:
+/// its signed `[target]` names the version exactly, under the desktop size
+/// limit.
 fn check_desktop_target(
     version: &RegistryVersion,
     manifest: &tilo_app_package::Manifest,
     size: usize,
 ) -> Result<(), BundleReviewError> {
     check_signed_target(version, manifest)?;
-    if size as u64 > tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES {
+    let limit = tilo_app_package::platform_size_limit(&version.target.platform);
+    if size as u64 > limit {
         return Err(BundleReviewError::TooLarge {
             version: version.version.clone(),
             size: size as u64,
-            limit: tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES,
+            limit,
         });
     }
     Ok(())
@@ -461,7 +524,7 @@ fn parse_32(value: &str) -> Result<[u8; 32], String> {
         .map_err(|bytes: Vec<u8>| format!("expected 32 bytes, got {}", bytes.len()))
 }
 
-fn public_ip(ip: IpAddr) -> bool {
+pub(crate) fn public_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => public_v4(ip),
         IpAddr::V6(ip) => public_v6(ip),
@@ -723,17 +786,86 @@ mod tests {
         };
         assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
 
-        let mut as_windows = entry.versions[0].clone();
-        as_windows.target.platform = registry_types::WINDOWS_PLATFORM.into();
-        assert!(matches!(
-            inspect_bytes(&entry, &as_windows, &bytes),
-            Err(BundleReviewError::TargetMismatch { .. })
-        ));
+        for other in [
+            registry_types::WINDOWS_PLATFORM,
+            registry_types::LINUX_PLATFORM,
+            registry_types::ANDROID_PLATFORM,
+        ] {
+            let mut relabelled = entry.versions[0].clone();
+            relabelled.target.platform = other.into();
+            assert!(matches!(
+                inspect_bytes(&entry, &relabelled, &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
         let mut as_intel = entry.versions[0].clone();
         as_intel.target.architecture = "x86_64".into();
         as_intel.target.isa = "x86_64".into();
         assert!(matches!(
             inspect_bytes(&entry, &as_intel, &bytes),
+            Err(BundleReviewError::TargetMismatch { .. })
+        ));
+        let mut as_tilo_os = entry.versions[0].clone();
+        as_tilo_os.target.platform = registry_types::TILO_OS_PLATFORM.into();
+        as_tilo_os.target.isa = "aarch64-v8.2".into();
+        assert!(inspect_bytes(&entry, &as_tilo_os, &bytes).is_err());
+
+        let policy = InspectionPolicy::default();
+        assert_eq!(
+            policy.download_limit(&entry.versions[0]),
+            tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES.max(policy.max_package_bytes)
+        );
+    }
+
+    #[test]
+    fn android_artifact_inspection_binds_the_signed_android_target() {
+        let identity = SigningIdentity::generate();
+        let (native, _) = signed_tapp(&identity);
+        let mut authored = app_registry::tapp::load(&native).unwrap().manifest;
+        authored.package.runtime = Some("tilo-runtime/2026.07".into());
+        let manifest = tilo_app_package::desktop::desktop_manifest(
+            &authored,
+            registry_types::ANDROID_PLATFORM,
+            "aarch64",
+            "aarch64",
+            "editor.apk",
+        )
+        .unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("editor.apk"), b"PK\x03\x04").unwrap();
+        let packed = pack(dir.path(), &manifest, &identity).unwrap();
+        let bytes = tilo_app_package::tapp::to_bytes(&packed.meta, Some(&packed)).unwrap();
+
+        let mut entry = sample_entry("https://example.com/editor-android.tapp");
+        entry.publisher_pubkey_hex = hex::encode(identity.public_key_bytes());
+        let version = &mut entry.versions[0];
+        version.tapp_root_hash_hex = hex::encode(packed.id().as_bytes());
+        version.tapp_size_bytes = bytes.len() as u64;
+        version.tapp_blake3_hex = blake3::hash(&bytes).to_hex().to_string();
+        version.target = registry_types::RegistryTarget {
+            platform: registry_types::ANDROID_PLATFORM.into(),
+            architecture: "aarch64".into(),
+            isa: "aarch64".into(),
+            runtime: Some("tilo-runtime/2026.07".into()),
+        };
+        assert!(inspect_bytes(&entry, &entry.versions[0], &bytes).is_ok());
+
+        for other in [
+            registry_types::LINUX_PLATFORM,
+            registry_types::MACOS_PLATFORM,
+        ] {
+            let mut relabelled = entry.versions[0].clone();
+            relabelled.target.platform = other.into();
+            assert!(matches!(
+                inspect_bytes(&entry, &relabelled, &bytes),
+                Err(BundleReviewError::TargetMismatch { .. })
+            ));
+        }
+        let mut as_x86 = entry.versions[0].clone();
+        as_x86.target.architecture = "x86_64".into();
+        as_x86.target.isa = "x86_64".into();
+        assert!(matches!(
+            inspect_bytes(&entry, &as_x86, &bytes),
             Err(BundleReviewError::TargetMismatch { .. })
         ));
         let mut as_tilo_os = entry.versions[0].clone();

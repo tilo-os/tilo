@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::{
     State,
     headless::Driver,
@@ -155,6 +156,50 @@ fn first_control_capture_preserves_admitted_toolbar_until_recomposition() {
     assert!(!nodes.is_empty());
     assert!(!history.needs_refresh(&state.doc, 900.0));
     assert!(history.captures_input());
+}
+
+/// Runners keep raw pointers into the admitted composition between frames.
+/// Replacing the toolbar, or swapping which children are presented, must
+/// report structure dirty until the next build admits the new widgets.
+#[test]
+fn replacing_admitted_history_controls_reports_structure_dirty() {
+    let mut state = State::new();
+    state.doc.put(ROOT, "body", "existing document").unwrap();
+    state.commit_action(None, None);
+    let mut live = Column::new().push(Box::new(Button::new("live", "Send", None)));
+    let mut history = host::HistoryHost::new(registration(), &state.doc).unwrap();
+    history.set_width(900.0);
+    let build = |history: &mut host::HistoryHost, live: &mut Column| {
+        let mut tree = taffy::TaffyTree::new();
+        let mut nodes = std::collections::HashMap::new();
+        history.build_composition(live, &mut tree, &Theme::dark(), &mut nodes);
+    };
+    build(&mut history, &mut live);
+    assert!(
+        !history.take_structure_dirty(),
+        "an admitted composition is clean"
+    );
+
+    history.set_sync_status(Some("Syncing".into()));
+    assert!(
+        history.take_structure_dirty(),
+        "the admitted toolbar was replaced"
+    );
+    assert!(
+        history.take_structure_dirty(),
+        "stale maps stay reported until a build admits the new toolbar"
+    );
+    build(&mut history, &mut live);
+    assert!(!history.take_structure_dirty());
+
+    assert!(history.request_open());
+    history.refresh(&state.doc);
+    assert!(
+        history.take_structure_dirty(),
+        "opening presents other children"
+    );
+    build(&mut history, &mut live);
+    assert!(!history.take_structure_dirty());
 }
 
 #[test]
@@ -1260,7 +1305,7 @@ impl Widget for LazyOwnerRoot {
     fn get_rect(&self) -> Rect {
         self.child.get_rect()
     }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         if !self.during_layout {
             self.mount_owner();
         } else if self.mount.get() && !self.mounted {
@@ -1311,17 +1356,9 @@ impl Widget for LazyOwnerRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.child
-            .handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
+        self.child.handle_event(event, ctx);
     }
 }
 fn lazy_owner_root(mount: Rc<Cell<bool>>, pending: bool, during_layout: bool) -> Box<dyn Widget> {
@@ -1359,6 +1396,8 @@ struct CheckedCompositionRoot {
 }
 
 impl Widget for CheckedCompositionRoot {
+    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
     crate::testing::delegate_widget_methods!(
         inner: sync,
         build_layout,
@@ -1367,6 +1406,21 @@ impl Widget for CheckedCompositionRoot {
         handle_event,
         get_rect
     );
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        self.inner.children()
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.inner.children_mut()
+    }
+
+    fn name(&self) -> &str {
+        "checked-composition-root"
+    }
+}
+
+impl crate::history_mode::capability::DocumentHistory for CheckedCompositionRoot {
     fn history_registration(
         &self,
     ) -> Result<Option<HistoryRegistration>, HistoryRegistrationError> {
@@ -1379,21 +1433,8 @@ impl Widget for CheckedCompositionRoot {
         )
         .map(Some)
     }
-
     fn document_history_definition(&self) -> Option<&'static HistoryDefinition> {
         Some(&CHECKED_COMPOSITION)
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        self.inner.children()
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner.children_mut()
-    }
-
-    fn name(&self) -> &str {
-        "checked-composition-root"
     }
 }
 
@@ -1528,4 +1569,21 @@ fn history_host_messages_exist_in_every_shipped_language() {
             );
         }
     }
+}
+
+#[test]
+fn closed_history_strip_insets_its_button_by_the_theme_spacing() {
+    let (driver, _, _) = versioned_driver((900, 650));
+    let spacing = driver.theme().tokens.spacing;
+    let button = driver.targets()["history-open"];
+    assert_eq!(
+        button.x0,
+        f64::from(spacing.s3),
+        "sibling step from the edge"
+    );
+    assert_eq!(
+        button.y0,
+        f64::from(spacing.s1),
+        "one control tall, not a band"
+    );
 }

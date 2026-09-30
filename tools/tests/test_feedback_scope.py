@@ -28,7 +28,7 @@ class FeedbackScopeTests(unittest.TestCase):
             self.assertNotIn('package-desktop-release', selection)
             self.assertNotIn('arm64-platform-support', workflow)
         with self.subTest(phase='nightly executes complete coverage on both native architectures'):
-            workflow = (ROOT / '.forgejo/workflows/nightly.yml').read_text(encoding='utf-8')
+            workflow = (ROOT / '.forgejo/workflows/ci-nightly.yml').read_text(encoding='utf-8')
             pairs = re.findall(r'- arch: (\S+)\s+runner: (\S+)', workflow)
             self.assertEqual(pairs, [('x86_64', 'runner'), ('aarch64', 'runner-arm64')])
             self.assertIn('runs-on: ${{ matrix.runner }}', workflow)

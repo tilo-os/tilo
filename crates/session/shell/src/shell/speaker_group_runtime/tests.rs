@@ -20,6 +20,10 @@ fn output(device: &str) -> EndpointSelector {
     EndpointSelector::mint(&id(device), "alsa_output.analog-stereo")
 }
 
+fn microphone(device: &str) -> EndpointSelector {
+    EndpointSelector::mint(&id(device), "alsa_input.analog-stereo")
+}
+
 fn stamp(device: &str) -> FabricStamp {
     FabricStamp {
         counter: 0,
@@ -57,12 +61,20 @@ impl Device {
     fn publish(&mut self, fabric: &mut DeviceFabric) {
         self.counter = self.counter.saturating_add(1);
         let owner = self.id();
-        let endpoints = vec![AudioEndpoint {
-            selector: output(self.name),
-            kind: AudioEndpointKind::Output,
-            label: format!("{} speakers", self.name),
-            is_default: true,
-        }];
+        let endpoints = vec![
+            AudioEndpoint {
+                selector: output(self.name),
+                kind: AudioEndpointKind::Output,
+                label: format!("{} speakers", self.name),
+                is_default: true,
+            },
+            AudioEndpoint {
+                selector: microphone(self.name),
+                kind: AudioEndpointKind::Microphone,
+                label: format!("{} microphone", self.name),
+                is_default: true,
+            },
+        ];
         let snapshot = DeviceFabricSnapshot {
             schema_version: FABRIC_SCHEMA_VERSION,
             owner: owner.clone(),
@@ -200,13 +212,14 @@ fn a_new_group_asks_only_remote_members_and_the_member_sees_one_prompt() {
         ]
     );
     shelf.handle(&fabric, &invites[0], "desk", now);
-    let view = shelf.core.view(&fabric, &shelf.id());
+    let view = shelf.core.view(&fabric, &shelf.id(), &|_| None);
     assert_eq!(view.consents.len(), 1);
     let consent = &view.consents[0];
     assert_eq!(consent.name, "Living room");
     assert_eq!(consent.leader_label, "desk");
-    assert_eq!(consent.role.describe(), "right speaker");
-    assert_eq!(consent.output_label.as_deref(), Some("shelf speakers"));
+    assert_eq!(consent.scope, SpeakerConsentScope::Play(RIGHT));
+    assert_eq!(consent.endpoint_label.as_deref(), Some("shelf speakers"));
+    assert_eq!(consent.prompt(), "Join Living room as the right speaker?");
 }
 
 #[test]
@@ -218,7 +231,13 @@ fn approving_authors_a_membership_that_makes_the_member_ready() {
         fabric.speaker_member_states(fabric.speaker_group(group).unwrap()),
         vec![SpeakerMemberState::Ready, SpeakerMemberState::Ready]
     );
-    assert!(shelf.core.view(&fabric, &shelf.id()).consents.is_empty());
+    assert!(
+        shelf
+            .core
+            .view(&fabric, &shelf.id(), &|_| None)
+            .consents
+            .is_empty()
+    );
     // A consented member is not asked again.
     assert!(
         desk.core
@@ -242,7 +261,13 @@ fn a_forged_invite_that_the_leader_never_published_cannot_be_approved() {
         },
     );
     shelf.handle(&fabric, &forged, "desk", now);
-    assert!(shelf.core.view(&fabric, &shelf.id()).consents.is_empty());
+    assert!(
+        shelf
+            .core
+            .view(&fabric, &shelf.id(), &|_| None)
+            .consents
+            .is_empty()
+    );
     assert!(
         shelf
             .core
@@ -950,4 +975,229 @@ fn only_the_leader_can_ask_a_consented_member_for_a_sweep() {
             .sweep_output(&fabric, &shelf.id(), &desk.id(), group),
         None
     );
+}
+
+fn candidate_state(
+    desk: &Device,
+    fabric: &DeviceFabric,
+    group: SpeakerGroupId,
+    device: &str,
+    now: Instant,
+) -> ListenerState {
+    let published = fabric.speaker_group(group).unwrap();
+    desk.core
+        .listener_candidates(fabric, &desk.id(), published, now)
+        .into_iter()
+        .find(|candidate| candidate.device == id(device))
+        .unwrap()
+        .state
+}
+
+#[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one consent exchange, followed from invite to withdrawal"
+)]
+fn a_microphone_listens_only_after_its_own_device_consents() {
+    let now = Instant::now();
+    let (mut desk, mut shelf, mut phone) = (
+        Device::new("desk"),
+        Device::new("shelf"),
+        Device::new("phone"),
+    );
+    let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    phone.publish(&mut fabric);
+    let published = fabric.speaker_group(group).unwrap().clone();
+    let candidates = desk
+        .core
+        .listener_candidates(&fabric, &desk.id(), &published, now);
+    assert_eq!(candidates[0].device, desk.id(), "this device comes first");
+    assert!(candidates[0].local);
+    assert_eq!(candidates[0].state, ListenerState::Ready);
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "phone", now),
+        ListenerState::NotAsked
+    );
+    // Playing in the group is not consent to listen.
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "shelf", now),
+        ListenerState::NotAsked
+    );
+
+    let invites = desk
+        .core
+        .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now);
+    assert_eq!(
+        invites,
+        vec![Egress {
+            target: phone.id(),
+            action: PersonalFabricAction::SpeakerListenInvite {
+                group,
+                name: "Living room".into(),
+                microphone: microphone("phone"),
+            },
+        }]
+    );
+    assert!(
+        desk.core
+            .invite_listeners(&published, &[(phone.id(), microphone("phone"))], now)
+            .is_empty(),
+        "asked once"
+    );
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "phone", now),
+        ListenerState::AwaitingConsent
+    );
+
+    assert!(phone.handle(&fabric, &invites[0], "desk", now).is_empty());
+    assert!(
+        !phone
+            .core
+            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
+    );
+    let view = phone.core.view(&fabric, &phone.id(), &|_| None);
+    assert_eq!(view.consents.len(), 1);
+    assert_eq!(view.consents[0].scope, SpeakerConsentScope::Listen);
+    assert_eq!(
+        view.consents[0].endpoint_label.as_deref(),
+        Some("phone microphone")
+    );
+    assert_eq!(
+        view.consents[0].prompt(),
+        "Let desk use this microphone for Living room?"
+    );
+
+    let decision = phone
+        .core
+        .resolve_listen_consent(&fabric, &phone.id(), group, true, &stamp("phone"))
+        .unwrap();
+    phone.publish(&mut fabric);
+    assert!(desk.handle(&fabric, &decision[0], "phone", now).is_empty());
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "phone", now),
+        ListenerState::Ready
+    );
+    assert!(
+        phone
+            .core
+            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
+    );
+    // Only the leader may ask, and only for the exact microphone.
+    assert!(!phone.core.may_listen(
+        &fabric,
+        &phone.id(),
+        &shelf.id(),
+        group,
+        microphone("phone")
+    ));
+    assert!(
+        !phone
+            .core
+            .may_listen(&fabric, &phone.id(), &desk.id(), group, output("phone"))
+    );
+    let memberships = phone.core.view(&fabric, &phone.id(), &|_| None).memberships;
+    assert_eq!(memberships.len(), 1);
+    assert_eq!(memberships[0].scope, SpeakerConsentScope::Listen);
+
+    // Withdrawing tells the leader and stops listening at once.
+    let withdrawn = phone.core.stop_listening(group).unwrap();
+    assert_eq!(
+        withdrawn[0].action,
+        PersonalFabricAction::SpeakerListenDecision {
+            group,
+            accepted: false
+        }
+    );
+    assert!(
+        !phone
+            .core
+            .may_listen(&fabric, &phone.id(), &desk.id(), group, microphone("phone"))
+    );
+}
+
+#[test]
+fn a_declined_microphone_is_not_asked_again_until_the_prompt_expires() {
+    let now = Instant::now();
+    let (mut desk, mut shelf, mut phone) = (
+        Device::new("desk"),
+        Device::new("shelf"),
+        Device::new("phone"),
+    );
+    let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    phone.publish(&mut fabric);
+    let published = fabric.speaker_group(group).unwrap().clone();
+    let asked = [(phone.id(), microphone("phone"))];
+    let invites = desk.core.invite_listeners(&published, &asked, now);
+    phone.handle(&fabric, &invites[0], "desk", now);
+    let decision = phone
+        .core
+        .resolve_listen_consent(&fabric, &phone.id(), group, false, &stamp("phone"))
+        .unwrap();
+    desk.handle(&fabric, &decision[0], "phone", now);
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "phone", now),
+        ListenerState::Declined
+    );
+    assert!(
+        desk.core
+            .invite_listeners(&published, &asked, now)
+            .is_empty()
+    );
+    let later = now + CONSENT_TTL;
+    assert_eq!(
+        candidate_state(&desk, &fabric, group, "phone", later),
+        ListenerState::NotAsked
+    );
+    assert_eq!(
+        desk.core.invite_listeners(&published, &asked, later).len(),
+        1
+    );
+}
+
+#[test]
+fn microphone_consent_ends_with_the_group_and_with_media_continuity() {
+    let now = Instant::now();
+    let (mut desk, mut shelf, mut phone) = (
+        Device::new("desk"),
+        Device::new("shelf"),
+        Device::new("phone"),
+    );
+    let (mut fabric, group) = joined_pair(&mut desk, &mut shelf, now);
+    phone.publish(&mut fabric);
+    let published = fabric.speaker_group(group).unwrap().clone();
+    let consent = |phone: &mut Device, desk: &mut Device, fabric: &mut DeviceFabric, at| {
+        let invites =
+            desk.core
+                .invite_listeners(&published, &[(phone.id(), microphone("phone"))], at);
+        assert_eq!(invites.len(), 1);
+        for invite in &invites {
+            phone.handle(fabric, invite, "desk", now);
+        }
+        phone
+            .core
+            .resolve_listen_consent(fabric, &phone.id(), group, true, &stamp("phone"))
+            .unwrap();
+        phone.publish(fabric);
+    };
+    consent(&mut phone, &mut desk, &mut fabric, now);
+    let stopped = phone.core.pump(&fabric, &phone.id(), false, now);
+    assert!(stopped.iter().any(|item| {
+        item.target == desk.id()
+            && item.action
+                == PersonalFabricAction::SpeakerListenDecision {
+                    group,
+                    accepted: false,
+                }
+    }));
+    assert!(phone.core.listeners.iter().flatten().next().is_none());
+
+    consent(&mut phone, &mut desk, &mut fabric, now + CONSENT_TTL);
+    let released = desk.core.delete_group(group).unwrap();
+    desk.publish(&mut fabric);
+    let leave = released
+        .iter()
+        .find(|item| item.target == phone.id())
+        .expect("the listening device is released too");
+    phone.handle(&fabric, leave, "desk", now);
+    assert!(phone.core.listeners.iter().flatten().next().is_none());
 }

@@ -1,6 +1,7 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Text, TextInput};
-use automerge::{AutoCommit, ObjId};
+use automerge::AutoCommit;
 use vello::kurbo::Rect;
 
 /// Recreates its children on every `build_layout`: the focused
@@ -37,11 +38,6 @@ impl RebuildHarness {
 }
 
 impl Widget for RebuildHarness {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for c in &mut self.children {
-            c.sync(state, path);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -83,19 +79,6 @@ impl Widget for RebuildHarness {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _r: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
-    }
     fn children(&self) -> Vec<&dyn Widget> {
         self.children.iter().map(Box::as_ref).collect()
     }
@@ -105,7 +88,7 @@ impl Widget for RebuildHarness {
             .map(|c| c.as_mut() as &mut (dyn Widget + '_))
             .collect()
     }
-    fn on_external_event(&mut self, payload: &str, _s: &mut AutoCommit, _r: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, _s: &mut AppModel, _r: &ModelPath) {
         match payload {
             "show_status" => self.show_status = true,
             "reset" => self.request_reset = true,
@@ -126,7 +109,7 @@ impl Widget for RebuildHarness {
 fn caret(app: &App) -> Option<String> {
     let id = app.focused_node?;
     let w = *app.layout.node_map.get(&id)?;
-    unsafe { (*w).get_state() }
+    unsafe { crate::undo::get_state(&(*w)) }
 }
 
 #[test]
@@ -141,7 +124,7 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
 
         let id = app.focused_node.expect("input focused at startup");
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
         }
         assert_eq!(caret(&app).as_deref(), Some("3"));
 
@@ -176,7 +159,7 @@ fn structure_rebuild_preserves_the_caret_unless_focus_resets() {
 
         let id = app.focused_node.unwrap();
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("3");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
         }
 
         let mut tmp = AutoCommit::new();

@@ -878,25 +878,6 @@ mod tests {
     use threshold_identity::ThresholdIdentity;
     use ui::widget::identity_flow::MemoryIdentityStore;
 
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new(name: &str) -> Self {
-            let base = std::env::temp_dir();
-            let pid = std::process::id();
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("tilo-identity-prov-{name}-{pid}-{nonce}"));
-            fs::create_dir_all(&path).expect("tempdir");
-            Self(path)
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
     fn fixture_record() -> IdentityRecord {
         let mut rng = UnwrapErr(SysRng);
         let id = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
@@ -914,8 +895,8 @@ mod tests {
     #[test]
     fn identity_files_round_trip_privately_and_refuse_symlinks() {
         fn save_and_load_round_trip_on_disk() {
-            let tmp = TmpDir::new("rt");
-            let store = DiskIdentityStore::at(tmp.0.join("primary.json"));
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
             assert!(store.load().unwrap().is_none());
             let rec = fixture_record();
             store.save(&rec).unwrap();
@@ -929,8 +910,8 @@ mod tests {
         }
 
         fn save_sets_0600_mode_on_unix() {
-            let tmp = TmpDir::new("mode");
-            let store = DiskIdentityStore::at(tmp.0.join("primary.json"));
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("primary.json"));
             store.save(&fixture_record()).unwrap();
             #[cfg(unix)]
             {
@@ -944,12 +925,12 @@ mod tests {
         fn load_refuses_an_identity_path_symlink() {
             use std::os::unix::fs::symlink;
 
-            let tmp = TmpDir::new("symlink");
-            let target = tmp.0.join("elsewhere.json");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let target = tmp.path().join("elsewhere.json");
             let bytes = fixture_record().to_json_bytes().unwrap();
             fs::write(&target, bytes).unwrap();
             fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).unwrap();
-            let path = tmp.0.join("primary.json");
+            let path = tmp.path().join("primary.json");
             symlink(&target, &path).unwrap();
 
             let store = DiskIdentityStore::at(path);
@@ -957,8 +938,8 @@ mod tests {
         }
 
         fn load_on_missing_file_returns_none() {
-            let tmp = TmpDir::new("missing");
-            let store = DiskIdentityStore::at(tmp.0.join("does-not-exist.json"));
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let store = DiskIdentityStore::at(tmp.path().join("does-not-exist.json"));
             assert!(store.load().unwrap().is_none());
             assert!(!store.identity_present());
         }
@@ -987,8 +968,8 @@ mod tests {
         fn host_identity_tree_is_private_and_refuses_a_symlink_root() {
             use std::os::unix::fs::{PermissionsExt, symlink};
 
-            let tmp = TmpDir::new("host-private-root");
-            let root = tmp.0.join("data/tilo");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().join("data/tilo");
             prepare_private_host_identity_tree(&root).unwrap();
             for directory in [&root, &root.join("user-identity"), &root.join("device")] {
                 assert_eq!(
@@ -997,9 +978,9 @@ mod tests {
                 );
             }
 
-            let target = tmp.0.join("target");
+            let target = tmp.path().join("target");
             fs::create_dir(&target).unwrap();
-            let linked = tmp.0.join("linked");
+            let linked = tmp.path().join("linked");
             symlink(&target, &linked).unwrap();
             assert!(prepare_private_host_identity_tree(&linked).is_err());
         }
@@ -1040,8 +1021,8 @@ mod tests {
 
         #[cfg(unix)]
         fn invalid_existing_identity_keeps_trusted_setup_in_front_of_the_desktop() {
-            let tmp = TmpDir::new("invalid-existing");
-            let path = tmp.0.join("primary.json");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let path = tmp.path().join("primary.json");
             fs::write(&path, b"not an identity").unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
             let store = DiskIdentityStore::at(path);
@@ -1061,23 +1042,29 @@ mod tests {
     fn invite_urls_are_signature_checked() {
         fn parse_invite_url_validates_signature() {
             use collab_types::{ChannelId, Role, generate_keypair};
-            use ui::widget::identity_flow::mint_invite_for_broker;
-            let tmp = TmpDir::new("parse-invite");
-            let authority = pairing_channel_at(tmp.0.join("pairing")).unwrap();
-            let invite_root = tmp.0.join("invite-authority");
+            use ui::widget::identity_flow::{
+                InviteBrokerLocator, InviteTerms, mint_invite_for_broker,
+            };
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
+            let invite_root = tmp.path().join("invite-authority");
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (sk, pk) = generate_keypair();
             let env = mint_invite_for_broker(
-                ChannelId::new(),
-                "engineering",
-                pk,
+                InviteTerms {
+                    channel: ChannelId::new(),
+                    channel_name: "engineering".into(),
+                    owner_pubkey: pk,
+                    inviter_label: "Alice".into(),
+                    role: Role::Editor,
+                    expires_at: SystemTime::now() + std::time::Duration::from_secs(3600),
+                },
                 &sk,
-                "Alice",
-                Role::Editor,
-                SystemTime::now() + std::time::Duration::from_secs(3600),
-                server.endpoint().to_string(),
-                server.certificate_der().to_vec(),
-                invite_root,
+                InviteBrokerLocator {
+                    endpoint: server.endpoint().to_string(),
+                    certificate: server.certificate_der().to_vec(),
+                    authority_root: invite_root,
+                },
             )
             .unwrap();
             let url = env.to_url().unwrap();
@@ -1098,8 +1085,8 @@ mod tests {
     fn pairing_channel_and_broker_survive_restart_and_consume_once() {
         fn new_pairing_channel_round_trips_a_message() {
             use threshold_identity::EnrolmentRound2;
-            let tmp = TmpDir::new("pairing-roundtrip");
-            let ch = pairing_channel_at(tmp.0.join("broker")).unwrap();
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let ch = pairing_channel_at(tmp.path().join("broker")).unwrap();
             let nonce = [0x55u8; 16];
             let mac = [0x11u8; 64];
             let reply = EnrolmentRound2 {
@@ -1115,8 +1102,8 @@ mod tests {
 
         fn pairing_broker_survives_handle_restart_and_consumes_once() {
             use threshold_identity::EnrolmentRound2;
-            let tmp = TmpDir::new("pairing-restart");
-            let root = tmp.0.join("broker");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().join("broker");
             let nonce = [0x42; 16];
             let reply = EnrolmentRound2 {
                 from_share_index: 2,
@@ -1134,8 +1121,8 @@ mod tests {
         }
 
         fn pairing_broker_cancellation_survives_restart() {
-            let tmp = TmpDir::new("pairing-cancel");
-            let root = tmp.0.join("broker");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let root = tmp.path().join("broker");
             pairing_channel_at(&root).unwrap().cancel();
             let restarted = pairing_channel_at(&root).unwrap();
             let reply = threshold_identity::EnrolmentRound2 {
@@ -1167,8 +1154,8 @@ mod tests {
     )]
     fn remote_pairing_and_invites_use_only_the_authenticated_tls_endpoint() {
         fn remote_pairer_uses_only_authenticated_transport_endpoint() {
-            let tmp = TmpDir::new("pairing-remote");
-            let authority = pairing_channel_at(tmp.0.join("authority")).unwrap();
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("authority")).unwrap();
             let nonce = [4; 16];
             let server = PairingBrokerServer::start(authority.clone(), nonce).unwrap();
             let remote = PairingHandshake::remote(
@@ -1203,22 +1190,26 @@ mod tests {
         }
 
         fn invite_redeems_through_independent_tls_endpoint_once() {
-            let tmp = TmpDir::new("invite-remote");
-            let authority = pairing_channel_at(tmp.0.join("pairing-authority")).unwrap();
-            let invite_root = tmp.0.join("invite-redemption-authority");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("pairing-authority")).unwrap();
+            let invite_root = tmp.path().join("invite-redemption-authority");
             let server = PairingBrokerServer::start_invites(authority, &invite_root).unwrap();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
             let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                collab_types::ChannelId::new(),
-                "remote",
-                owner_public,
+                ui::widget::identity_flow::InviteTerms {
+                    channel: collab_types::ChannelId::new(),
+                    channel_name: "remote".into(),
+                    owner_pubkey: owner_public,
+                    inviter_label: "Alice".into(),
+                    role: collab_types::Role::Editor,
+                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                },
                 &owner_secret,
-                "Alice",
-                collab_types::Role::Editor,
-                SystemTime::now() + Duration::from_secs(60),
-                server.endpoint().to_string(),
-                server.certificate_der().to_vec(),
-                invite_root,
+                ui::widget::identity_flow::InviteBrokerLocator {
+                    endpoint: server.endpoint().to_string(),
+                    certificate: server.certificate_der().to_vec(),
+                    authority_root: invite_root,
+                },
             )
             .unwrap();
             let (_, invitee) = collab_types::generate_keypair();
@@ -1240,9 +1231,9 @@ mod tests {
         }
 
         fn invite_broker_uses_its_own_clock_and_rejects_pairing_frames() {
-            let tmp = TmpDir::new("invite-expiry-authority");
-            let pairing = pairing_channel_at(tmp.0.join("pairing")).unwrap();
-            let invite_root = tmp.0.join("invite-redemption-authority");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let pairing = pairing_channel_at(tmp.path().join("pairing")).unwrap();
+            let invite_root = tmp.path().join("invite-redemption-authority");
             let invite_authority =
                 ui::widget::identity_flow::InviteRedemptionAuthority::at(&invite_root).unwrap();
             invite_authority.issue([3; 32], [4; 32], 1).unwrap();
@@ -1277,13 +1268,13 @@ mod tests {
     )]
     fn persistent_broker_keeps_its_tls_pin_and_refuses_corrupt_identity() {
         fn persistent_broker_keeps_tls_pin_across_restart() {
-            let tmp = TmpDir::new("broker-tls-restart");
-            let authority = pairing_channel_at(tmp.0.join("pairing")).unwrap();
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
             let first = PairingBrokerServer::start_persistent(
                 authority.clone(),
                 [2; 16],
                 (std::net::Ipv4Addr::LOCALHOST, 0).into(),
-                &tmp.0.join("tls"),
+                &tmp.path().join("tls"),
             )
             .unwrap();
             let endpoint = first.endpoint();
@@ -1293,7 +1284,7 @@ mod tests {
                 authority,
                 [2; 16],
                 endpoint,
-                &tmp.0.join("tls"),
+                &tmp.path().join("tls"),
             )
             .unwrap();
             assert_eq!(restarted.certificate_der(), certificate);
@@ -1305,35 +1296,39 @@ mod tests {
             };
             remote.publish_pairer_reply(&[2; 16], reply, [4; 64]);
             assert!(restarted.endpoint().ip().is_loopback());
-            let metadata = fs::metadata(tmp.0.join("tls").join(BROKER_IDENTITY_FILE)).unwrap();
+            let metadata = fs::metadata(tmp.path().join("tls").join(BROKER_IDENTITY_FILE)).unwrap();
             assert_eq!(metadata.permissions().mode() & 0o777, 0o600);
         }
 
         fn signed_invite_redeems_after_broker_restart_with_the_same_pin() {
-            let tmp = TmpDir::new("invite-broker-restart");
-            let authority = pairing_channel_at(tmp.0.join("pairing")).unwrap();
-            let tls_dir = tmp.0.join("tls");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
+            let tls_dir = tmp.path().join("tls");
             let first = PairingBrokerServer::start_persistent_invites(
                 authority.clone(),
                 (std::net::Ipv4Addr::LOCALHOST, 0).into(),
                 &tls_dir,
-                tmp.0.join("invite-redemption-authority"),
+                tmp.path().join("invite-redemption-authority"),
             )
             .unwrap();
             let endpoint = first.endpoint();
             let certificate = first.certificate_der().to_vec();
             let (owner_secret, owner_public) = collab_types::generate_keypair();
             let invite = ui::widget::identity_flow::mint_invite_for_broker(
-                collab_types::ChannelId::new(),
-                "restart-safe",
-                owner_public,
+                ui::widget::identity_flow::InviteTerms {
+                    channel: collab_types::ChannelId::new(),
+                    channel_name: "restart-safe".into(),
+                    owner_pubkey: owner_public,
+                    inviter_label: "Alice".into(),
+                    role: collab_types::Role::Editor,
+                    expires_at: SystemTime::now() + Duration::from_secs(60),
+                },
                 &owner_secret,
-                "Alice",
-                collab_types::Role::Editor,
-                SystemTime::now() + Duration::from_secs(60),
-                endpoint.to_string(),
-                certificate.clone(),
-                tmp.0.join("invite-redemption-authority"),
+                ui::widget::identity_flow::InviteBrokerLocator {
+                    endpoint: endpoint.to_string(),
+                    certificate: certificate.clone(),
+                    authority_root: tmp.path().join("invite-redemption-authority"),
+                },
             )
             .unwrap();
             drop(first);
@@ -1342,7 +1337,7 @@ mod tests {
                 authority,
                 endpoint,
                 &tls_dir,
-                tmp.0.join("invite-redemption-authority"),
+                tmp.path().join("invite-redemption-authority"),
             )
             .unwrap();
             assert_eq!(restarted.certificate_der(), certificate);
@@ -1365,14 +1360,14 @@ mod tests {
         }
 
         fn persistent_broker_refuses_corrupt_identity_instead_of_rotating_pin() {
-            let tmp = TmpDir::new("broker-corrupt-pin");
-            let authority = pairing_channel_at(tmp.0.join("pairing")).unwrap();
-            let tls_dir = tmp.0.join("tls");
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let authority = pairing_channel_at(tmp.path().join("pairing")).unwrap();
+            let tls_dir = tmp.path().join("tls");
             let server = PairingBrokerServer::start_persistent_invites(
                 authority.clone(),
                 (std::net::Ipv4Addr::LOCALHOST, 0).into(),
                 &tls_dir,
-                tmp.0.join("invite-redemption-authority"),
+                tmp.path().join("invite-redemption-authority"),
             )
             .unwrap();
             drop(server);
@@ -1384,7 +1379,7 @@ mod tests {
                     authority,
                     (std::net::Ipv4Addr::LOCALHOST, 0).into(),
                     &tls_dir,
-                    tmp.0.join("invite-redemption-authority"),
+                    tmp.path().join("invite-redemption-authority"),
                 )
                 .is_err()
             );
@@ -1398,8 +1393,8 @@ mod tests {
 
     #[test]
     fn full_dkg_crosses_only_the_pinned_tls_broker() {
-        let tmp = TmpDir::new("pairing-full-tls");
-        let authority = pairing_channel_at(tmp.0.join("authority")).unwrap();
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let authority = pairing_channel_at(tmp.path().join("authority")).unwrap();
         let mut rng = UnwrapErr(SysRng);
         let mut bootstrap = ThresholdIdentity::bootstrap_single_device(&mut rng).unwrap();
         let (host_session, host_round1) = bootstrap.begin_enrolment(1, 2, 2, &mut rng).unwrap();

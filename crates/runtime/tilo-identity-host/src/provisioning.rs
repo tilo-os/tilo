@@ -12,6 +12,7 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use threshold_identity::ThresholdIdentity;
+use tilo_user_identity::persist::DeviceKeyCustody;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, IdentityPaths, persist};
 use ui::widget::identity_flow::IdentityRecord;
 
@@ -19,10 +20,61 @@ use ui::widget::identity_flow::IdentityRecord;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IdentityStorage {
     /// The platform's secret store, or its explicitly reported private-file
-    /// fallback: what a real session uses.
+    /// fallback: what a real session uses. On macOS the device key and the
+    /// runtime's channel-state key are in the login Keychain too, with no
+    /// file fallback.
     Platform,
     /// Plain private files beside the record, for isolated test fixtures.
     Files,
+}
+
+/// Set (to anything), it keeps every identity secret of the session in
+/// [`IdentityStorage::Files`], out of the user's login Keychain: for tests,
+/// and for a release built without a Developer ID signature
+/// ([`runtime_identity::file_secrets_requested`]).
+pub use runtime_identity::FILE_SECRETS_ENV;
+
+impl IdentityStorage {
+    /// What this session keeps its identity secrets in.
+    #[must_use]
+    pub fn for_session() -> Self {
+        if !runtime_identity::file_secrets_requested() {
+            return Self::Platform;
+        }
+        // A test asks for files and needs no word about it; anyone else is
+        // told where the secrets went.
+        if !(cfg!(debug_assertions) && std::env::var_os(FILE_SECRETS_ENV).is_some()) {
+            static SAID: std::sync::Once = std::sync::Once::new();
+            SAID.call_once(|| {
+                tracing::warn!(
+                    "this build has no Developer ID signature, and the Keychain would keep \
+                     its identity secrets for this exact build only; they are in owner-only \
+                     files in the profile instead"
+                );
+            });
+        }
+        Self::Files
+    }
+
+    /// Where the device key is kept under this storage.
+    #[cfg(target_os = "macos")]
+    #[must_use]
+    pub fn device_key_custody(self) -> DeviceKeyCustody {
+        match self {
+            Self::Platform => DeviceKeyCustody::Keychain,
+            Self::Files => DeviceKeyCustody::File,
+        }
+    }
+
+    /// Where the device key is kept under this storage: a file, which Tilo
+    /// OS shares between the root filesystem daemon and the session.
+    #[cfg(not(target_os = "macos"))]
+    #[must_use]
+    pub fn device_key_custody(self) -> DeviceKeyCustody {
+        match self {
+            Self::Platform | Self::Files => DeviceKeyCustody::File,
+        }
+    }
 }
 
 fn identity_load_error(error: runtime_identity::NotAvailable) -> io::Error {
@@ -154,6 +206,9 @@ enum IdentityProvisioningContext {
     NativeTilo,
     /// Tilo Desktop added to a pre-existing Linux distribution and user account.
     LegacyLinuxHost,
+    /// A disposable identity a dev-image test session mints for itself.
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    ThrowawayTest,
 }
 
 /// Create a fresh single-device identity at `<identity_dir>/primary.json`.
@@ -183,7 +238,7 @@ fn ensure_primary_identity_in_context(
 ) -> Result<ProvisionOutcome, io::Error> {
     let path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     if path.exists() {
-        if context == IdentityProvisioningContext::NativeTilo {
+        if context != IdentityProvisioningContext::LegacyLinuxHost {
             protect_identity_record(identity_dir, storage)?;
         }
         return Ok(ProvisionOutcome::Existing);
@@ -198,6 +253,8 @@ fn ensure_primary_identity_in_context(
     let display_name = match context {
         IdentityProvisioningContext::NativeTilo => String::new(),
         IdentityProvisioningContext::LegacyLinuxHost => login_account_display_name(),
+        #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+        IdentityProvisioningContext::ThrowawayTest => THROWAWAY_TEST_IDENTITY_NAME.to_owned(),
     };
     let record = IdentityRecord::from_threshold_identity(
         &identity,
@@ -293,6 +350,81 @@ pub fn ensure_collaboration_identity_for_legacy_linux_host(
     )
 }
 
+/// Display name of an identity minted by [`ensure_throwaway_test_identity`].
+pub const THROWAWAY_TEST_IDENTITY_NAME: &str = "Throwaway test identity";
+
+/// Present beside the identity record when that identity is a throwaway
+/// minted by [`ensure_throwaway_test_identity`].
+pub const THROWAWAY_TEST_IDENTITY_MARKER: &str = "throwaway-test-identity";
+
+/// Whether the identity in `identity_dir` is a throwaway test identity.
+#[must_use]
+pub fn is_throwaway_test_identity(identity_dir: &Path) -> bool {
+    identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER).is_file()
+}
+
+/// Provision the collaboration identity chain around a disposable identity
+/// named [`THROWAWAY_TEST_IDENTITY_NAME`] and marked with
+/// [`THROWAWAY_TEST_IDENTITY_MARKER`], for a test session on a dev image.
+///
+/// Never replaces or adopts a real identity: an identity without the marker
+/// is refused. Idempotent for a throwaway identity it minted earlier.
+///
+/// # Errors
+///
+/// [`io::ErrorKind::Unsupported`], touching nothing, in a release build
+/// without the `throwaway-test-identity` feature;
+/// [`io::ErrorKind::AlreadyExists`] when the directory already holds an
+/// identity that is not a throwaway one; otherwise as
+/// [`ensure_collaboration_identity`].
+pub fn ensure_throwaway_test_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    storage: IdentityStorage,
+) -> Result<ProvisionOutcome, io::Error> {
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    {
+        mint_throwaway_test_identity(identity_dir, paths, storage)
+    }
+    #[cfg(not(any(debug_assertions, feature = "throwaway-test-identity")))]
+    {
+        let _ = (identity_dir, paths, storage);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "throwaway test identities exist only in dev builds",
+        ))
+    }
+}
+
+#[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+fn mint_throwaway_test_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+    storage: IdentityStorage,
+) -> Result<ProvisionOutcome, io::Error> {
+    prepare_identity_directory(identity_dir)?;
+    let marker = identity_dir.join(THROWAWAY_TEST_IDENTITY_MARKER);
+    if runtime_identity::resolve_active_identity(identity_dir).is_some() {
+        if !marker.is_file() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                "this user already has an identity that is not a throwaway test identity",
+            ));
+        }
+    } else {
+        // The marker goes first: a marker without an identity is harmless,
+        // an unmarked throwaway would be refused from then on.
+        fs::write(&marker, b"")?;
+    }
+    ensure_collaboration_identity_in_context(
+        identity_dir,
+        paths,
+        IdentityProvisioningContext::ThrowawayTest,
+        storage,
+        DeviceClass::Native,
+    )
+}
+
 /// Prepare the private per-user identity directory before either the key
 /// transaction or its first-use crash journal is written. Keeping this as one
 /// operation prevents the journal preflight and the identity writer from
@@ -337,7 +469,7 @@ fn ensure_collaboration_identity_in_context(
     let primary_path = identity_dir.join(PRIMARY_IDENTITY_FILE);
     let (selected_path, outcome) =
         if let Some(path) = runtime_identity::resolve_active_identity(identity_dir) {
-            if context == IdentityProvisioningContext::NativeTilo {
+            if context != IdentityProvisioningContext::LegacyLinuxHost {
                 protect_identity_record_at(identity_dir, &path, storage)?;
             }
             (path, ProvisionOutcome::Existing)
@@ -411,12 +543,10 @@ fn ensure_collaboration_identity_in_context(
         class,
     )?;
 
-    // Keep the legacy primary path working while making it the first entry in
-    // the multi-identity registry. A registry write failure is a provisioning
-    // failure: silently creating a key that no workspace can select strands
-    // the identity immediately.
-    let registry =
-        crate::registry::IdentityRegistryStore::at(identity_dir).migrate_legacy_primary()?;
+    // Register the primary record in the multi-identity registry. A registry
+    // write failure is a provisioning failure: silently creating a key that no
+    // workspace can select strands the identity immediately.
+    let registry = crate::registry::IdentityRegistryStore::at(identity_dir).load_reconciled()?;
     if let Some(identity_id) = registry.default_identity {
         crate::device_fleet::DeviceFleetStore::at(identity_dir, paths.clone())
             .register_current_device(&identity_id)?;
@@ -651,8 +781,7 @@ pub fn verify_collaboration_identity(
     }
     let root_public = persist::read_public_key(&paths.user_pubkey)
         .map_err(|e| io::Error::other(e.to_string()))?;
-    let device = persist::read_device_key(&paths.device_privkey)
-        .map_err(|e| io::Error::other(e.to_string()))?;
+    let device = persist::load_device_key(paths).map_err(|e| io::Error::other(e.to_string()))?;
     let cert = persist::read_device_cert(&paths.device_cert)
         .map_err(|e| io::Error::other(e.to_string()))?;
     tilo_user_identity::verify_device_cert_at(&cert, now_ns)
@@ -675,11 +804,13 @@ pub fn verify_collaboration_identity(
 }
 
 /// Resolve the system identity root, with the same test/development override
-/// used by the filesystem synchroniser.
+/// used by the filesystem synchroniser, and this session's device-key
+/// custody ([`IdentityStorage::for_session`]).
 pub fn collaboration_identity_paths() -> IdentityPaths {
     std::env::var_os("TILO_IDENTITY_ROOT")
         .filter(|value| !value.is_empty())
         .map_or_else(IdentityPaths::default_system, IdentityPaths::under)
+        .with_device_key_custody(IdentityStorage::for_session().device_key_custody())
 }
 
 fn import_primary_identity(
@@ -755,29 +886,64 @@ mod tests {
 
     use std::sync::{Arc, Barrier};
 
-    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
-    struct TmpDir(PathBuf);
-    impl TmpDir {
-        fn new(name: &str) -> Self {
-            let base = std::env::temp_dir();
-            let pid = std::process::id();
-            let nonce = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |d| d.as_nanos());
-            let path = base.join(format!("tilo-desktop-firstboot-{name}-{pid}-{nonce}"));
-            std::fs::create_dir_all(&path).expect("create tmpdir");
-            TmpDir(path)
+    #[test]
+    #[cfg(any(debug_assertions, feature = "throwaway-test-identity"))]
+    fn a_throwaway_test_identity_is_marked_and_never_replaces_a_real_one() {
+        // Phase `a_throwaway_identity_is_named_and_marked`.
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            assert!(matches!(
+                ensure_throwaway_test_identity(&personal, &paths, FILES).expect("provision"),
+                ProvisionOutcome::Created { .. }
+            ));
+            assert!(is_throwaway_test_identity(&personal));
+            let identity = runtime_identity::load_from_path(personal.join(PRIMARY_IDENTITY_FILE))
+                .expect("load throwaway identity");
+            assert_eq!(identity.display_name(), THROWAWAY_TEST_IDENTITY_NAME);
+            assert!(
+                paths.device_cert.exists(),
+                "the device chain is provisioned too"
+            );
+            // Phase `a_second_run_keeps_the_same_throwaway`.
+            assert_eq!(
+                ensure_throwaway_test_identity(&personal, &paths, FILES).expect("again"),
+                ProvisionOutcome::Existing
+            );
         }
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-    impl Drop for TmpDir {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.0);
+        // Phase `a_real_identity_is_refused_and_left_untouched`.
+        {
+            let tmp = tempfile::tempdir().expect("tempdir");
+            let personal = tmp.path().join("config/tilo/identity");
+            let paths = IdentityPaths::under(tmp.path().join("system"));
+            ensure_collaboration_identity(&personal, &paths).expect("real identity");
+            let record = personal.join(PRIMARY_IDENTITY_FILE);
+            let before = fs::read(&record).unwrap();
+            let error = ensure_throwaway_test_identity(&personal, &paths, FILES)
+                .expect_err("a real identity must not be adopted as a throwaway");
+            assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+            assert_eq!(fs::read(&record).unwrap(), before);
+            assert!(!is_throwaway_test_identity(&personal));
         }
     }
 
+    #[test]
+    #[cfg(not(any(debug_assertions, feature = "throwaway-test-identity")))]
+    fn a_release_build_refuses_a_throwaway_test_identity() {
+        // Only compiled into a plain `--release` test run, the profile the
+        // OS image's binaries are built with.
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let personal = tmp.path().join("config/tilo/identity");
+        let paths = IdentityPaths::under(tmp.path().join("system"));
+        let error = ensure_throwaway_test_identity(&personal, &paths, FILES)
+            .expect_err("a release build must not mint a throwaway identity");
+        assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+        assert!(!personal.exists(), "the refusal writes nothing");
+        assert!(!paths.device_cert.exists());
+    }
+
+    /// Minimal tempdir helper (avoids pulling `tempfile` as a dev-dep — the only test in `quick-shell` that needs one).
     #[cfg(unix)]
     #[test]
     fn identity_files_are_private_and_refuse_symlinks() {
@@ -785,7 +951,7 @@ mod tests {
         {
             use std::os::unix::fs::symlink;
 
-            let tmp = TmpDir::new("identity-dir-symlink");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let target = tmp.path().join("target");
             fs::create_dir(&target).unwrap();
             let linked = tmp.path().join("linked");
@@ -794,7 +960,7 @@ mod tests {
         }
         // Phase `collaboration_verifier_rejects_a_permissive_primary_secret`.
         {
-            let tmp = TmpDir::new("collaboration-identity-permissions");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_collaboration_identity(&personal, &paths).unwrap();
@@ -807,7 +973,7 @@ mod tests {
         }
         // Phase `ensure_primary_identity_writes_a_private_file`.
         {
-            let tmp = TmpDir::new("mode");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let identity_dir = tmp.path().join("tilo").join("identity");
             ensure_primary_identity(&identity_dir).expect("provision identity");
             let identity_file = identity_dir.join(PRIMARY_IDENTITY_FILE);
@@ -821,7 +987,7 @@ mod tests {
     fn primary_identity_is_created_once_and_legacy_hosts_are_associated_not_relabelled() {
         // Phase `ensure_primary_identity_reports_existing_vs_created`.
         {
-            let tmp = TmpDir::new("outcome");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let dir = tmp.path().join("tilo").join("identity");
             // Fresh run creates.
             match ensure_primary_identity(&dir).expect("provision ok") {
@@ -847,7 +1013,7 @@ mod tests {
         }
         // Phase `legacy_linux_host_associates_a_fresh_identity_with_the_unix_account`.
         {
-            let tmp = TmpDir::new("legacy-host-account");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
 
@@ -862,7 +1028,7 @@ mod tests {
         }
         // Phase `legacy_linux_host_does_not_relabel_or_migrate_an_existing_identity`.
         {
-            let tmp = TmpDir::new("legacy-host-existing");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_primary_identity(&personal).expect("seed existing identity");
@@ -887,7 +1053,7 @@ mod tests {
     fn legacy_host_resumes_partial_identity_beneath_atomic_fedora_home_link() {
         use std::os::unix::fs::symlink;
 
-        let tmp = TmpDir::new("legacy-host-fedora-home");
+        let tmp = tempfile::tempdir().expect("tempdir");
         let real_home = tmp.path().join("var/home/alice");
         let personal = real_home.join(".config/tilo/identity");
         let identity_root = real_home.join(".local/share/tilo");
@@ -937,7 +1103,7 @@ mod tests {
 
     #[test]
     fn the_shell_issues_native_certificates_and_the_runtime_foreign_ones() {
-        let tmp = TmpDir::new("device-class");
+        let tmp = tempfile::tempdir().expect("tempdir");
         let personal = tmp.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(tmp.path().join("system"));
         ensure_collaboration_identity(&personal, &paths).unwrap();
@@ -968,7 +1134,7 @@ mod tests {
             foreign_bytes
         );
 
-        let fresh = TmpDir::new("device-class-fresh");
+        let fresh = tempfile::tempdir().expect("tempdir");
         let personal = fresh.path().join("config/tilo/identity");
         let paths = IdentityPaths::under(fresh.path().join("system"));
         super::ensure_foreign_collaboration_identity(&personal, &paths, FILES).unwrap();
@@ -981,7 +1147,7 @@ mod tests {
     fn collaboration_setup_builds_and_verifies_one_identity_chain() {
         // Phase `collaboration_setup_creates_one_verified_identity_chain`.
         {
-            let tmp = TmpDir::new("collaboration-identity");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
 
@@ -1023,7 +1189,7 @@ mod tests {
         }
         // Phase `collaboration_verifier_rejects_a_mismatched_personal_root`.
         {
-            let tmp = TmpDir::new("collaboration-identity-mismatch");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let other_personal = tmp.path().join("other/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
@@ -1041,7 +1207,11 @@ mod tests {
         }
         // Phase `collaboration_setup_repairs_the_active_import_without_minting_primary`.
         {
-            let tmp = TmpDir::new("active-import");
+            // Selecting an identity secures it with the session's store; this
+            // fixture's store is files.
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set(FILE_SECRETS_ENV, "1");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let personal = tmp.path().join("config/tilo/identity");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             ensure_primary_identity(&personal).expect("seed exported identity");
@@ -1077,7 +1247,7 @@ mod tests {
     fn concurrent_and_multi_user_provisioning_keeps_one_device_owner() {
         // Phase `multiple_os_users_share_one_device_without_replacing_its_owner`.
         {
-            let tmp = TmpDir::new("multi-user-device");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             let alice = tmp.path().join("alice/tilo/identity");
             let bob = tmp.path().join("bob/tilo/identity");
@@ -1109,7 +1279,7 @@ mod tests {
         }
         // Phase `simultaneous_user_provisioning_builds_one_consistent_device_chain`.
         {
-            let tmp = TmpDir::new("simultaneous-user-provisioning");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let paths = IdentityPaths::under(tmp.path().join("system"));
             let alice = tmp.path().join("alice/tilo/identity");
             let bob = tmp.path().join("bob/tilo/identity");
@@ -1166,7 +1336,7 @@ mod tests {
         }
         // Phase `simultaneous_owner_claims_elect_one_valid_winner_without_clobbering`.
         {
-            let tmp = TmpDir::new("simultaneous-owner-election");
+            let tmp = tempfile::tempdir().expect("tempdir");
             let path = tmp.path().join("system/user-identity/pubkey.bin");
             std::fs::create_dir_all(path.parent().expect("claim parent")).expect("claim parent");
 

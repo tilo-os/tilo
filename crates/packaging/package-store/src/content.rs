@@ -67,15 +67,6 @@ impl Content<'_> {
         Ok(BlobHash(*stored.as_bytes()))
     }
 
-    /// Ingest the file at `path` (absolute), returning its hash.
-    pub(crate) fn ingest_file(&self, path: &Path) -> Result<BlobHash, StoreError> {
-        let stored = self
-            .runtime
-            .block_on(self.store.ingest_file(path))
-            .map_err(content_error)?;
-        Ok(BlobHash(*stored.as_bytes()))
-    }
-
     /// Write `blob` to the new file `target`, sharing extents with the
     /// store's copy where the filesystem allows.
     pub(crate) fn export(&self, blob: &BlobHash, target: &Path) -> Result<(), StoreError> {

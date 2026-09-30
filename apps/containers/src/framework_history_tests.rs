@@ -5,6 +5,7 @@ use tilo_automerge::ApplyIncoming as _;
 use ui::headless::test_support::{a11y_node_labelled, find_semantic};
 use ui::history_mode::pending_controls::PendingControlStatus;
 use ui::widget::Widget;
+use ui::widget::{AppModel, ModelPath};
 
 type ArmedReplacement = (
     std::sync::mpsc::Receiver<crate::app::ControlledRuntimeRequest>,
@@ -558,13 +559,15 @@ struct CustodyDeniedContainersRoot {
 }
 
 impl Widget for CustodyDeniedContainersRoot {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls
+    );
+
     fn name(&self) -> &'static str {
         "CustodyDeniedContainersRoot"
     }
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        self.child.document_history_definition()
-    }
-    fn sync(&mut self, doc: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
         self.child.sync(doc, path);
     }
     fn build_layout(
@@ -599,18 +602,9 @@ impl Widget for CustodyDeniedContainersRoot {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<taffy::NodeId>,
-        node: taffy::NodeId,
-        tree: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        self.child.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, tree,
-        );
+        self.child.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         vec![self.child.as_ref()]
@@ -622,12 +616,21 @@ impl Widget for CustodyDeniedContainersRoot {
             vec![self.child.as_mut()]
         }
     }
+}
+
+impl ui::widget::controls::ActionControls for CustodyDeniedContainersRoot {
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if self.denied.get() {
             None
         } else {
-            self.child.take_control_invocation()
+            ui::widget::controls::take_control_invocation(self.child.as_mut())
         }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CustodyDeniedContainersRoot {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        ui::history_mode::capability::document_history_definition(self.child.as_ref())
     }
 }
 

@@ -9,6 +9,7 @@ use crate::LocalState;
 use crate::theme::Theme;
 use crate::time::SystemTime;
 use crate::tokens::TextRole;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{
     Button, ButtonStyle, Checkbox, Column, Container, Element, Row, Scrollable, Spacer, Text,
     TextInput, Toggle, Widget, labeled_check, labeled_field,
@@ -292,25 +293,47 @@ fn build_node(node: &UiNode, context: &UiBuildContext) -> Result<Element, UiGrap
             }
             if let (Some(navigation), Some(router)) = (navigate, context.router.as_ref()) {
                 let router = router.clone();
+                // A published view action, so the palette, agents and the
+                // native audit reach navigation as they reach any control. A
+                // button that also writes a document path keeps that path.
+                let bind = |button: Button, navigate: Box<dyn Fn() + 'static>| {
+                    if on_click_path.is_some() {
+                        button.on_click(move || navigate())
+                    } else {
+                        button.on_view(move || navigate())
+                    }
+                };
                 button = match navigation {
                     UiNavigation::Push { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.push(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.push(route.clone());
+                            }),
+                        )
                     }
                     UiNavigation::Replace { route } if router.knows(route) => {
                         let route = route.clone();
-                        button.on_click(move || {
-                            let _ = router.replace(route.clone());
-                        })
+                        bind(
+                            button,
+                            Box::new(move || {
+                                let _ = router.replace(route.clone());
+                            }),
+                        )
                     }
-                    UiNavigation::Back => button.on_click(move || {
-                        let _ = router.back();
-                    }),
-                    UiNavigation::Forward => button.on_click(move || {
-                        let _ = router.forward();
-                    }),
+                    UiNavigation::Back => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.back();
+                        }),
+                    ),
+                    UiNavigation::Forward => bind(
+                        button,
+                        Box::new(move || {
+                            let _ = router.forward();
+                        }),
+                    ),
                     UiNavigation::Push { .. } | UiNavigation::Replace { .. } => button,
                 };
             }
@@ -428,71 +451,22 @@ fn reconcile_node(
                 children: old_children,
                 ..
             },
-            UiNode::Column {
-                id,
-                children: new_children,
-                gap,
-                no_padding,
-                intrinsic_height,
-                fill_remaining_height,
-            },
-        ) => reconcile_column(
-            old,
-            old_children,
-            id,
-            new_children,
-            *gap,
-            *no_padding,
-            *intrinsic_height,
-            *fill_remaining_height,
-            context,
-        ),
+            UiNode::Column { .. },
+        ) => reconcile_column(old, old_children, new_node, context),
         (
             UiNode::Row {
                 children: old_children,
                 ..
             },
-            UiNode::Row {
-                id,
-                children: new_children,
-                no_wrap,
-                fill_remaining_height,
-            },
-        ) => reconcile_row(
-            old,
-            old_children,
-            id,
-            new_children,
-            *no_wrap,
-            *fill_remaining_height,
-            context,
-        ),
+            UiNode::Row { .. },
+        ) => reconcile_row(old, old_children, new_node, context),
         (
             UiNode::Container {
                 child: old_child_node,
                 ..
             },
-            UiNode::Container {
-                id,
-                child: new_child_node,
-                background,
-                no_padding,
-                fill_height,
-                width,
-                height,
-            },
-        ) => reconcile_container(
-            old,
-            old_child_node,
-            id,
-            new_child_node,
-            *background,
-            *no_padding,
-            *fill_height,
-            *width,
-            *height,
-            context,
-        ),
+            UiNode::Container { .. },
+        ) => reconcile_container(old, old_child_node, new_node, context),
         _ => {
             let snapshot = widget_state_snapshot(old.as_ref());
             let focused = focused_widget_snapshot(old.as_ref());
@@ -506,119 +480,104 @@ fn reconcile_node(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "column graph props are applied together during one reconcile step"
-)]
+/// Rebuilding `new_node` from scratch is the fallback whenever the retained
+/// widget is not the matching kind.
 fn reconcile_column(
     mut old: Element,
     old_children: &[UiNode],
-    id: &str,
-    new_children: &[UiNode],
-    gap: Option<f32>,
-    no_padding: bool,
-    intrinsic_height: bool,
-    fill_remaining_height: bool,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(column) = old
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Column>())
+    let (
+        UiNode::Column {
+            id,
+            children: new_children,
+            gap,
+            no_padding,
+            intrinsic_height,
+            fill_remaining_height,
+        },
+        Some(column),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Column>()),
+    )
     else {
-        return Ok((
-            build_node(
-                &UiNode::Column {
-                    id: id.to_owned(),
-                    children: new_children.to_vec(),
-                    gap,
-                    no_padding,
-                    intrinsic_height,
-                    fill_remaining_height,
-                },
-                context,
-            )?,
-            true,
-        ));
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = column.take_children();
     let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
     column.set_children(next);
-    column.apply_graph_props(id, gap, no_padding, intrinsic_height, fill_remaining_height);
+    column.apply_graph_props(
+        id,
+        *gap,
+        *no_padding,
+        *intrinsic_height,
+        *fill_remaining_height,
+    );
     Ok((old, topology))
 }
 
 fn reconcile_row(
     mut old: Element,
     old_children: &[UiNode],
-    id: &str,
-    new_children: &[UiNode],
-    no_wrap: bool,
-    fill_remaining_height: bool,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(row) = old.as_any_mut().and_then(|any| any.downcast_mut::<Row>()) else {
-        return Ok((
-            build_node(
-                &UiNode::Row {
-                    id: id.to_owned(),
-                    children: new_children.to_vec(),
-                    no_wrap,
-                    fill_remaining_height,
-                },
-                context,
-            )?,
-            true,
-        ));
+    let (
+        UiNode::Row {
+            id,
+            children: new_children,
+            no_wrap,
+            fill_remaining_height,
+        },
+        Some(row),
+    ) = (
+        new_node,
+        old.as_any_mut().and_then(|any| any.downcast_mut::<Row>()),
+    )
+    else {
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = row.take_children();
     let (next, topology) = reconcile_child_list(previous, old_children, new_children, context)?;
     row.set_children(next);
-    row.apply_graph_props(id, no_wrap, fill_remaining_height);
+    row.apply_graph_props(id, *no_wrap, *fill_remaining_height);
     Ok((old, topology))
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "container graph props are applied together during one reconcile step"
-)]
 fn reconcile_container(
     mut old: Element,
     old_child_node: &UiNode,
-    id: &str,
-    new_child_node: &UiNode,
-    background: bool,
-    no_padding: bool,
-    fill_height: bool,
-    width: Option<f32>,
-    height: Option<f32>,
+    new_node: &UiNode,
     context: &UiBuildContext,
 ) -> Result<(Element, bool), UiGraphError> {
-    let Some(container) = old
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Container>())
+    let (
+        UiNode::Container {
+            id,
+            child: new_child_node,
+            background,
+            no_padding,
+            fill_height,
+            width,
+            height,
+        },
+        Some(container),
+    ) = (
+        new_node,
+        old.as_any_mut()
+            .and_then(|any| any.downcast_mut::<Container>()),
+    )
     else {
-        return Ok((
-            build_node(
-                &UiNode::Container {
-                    id: id.to_owned(),
-                    child: Box::new(new_child_node.clone()),
-                    background,
-                    no_padding,
-                    fill_height,
-                    width,
-                    height,
-                },
-                context,
-            )?,
-            true,
-        ));
+        return Ok((build_node(new_node, context)?, true));
     };
     let previous = container
         .take_child()
         .unwrap_or_else(|| Box::new(Spacer::new()));
     let (child, topology) = reconcile_node(previous, old_child_node, new_child_node, context)?;
     container.set_child(child);
-    container.apply_graph_props(id, background, no_padding, fill_height, width, height);
+    container.apply_graph_props(id, *background, *no_padding, *fill_height, *width, *height);
     Ok((old, topology))
 }
 
@@ -657,7 +616,7 @@ fn widget_state_snapshot(widget: &dyn Widget) -> HashMap<String, Option<String>>
     let mut states = HashMap::new();
     fn walk(widget: &dyn Widget, states: &mut HashMap<String, Option<String>>) {
         if let Some(id) = widget.test_id() {
-            states.insert(id.to_owned(), widget.get_state());
+            states.insert(id.to_owned(), crate::undo::get_state(widget));
         }
         widget.for_each_child(&mut |child| walk(child, states));
     }
@@ -669,7 +628,7 @@ fn restore_widget_states(widget: &mut dyn Widget, states: &HashMap<String, Optio
     if let Some(id) = widget.test_id().map(str::to_owned)
         && let Some(Some(state)) = states.get(&id)
     {
-        widget.set_state(state);
+        crate::undo::set_state(widget, state);
     }
     for child in widget.children_mut() {
         restore_widget_states(child, states);
@@ -1198,19 +1157,8 @@ impl UiGraphHandle {
 }
 
 fn write_live_graph_atomic(path: &Path, json: &str) -> Result<(), UiGraphError> {
-    let parent = path.parent().unwrap_or_else(|| Path::new("."));
-    let temporary = parent.join(format!(
-        ".{}.tmp",
-        path.file_name()
-            .and_then(|name| name.to_str())
-            .unwrap_or("ui-graph.json")
-    ));
-    std::fs::write(&temporary, json)
-        .map_err(|error| UiGraphError::Io(format!("writing {}: {error}", temporary.display())))?;
-    std::fs::rename(&temporary, path).map_err(|error| {
-        let _ = std::fs::remove_file(&temporary);
-        UiGraphError::Io(format!("publishing {}: {error}", path.display()))
-    })
+    tilo_files::native::atomic::write(path, json.as_bytes())
+        .map_err(|error| UiGraphError::Io(format!("publishing {}: {error}", path.display())))
 }
 
 fn advance_graph_revision(revision: &mut u64) -> Result<(), UiGraphError> {
@@ -1436,12 +1384,17 @@ impl LiveUi {
 }
 
 impl Widget for LiveUi {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::undo::UndoPoints
+    );
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -1497,32 +1450,12 @@ impl Widget for LiveUi {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -1546,14 +1479,6 @@ impl Widget for LiveUi {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let own = std::mem::take(&mut self.structure_dirty);
         own | self.child.take_structure_dirty()
@@ -1575,12 +1500,6 @@ impl Widget for LiveUi {
             "tilo.ui.graph.undo",
             "tilo.ui.graph.redo",
         ]
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
-        let mut resources = self.child.resources(doc);
-        resources.push(self.graph_resource());
-        resources
     }
 
     fn start_operation(
@@ -1620,6 +1539,23 @@ impl Widget for LiveUi {
             presence,
             permissions,
         );
+    }
+}
+
+impl crate::undo::UndoPoints for LiveUi {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl crate::resources::PublishesResources for LiveUi {
+    fn resources(&self, doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+        let mut resources = crate::resources::resources(self.child.as_ref(), doc);
+        resources.push(self.graph_resource());
+        resources
     }
 }
 
@@ -1727,7 +1663,7 @@ fn focused_widget_snapshot(widget: &dyn Widget) -> Option<(String, Option<String
     if widget.is_focused()
         && let Some(id) = widget.test_id()
     {
-        return Some((id.to_owned(), widget.get_state()));
+        return Some((id.to_owned(), crate::undo::get_state(widget)));
     }
     widget
         .children()
@@ -1739,7 +1675,7 @@ fn restore_widget_focus(widget: &mut dyn Widget, id: &str, state: Option<&str>) 
     if widget.test_id() == Some(id) {
         widget.set_focus(true);
         if let Some(state) = state {
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
         }
         return true;
     }
@@ -3122,12 +3058,14 @@ fn delete_button(
 }
 
 impl Widget for UiGraphEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(dyn crate::undo::LocalUndo, dyn crate::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.rebuild_if_changed();
         self.child.sync(state, path);
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.rebuild_if_changed();
         self.child.update(state, path)
     }
@@ -3183,32 +3121,12 @@ impl Widget for UiGraphEditor {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if let Ok(children) = taffy.children(node_id)
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(child) = children.first()
         {
-            self.child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                *child,
-                taffy,
-            );
+            self.child
+                .handle_event(event, &mut ctx.reborrow(ctx.path, *child));
         }
     }
 
@@ -3236,14 +3154,6 @@ impl Widget for UiGraphEditor {
         self.rect
     }
 
-    fn needs_commit(&self) -> bool {
-        self.child.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.child.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         std::mem::take(&mut self.structure_dirty) | self.child.take_structure_dirty()
     }
@@ -3255,6 +3165,36 @@ impl Widget for UiGraphEditor {
             || self.child.needs_idle_sync()
     }
 
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut crate::text_render::TextRenderer,
+        theme: &Theme,
+        presence: &crate::presence::PresenceCtx,
+        permissions: &crate::permissions::PermissionContext,
+    ) {
+        self.child.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+}
+
+impl crate::undo::UndoPoints for UiGraphEditor {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.child.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.child.as_mut());
+    }
+}
+
+impl crate::undo::LocalUndo for UiGraphEditor {
     fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
         if !widget_tree_has_focus(self.child.as_ref()) {
             return false;
@@ -3275,25 +3215,6 @@ impl Widget for UiGraphEditor {
             (_, Err(error)) => status.set(format!("History action failed: {error}")),
         }
         true
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut crate::text_render::TextRenderer,
-        theme: &Theme,
-        presence: &crate::presence::PresenceCtx,
-        permissions: &crate::permissions::PermissionContext,
-    ) {
-        self.child.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
     }
 }
 
@@ -3577,7 +3498,7 @@ mod tests {
     }
 
     #[test]
-    fn routed_graph_buttons_drive_history_and_back_without_document_mutations() {
+    fn routed_graph_buttons_publish_navigation_and_leave_the_document_alone() {
         fn screen(id: &str, title: &str, button: UiNode) -> UiDocument {
             UiDocument::new(UiNode::Column {
                 id: id.into(),
@@ -3665,6 +3586,20 @@ mod tests {
             .perform_named("back-home", &Action::Activate)
             .unwrap();
         assert_eq!(handle.current(), "home");
+        assert_eq!(driver.dump_json(), document_before);
+
+        let audit = driver.native_app_audit();
+        assert!(audit.is_certified(), "{:?}", audit.issues);
+        driver
+            .invoke_action(
+                &tilo_actions::ActionAddress::new("tilo.control:open-settings", "invoke"),
+                &serde_json::Map::new(),
+                false,
+                None,
+            )
+            .unwrap();
+        assert_eq!(handle.current(), "settings");
+        assert!(driver.native_app_audit().is_certified());
         assert_eq!(driver.dump_json(), document_before);
     }
 
@@ -3789,7 +3724,7 @@ mod tests {
     fn set_named_state(widget: &mut dyn Widget, id: &str, state: &str) -> bool {
         if widget.test_id() == Some(id) {
             widget.set_focus(true);
-            widget.set_state(state);
+            crate::undo::set_state(widget, state);
             return true;
         }
         widget
@@ -3800,7 +3735,7 @@ mod tests {
 
     fn named_state(widget: &dyn Widget, id: &str) -> Option<String> {
         if widget.test_id() == Some(id) {
-            return widget.get_state();
+            return crate::undo::get_state(widget);
         }
         widget
             .children()
@@ -3982,7 +3917,7 @@ mod tests {
     fn live_graph_actions_apply_and_dump() {
         let handle = UiGraphHandle::new(sample()).unwrap();
         let mut live = handle.widget(&Theme::dark()).unwrap();
-        let resources = live.resources(&AutoCommit::new());
+        let resources = crate::resources::resources(&live, &AutoCommit::new());
         assert!(
             resources
                 .iter()

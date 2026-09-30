@@ -161,7 +161,7 @@ mod tests {
     )]
     #[test]
     fn a_temporary_service_member_reads_until_its_grant_expires() {
-        use crate::shell::channel_encryption::tests::{
+        use crate::shell::channel_encryption::testing::{
             Directory, Endpoint, Policy, Room, key, public,
         };
         use crate::shell::channel_encryption::{
@@ -228,18 +228,21 @@ mod tests {
             Endpoint::join(&transport, room, 0),
             Endpoint::join(&transport, room, 1),
         );
+        // One simulated clock drives every call, so how long the host takes
+        // to create groups and seal content cannot outrun the pumps.
         let mut now = Instant::now();
-        let mut run = |steward: &mut ChannelEncryption,
-                       service: &mut ChannelEncryption,
-                       wall: u64,
-                       seconds: u64| {
+        let run = |steward: &mut ChannelEncryption,
+                   service: &mut ChannelEncryption,
+                   now: &mut Instant,
+                   wall: u64,
+                   seconds: u64| {
             for _ in 0..seconds.saturating_mul(4) {
-                now = now.checked_add(Duration::from_millis(250)).unwrap();
-                steward.pump(&steward_end, now, wall);
-                service.pump(&service_end, now, wall);
+                *now = now.checked_add(Duration::from_millis(250)).unwrap();
+                steward.pump(&steward_end, *now, wall);
+                service.pump(&service_end, *now, wall);
             }
         };
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
             panic!("the steward's device opens its own channel");
         };
         let before = keys
@@ -252,12 +255,12 @@ mod tests {
 
         // Without a grant the service only waits.
         assert!(matches!(
-            service.access(room, channel, Instant::now()),
+            service.access(room, channel, now),
             ChannelAccess::Waiting
         ));
-        run(&mut steward, &mut service, 1_000, 5);
+        run(&mut steward, &mut service, &mut now, 1_000, 5);
         assert!(matches!(
-            service.access(room, channel, Instant::now()),
+            service.access(room, channel, now),
             ChannelAccess::Waiting
         ));
 
@@ -271,9 +274,8 @@ mod tests {
             Some(2_000),
         )
         .unwrap();
-        run(&mut steward, &mut service, 1_000, 5);
-        let ChannelAccess::Ready(service_keys) = service.access(room, channel, Instant::now())
-        else {
+        run(&mut steward, &mut service, &mut now, 1_000, 5);
+        let ChannelAccess::Ready(service_keys) = service.access(room, channel, now) else {
             panic!("a granted service member is admitted");
         };
         assert!(
@@ -282,7 +284,7 @@ mod tests {
                 .is_ok(),
             "it reads the channel's history, like any joiner"
         );
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
             panic!("steward keys");
         };
         let during = keys
@@ -299,12 +301,12 @@ mod tests {
         );
 
         // The grant's deadline passes: the steward removes the service.
-        run(&mut steward, &mut service, 2_000, 5);
+        run(&mut steward, &mut service, &mut now, 2_000, 5);
         assert!(matches!(
-            service.access(room, channel, Instant::now()),
+            service.access(room, channel, now),
             ChannelAccess::Removed
         ));
-        let ChannelAccess::Ready(keys) = steward.access(room, channel, Instant::now()) else {
+        let ChannelAccess::Ready(keys) = steward.access(room, channel, now) else {
             panic!("steward keys");
         };
         assert!(

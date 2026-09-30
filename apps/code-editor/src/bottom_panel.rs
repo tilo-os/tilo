@@ -8,13 +8,13 @@
 //! The panel renders the data the app feeds it and reports what the user
 //! clicked; it owns no filesystem or language-server state of its own.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
-use ui::widget::{EmptyState, Widget};
+use ui::widget::{EmptyState, EmptyStateContent, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
@@ -256,15 +256,14 @@ impl BottomPanel {
                 self.rect.y1,
             );
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 body,
-                Some(ui::icons::Icon::Search),
-                "Search this project",
-                Some("Ctrl+Shift+F searches every file under the project root."),
-                None,
+                &EmptyStateContent {
+                    icon: Some(ui::icons::Icon::Search),
+                    title: "Search this project",
+                    message: Some("Ctrl+Shift+F searches every file under the project root."),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
             return;
@@ -318,10 +317,6 @@ impl BottomPanel {
     /// Draw one row per visible search hit: the `path:line` location column,
     /// then the code preview with the matched span tinted. Records each row's
     /// rect in `hit_rects` for click hit-testing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a draw pass over one screenful of rows threading through the same handful of already-computed geometry values; grouping them into a struct would not make the call clearer"
-    )]
     fn draw_search_rows(
         &mut self,
         scene: &mut Scene,
@@ -635,15 +630,14 @@ impl BottomPanel {
                 ),
             };
             EmptyState::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 body,
-                Some(icon),
-                title,
-                Some(message),
-                None,
+                &EmptyStateContent {
+                    icon: Some(icon),
+                    title,
+                    message: Some(message),
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
         } else {
@@ -799,8 +793,6 @@ fn ellipsize_back(tr: &mut TextRenderer, s: &str, size: f32, max_w: f64) -> Stri
 }
 
 impl Widget for BottomPanel {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -899,21 +891,11 @@ impl Widget for BottomPanel {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.tab != PanelTab::Search || !self.rect.contains(self.last_cursor) {
@@ -931,7 +913,7 @@ impl Widget for BottomPanel {
                     self.search_scroll = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -948,7 +930,7 @@ impl Widget for BottomPanel {
                                 self.tab_changed = true;
                                 self.dirty = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                             break;
                         }
                     }
@@ -961,7 +943,7 @@ impl Widget for BottomPanel {
                         if rect.contains(self.last_cursor) {
                             self.activated_hit = Some(self.search_scroll + i);
                             self.dirty = true;
-                            *handled = true;
+                            *ctx.handled = true;
                             break;
                         }
                     }

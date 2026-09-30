@@ -36,10 +36,6 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
         command.env(key, path);
     }
     command.env("TILO_PACKAGE_ID", "so.tilo.calendar.cli-test");
-    command.env(
-        "TILO_CALENDAR_DATA",
-        directory.join("absent-legacy.automerge"),
-    );
     if let Some(source) = source {
         command.arg(source);
     }
@@ -64,7 +60,7 @@ fn run_calendar(directory: &Path, source: Option<&Path>, name: &str) -> serde_js
             std::fs::File::create(&stderr).unwrap(),
         ));
     let mut child = command.spawn().expect("launch actual Calendar binary");
-    let started = std::time::Instant::now();
+    let started = ui::time::now();
     let status = loop {
         if let Some(status) = child.try_wait().unwrap() {
             break status;

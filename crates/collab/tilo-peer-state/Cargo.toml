@@ -6,6 +6,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+# The shell retention authority a relay binding pins.
+tilo-relay-protocol = { path = "../../hosting/tilo-relay-protocol" }
 fnv.workspace = true
 tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 flate2.workspace = true
@@ -30,6 +32,8 @@ tilo-user-identity = { path = "../tilo-user-identity" }
 [dev-dependencies]
 # The sanctioned patch-log-free way to take changes into an AutoCommit (clippy.toml).
 tilo-automerge.workspace = true
+# Real channel content keys for the sealed compaction tests.
+channel-crypto = { path = "../channel-crypto" }
 
 [lints]
 workspace = true

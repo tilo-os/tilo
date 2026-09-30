@@ -481,3 +481,46 @@ fn recorded_payloads_decode_and_encode_unchanged() {
         assert_eq!(serde_json::to_string(&action).unwrap(), payload);
     }
 }
+
+#[test]
+fn add_slide_writes_its_title_and_body_in_one_step() {
+    let mut participant = Participant::new();
+    let before = participant.deck().slides.len();
+    participant
+        .invoke(
+            "add-slide",
+            &json!({"layout": "title", "title": "Product Launch", "body": "October 2026"}),
+        )
+        .unwrap();
+    participant
+        .invoke(
+            "add-slide",
+            &json!({"title": "Agenda", "body": "Goals\nTimeline\nBudget"}),
+        )
+        .unwrap();
+    participant.invoke("add-slide", &json!({})).unwrap();
+    let deck = participant.deck();
+    assert_eq!(deck.slides.len(), before + 3);
+    let texts = |index: usize| -> Vec<String> {
+        deck.slides[index]
+            .elements
+            .iter()
+            .filter(|element| element.kind == ElementKind::Text)
+            .map(|element| element.text.clone())
+            .collect()
+    };
+    assert_eq!(texts(before), ["Product Launch", "October 2026"]);
+    assert_eq!(deck.slides[before].layout, crate::model::Layout::Title);
+    assert_eq!(texts(before + 1), ["Agenda", "Goals\nTimeline\nBudget"]);
+    assert_eq!(
+        texts(before + 2),
+        ["New slide", "Add your content…"],
+        "no arguments: the template"
+    );
+    assert!(
+        participant
+            .invoke("add-slide", &json!({"layout": "sideways"}))
+            .is_err(),
+        "a layout outside the choices is refused"
+    );
+}

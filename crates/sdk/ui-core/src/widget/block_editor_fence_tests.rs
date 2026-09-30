@@ -134,14 +134,16 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
             event,
             is_synthetic: false,
         },
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &ROOT,
-        &mut handled,
-        &mut None,
-        NodeId::new(0),
-        &TaffyTree::new(),
+        &mut crate::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut None,
+            node_id: NodeId::new(0),
+            taffy: &TaffyTree::new(),
+        },
     );
     assert!(handled);
     editor.sync(doc, &ROOT);
@@ -241,21 +243,21 @@ fn typed_fences_promote_track_language_and_undo() {
         state.commit_action(None, None);
         type_text(&mut editor, &mut state.doc, "``");
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         type_text(&mut editor, &mut state.doc, "`");
         assert!(
-            editor.needs_commit(),
+            crate::undo::needs_commit(&editor),
             "replacing the line must retain its undo checkpoint"
         );
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         type_text(&mut editor, &mut state.doc, "python");
         assert!(
-            editor.needs_commit(),
+            crate::undo::needs_commit(&editor),
             "language metadata is an undoable edit"
         );
         state.commit_action(None, None);
-        Widget::on_commit(&mut editor);
+        crate::undo::on_commit(&mut editor);
         assert!(state.undo(None, None).is_some());
         editor.sync(&mut state.doc, &ROOT);
         assert_eq!(editor.blocks[0].kind, BlockKind::CodeBlock { lang: None });

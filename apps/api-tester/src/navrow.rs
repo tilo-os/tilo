@@ -15,8 +15,8 @@
 //! while becoming fully navigable.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -26,6 +26,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action, Role};
 use ui::color_compat::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
@@ -144,8 +145,6 @@ impl NavRow {
 }
 
 impl Widget for NavRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -201,8 +200,6 @@ impl Widget for NavRow {
         _presence: &PresenceCtx,
     ) {
         let r = self.rect;
-        let y = r.y0;
-        let inner_w = r.width();
 
         // Focus ring — a rounded outline that reads at a glance and is the
         // one visible cue a hand-painted row never had.
@@ -262,13 +259,8 @@ impl Widget for NavRow {
             }
             NavKind::Collection { expanded, count } => {
                 Self::draw_collection_row(
-                    scene,
-                    t,
-                    tr,
-                    theme,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     r,
-                    y,
-                    inner_w,
                     &self.label,
                     *expanded,
                     *count,
@@ -276,13 +268,8 @@ impl Widget for NavRow {
             }
             NavKind::Request { method, selected } => {
                 Self::draw_request_row(
-                    scene,
-                    t,
-                    tr,
-                    theme,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     r,
-                    y,
-                    inner_w,
                     &self.label,
                     *method,
                     *selected,
@@ -290,13 +277,8 @@ impl Widget for NavRow {
             }
             NavKind::History { method, status } => {
                 Self::draw_history_row(
-                    scene,
-                    t,
-                    tr,
-                    theme,
+                    &mut PaintCtx::new(scene, t, tr, theme),
                     r,
-                    y,
-                    inner_w,
                     &self.label,
                     *method,
                     *status,
@@ -305,22 +287,12 @@ impl Widget for NavRow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
-        if *handled {
+        if *ctx.handled {
             return;
         }
         match event {
@@ -332,9 +304,9 @@ impl Widget for NavRow {
                 // `MouseInput` carries no position, so gate on the cursor we
                 // tracked from `CursorMoved` — only the row under the pointer
                 // activates.
-                *focus_target = Some(node_id);
+                *ctx.focus_target = Some(ctx.node_id);
                 self.activate();
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -355,7 +327,7 @@ impl Widget for NavRow {
                         && let Some(adjust) = &mut self.on_adjust
                     {
                         adjust(delta);
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                 }
@@ -363,7 +335,7 @@ impl Widget for NavRow {
                     || matches!(key, Key::Character(s) if s.as_str() == " ");
                 if is_activate {
                     self.activate();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -433,13 +405,18 @@ impl Widget for NavRow {
         &mut self,
         target: &str,
         action: &Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         target == self.id && self.perform_action(action, state, path)
     }
 
-    fn perform_action(&mut self, action: &Action, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn perform_action(
+        &mut self,
+        action: &Action,
+        _state: &mut AppModel,
+        _path: &ModelPath,
+    ) -> bool {
         if let Some(adjust) = &mut self.on_adjust {
             match action {
                 Action::Increment => {
@@ -503,139 +480,100 @@ impl NavRow {
         format!("{}…", &label[..boundaries[low]])
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "label painting takes the clipping rect, text, color and style alongside the scene, transform and text renderer"
-    )]
-    fn draw_label(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        r: Rect,
-        label: &str,
-        color: Color,
-        style: &TextStyle,
-    ) {
-        let label = Self::single_line_label(tr, label, r.width(), style);
-        let (_, height) = tr.measure_style(&label, None, style);
-        scene.push_layer(
+    fn draw_label(ctx: &mut PaintCtx<'_>, r: Rect, label: &str, color: Color, style: &TextStyle) {
+        let label = Self::single_line_label(ctx.text, label, r.width(), style);
+        let (_, height) = ctx.text.measure_style(&label, None, style);
+        ctx.scene.push_layer(
             Fill::NonZero,
             vello::peniko::BlendMode::default(),
             1.0,
-            t,
+            ctx.transform,
             &r,
         );
-        tr.draw_style(
-            scene,
+        ctx.text(
             &label,
-            color,
-            t * Affine::translate((r.x0, r.center().y - f64::from(height) / 2.0)),
-            None,
             style,
+            color,
+            Point::new(r.x0, r.center().y - f64::from(height) / 2.0),
+            None,
         );
-        scene.pop_layer();
+        ctx.scene.pop_layer();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "collection rows combine paint context and row geometry with the label, expansion state and request count"
-    )]
     fn draw_collection_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         r: Rect,
-        _y: f64,
-        _inner_w: f64,
         label: &str,
         expanded: bool,
         count: usize,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let caret = if expanded { "▾" } else { "▸" };
-        let (_, caret_h) = tr.measure(caret, 12.0, None);
-        tr.draw_text(
-            scene,
+        let (_, caret_h) = ctx.text.measure(caret, 12.0, None);
+        ctx.text(
             caret,
-            12.0,
+            &TextStyle::new(12.0),
             c.text_dim,
-            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(caret_h) / 2.0)),
+            Point::new(r.x0 + 6.0, r.center().y - f64::from(caret_h) / 2.0),
             None,
         );
         let count = count.to_string();
-        let (cw, ch) = tr.measure(&count, 11.0, None);
-        let style = tr.renderer_input_style(
+        let (cw, ch) = ctx.text.measure(&count, 11.0, None);
+        let style = ctx.text.renderer_input_style(
             &TextStyle::new(theme.tokens.typography.scale.base).with_weight(TextWeight::Semibold),
         );
         Self::draw_label(
-            scene,
-            t,
-            tr,
+            ctx,
             Rect::new(r.x0 + 24.0, r.y0, r.x1 - f64::from(cw) - 14.0, r.y1),
             label,
             c.text_primary,
             &style,
         );
-        tr.draw_text(
-            scene,
+        ctx.text(
             &count,
-            11.0,
+            &TextStyle::new(11.0),
             c.text_dim,
-            t * Affine::translate((
+            Point::new(
                 r.x1 - f64::from(cw) - 6.0,
                 r.center().y - f64::from(ch) / 2.0,
-            )),
+            ),
             None,
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "request rows combine paint context and row geometry with the label, HTTP method and selection state"
-    )]
     fn draw_request_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         r: Rect,
-        _y: f64,
-        _inner_w: f64,
         label: &str,
         method: HttpMethod,
         selected: bool,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
         if selected {
-            let shape = RoundedRect::from_rect(
+            ctx.fill_round(
                 Rect::new(r.x0, r.y0 + 2.0, r.x1, r.y1 - 2.0),
                 f64::from(theme.tokens.radii.md),
-            );
-            scene.fill(
-                Fill::NonZero,
-                t,
                 theme.accent_primary.with_alpha_factor(0.18),
-                None,
-                &shape,
             );
         }
-        let (mw, mh) = tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let (mw, mh) =
+            ctx.text
+                .measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
         let label_x = r.x0 + 28.0 + f64::from(mw).max(24.0) + 12.0;
-        tr.draw_text_weighted(
-            scene,
+        ctx.text(
             method_short(method),
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 28.0, r.center().y - f64::from(mh) / 2.0)),
+            Point::new(r.x0 + 28.0, r.center().y - f64::from(mh) / 2.0),
             None,
-            TextWeight::Bold,
         );
-        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let style = ctx
+            .text
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
         Self::draw_label(
-            scene,
-            t,
-            tr,
+            ctx,
             Rect::new(label_x, r.y0, r.x1 - 8.0, r.y1),
             label,
             if selected { c.text_primary } else { c.text_dim },
@@ -643,57 +581,49 @@ impl NavRow {
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "history rows combine paint context and row geometry with the label, HTTP method and response status"
-    )]
     fn draw_history_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         r: Rect,
-        _y: f64,
-        _inner_w: f64,
         label: &str,
         method: HttpMethod,
         status: u16,
     ) {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let (mw, mh) = tr.measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
+        let (mw, mh) =
+            ctx.text
+                .measure_weighted(method_short(method), 10.0, None, TextWeight::Bold);
         let status_text = status.to_string();
-        let (sw, sh) = tr.measure_weighted(&status_text, 11.0, None, TextWeight::Semibold);
+        let (sw, sh) = ctx
+            .text
+            .measure_weighted(&status_text, 11.0, None, TextWeight::Semibold);
         let label_x = r.x0 + 6.0 + f64::from(mw).max(28.0) + 12.0;
-        tr.draw_text_weighted(
-            scene,
+        ctx.text(
             method_short(method),
-            10.0,
+            &TextStyle::new(10.0).with_weight(TextWeight::Bold),
             method_color(theme, method),
-            t * Affine::translate((r.x0 + 6.0, r.center().y - f64::from(mh) / 2.0)),
+            Point::new(r.x0 + 6.0, r.center().y - f64::from(mh) / 2.0),
             None,
-            TextWeight::Bold,
         );
-        let style = tr.renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
+        let style = ctx
+            .text
+            .renderer_input_style(&TextStyle::new(theme.tokens.typography.scale.sm));
         Self::draw_label(
-            scene,
-            t,
-            tr,
+            ctx,
             Rect::new(label_x, r.y0, r.x1 - f64::from(sw) - 14.0, r.y1),
             label,
             c.text_dim,
             &style,
         );
-        tr.draw_text_weighted(
-            scene,
+        ctx.text(
             &status_text,
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             status_color(theme, status_class(status)),
-            t * Affine::translate((
+            Point::new(
                 r.x1 - f64::from(sw) - 6.0,
                 r.center().y - f64::from(sh) / 2.0,
-            )),
+            ),
             None,
-            TextWeight::Semibold,
         );
     }
 }

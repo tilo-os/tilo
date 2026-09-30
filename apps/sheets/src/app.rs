@@ -14,8 +14,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -213,24 +214,44 @@ enum InterchangeResult {
 /// export never reaches the selected destination.
 enum PreparedResourceIo {
     Import {
-        generation: u64,
         format: Interchange,
         path: PathBuf,
         tables: Vec<crate::xlsx::SheetTable>,
     },
     Export {
-        generation: u64,
         format: Interchange,
         destination: PathBuf,
         temporary: PathBuf,
     },
 }
 
-impl PreparedResourceIo {
-    fn generation(&self) -> u64 {
-        match self {
-            Self::Import { generation, .. } | Self::Export { generation, .. } => *generation,
+/// The interchange worker's one reply. Sending, returning early or panicking
+/// all wake the owning host after the channel settles: the worker is the only
+/// source of progress for an accepted job, and an idle host has no frame that
+/// would otherwise notice its result. A reply nobody can receive any more
+/// (Sheets closed) removes its prepared export instead of leaking it.
+struct InterchangeReply {
+    tx: Option<SyncSender<InterchangeResult>>,
+    wake: ui::wake::WakeHandle,
+}
+
+impl InterchangeReply {
+    fn send(mut self, result: InterchangeResult) {
+        let Some(tx) = self.tx.take() else { return };
+        if let Err(mpsc::SendError(InterchangeResult::Export {
+            result: Ok(temporary),
+            ..
+        })) = tx.send(result)
+        {
+            SheetsApp::discard_export_temp(&temporary);
         }
+    }
+}
+
+impl Drop for InterchangeReply {
+    fn drop(&mut self) {
+        drop(self.tx.take());
+        self.wake.wake();
     }
 }
 
@@ -325,6 +346,10 @@ enum RunMode {
     /// The headless `--shots`/test path: seeds the sample budget so a captured
     /// frame shows real formulas, and never reads or writes the user's data.
     Shots,
+    /// Mounted by a host on a record: the record is the workbook, so the
+    /// app-wide file is never read or written. Only the record's creator
+    /// adds the first sheet; a participant that joined waits for it.
+    Record(ui::launch::RecordLaunch),
 }
 
 /// The app's only decorative animation is the transient status bubble. Keep
@@ -345,6 +370,11 @@ impl RunMode {
     /// Whether an empty workbook is filled with the sample budget.
     fn seeds_sample_data(self) -> bool {
         self == Self::Shots
+    }
+
+    /// Whether an empty workbook gets its first blank sheet.
+    fn seeds_blank_sheet(self) -> bool {
+        self != Self::Record(ui::launch::RecordLaunch::Joined)
     }
 }
 
@@ -930,6 +960,9 @@ pub struct SheetsApp {
     /// One bounded file worker result slot.  A fresh channel is made only
     /// after the previous job settles, so accepted jobs cannot be displaced.
     interchange_rx: Option<Receiver<InterchangeResult>>,
+    /// Result channels of cancelled jobs whose workers may still be running.
+    /// They no longer hold the slot; each is reaped once its worker replies.
+    orphaned_interchange: Vec<Receiver<InterchangeResult>>,
     interchange_generation: u64,
     active_interchange_generation: Option<u64>,
     resource_invocation: Option<tilo_actions::InvocationId>,
@@ -939,9 +972,9 @@ pub struct SheetsApp {
     /// Set by a non-cancelled lifecycle poll; the following mutable `sync`
     /// receipt may then publish/import the prepared result.
     resource_confirmation: Option<tilo_actions::InvocationId>,
-    /// A cancellation can arrive while the bounded worker is still parsing or
-    /// encoding. Its eventual result is discarded by this exact generation.
-    cancelled_interchange_generation: Option<u64>,
+    /// The host that accepted the current job; woken whenever that job can
+    /// advance only through another `sync`.
+    interchange_wake: ui::wake::WakeHandle,
     pending_reveal: Option<PendingReveal>,
     /// The last copied/cut rectangle, kept so an in-app paste can restore raw
     /// inputs and formats exactly (and shift relative formula references),
@@ -1048,7 +1081,7 @@ impl SheetsApp {
             settings_panel: SettingsPanel::None,
             global: GlobalSettings::default(),
             doc_settings: DocSettings::default(),
-            run: RunMode::Live,
+            run: ui::launch::record_launch().map_or(RunMode::Live, RunMode::Record),
             motion: MotionPreference::Full,
             saved_heads: Vec::new(),
             persistence_rx: None,
@@ -1060,6 +1093,7 @@ impl SheetsApp {
             cache: None,
             io: None,
             interchange_rx: None,
+            orphaned_interchange: Vec::new(),
             interchange_generation: 0,
             active_interchange_generation: None,
             resource_invocation: None,
@@ -1067,7 +1101,7 @@ impl SheetsApp {
             pending_resource_io: None,
             prepared_resource_io: None,
             resource_confirmation: None,
-            cancelled_interchange_generation: None,
+            interchange_wake: ui::wake::WakeHandle::detached(),
             pending_reveal: None,
             clipboard: None,
             palette: CommandPalette::commands(),
@@ -1386,7 +1420,7 @@ impl SheetsApp {
     /// it would have faded, or never surfaced, by the time the frame renders).
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Shots hook: open the File menu so its actions appear in the frame.
@@ -1668,18 +1702,15 @@ impl SheetsApp {
                 if let Some(addr) = a1_to_addr("E2") {
                     self.grid.select_only(addr);
                 }
-            } else {
+            } else if self.run.seeds_blank_sheet() {
                 SheetsDoc::add_sheet(doc, "Sheet1");
                 self.active_sheet = 0;
                 self.grid.select_only((0, 0));
             }
         } else {
-            // Restored workbook: clamp the persisted active index and land on A1.
-            // Older local workbooks carried the active tab in the shared CRDT.
-            // Read it once as a migration hint, but do not write it back: a
-            // tab is local presentation, not collaborative workbook content.
-            let active = SheetsDoc::active_index(doc);
-            self.active_sheet = active;
+            // Restored workbook: land on the first sheet at A1. The active tab
+            // is local presentation, not collaborative workbook content.
+            self.active_sheet = 0;
             self.grid.select_only((0, 0));
         }
         let current_heads = doc.get_heads();
@@ -1704,25 +1735,24 @@ impl SheetsApp {
         let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
             "workbook persistence generation is exhausted; restart Sheets".to_string()
         })?;
-        let path =
-            workbook_path().ok_or_else(|| "no per-user data directory is available".to_string())?;
+        let (location, name) = workbook_store();
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sheets-persistence-load".into())
-            .spawn(move || {
-                let result = match std::fs::read(&path) {
-                    Ok(bytes) => AutoCommit::load(&bytes)
-                        .map(|mut saved| {
-                            let heads = saved.get_heads();
-                            Some(Box::new((saved, heads)))
-                        })
-                        .map_err(|error| format!("could not decode saved workbook: {error}")),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(format!("could not read saved workbook: {error}")),
-                };
-                let _ = tx.send(PersistenceResult::Load { generation, result });
-            })
-            .map_err(|error| format!("could not start workbook load worker: {error}"))?;
+        run_worker("sheets-persistence-load", move || {
+            let read = tilo_files::Dir::open(location)
+                .and_then(|dir| tilo_files::blocking::read(&dir, &name));
+            let result = match read {
+                Ok(bytes) => AutoCommit::load(&bytes)
+                    .map(|mut saved| {
+                        let heads = saved.get_heads();
+                        Some(Box::new((saved, heads)))
+                    })
+                    .map_err(|error| format!("could not decode saved workbook: {error}")),
+                Err(tilo_files::FsError::NotFound) => Ok(None),
+                Err(error) => Err(format!("could not read saved workbook: {error}")),
+            };
+            let _ = tx.send(PersistenceResult::Load { generation, result });
+        })
+        .map_err(|error| format!("could not start workbook load worker: {error}"))?;
         self.persistence_generation = generation;
         self.persistence_rx = Some(rx);
         self.active_persistence = Some((generation, PersistenceJob::Load));
@@ -1742,23 +1772,21 @@ impl SheetsApp {
         let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
             "workbook persistence generation is exhausted; restart Sheets".to_string()
         })?;
-        let path =
-            workbook_path().ok_or_else(|| "no per-user data directory is available".to_string())?;
+        let (location, name) = workbook_store();
         let mut saved_doc = doc.fork();
         let result_heads = heads.clone();
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sheets-persistence-save".into())
-            .spawn(move || {
-                let result = atomic_file::write_creating_parent(&path, &saved_doc.save())
-                    .map_err(|error| error.to_string());
-                let _ = tx.send(PersistenceResult::Save {
-                    generation,
-                    heads: result_heads,
-                    result,
-                });
-            })
-            .map_err(|error| format!("could not start workbook save worker: {error}"))?;
+        run_worker("sheets-persistence-save", move || {
+            let result = tilo_files::Dir::open(location)
+                .and_then(|dir| tilo_files::blocking::write_atomic(&dir, &name, &saved_doc.save()))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(PersistenceResult::Save {
+                generation,
+                heads: result_heads,
+                result,
+            });
+        })
+        .map_err(|error| format!("could not start workbook save worker: {error}"))?;
         self.persistence_generation = generation;
         self.persistence_rx = Some(rx);
         self.active_persistence = Some((generation, PersistenceJob::Save { heads }));
@@ -1782,7 +1810,7 @@ impl SheetsApp {
             Err(TryRecvError::Disconnected) => {
                 self.persistence_rx = None;
                 let active = self.active_persistence.take();
-                self.last_persist_failure = Some(Instant::now());
+                self.last_persist_failure = Some(ui::time::now());
                 self.status = match active {
                     Some((_, PersistenceJob::Load)) => {
                         "Workbook load worker disconnected; opening a new workbook".into()
@@ -1811,7 +1839,7 @@ impl SheetsApp {
             // retained job. Settle it as failed rather than letting a later
             // dirty check overwrite that ownership.
             self.active_persistence = None;
-            self.last_persist_failure = Some(Instant::now());
+            self.last_persist_failure = Some(ui::time::now());
             self.status =
                 "Discarded a stale workbook persistence result; changes will be retried".into();
             if !self.pending.seeded {
@@ -1834,7 +1862,7 @@ impl SheetsApp {
                             if let Err(error) = doc.merge_incoming(&mut saved) {
                                 self.status =
                                     format!("Saved workbook could not be merged: {error}");
-                                self.last_persist_failure = Some(Instant::now());
+                                self.last_persist_failure = Some(ui::time::now());
                                 None
                             } else {
                                 Some(durable_heads)
@@ -1850,9 +1878,9 @@ impl SheetsApp {
                                     Self::table_from_snapshot(&snapshot)
                                 })
                                 .collect();
-                            if let Err(error) = self.import_tables(doc, tables) {
+                            if let Err(error) = self.import_tables_with(doc, tables, false) {
                                 self.status = format!("Could not import saved workbook: {error}");
-                                self.last_persist_failure = Some(Instant::now());
+                                self.last_persist_failure = Some(ui::time::now());
                             }
                             self.load_start_heads = Some(doc.get_heads());
                             None
@@ -1861,7 +1889,7 @@ impl SheetsApp {
                     Ok(None) => None,
                     Err(error) => {
                         self.status = format!("Could not load saved workbook: {error}");
-                        self.last_persist_failure = Some(Instant::now());
+                        self.last_persist_failure = Some(ui::time::now());
                         None
                     }
                 };
@@ -1881,7 +1909,7 @@ impl SheetsApp {
                 Err(error) => {
                     self.status =
                         format!("Could not save workbook: {error}; changes will be retried");
-                    self.last_persist_failure = Some(Instant::now());
+                    self.last_persist_failure = Some(ui::time::now());
                 }
             },
             _ => {
@@ -1912,7 +1940,7 @@ impl SheetsApp {
         }
         if let Err(error) = self.start_persistence_save(doc, heads) {
             self.status = format!("Could not save workbook: {error}; changes will be retried");
-            self.last_persist_failure = Some(Instant::now());
+            self.last_persist_failure = Some(ui::time::now());
         }
     }
 
@@ -2006,6 +2034,7 @@ impl SheetsApp {
             eff_fmt: fmt.clone(),
             values: values.clone(),
         });
+        self.grid.set_bold(snap.bold);
         self.grid.set_data(snap.raw, fmt, values);
         self.pending.redraw = true;
     }
@@ -2516,7 +2545,7 @@ impl SheetsApp {
                 (inferred.format != CellFormat::General).then_some(inferred.format),
             ));
         }
-        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)]) {
+        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)], true) {
             Ok(count) => self.status = format!("Imported {count} cells from {}", file_label(path)),
             Err(error) => self.status = format!("CSV import failed: {error}"),
         }
@@ -2545,7 +2574,7 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
     }
 
     /// Materialise the whole workbook in tab order for workbook interchange.
@@ -2618,12 +2647,23 @@ impl SheetsApp {
         }
     }
 
-    /// Import a parsed set of tables (one per sheet) into new sheets, running
-    /// smart inference where a source cell carried no explicit format.
+    /// Import a user's file (one table per sheet) into new sheets; into a
+    /// workbook that is still blank, the file replaces its empty sheet.
     fn import_tables(
         &mut self,
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
+    ) -> Result<usize, String> {
+        self.import_tables_with(doc, tables, true)
+    }
+
+    /// Import a parsed set of tables (one per sheet) into new sheets, running
+    /// smart inference where a source cell carried no explicit format.
+    fn import_tables_with(
+        &mut self,
+        doc: &mut AutoCommit,
+        tables: Vec<crate::xlsx::SheetTable>,
+        replace_blank: bool,
     ) -> Result<usize, String> {
         let cur = self.default_currency();
         let mut total: usize = 0;
@@ -2658,7 +2698,7 @@ impl SheetsApp {
             total += writes.len();
             imported.push((table.name, writes));
         }
-        self.import_workbook_action(doc, imported)?;
+        self.import_workbook_action(doc, imported, replace_blank)?;
         self.reload(doc);
         Ok(total)
     }
@@ -2668,12 +2708,13 @@ impl SheetsApp {
     /// the authoritative limit; this inexpensive first gate avoids allocating
     /// an arbitrary local file just to discover it was never eligible.
     fn check_import_file_size(path: &std::path::Path) -> Result<(), String> {
-        let metadata = std::fs::metadata(path)
+        let metadata = tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name))
             .map_err(|error| format!("cannot inspect {}: {error}", file_label(path)))?;
-        if !metadata.is_file() {
+        if metadata.kind != tilo_files::Kind::File {
             return Err("the selected path is not a regular file".into());
         }
-        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
                 "{} is larger than the {} MiB import limit",
                 file_label(path),
@@ -2691,34 +2732,40 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         sheets: ImportedWorkbook,
+        replace_blank: bool,
     ) -> Result<usize, String> {
         let mut total = 0usize;
-        let action = actions::import_sheets_action(sheets.into_iter().map(|(name, mut writes)| {
-            let name = if name.trim().is_empty() {
-                "Imported".to_string()
-            } else {
-                name
-            };
-            writes.sort_by_key(|(addr, _, _)| (addr.1, addr.0));
-            total = total.saturating_add(writes.len());
-            (
-                name,
-                writes
-                    .into_iter()
-                    .map(|(addr, raw, fmt)| actions::CellWrite {
-                        col: addr.0,
-                        row: addr.1,
-                        raw,
-                        fmt: fmt.map(CellFormat::as_str),
-                    })
-                    .collect(),
-            )
-        }));
+        let mut action =
+            actions::import_sheets_action(sheets.into_iter().map(|(name, mut writes)| {
+                let name = if name.trim().is_empty() {
+                    "Imported".to_string()
+                } else {
+                    name
+                };
+                writes.sort_by_key(|(addr, _, _)| (addr.1, addr.0));
+                total = total.saturating_add(writes.len());
+                (
+                    name,
+                    writes
+                        .into_iter()
+                        .map(|(addr, raw, fmt)| actions::CellWrite {
+                            col: addr.0,
+                            row: addr.1,
+                            raw,
+                            fmt: fmt.map(CellFormat::as_str),
+                        })
+                        .collect(),
+                )
+            }));
         if total > MAX_IMPORT_CELLS {
             return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
         }
-        let last_sheet_id = match &action {
-            SheetsAction::ImportSheets { sheets } => {
+        let last_sheet_id = match &mut action {
+            SheetsAction::ImportSheets {
+                sheets,
+                replace_blank: replace,
+            } => {
+                *replace = replace_blank;
                 sheets.last().map(|sheet| sheet.sheet_id.clone())
             }
             _ => None,
@@ -2839,28 +2886,32 @@ impl SheetsApp {
         };
         let (tx, rx): (SyncSender<InterchangeResult>, Receiver<InterchangeResult>) =
             mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sheets-interchange".into())
-            .spawn(move || {
-                let result = match operation {
-                    PendingIo::Import(format) => InterchangeResult::Import {
-                        generation,
-                        format,
-                        path: path.clone(),
-                        result: SheetsApp::read_import_tables(format, &path),
-                    },
-                    PendingIo::Export(format) => InterchangeResult::Export {
-                        generation,
-                        format,
-                        destination: path.clone(),
-                        result: SheetsApp::prepare_export_snapshots(
-                            format, &path, generation, &snapshots,
-                        ),
-                    },
-                };
-                let _ = tx.send(result);
-            })
-            .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
+        self.interchange_wake = ui::wake::WakeHandle::new();
+        let reply = InterchangeReply {
+            tx: Some(tx),
+            wake: self.interchange_wake.clone(),
+        };
+        ui::rt::spawn_thread("sheets-interchange", move || {
+            let reply = reply;
+            let result = match operation {
+                PendingIo::Import(format) => InterchangeResult::Import {
+                    generation,
+                    format,
+                    path: path.clone(),
+                    result: SheetsApp::read_import_tables(format, &path),
+                },
+                PendingIo::Export(format) => InterchangeResult::Export {
+                    generation,
+                    format,
+                    destination: path.clone(),
+                    result: SheetsApp::prepare_export_snapshots(
+                        format, &path, generation, &snapshots,
+                    ),
+                },
+            };
+            reply.send(result);
+        })
+        .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
         self.interchange_rx = Some(rx);
         self.active_interchange_generation = Some(generation);
         self.status = match operation {
@@ -2879,7 +2930,9 @@ impl SheetsApp {
             Interchange::Xlsx => crate::xlsx::read_xlsx(path).map_err(|error| error.to_string()),
             Interchange::Ods => crate::ods::read_ods(path).map_err(|error| error.to_string()),
             Interchange::Csv => {
-                let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+                let bytes = crate::xlsx::read_file(path).map_err(|error| error.to_string())?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| "the CSV file is not UTF-8 text".to_string())?;
                 let cells = crate::csv::parse_csv(&text);
                 if cells.len() > MAX_IMPORT_CELLS {
                     return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
@@ -2919,6 +2972,7 @@ impl SheetsApp {
                         raw,
                         format: CellFormat::General,
                         formula: None,
+                        bold: false,
                     });
                 }
                 Ok(vec![crate::xlsx::SheetTable {
@@ -2966,22 +3020,14 @@ impl SheetsApp {
                             .collect()
                     })
                     .collect::<Vec<Vec<String>>>();
-                std::fs::write(&temporary, crate::csv::to_csv(&rows))
+                crate::xlsx::write_file(&temporary, crate::csv::to_csv(&rows).as_bytes())
                     .map_err(|error| error.to_string())
             }
         };
         if let Err(error) = result {
-            let _ = std::fs::remove_file(&temporary);
+            Self::discard_export_temp(&temporary);
             return Err(error);
         }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&temporary)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| {
-                let _ = std::fs::remove_file(&temporary);
-                error.to_string()
-            })?;
         Ok(temporary)
     }
 
@@ -2992,27 +3038,22 @@ impl SheetsApp {
         let parent = destination
             .parent()
             .ok_or_else(|| "export destination has no parent directory".to_string())?;
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let dir = tilo_files::Dir::open(tilo_files::Location::Native(parent.to_path_buf()))
+            .map_err(|error| error.to_string())?;
         let stem = destination
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("workbook");
         for _ in 0..4 {
-            let temporary = parent.join(format!(
-                ".{stem}.tilo-export-{generation}-{}.tmp",
-                Uuid::new_v4()
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => {
-                    drop(file);
-                    return Ok(temporary);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.to_string()),
+            let name = format!(".{stem}.tilo-export-{generation}-{}.tmp", Uuid::new_v4());
+            let reserved = tilo_files::VPath::new(&name)
+                .map_err(|error| error.to_string())
+                .and_then(|name| {
+                    tilo_files::blocking::create_new(&dir, &name, b"")
+                        .map_err(|error| error.to_string())
+                })?;
+            if reserved {
+                return Ok(parent.join(name));
             }
         }
         Err("could not reserve an exclusive export temporary file".into())
@@ -3022,11 +3063,10 @@ impl SheetsApp {
         temporary: &std::path::Path,
         destination: &std::path::Path,
     ) -> Result<(), String> {
-        let parent = destination
-            .parent()
-            .ok_or_else(|| "export destination has no parent directory".to_string())?;
-        std::fs::rename(temporary, destination).map_err(|error| error.to_string())?;
-        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
+        let bytes = crate::xlsx::read_file(temporary).map_err(|error| error.to_string())?;
+        crate::xlsx::write_file(destination, &bytes).map_err(|error| error.to_string())?;
+        Self::discard_export_temp(temporary);
+        Ok(())
     }
 
     fn publish_or_discard_export_temp(
@@ -3043,7 +3083,9 @@ impl SheetsApp {
     }
 
     fn discard_export_temp(temporary: &std::path::Path) {
-        let _ = std::fs::remove_file(temporary);
+        if let Ok((dir, name)) = tilo_files::file_at(temporary) {
+            let _ = tilo_files::blocking::remove(&dir, &name);
+        }
     }
 
     fn table_from_snapshot(snap: &crate::doc::SheetSnapshot) -> crate::xlsx::SheetTable {
@@ -3057,7 +3099,7 @@ impl SheetsApp {
                 fmt.insert(*addr, inferred);
             }
         }
-        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values)
+        crate::xlsx::SheetTable::from_cells(&snap.name, &snap.raw, &fmt, &values, &snap.bold)
     }
 
     /// Drain a finished interchange file dialog, if one landed since the last
@@ -3134,13 +3176,6 @@ impl SheetsApp {
         let Some(prepared) = self.prepared_resource_io.take() else {
             return;
         };
-        if self.cancelled_interchange_generation == Some(prepared.generation()) {
-            self.cancelled_interchange_generation = None;
-            if let PreparedResourceIo::Export { temporary, .. } = prepared {
-                Self::discard_export_temp(&temporary);
-            }
-            return;
-        }
         let result = match prepared {
             PreparedResourceIo::Import {
                 format,
@@ -3167,6 +3202,21 @@ impl SheetsApp {
             self.status = format!("Spreadsheet operation failed: {error}");
         }
         self.finish_resource_io(result);
+    }
+
+    /// Reap replies of cancelled jobs; their prepared exports never publish.
+    fn drain_orphaned_interchange(&mut self) {
+        self.orphaned_interchange.retain(|rx| match rx.try_recv() {
+            Ok(InterchangeResult::Export {
+                result: Ok(temporary),
+                ..
+            }) => {
+                Self::discard_export_temp(&temporary);
+                false
+            }
+            Ok(_) | Err(TryRecvError::Disconnected) => false,
+            Err(TryRecvError::Empty) => true,
+        });
     }
 
     fn discard_prepared_resource_io(&mut self) {
@@ -3216,27 +3266,15 @@ impl SheetsApp {
             return;
         }
         self.active_interchange_generation = None;
-        if self.cancelled_interchange_generation == Some(generation) {
-            self.cancelled_interchange_generation = None;
-            if let InterchangeResult::Export {
-                result: Ok(temporary),
-                ..
-            } = result
-            {
-                Self::discard_export_temp(&temporary);
-            }
-            return;
-        }
         if self.resource_invocation.is_some() {
             match result {
                 InterchangeResult::Import {
-                    generation,
                     format,
                     path,
                     result: Ok(tables),
+                    ..
                 } => {
                     self.prepared_resource_io = Some(PreparedResourceIo::Import {
-                        generation,
                         format,
                         path,
                         tables,
@@ -3244,13 +3282,12 @@ impl SheetsApp {
                     self.status = "Spreadsheet import is ready to apply".into();
                 }
                 InterchangeResult::Export {
-                    generation,
                     format,
                     destination,
                     result: Ok(temporary),
+                    ..
                 } => {
                     self.prepared_resource_io = Some(PreparedResourceIo::Export {
-                        generation,
                         format,
                         destination,
                         temporary,
@@ -3332,8 +3369,10 @@ impl SheetsApp {
 
     /// Cancel the one accepted resource I/O operation. Workers are not
     /// forcibly killed (that is neither portable nor safe around codecs), but
-    /// their exact generation becomes inert and any prepared export is removed
-    /// before it can publish.
+    /// they release the in-progress slot at once, so a worker stuck on a slow
+    /// mount cannot refuse every retry; its eventual reply is reaped without
+    /// being applied, and any export already prepared is removed before it can
+    /// publish.
     fn cancel_resource_io(&mut self, invocation: tilo_actions::InvocationId) -> bool {
         let pending_matches = self
             .pending_resource_io
@@ -3348,9 +3387,10 @@ impl SheetsApp {
         self.io = None;
         self.resource_confirmation = None;
         self.discard_prepared_resource_io();
-        if let Some(generation) = self.active_interchange_generation {
-            self.cancelled_interchange_generation = Some(generation);
+        if let Some(rx) = self.interchange_rx.take() {
+            self.orphaned_interchange.push(rx);
         }
+        self.active_interchange_generation = None;
         self.resource_invocation = None;
         self.status = "Spreadsheet operation cancelled".into();
         self.resource_result = Some(tilo_actions::InvocationUpdate::Cancelled {
@@ -3446,8 +3486,7 @@ impl SheetsApp {
 
     #[cfg(test)]
     fn dispatch_palette_view_for_test(&mut self, doc: &AutoCommit) {
-        let intent = self
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
         let resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
         let spec = tilo_actions::door::resolve(&resources, &intent.address)
@@ -3455,7 +3494,7 @@ impl SheetsApp {
         assert_eq!(spec.kind, tilo_actions::OperationKind::View);
         let encoded = spec.build_json(&intent.arguments).expect("valid arguments");
         assert!(
-            self.invoke_resource_operation(
+            self.answer_resource_operation(
                 spec.kind,
                 &encoded.type_id,
                 &encoded.payload,
@@ -4065,10 +4104,6 @@ impl SheetsApp {
 
     // --- drawing ------------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one chip painter receives its shared paint context, the resolved metrics and the chip's own geometry/state"
-    )]
     fn draw_chip(
         scene: &mut Scene,
         transform: Affine,
@@ -4323,10 +4358,9 @@ impl SheetsApp {
         // so what the pointer lands on is exactly what is painted.
         let colors = &theme.tokens.colors;
         let m = &self.metrics;
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "fx",
-            m.base,
             colors.text_dim,
             transform
                 * Affine::translate((
@@ -4334,9 +4368,7 @@ impl SheetsApp {
                     ChromeMetrics::centred_top(self.fx_rect, m.lh_base),
                 )),
             None,
-            TextWeight::Regular,
-            true,
-            false,
+            &TextStyle::new(m.base).with_italic(true),
         );
     }
 
@@ -4393,10 +4425,6 @@ impl SheetsApp {
     /// Formulas (whether being edited OR merely selected) tint each cell
     /// reference to match the coloured outlines on the grid; plain values
     /// draw in the body colour.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "formula painting passes the render context alongside cell content, font size and the formula-bar origin"
-    )]
     fn draw_formula_content(
         scene: &mut Scene,
         transform: Affine,
@@ -4606,7 +4634,7 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let Some(label) = self.status_bubble_label() else {
             return;
         };
@@ -5576,9 +5604,32 @@ fn tsv_cell(display: &str) -> String {
 /// Where the workbook is persisted between sessions:
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
+fn workbook_store() -> (tilo_files::Location, tilo_files::VPath) {
+    let location = tilo_paths::env_dir("XDG_DATA_HOME").map_or_else(
+        || tilo_paths::AppPaths::for_app("tilo").data(),
+        |base| tilo_files::Location::Native(base.join("tilo")),
+    );
+    let name = tilo_files::VPath::new("sheets/workbook.automerge").unwrap_or_default();
+    (location, name)
+}
+
+#[cfg(test)]
 fn workbook_path() -> Option<PathBuf> {
-    let base = xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_dir)?;
-    Some(base.join("tilo").join("sheets").join("workbook.automerge"))
+    let (location, name) = workbook_store();
+    Some(location.native_path().ok()?.join(name.as_str()))
+}
+
+/// Run `job` on a worker thread, or at once where there are no threads (a
+/// browser page, where the app's files answer from memory).
+fn run_worker(name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    if matches!(
+        ui::rt::availability(ui::rt::Feature::Threads),
+        ui::rt::Availability::Unsupported(_)
+    ) {
+        job();
+        return Ok(());
+    }
+    ui::rt::spawn_thread(name, job).map(drop)
 }
 
 /// A new sheet name derived from an imported file's stem.
@@ -5639,156 +5690,52 @@ fn file_label(path: &std::path::Path) -> String {
 }
 
 impl Widget for SheetsApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::undo::UndoPoints
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[actions::SHEETS_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        if type_id != actions::SHEETS_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
-        }
-        match operation {
-            actions::SheetsOperation::ImportCsv { path: None } => {
-                self.begin_import(Interchange::Csv);
-            }
-            actions::SheetsOperation::ImportXlsx { path: None } => {
-                self.begin_import(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ImportOds { path: None } => {
-                self.begin_import(Interchange::Ods);
-            }
-            actions::SheetsOperation::ExportCsv { path: None } => {
-                self.begin_export(Interchange::Csv);
-            }
-            actions::SheetsOperation::ExportXlsx { path: None } => {
-                self.begin_export(Interchange::Xlsx);
-            }
-            actions::SheetsOperation::ExportOds { path: None } => {
-                self.begin_export(Interchange::Ods);
-            }
-            actions::SheetsOperation::ImportCsv { path: Some(_) }
-            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ImportOds { path: Some(_) }
-            | actions::SheetsOperation::ExportCsv { path: Some(_) }
-            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
-            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
-                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
-            }
-            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
-            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
-            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
-            actions::SheetsOperation::RevealSheet { sheet_id } => {
-                if !self
-                    .searchable_sheets
-                    .iter()
-                    .any(|sheet| sheet.id == sheet_id)
-                {
-                    return Err("sheet no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
-            }
-            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
-                if !self.searchable_sheets.iter().any(|sheet| {
-                    sheet.id == sheet_id
-                        && sheet
-                            .cells
-                            .iter()
-                            .any(|cell| cell.col == col && cell.row == row)
-                }) {
-                    return Err("cell no longer exists".into());
-                }
-                self.pending_reveal = Some(PendingReveal::Cell {
-                    sheet_id,
-                    addr: (col, row),
-                });
-            }
-        }
-        Ok(true)
+    fn semantic_readers(&self) -> &'static [ui::semantic_document_read::RegisteredSemanticReader] {
+        &crate::cell_actions::READERS
     }
 
-    fn start_resource_operation(
+    fn start_operation(
         &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let expected = actions::operation_kind(&operation);
-        if kind != expected {
-            return Err(format!(
-                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
-            ));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let direct = match &operation {
-            actions::SheetsOperation::ImportCsv { path }
-            | actions::SheetsOperation::ImportXlsx { path }
-            | actions::SheetsOperation::ImportOds { path }
-            | actions::SheetsOperation::ExportCsv { path }
-            | actions::SheetsOperation::ExportXlsx { path }
-            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
-            _ => false,
-        };
-        let is_interchange = matches!(
-            &operation,
-            actions::SheetsOperation::ImportCsv { .. }
-                | actions::SheetsOperation::ImportXlsx { .. }
-                | actions::SheetsOperation::ImportOds { .. }
-                | actions::SheetsOperation::ExportCsv { .. }
-                | actions::SheetsOperation::ExportXlsx { .. }
-                | actions::SheetsOperation::ExportOds { .. }
-        );
-        // There is exactly one portal/result slot.  Refuse a second accepted
-        // operation rather than overwriting the first invocation's identity
-        // (which would strand an agent or Ctrl+K job forever).
-        if is_interchange
-            && (self.io.is_some()
-                || self.pending_resource_io.is_some()
-                || self.interchange_rx.is_some()
-                || self.active_interchange_generation.is_some()
-                || self.resource_invocation.is_some()
-                || self.resource_result.is_some())
-        {
-            return Err("a spreadsheet import or export is already in progress".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if direct {
-            self.pending_resource_io = Some((invocation, operation));
-            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-        }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        if self.io.is_some() {
-            self.resource_invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5810,12 +5757,26 @@ impl Widget for SheetsApp {
         } else {
             if self.resource_invocation == Some(invocation) {
                 self.resource_confirmation = Some(invocation);
+                // Settling needs a mutable `sync`, which an idle host runs
+                // only when woken; polling alone schedules no frame.
+                if self.prepared_resource_io.is_some() {
+                    self.interchange_wake.wake();
+                }
             }
             None
         }
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
+        if self.run == RunMode::Record(ui::launch::RecordLaunch::Joined)
+            && SheetsDoc::sheet_count_readonly(state) == 0
+        {
+            // The creator's workbook has not arrived. Reading through the
+            // get-or-create accessors now would write a second `wb` that
+            // competes with the creator's in the merge.
+            return;
+        }
         if !self.pending.seeded {
             if !self.persistence_started {
                 // Pull the shared global defaults once at startup.
@@ -5824,7 +5785,7 @@ impl Widget for SheetsApp {
                 if self.run.persists() {
                     if let Err(error) = self.start_persistence_load(state.get_heads()) {
                         self.status = format!("Could not start workbook load: {error}");
-                        self.last_persist_failure = Some(Instant::now());
+                        self.last_persist_failure = Some(ui::time::now());
                         self.finish_initialize(state, None);
                     }
                 } else {
@@ -5885,6 +5846,7 @@ impl Widget for SheetsApp {
         // Land a finished import/export file dialog before reloading, so the
         // imported sheet (or the export's status) is reflected this frame.
         self.drain_io(state);
+        self.drain_orphaned_interchange();
         self.drain_interchange_worker(state);
         self.settle_prepared_resource_io(state);
         self.drain_persistence_worker(state);
@@ -5898,7 +5860,7 @@ impl Widget for SheetsApp {
         let label = self.status_bubble_label().unwrap_or_default();
         if label != self.last_status_label {
             if !label.is_empty() {
-                self.status_bubble.poke(std::time::Instant::now());
+                self.status_bubble.poke(ui::time::now());
             }
             self.last_status_label = label;
         }
@@ -5997,8 +5959,7 @@ impl Widget for SheetsApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while the floating status bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event.
-        (self.motion == MotionPreference::Full
-            && self.status_bubble.needs_frame(std::time::Instant::now()))
+        (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
             || self.children().iter().any(|c| c.needs_animation_frame())
     }
 
@@ -6019,85 +5980,18 @@ impl Widget for SheetsApp {
         self.draw_sheet_tab_presence(scene, transform, theme, presence);
     }
 
-    /// Announce which sheet the local user is viewing, so peers can flag
-    /// that tab. Keyed by sheet name (the same key
-    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
-    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
-        let name = self.sheet_names.get(self.active_sheet)?;
-        Some((
-            PresenceKey::Tab { id: name.clone() },
-            PresencePayload::Arrived,
-        ))
-    }
-
-    /// Publish the open workbook + its sheets so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        _doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // The workbook is the sole stable top-level root. Sheets/cells remain
-        // in the revisioned retained search provider, not this RPC page.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            vec![crate::actions::workbook_root(&self.sheets_resource_ctx())]
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary bracketing it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold sheets and populated cells into unified search. Every hit names an
-    /// exported resource View action; no app-owned activation callback exists.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
         if self.route_inline_editor(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            handled,
+            event_ctx.scale_factor,
+            *event_ctx.modifiers,
+            event_ctx.state,
+            event_ctx.handled,
             &mut PaletteRouteCtx {
-                path,
-                focus_target,
-                node_id,
-                taffy,
+                path: event_ctx.path,
+                focus_target: event_ctx.focus_target,
+                node_id: event_ctx.node_id,
+                taffy: event_ctx.taffy,
             },
         ) {
             return;
@@ -6108,7 +6002,12 @@ impl Widget for SheetsApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press(*modifiers, state, path, handled);
+                self.handle_left_press(
+                    *event_ctx.modifiers,
+                    event_ctx.state,
+                    event_ctx.path,
+                    event_ctx.handled,
+                );
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -6117,37 +6016,42 @@ impl Widget for SheetsApp {
             } => {
                 self.grid.pointer_up();
                 // A completed fill-handle drag commits its expansion here.
-                self.run_pending_fill(state);
+                self.run_pending_fill(event_ctx.state);
                 self.formula_bar_selecting = false;
                 self.pending.redraw = true;
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Right,
                 ..
             } => {
-                self.handle_right_press(handled);
+                self.handle_right_press(event_ctx.handled);
             }
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, handled);
+                self.handle_cursor_moved(
+                    position.x,
+                    position.y,
+                    event_ctx.scale_factor,
+                    event_ctx.handled,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.handle_mouse_wheel(delta, scale_factor, handled);
+                self.handle_mouse_wheel(delta, event_ctx.scale_factor, event_ctx.handled);
             }
             WindowEvent::KeyboardInput { .. } => {
                 let mut ctx = PaletteRouteCtx {
-                    path,
-                    focus_target,
-                    node_id,
-                    taffy,
+                    path: event_ctx.path,
+                    focus_target: event_ctx.focus_target,
+                    node_id: event_ctx.node_id,
+                    taffy: event_ctx.taffy,
                 };
                 self.handle_keyboard_input(
                     event,
-                    scale_factor,
-                    *modifiers,
-                    state,
-                    handled,
+                    event_ctx.scale_factor,
+                    *event_ctx.modifiers,
+                    event_ctx.state,
+                    event_ctx.handled,
                     &mut ctx,
                 );
             }
@@ -6456,9 +6360,10 @@ impl Widget for SheetsApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         let activates = matches!(action, ui::a11y::Action::Activate | ui::a11y::Action::Focus);
         if activates {
             let opened = match target {
@@ -6527,18 +6432,6 @@ impl Widget for SheetsApp {
         true
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        if self.palette.is_open() {
-            self.palette.control_action_bindings()
-        } else {
-            Vec::new()
-        }
-    }
-
     fn get_rect(&self) -> Rect {
         self.rect
     }
@@ -6551,13 +6444,239 @@ impl Widget for SheetsApp {
         self.pending.redraw = false;
         self.grid.mark_drawn();
     }
+}
 
+impl ui::undo::UndoPoints for SheetsApp {
     fn needs_commit(&self) -> bool {
         self.pending.commit
     }
-
     fn on_commit(&mut self) {
         self.pending.commit = false;
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for SheetsApp {
+    /// Announce which sheet the local user is viewing, so peers can flag
+    /// that tab. Keyed by sheet name (the same key
+    /// `Self::draw_sheet_tab_presence` reads on the receiving side).
+    fn presence_payload(&self) -> Option<(PresenceKey, PresencePayload)> {
+        let name = self.sheet_names.get(self.active_sheet)?;
+        Some((
+            PresenceKey::Tab { id: name.clone() },
+            PresencePayload::Arrived,
+        ))
+    }
+}
+
+impl ui::search::capability::SearchSource for SheetsApp {
+    /// Fold sheets and populated cells into unified search. Every hit names an
+    /// exported resource View action; no app-owned activation callback exists.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SheetsApp {
+    /// Publish the open workbook + its sheets so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn action_directory_resource_page(
+        &self,
+        _doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // The workbook is the sole stable top-level root. Sheets/cells remain
+        // in the revisioned retained search provider, not this RPC page.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            vec![crate::actions::workbook_root(&self.sheets_resource_ctx())]
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for SheetsApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        if self.palette.is_open() {
+            self.palette.control_action_bindings()
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+impl ui::undo::CommittedActions for SheetsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary bracketing it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl SheetsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        if type_id != actions::SHEETS_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
+        match operation {
+            actions::SheetsOperation::ImportCsv { path: None } => {
+                self.begin_import(Interchange::Csv);
+            }
+            actions::SheetsOperation::ImportXlsx { path: None } => {
+                self.begin_import(Interchange::Xlsx);
+            }
+            actions::SheetsOperation::ImportOds { path: None } => {
+                self.begin_import(Interchange::Ods);
+            }
+            actions::SheetsOperation::ExportCsv { path: None } => {
+                self.begin_export(Interchange::Csv);
+            }
+            actions::SheetsOperation::ExportXlsx { path: None } => {
+                self.begin_export(Interchange::Xlsx);
+            }
+            actions::SheetsOperation::ExportOds { path: None } => {
+                self.begin_export(Interchange::Ods);
+            }
+            actions::SheetsOperation::ImportCsv { path: Some(_) }
+            | actions::SheetsOperation::ImportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ImportOds { path: Some(_) }
+            | actions::SheetsOperation::ExportCsv { path: Some(_) }
+            | actions::SheetsOperation::ExportXlsx { path: Some(_) }
+            | actions::SheetsOperation::ExportOds { path: Some(_) } => {
+                return Err("direct spreadsheet I/O requires lifecycle dispatch".into());
+            }
+            actions::SheetsOperation::OpenCommandPalette => self.open_command_palette(doc),
+            actions::SheetsOperation::GoToCell { reference } => self.go_to_cell(&reference),
+            actions::SheetsOperation::ToggleFormulaView => self.toggle_formula_view(),
+            actions::SheetsOperation::RevealSheet { sheet_id } => {
+                if !self
+                    .searchable_sheets
+                    .iter()
+                    .any(|sheet| sheet.id == sheet_id)
+                {
+                    return Err("sheet no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Sheet { sheet_id });
+            }
+            actions::SheetsOperation::RevealCell { sheet_id, col, row } => {
+                if !self.searchable_sheets.iter().any(|sheet| {
+                    sheet.id == sheet_id
+                        && sheet
+                            .cells
+                            .iter()
+                            .any(|cell| cell.col == col && cell.row == row)
+                }) {
+                    return Err("cell no longer exists".into());
+                }
+                self.pending_reveal = Some(PendingReveal::Cell {
+                    sheet_id,
+                    addr: (col, row),
+                });
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let expected = actions::operation_kind(&operation);
+        if kind != expected {
+            return Err(format!(
+                "operation kind {kind:?} does not match sheets operation kind {expected:?}"
+            ));
+        }
+        let direct = match &operation {
+            actions::SheetsOperation::ImportCsv { path }
+            | actions::SheetsOperation::ImportXlsx { path }
+            | actions::SheetsOperation::ImportOds { path }
+            | actions::SheetsOperation::ExportCsv { path }
+            | actions::SheetsOperation::ExportXlsx { path }
+            | actions::SheetsOperation::ExportOds { path } => path.is_some(),
+            _ => false,
+        };
+        let is_interchange = matches!(
+            &operation,
+            actions::SheetsOperation::ImportCsv { .. }
+                | actions::SheetsOperation::ImportXlsx { .. }
+                | actions::SheetsOperation::ImportOds { .. }
+                | actions::SheetsOperation::ExportCsv { .. }
+                | actions::SheetsOperation::ExportXlsx { .. }
+                | actions::SheetsOperation::ExportOds { .. }
+        );
+        // There is exactly one portal/result slot.  Refuse a second accepted
+        // operation rather than overwriting the first invocation's identity
+        // (which would strand an agent or Ctrl+K job forever).
+        if is_interchange
+            && (self.io.is_some()
+                || self.pending_resource_io.is_some()
+                || self.interchange_rx.is_some()
+                || self.active_interchange_generation.is_some()
+                || self.resource_invocation.is_some()
+                || self.resource_result.is_some())
+        {
+            return Err("a spreadsheet import or export is already in progress".into());
+        }
+        if direct {
+            self.pending_resource_io = Some((invocation, operation));
+            return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if self.io.is_some() {
+            self.resource_invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 
@@ -6586,14 +6705,16 @@ impl SheetsApp {
                 rename.editor.apply_layout_external(rename.rect);
                 rename.editor.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    ctx.path,
-                    handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path: ctx.path,
+                        handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
                 rename.editor.take_outcome()
             };
@@ -6642,14 +6763,16 @@ impl SheetsApp {
                 ));
                 input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    ctx.path,
-                    handled,
-                    ctx.focus_target,
-                    ctx.node_id,
-                    ctx.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state,
+                        path: ctx.path,
+                        handled,
+                        focus_target: ctx.focus_target,
+                        node_id: ctx.node_id,
+                        taffy: ctx.taffy,
+                    },
                 );
                 input.take_submit()
             };
@@ -7079,7 +7202,7 @@ impl SheetsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let cell = self.cell_under(p);
         let double = !self.grid.editing_formula()
             && matches!(
@@ -7173,14 +7296,16 @@ impl SheetsApp {
         if self.palette.is_open() {
             self.palette.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                ctx.path,
-                handled,
-                ctx.focus_target,
-                ctx.node_id,
-                ctx.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: ctx.path,
+                    handled,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
+                },
             );
             self.pending.redraw = true;
             *handled = true;
@@ -8196,7 +8321,7 @@ mod tests {
             if done(app) {
                 return;
             }
-            let within = deadline.saturating_duration_since(Instant::now());
+            let within = deadline.saturating_duration_since(ui::time::now());
             let pending = app.status.clone();
             if let Some(rx) = app.persistence_rx.take() {
                 app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
@@ -8262,7 +8387,7 @@ mod tests {
         // Case `reduced_motion_stops_status_bubble_animation_frames`.
         {
             let (mut app, _doc) = seeded_app();
-            app.status_bubble.poke(Instant::now());
+            app.status_bubble.poke(ui::time::now());
             assert!(app.needs_animation_frame());
             app.set_motion_reduced(true);
             assert!(!app.needs_animation_frame());
@@ -8271,20 +8396,27 @@ mod tests {
 
     /// Resource operations reject wrong kinds; affordances dispatch the same encoded actions as their specs.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one scenario test keeps each merged phase and its fresh fixture visible"
+    )]
     fn affordances_and_resource_operations_match_action_specs() {
         // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
         {
-            let (mut app, doc) = seeded_app();
+            let (mut app, mut doc) = seeded_app();
             assert!(!app.grid.formula_view());
             let toggle = serde_json::to_vec(&actions::SheetsOperation::ToggleFormulaView).unwrap();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    actions::SHEETS_OPERATION_TYPE,
-                    &toggle,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        actions::SHEETS_OPERATION_TYPE,
+                        &toggle
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -8295,14 +8427,16 @@ mod tests {
             })
             .unwrap();
             assert!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::InvocationId::new(),
-                    tilo_actions::OperationKind::View,
-                    actions::SHEETS_OPERATION_TYPE,
-                    &import,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        actions::SHEETS_OPERATION_TYPE,
+                        &import
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -8323,7 +8457,7 @@ mod tests {
             // Capture the Ctrl+K delete spec for sheet 1 from the live resource tree,
             // *before* the affordance mutates the workbook (the tree shrinks after).
             let from_spec = {
-                let resources = ui::widget::Widget::resources(&app, &doc);
+                let resources = ui::resources::resources(&app, &doc);
                 let sheet1 = &resources[0].children[1];
                 let spec = sheet1.actions.iter().find(|a| a.id == "delete").unwrap();
                 match &spec.input {
@@ -8446,7 +8580,6 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_invocation = Some(invocation);
             app.prepared_resource_io = Some(PreparedResourceIo::Export {
-                generation: 42,
                 format: Interchange::Csv,
                 destination: destination.clone(),
                 temporary: temporary.clone(),
@@ -8521,7 +8654,6 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             app.resource_invocation = Some(invocation);
             app.prepared_resource_io = Some(PreparedResourceIo::Import {
-                generation: 46,
                 format: Interchange::Csv,
                 path: PathBuf::from("prepared.csv"),
                 tables: vec![crate::xlsx::SheetTable {
@@ -8558,6 +8690,145 @@ mod tests {
         }
     }
 
+    /// Admit an agent's direct-path `.xlsx` export and run the one model pass
+    /// admission schedules.
+    fn admit_direct_export(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        destination: &std::path::Path,
+    ) -> tilo_actions::InvocationId {
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&actions::SheetsOperation::ExportXlsx {
+            path: Some(destination.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &payload,
+            ),
+            doc,
+            &automerge::ROOT,
+        );
+        assert!(
+            matches!(
+                started,
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            ),
+            "{started:?}"
+        );
+        app.sync(doc, &automerge::ROOT);
+        invocation
+    }
+
+    /// Drive `invocation` the way an idle native or hosted runner does: poll
+    /// on every pass, but `sync` only when a wake arrives. Nothing else makes
+    /// frames, so a job whose progress wakes nobody stays Accepted forever.
+    fn settle_on_idle_host(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        wakes: &Receiver<ui::wake::WakeEvent>,
+        invocation: tilo_actions::InvocationId,
+    ) -> tilo_actions::InvocationUpdate {
+        let deadline = tilo_test_env::hang_deadline();
+        loop {
+            if let Some(update) =
+                Widget::poll_resource_operation(app, invocation, false, doc, &automerge::ROOT)
+            {
+                return update;
+            }
+            let within = deadline.saturating_duration_since(Instant::now());
+            wakes.recv_timeout(within).unwrap_or_else(|_| {
+                panic!(
+                    "the job never woke its idle host (status: {}); an agent would see it Accepted forever",
+                    app.status
+                )
+            });
+            app.sync(doc, &automerge::ROOT);
+        }
+    }
+
+    /// An agent's direct-path export on an idle host reaches a terminal state
+    /// through the app's own wakes, and cancelling one releases the single
+    /// interchange slot immediately instead of refusing every retry.
+    #[test]
+    fn direct_path_export_settles_and_cancels_on_an_idle_host() {
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, wakes) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let directory =
+            std::env::temp_dir().join(format!("tilo-sheets-idle-export-{}", Uuid::new_v4()));
+        let destination = directory.join("out").join("in-stock.xlsx");
+        let (mut app, mut doc) = seeded_app();
+
+        // Case `export_reaches_a_terminal_state_without_foreign_frames`.
+        {
+            let invocation = admit_direct_export(&mut app, &mut doc, &destination);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(!crate::xlsx::read_xlsx(&destination).unwrap().is_empty());
+        }
+
+        // Case `cancelling_an_in_flight_export_releases_the_slot`.
+        {
+            std::fs::remove_file(&destination).unwrap();
+            let cancelled_job = admit_direct_export(&mut app, &mut doc, &destination);
+            assert!(app.interchange_rx.is_some(), "the export worker is running");
+            let cancelled = Widget::poll_resource_operation(
+                &mut app,
+                cancelled_job,
+                true,
+                &doc,
+                &automerge::ROOT,
+            );
+            assert!(
+                matches!(
+                    cancelled,
+                    Some(tilo_actions::InvocationUpdate::Cancelled { .. })
+                ),
+                "{cancelled:?}"
+            );
+            assert!(app.interchange_rx.is_none());
+            assert!(app.active_interchange_generation.is_none());
+
+            let retry = admit_direct_export(&mut app, &mut doc, &destination);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, retry);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(destination.exists());
+
+            // The cancelled worker's prepared file is reaped, never published.
+            let deadline = tilo_test_env::hang_deadline();
+            while !app.orphaned_interchange.is_empty() {
+                let within = deadline.saturating_duration_since(Instant::now());
+                wakes
+                    .recv_timeout(within)
+                    .expect("the cancelled worker wakes its host when it exits");
+                app.sync(&mut doc, &automerge::ROOT);
+            }
+            let leftovers: Vec<_> = std::fs::read_dir(destination.parent().unwrap())
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .filter(|name| name != "in-stock.xlsx")
+                .collect();
+            assert!(leftovers.is_empty(), "{leftovers:?}");
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         app.cache
             .as_ref()
@@ -8576,7 +8847,7 @@ mod tests {
             assert!(!app.sheet_names.is_empty(), "seeded app has sheets");
 
             let (key, payload) =
-                ui::widget::Widget::presence_payload(&app).expect("a sheet is active");
+                ui::presence::capability::presence_payload(&app).expect("a sheet is active");
             assert_eq!(
                 key,
                 PresenceKey::Tab {
@@ -8590,7 +8861,8 @@ mod tests {
             if app.sheet_names.len() > 1 {
                 let other = (app.active_sheet + 1) % app.sheet_names.len();
                 app.active_sheet = other;
-                let (key2, _) = ui::widget::Widget::presence_payload(&app).expect("still active");
+                let (key2, _) =
+                    ui::presence::capability::presence_payload(&app).expect("still active");
                 assert_eq!(
                     key2,
                     PresenceKey::Tab {
@@ -8610,9 +8882,11 @@ mod tests {
             app.grid.insert_text_public("draft");
             app.switch_sheet(&mut doc, 1); // click the "Sales" tab
             assert_eq!(app.active_sheet, 1);
-            assert_eq!(
-                SheetsDoc::active_index(&mut doc),
-                0,
+            let wb = SheetsDoc::wb_map(&mut doc);
+            assert!(
+                automerge::ReadDoc::get(&doc, &wb, "active")
+                    .unwrap()
+                    .is_none(),
                 "switching tabs is local presentation and must not write the shared workbook"
             );
             // The pending edit landed on sheet 0, not sheet 1.
@@ -8935,6 +9209,33 @@ mod tests {
             assert_eq!(values.get(&(4, 1)), Some(&CellValue::Number(3600.0)));
             // A non-formula neighbour still round-trips as a plain value.
             assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (1, 1)), "1200");
+        }
+
+        // Case `a_file_imported_into_a_new_workbook_is_the_workbook`.
+        // A new workbook's empty Sheet1 gives way, so an export of the
+        // imported file doesn't open on a blank first tab.
+        {
+            let mut app = SheetsApp::new();
+            let mut doc = AutoCommit::new();
+            SheetsDoc::add_sheet(&mut doc, "Sheet1");
+            let table = crate::xlsx::SheetTable {
+                name: "sales".into(),
+                rows: vec![vec![Some(crate::xlsx::ImportedCell {
+                    raw: "Region".into(),
+                    format: CellFormat::General,
+                    formula: None,
+                    bold: false,
+                })]],
+            };
+            app.import_tables(&mut doc, vec![table.clone()]).unwrap();
+            assert_eq!(SheetsDoc::sheet_names(&mut doc), ["sales"]);
+            assert_eq!(app.active_sheet, 0);
+            app.import_tables(&mut doc, vec![table]).unwrap();
+            assert_eq!(
+                SheetsDoc::sheet_names(&mut doc).len(),
+                2,
+                "a used workbook keeps its sheets"
+            );
         }
 
         // Case `csv_export_then_import_roundtrips`.
@@ -9949,14 +10250,16 @@ mod tests {
         let node = taffy.new_leaf(Style::default()).unwrap();
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

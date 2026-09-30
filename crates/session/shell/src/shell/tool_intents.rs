@@ -37,10 +37,11 @@ struct ShellRequest {
 impl Drop for ToolServiceHandle {
     fn drop(&mut self) {
         self.shutdown.store(true, Ordering::Release);
-        // Wake the nonblocking listener immediately rather than waiting for a
-        // scheduling tick during compositor shutdown.
-        let _ = UnixStream::connect(&self.path);
-        if let Some(thread) = self.thread.take() {
+        // The listener sleeps in `accept`; one connection wakes it to see the
+        // flag. If nothing can connect it is not waited for.
+        if let Some(thread) = self.thread.take()
+            && UnixStream::connect(&self.path).is_ok()
+        {
             let _ = thread.join();
         }
         let _ = std::fs::remove_file(&self.path);
@@ -110,7 +111,6 @@ fn spawn_at(
         std::fs::remove_file(&path)?;
     }
     let listener = UnixListener::bind(&path)?;
-    listener.set_nonblocking(true)?;
     let shutdown = Arc::new(AtomicBool::new(false));
     let worker_shutdown = Arc::clone(&shutdown);
     // Launches a client asks for report to the session that started the
@@ -118,8 +118,9 @@ fn spawn_at(
     let thread = crate::shell::launcher::spawn_reporting(
         std::thread::Builder::new().name("tilo-tool-intents".into()),
         move || {
-            while !worker_shutdown.load(Ordering::Acquire) {
+            loop {
                 match listener.accept() {
+                    Ok(_) if worker_shutdown.load(Ordering::Acquire) => break,
                     Ok((stream, _)) => {
                         let handler = Arc::clone(&handler);
                         let _ = crate::shell::launcher::spawn_reporting(
@@ -127,9 +128,7 @@ fn spawn_at(
                             move || serve_client(stream, &handler),
                         );
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
+                    Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
                     Err(e) => {
                         tracing::warn!(error = %e, "tool-intent listener failed");
                         break;
@@ -291,6 +290,32 @@ fn serve_client(stream: UnixStream, handler: &Handler) {
 mod tests {
     use super::*;
     use os_actions::{ToolIntent, VpnRoute, WorkspaceSettingsRoute};
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn idle_listener_sleeps_until_a_client_arrives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tools.sock");
+        let (service, listener) =
+            crate::idle_thread_probe::spawned_thread("tilo-tool-inten", || {
+                spawn_at(
+                    path.clone(),
+                    Arc::new(|_| Ok(())),
+                    Arc::new(Mutex::new(Vec::new())),
+                    Arc::new(Mutex::new(Vec::new())),
+                )
+                .unwrap()
+            });
+        crate::idle_thread_probe::assert_stays_asleep(&listener, "tool-intent listener");
+        UnixStream::connect(&path).expect("still accepts clients");
+        let started = std::time::Instant::now();
+        drop(service);
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "drop waited on its listener"
+        );
+        assert!(!path.exists(), "drop unlinks the socket");
+    }
 
     #[test]
     fn workspace_tool_intents_are_typed_and_confined_to_the_active_room() {

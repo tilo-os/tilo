@@ -4,6 +4,7 @@
 //! Automerge document on every change (see [`crate::doc`]).
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -14,9 +15,10 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey};
 
 use ui::Widget;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::actions::{self, CalculatorAction, GraphKind};
@@ -91,7 +93,7 @@ pub struct CalculatorApp {
     /// delivery. Individual custom-painted controls remain semantic children.
     host_focused: bool,
     /// Time + position of the last press, for double-click detection.
-    last_click: Option<ui::clock::Instant>,
+    last_click: Option<ui::time::Instant>,
     last_click_pos: Point,
 
     seeded: bool,
@@ -107,7 +109,7 @@ pub struct CalculatorApp {
     /// When `Some`, an edit landed at this time and has not yet been sealed into
     /// an undo checkpoint. Drives [`Widget::needs_commit`] so a burst of typing
     /// coalesces into a single Ctrl+Z step once editing pauses.
-    last_edit_time: Option<ui::clock::Instant>,
+    last_edit_time: Option<ui::time::Instant>,
     node: Option<NodeId>,
 
     /// Framework-owned action dispatch. Each on-screen affordance dispatches its
@@ -308,7 +310,7 @@ impl CalculatorApp {
     /// actor + committed change, so it replays byte-identically on peers). The
     /// document heads captured just before the first action of the current event
     /// are stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). The in-memory model is mutated by the
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). The in-memory model is mutated by the
     /// caller for immediate feedback; `store` then reconciles it (a no-op for the
     /// list the action already wrote), and `sync` re-adopts the document on
     /// undo/redo or a merged peer patch.
@@ -416,10 +418,11 @@ impl CalculatorApp {
     }
 
     fn draw_topbar(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         let c = &theme.tokens.colors;
-        draw::fill_rect(scene, t, self.topbar, c.surfaces.raised);
+        ctx.fill_rect(self.topbar, c.surfaces.raised);
         draw::line(
-            scene,
+            ctx.scene,
             t,
             Point::new(self.topbar.x0, self.topbar.y1),
             Point::new(self.topbar.x1, self.topbar.y1),
@@ -437,12 +440,12 @@ impl CalculatorApp {
             self.seg_rects[2].x1 + 4.0,
             self.seg_rects[2].y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer, 10.0, c.neutral[2]);
         let sel = self.model.mode.index();
         let on_accent = c.on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST);
         for (i, (m, &r)) in Mode::all().iter().zip(self.seg_rects.iter()).enumerate() {
             if i == sel {
-                draw::fill_round(scene, t, r, 8.0, c.accent[5]);
+                ctx.fill_round(r, 8.0, c.accent[5]);
             }
             let col = if i == sel { on_accent } else { c.text_dim };
             let label = if self.seg_short {
@@ -451,15 +454,12 @@ impl CalculatorApp {
                 m.label()
             };
             draw::text_in(
-                scene,
-                tr,
-                t,
+                &mut ctx,
                 r,
                 label,
-                TopbarLabels::SEG_FONT,
+                &TextStyle::new(TopbarLabels::SEG_FONT).with_weight(TextWeight::Semibold),
                 col,
                 Align::Center,
-                TextWeight::Semibold,
             );
         }
 
@@ -470,11 +470,11 @@ impl CalculatorApp {
             self.deg_rect.x1 + 4.0,
             self.deg_rect.y1 + 4.0,
         );
-        ui::surface::card(scene, t, outer2, 10.0, c.neutral[2]);
+        ui::surface::card(ctx.scene, t, outer2, 10.0, c.neutral[2]);
         if self.model.deg {
-            draw::fill_round(scene, t, self.deg_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.deg_rect, 8.0, c.accent[5]);
         } else {
-            draw::fill_round(scene, t, self.rad_rect, 8.0, c.accent[5]);
+            ctx.fill_round(self.rad_rect, 8.0, c.accent[5]);
         }
         let rad_col = if self.model.deg {
             c.text_dim
@@ -487,26 +487,20 @@ impl CalculatorApp {
             c.text_dim
         };
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.rad_rect,
             "RAD",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             rad_col,
             Align::Center,
-            TextWeight::Semibold,
         );
         draw::text_in(
-            scene,
-            tr,
-            t,
+            &mut ctx,
             self.deg_rect,
             "DEG",
-            TopbarLabels::TOGGLE_FONT,
+            &TextStyle::new(TopbarLabels::TOGGLE_FONT).with_weight(TextWeight::Semibold),
             deg_col,
             Align::Center,
-            TextWeight::Semibold,
         );
     }
 
@@ -530,7 +524,7 @@ impl CalculatorApp {
         }
 
         // Double-click detection (≤400 ms, within 5 px).
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         let double = self
             .last_click
             .is_some_and(|t| now.duration_since(t).as_millis() <= 400)
@@ -1174,45 +1168,8 @@ fn key_accessible_name(key: &model::Key) -> String {
     }
 }
 
-impl Widget for CalculatorApp {
-    fn is_focusable(&self) -> bool {
-        true
-    }
-
-    fn set_focus(&mut self, focused: bool) {
-        self.dirty |= self.host_focused != focused;
-        self.host_focused = focused;
-    }
-
-    fn is_focused(&self) -> bool {
-        self.host_focused
-    }
-
-    fn ime_cursor_rect(&self) -> Option<Rect> {
-        if !self.host_focused {
-            return None;
-        }
-        match self.model.mode {
-            Mode::Calc => self.calc.expression_ime_rect(),
-            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
-            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
-        }
-    }
-
-    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
-        self.host_focused
-            .then_some(winit::window::ImePurpose::Normal)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[actions::CALCULATOR_OPERATION_TYPE]
-    }
-
-    fn invoke_resource_operation(
+impl CalculatorApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -1260,9 +1217,73 @@ impl Widget for CalculatorApp {
         });
         Ok(true)
     }
+}
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+impl Widget for CalculatorApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
+
+    fn is_focusable(&self) -> bool {
+        true
+    }
+
+    fn set_focus(&mut self, focused: bool) {
+        self.dirty |= self.host_focused != focused;
+        self.host_focused = focused;
+    }
+
+    fn is_focused(&self) -> bool {
+        self.host_focused
+    }
+
+    fn ime_cursor_rect(&self) -> Option<Rect> {
+        if !self.host_focused {
+            return None;
+        }
+        match self.model.mode {
+            Mode::Calc => self.calc.expression_ime_rect(),
+            Mode::Graph2d => self.g2.field_rect(self.model.active_fn),
+            Mode::Graph3d => self.g3.field_rect(self.model.active_surface),
+        }
+    }
+
+    fn ime_purpose(&self) -> Option<winit::window::ImePurpose> {
+        self.host_focused
+            .then_some(winit::window::ImePurpose::Normal)
+    }
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[actions::CALCULATOR_OPERATION_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         use automerge::transaction::Transactable as _;
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if crate::doc::is_seeded(state) {
                 let _ = crate::doc::load_into(state, &mut self.model);
@@ -1405,18 +1426,7 @@ impl Widget for CalculatorApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Window groups offer an event to visible apps in presentation order.
         // Keyboard and IME input belongs to the host-selected Calculator only;
         // an unfocused instance must leave it unclaimed so that selected sibling
@@ -1435,7 +1445,7 @@ impl Widget for CalculatorApp {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.mouse = p;
                 match self.model.mode {
                     Mode::Calc => {
@@ -1464,15 +1474,15 @@ impl Widget for CalculatorApp {
                     self.g2.hovered_row,
                     self.g3.hovered_row,
                 );
-                *handled = self.dragging || self.field_dragging || hover_now != hover_before;
+                *ctx.handled = self.dragging || self.field_dragging || hover_now != hover_before;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_press(self.mouse, state);
-                *handled = true;
+                self.on_press(self.mouse, ctx.state);
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1484,7 +1494,7 @@ impl Widget for CalculatorApp {
                 self.g2.release_fields();
                 self.g3.release_fields();
                 self.calc.pressed_key = None;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let step = match delta {
@@ -1492,30 +1502,30 @@ impl Widget for CalculatorApp {
                     MouseScrollDelta::PixelDelta(pos) => pos.y / 40.0,
                 };
                 self.on_wheel(step);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                *handled = !self.escape_is_idle(&key_event.logical_key);
-                self.on_key(&key_event.logical_key, *modifiers, state);
+                *ctx.handled = !self.escape_is_idle(&key_event.logical_key);
+                self.on_key(&key_event.logical_key, *ctx.modifiers, ctx.state);
             }
             WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
                 self.on_key(
                     &WKey::Character(text.clone().into()),
                     winit::event::Modifiers::default(),
-                    state,
+                    ctx.state,
                 );
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::Ime(_) => {
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
 
         // Everything but inert pointer motion may have changed what is drawn.
-        if !matches!(event, WindowEvent::CursorMoved { .. }) || *handled || self.model_dirty {
+        if !matches!(event, WindowEvent::CursorMoved { .. }) || *ctx.handled || self.model_dirty {
             self.dirty = true;
         }
         if self.model_dirty {
@@ -1526,7 +1536,7 @@ impl Widget for CalculatorApp {
             // Mark an uncommitted edit so `needs_commit` can seal it into an
             // undo checkpoint once editing pauses (character-key edits are not
             // committed by the App's per-event path, only coalesced here).
-            self.last_edit_time = Some(ui::clock::Instant::now());
+            self.last_edit_time = Some(ui::time::now());
         }
     }
 
@@ -1729,10 +1739,11 @@ impl Widget for CalculatorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, _) = ui::doc::document(state, path);
         // Assistive actions bypass `handle_event`; they may change anything.
         self.dirty = true;
         match target {
@@ -1856,34 +1867,6 @@ impl Widget for CalculatorApp {
         }
     }
 
-    /// Seal a burst of edits into one undo checkpoint after a short pause, so
-    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
-    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
-    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
-    /// bespoke stack.
-    fn needs_commit(&self) -> bool {
-        self.last_edit_time
-            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
-    }
-
-    fn on_commit(&mut self) {
-        self.last_edit_time = None;
-    }
-
-    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
-    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
-    /// impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its history / graph action, so it records one undo boundary for the whole
-    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
     fn test_id(&self) -> Option<&str> {
         Some("calculator_app")
     }
@@ -1896,6 +1879,45 @@ impl Widget for CalculatorApp {
     /// change.
     fn is_layout_dirty(&self) -> bool {
         self.area == Rect::ZERO
+    }
+}
+
+impl ui::undo::UndoPoints for CalculatorApp {
+    /// Seal a burst of edits into one undo checkpoint after a short pause, so
+    /// Ctrl+Z steps back per token/pause rather than per keystroke. The App
+    /// calls [`Widget::needs_commit`] → `commit_action` (a `ui::State` snapshot)
+    /// → [`Widget::on_commit`]; undo/redo is entirely `ui::State`'s, not a
+    /// bespoke stack.
+    fn needs_commit(&self) -> bool {
+        self.last_edit_time
+            .is_some_and(|t| t.elapsed() >= COMMIT_COALESCE)
+    }
+    fn on_commit(&mut self) {
+        self.last_edit_time = None;
+    }
+}
+
+impl ui::resources::PublishesResources for CalculatorApp {
+    /// Publish the calculator's Ctrl+K resource tree (history entries + saved
+    /// graph formulas), via the [`ResourceProvider`](tilo_actions::ResourceProvider)
+    /// impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for CalculatorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for CalculatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its history / graph action, so it records one undo boundary for the whole
+    /// gesture (see `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -2408,7 +2430,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -2454,7 +2476,7 @@ mod tests {
             let expression = crate::doc::load(&state.doc).unwrap().history[1]
                 .expr
                 .clone();
-            let resources = app.resources(&state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             let row = resources[0]
                 .children
                 .iter()
@@ -2478,13 +2500,17 @@ mod tests {
             let heads = state.doc.get_heads();
             app.set_mode(Mode::Graph3d);
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: first invoke handled"
             );
@@ -2494,13 +2520,17 @@ mod tests {
             app.model_dirty = false;
             app.model.expr = "uncommitted input".into();
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap(),
                 "search recall: second invoke handled"
             );
@@ -2514,13 +2544,17 @@ mod tests {
             );
             app.perform_action(&mut state.doc, &actions::delete_history_entry_action(&id));
             assert!(
-                app.invoke_resource_operation(
-                    open.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        open.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
                     &state.root
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "search recall: deleted row is refused"
             );
@@ -2987,6 +3021,7 @@ mod tests {
     /// commit. Fresh app + state per phase.
     #[test]
     fn formula_edits_sync_through_crdt_and_framework_undo() {
+        use ui::undo::needs_commit;
         // phase undo_redo_of_formula_edit_routes_through_ui_state
         {
             // Undo/redo of a formula edit round-trips through `ui::State`'s snapshot
@@ -3018,8 +3053,7 @@ mod tests {
                 app.on_key(&WKey::Character(ch.into()), none, &mut state.doc);
             }
             assert_eq!(app.model.funcs[0].expr, "2*x", "undo: typed formula");
-            let before = app
-                .take_committed_action()
+            let before = ui::undo::take_committed_action(&mut app)
                 .expect("formula actions expose one undo bracket");
             assert!(
                 state.record_committed_action(before, None, None),
@@ -3086,7 +3120,7 @@ mod tests {
             app.area = Rect::new(0.0, 0.0, 1280.0, 800.0);
             app.relayout();
             app.layout_active();
-            assert!(!app.needs_commit(), "no edit yet → nothing to commit");
+            assert!(!needs_commit(&app), "no edit yet → nothing to commit");
             let five = app.bench_calc_key_center("5").expect("5 keycap laid out");
             tap(&mut app, &mut st, five);
             assert_eq!(app.model.expr, "5", "seal: tapped 5");
@@ -3095,7 +3129,7 @@ mod tests {
                 "an edit must arm the coalescing timer"
             );
             assert!(
-                !app.needs_commit(),
+                !needs_commit(&app),
                 "a just-made edit must not seal a checkpoint mid-burst"
             );
             // Once the coalesce window has elapsed the widget asks to checkpoint.
@@ -3105,12 +3139,12 @@ mod tests {
                     .unwrap(),
             );
             assert!(
-                app.needs_commit(),
+                needs_commit(&app),
                 "after the pause the edit must seal into a checkpoint"
             );
             // The App calls on_commit after snapshotting; that clears the pending edit.
-            app.on_commit();
-            assert!(!app.needs_commit(), "seal: on_commit clears needs_commit");
+            ui::undo::on_commit(&mut app);
+            assert!(!needs_commit(&app), "seal: on_commit clears needs_commit");
             assert!(
                 app.last_edit_time.is_none(),
                 "seal: on_commit clears the timer"
@@ -3134,14 +3168,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut st.doc,
-            &st.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut st.doc,
+                path: &st.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3418,14 +3454,16 @@ mod tests {
                     device_id: dev,
                     position: winit::dpi::PhysicalPosition::new(toggle.x, toggle.y),
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             app.handle_event(
                 &WindowEvent::MouseInput {
@@ -3433,14 +3471,16 @@ mod tests {
                     state: ElementState::Pressed,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &mods,
-                &mut st.doc,
-                &st.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut st.doc,
+                    path: &st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 app.g2.panel_open(),

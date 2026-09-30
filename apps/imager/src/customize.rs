@@ -26,18 +26,19 @@ use automerge::AutoCommit;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::local_state::LocalState;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::surface;
-use ui::text_render::{TextRenderer, TextWeight};
-use ui::theme::Theme;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::tokens::Metrics;
 use ui::widget::{Button, ButtonFace, Dropdown, TextInput, Widget};
 
 use crate::actions::{IMAGER_ACTION_TYPE, ImagerAction};
+use crate::app::TextRun;
 use crate::model::{Filesystem, InstallProfile, installer_locales};
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
@@ -596,32 +597,6 @@ impl CustomizePanel {
 
     // ---- drawing ----------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "text drawing keeps the renderer, scene, style, position, width, and weight explicit at each call site"
-    )]
-    fn txt(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        s: &str,
-        size: f32,
-        color: Color,
-        x: f64,
-        top: f64,
-        max_w: Option<f32>,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            Affine::translate((x, top)),
-            max_w,
-            weight,
-        );
-    }
-
     fn fill_rr(scene: &mut Scene, t: Affine, r: Rect, radius: f64, c: Color) {
         scene.fill(
             Fill::NonZero,
@@ -642,62 +617,39 @@ impl CustomizePanel {
         );
     }
 
-    fn section_label(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        theme: &Theme,
-        s: &str,
-        x: f64,
-        y: f64,
-    ) {
-        Self::txt(
-            tr,
-            scene,
+    fn section_label(ctx: &mut PaintCtx<'_>, s: &str, at: Point) {
+        TextRun::new(
             s,
-            11.0,
-            theme.tokens.colors.text_dim,
-            x,
-            y,
-            None,
-            TextWeight::Semibold,
-        );
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
+            ctx.theme.tokens.colors.text_dim,
+        )
+        .draw(ctx.scene, ctx.text, at, None);
     }
 
     /// Draw + hit-forward one text field (box + label + the shared input glyphs).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one field draw forwards the shared render context plus its field identity and geometry"
-    )]
     fn draw_field(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         f: CzField,
         r: Rect,
         label: &str,
     ) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let c = &theme.tokens.colors;
         let choice_valid = !Self::is_choice(f) || self.choice_is_valid(f);
         // The caption sits on its own line box a `LABEL` above the field.
         let label_top = r.y0 - LABEL - self.anchors.label_h;
-        Self::txt(
-            tr,
-            scene,
+        TextRun::new(
             label,
-            11.0,
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             if choice_valid {
                 c.text_dim
             } else {
                 c.semantic.danger
             },
-            r.x0,
-            label_top,
-            None,
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(r.x0, label_top), None);
         let focused = self.focused == Some(f);
         let radius = theme.radius_standard;
         if Self::is_choice(f) {
@@ -709,16 +661,11 @@ impl CustomizePanel {
                 Self::stroke_rr(scene, t, r, radius, c.semantic.danger, 2.0);
                 let message = "Choose a listed value";
                 let (width, _) = tr.measure(message, 10.0, None);
-                Self::txt(
-                    tr,
+                TextRun::new(message, TextStyle::new(10.0), c.semantic.danger).draw(
                     scene,
-                    message,
-                    10.0,
-                    c.semantic.danger,
-                    r.x1 - f64::from(width),
-                    label_top,
+                    tr,
+                    Point::new(r.x1 - f64::from(width), label_top),
                     Some((r.width() - 2.0 * LABEL).max(0.0) as f32),
-                    TextWeight::Regular,
                 );
             }
             return;
@@ -739,35 +686,12 @@ impl CustomizePanel {
     }
 
     /// Render the whole panel into `content` for the given profile snapshot.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the embedded panel receives the host render context and reviewed profile without owning duplicate state"
-    )]
-    pub fn draw(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        content: Rect,
-        profile: &InstallProfile,
-        target_removable: bool,
-    ) {
+    pub fn draw(&mut self, ctx: &mut PaintCtx<'_>, presence: &PresenceCtx, content: Rect) {
         let g = self.geom(content);
-        self.draw_identity_fields(scene, tr, theme, t, presence, content.x0, &g);
-        self.draw_region_and_options(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            content.x0,
-            &g,
-            profile,
-            target_removable,
-        );
-        self.draw_export_button(scene, tr, theme, t, &g);
+        self.draw_identity_fields(ctx, presence, content.x0, &g);
+        self.draw_region_and_options(ctx, presence, content.x0, &g);
+        self.draw_export_button(ctx, &g);
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         // Dropdown lists are a top-layer pass so a long filtered time-zone
         // result is never painted underneath the following fields.
         for field in [
@@ -783,66 +707,20 @@ impl CustomizePanel {
     }
 
     /// The IDENTITY section: hostname, name, username and time zone.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the section renderer forwards one shared render context to each identity field"
-    )]
     fn draw_identity_fields(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         label_x: f64,
         g: &CzGeom,
     ) {
-        Self::section_label(tr, scene, theme, "IDENTITY", label_x, g.identity_label_y);
+        Self::section_label(ctx, "IDENTITY", Point::new(label_x, g.identity_label_y));
+        self.draw_field(ctx, presence, CzField::Hostname, g.hostname, "Hostname");
+        self.draw_field(ctx, presence, CzField::FullName, g.full_name, "Full name");
+        self.draw_field(ctx, presence, CzField::Username, g.username, "Username");
+        self.draw_field(ctx, presence, CzField::Timezone, g.timezone, "Time zone");
         self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            CzField::Hostname,
-            g.hostname,
-            "Hostname",
-        );
-        self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            CzField::FullName,
-            g.full_name,
-            "Full name",
-        );
-        self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            CzField::Username,
-            g.username,
-            "Username",
-        );
-        self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            CzField::Timezone,
-            g.timezone,
-            "Time zone",
-        );
-        self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
+            ctx,
             presence,
             CzField::Locale,
             g.locale,
@@ -852,45 +730,21 @@ impl CustomizePanel {
 
     /// The REGION section contains the last host-side preference. Security,
     /// storage target and destructive choices are completed on the device.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the section renderer forwards one shared render context plus reviewed install context"
-    )]
     fn draw_region_and_options(
         &mut self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
         label_x: f64,
         g: &CzGeom,
-        _profile: &InstallProfile,
-        _target_removable: bool,
     ) {
         Self::section_label(
-            tr,
-            scene,
-            theme,
+            ctx,
             "REGION & OPTIONS",
-            label_x,
-            g.region_label_y,
+            Point::new(label_x, g.region_label_y),
         );
+        self.draw_field(ctx, presence, CzField::Keyboard, g.keyboard, "Keyboard");
         self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
-            presence,
-            CzField::Keyboard,
-            g.keyboard,
-            "Keyboard",
-        );
-        self.draw_field(
-            scene,
-            tr,
-            theme,
-            t,
+            ctx,
             presence,
             CzField::Filesystem,
             g.filesystem,
@@ -899,14 +753,8 @@ impl CustomizePanel {
     }
 
     /// Preview the exact profile which will be embedded into the medium.
-    fn draw_export_button(
-        &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        g: &CzGeom,
-    ) {
+    fn draw_export_button(&self, ctx: &mut PaintCtx<'_>, g: &CzGeom) {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         // The toolkit's neutral Button face — `Button::paint` shares
         // `face_colors` with the retained widget, so this secondary action
         // matches every other button: raised at rest, the hover tint under
@@ -932,52 +780,29 @@ impl CustomizePanel {
     /// Route a winit event into the panel. Text edits and toggles dispatch
     /// their [`ImagerAction`] through `host`; the returned [`CzResponse`] tells
     /// the host whether the event was consumed and whether export was asked for.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "widget event dispatch must forward the toolkit event context and the authoritative action host"
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         host: &mut ui::ActionHost,
         profile: &InstallProfile,
         target_removable: bool,
         content: Rect,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         let g = self.geom(content);
         match event {
-            WindowEvent::CursorMoved { position, .. } => self.handle_cursor_moved(
-                event, position.x, position.y, scale, *modifiers, doc, path, &g, node_id, taffy,
-            ),
+            WindowEvent::CursorMoved { position, .. } => {
+                self.handle_cursor_moved(event, ctx, position.x, position.y, &g)
+            }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_left_click(
-                event,
-                scale,
-                *modifiers,
-                doc,
-                path,
-                host,
-                profile,
-                target_removable,
-                &g,
-                node_id,
-                taffy,
-            ),
+            } => self.handle_left_click(event, ctx, host, profile, target_removable, &g),
             WindowEvent::KeyboardInput { event: key_ev, .. }
                 if key_ev.state == ElementState::Pressed =>
             {
-                self.handle_key_event(
-                    event, key_ev, scale, *modifiers, doc, path, host, &g, node_id, taffy,
-                )
+                self.handle_key_event(event, ctx, key_ev, host, &g)
             }
             _ => CzResponse {
                 handled: false,
@@ -988,24 +813,15 @@ impl CustomizePanel {
 
     /// Track the pointer and forward it to a focused field so drag-selection
     /// tracks along.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "pointer routing keeps toolkit event state and action dispatch explicit"
-    )]
     fn handle_cursor_moved(
         &mut self,
         event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         px: f64,
         py: f64,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
-        self.last_mouse = Point::new(px / scale, py / scale);
+        self.last_mouse = Point::new(px / ctx.scale_factor, py / ctx.scale_factor);
         if let Some(f) = self.focused {
             let inner = Rect::new(
                 g.field(f).x0 + SIBLING,
@@ -1017,13 +833,23 @@ impl CustomizePanel {
             if let Some(choice) = self.choice(f) {
                 choice.apply_layout_external(g.field(f));
                 choice.handle_event(
-                    event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             } else {
                 let input = self.input(f);
                 input.apply_layout_external(inner);
                 input.handle_event(
-                    event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+                    event,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut h,
+                        focus_target: &mut ft,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
             }
         }
@@ -1035,23 +861,14 @@ impl CustomizePanel {
 
     /// A left click: focus a field and forward the press for caret placement,
     /// dispatch a toggle, request export, or (on empty space) drop focus.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "click routing keeps geometry, toolkit event state, and action dispatch explicit"
-    )]
     fn handle_left_click(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         host: &mut ui::ActionHost,
         profile: &InstallProfile,
         _target_removable: bool,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         let p = self.last_mouse;
         if let Some(field) = self.focused
@@ -1064,14 +881,11 @@ impl CustomizePanel {
                 choice.apply_layout_external(g.field(field));
                 choice.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 choice.selected().to_string()
             } else {
@@ -1080,7 +894,7 @@ impl CustomizePanel {
             if selected != before
                 && let Some(value) = Self::choice_profile_value(field, &selected)
             {
-                Self::dispatch(doc, host, &Self::field_action(field, value));
+                Self::dispatch(ctx.state, host, &Self::field_action(field, value));
             }
             if handled {
                 return CzResponse {
@@ -1091,17 +905,7 @@ impl CustomizePanel {
         }
         for f in CzField::ALL {
             if g.field(f).contains(p) {
-                self.focus_field(
-                    f,
-                    g.field(f),
-                    event,
-                    scale,
-                    modifiers,
-                    doc,
-                    path,
-                    node_id,
-                    taffy,
-                );
+                self.focus_field(event, ctx, f, g.field(f));
                 return CzResponse {
                     handled: true,
                     export_requested: false,
@@ -1124,22 +928,13 @@ impl CustomizePanel {
 
     /// A key press while a field is focused: Enter/Escape blur it, anything
     /// else routes to the input and dispatches its fresh value.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "keyboard routing keeps modifiers, toolkit event state, and action dispatch explicit"
-    )]
     fn handle_key_event(
         &mut self,
         event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key_ev: &winit::event::KeyEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
         host: &mut ui::ActionHost,
         g: &CzGeom,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) -> CzResponse {
         if self.export_focused {
             return match &key_ev.logical_key {
@@ -1175,14 +970,11 @@ impl CustomizePanel {
                 choice.apply_layout_external(rect);
                 choice.handle_event(
                     event,
-                    scale,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut handled,
-                    &mut focus_target,
-                    node_id,
-                    taffy,
+                    &mut ui::widget::EventCtx {
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        ..ctx.reborrow(ctx.path, ctx.node_id)
+                    },
                 );
                 (before, choice.selected().to_string())
             } else {
@@ -1191,7 +983,7 @@ impl CustomizePanel {
             if let Some(value) = Self::choice_profile_value(f, &selected)
                 && selected != before
             {
-                Self::dispatch(doc, host, &Self::field_action(f, value));
+                Self::dispatch(ctx.state, host, &Self::field_action(f, value));
             }
             return CzResponse {
                 handled,
@@ -1219,31 +1011,27 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut h,
+                focus_target: &mut ft,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         let value = self.input(f).value().to_string();
-        Self::dispatch(doc, host, &Self::field_action(f, value));
+        Self::dispatch(ctx.state, host, &Self::field_action(f, value));
         CzResponse {
             handled: true,
             export_requested: false,
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "focus transfer synchronizes the chosen field with toolkit state and the authoritative profile action"
-    )]
     fn focus_field(
         &mut self,
+        event: &WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         f: CzField,
         field_rect: Rect,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: Modifiers,
-        doc: &mut AutoCommit,
-        path: &automerge::ObjId,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
     ) {
         self.blur();
         self.focused = Some(f);
@@ -1253,14 +1041,11 @@ impl CustomizePanel {
             let (mut handled, mut focus_target) = (false, None);
             choice.handle_event(
                 event,
-                scale,
-                &modifiers,
-                doc,
-                path,
-                &mut handled,
-                &mut focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             return;
         }
@@ -1275,7 +1060,12 @@ impl CustomizePanel {
         input.apply_layout_external(inner);
         let (mut h, mut ft) = (false, None);
         input.handle_event(
-            event, scale, &modifiers, doc, path, &mut h, &mut ft, node_id, taffy,
+            event,
+            &mut ui::widget::EventCtx {
+                handled: &mut h,
+                focus_target: &mut ft,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
     }
 

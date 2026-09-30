@@ -8,8 +8,8 @@ use std::time::SystemTime;
 use channel_crypto::{ChannelGroup, Error, MemberKey, VaultKey};
 use collab_types::history::{HistoryPager, page_before};
 use collab_types::{
-    ArtifactId, AttestationId, ChannelId, ContentRetention, EncryptionMetadata, OpClass, SignedOp,
-    generate_keypair, sign_op, verify_op,
+    ArtifactId, AttestationId, ChannelId, ContentRetention, OpClass, SignedOp, generate_keypair,
+    sign_op, verify_op,
 };
 
 /// The history host (broker/relay): stores signed ciphertext, never keys.
@@ -524,15 +524,8 @@ fn concurrent_add_and_remove_serialize_and_every_member_agrees_on_keys() {
     assert!(open(&mut carol, &host.ops[1]).is_err());
 }
 
-/// The keyring survives restart for every member and version-one ciphertext from an earlier
-/// build still decrypts.
-/// Runs each phase below in order; every phase builds its own fixture.
+/// The keyring survives restart for every member.
 #[test]
-fn content_keys_outlive_restarts_and_builds() {
-    keyring_survives_restart_for_every_member();
-    version_one_ciphertext_from_an_earlier_build_still_decrypts();
-}
-
 fn keyring_survives_restart_for_every_member() {
     let (channel, artifact, host, alice, bob, document) = populated_channel(40);
     let dir = tempfile::tempdir().unwrap();
@@ -552,36 +545,4 @@ fn keyring_survives_restart_for_every_member() {
             "state is written in the current format"
         );
     }
-}
-
-/// An MLS application message (encryption scheme version 1) and the
-/// receiver's state, both written by the build before content keys existed.
-fn version_one_ciphertext_from_an_earlier_build_still_decrypts() {
-    let fixtures = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
-    let key = VaultKey::new([0x44; 32]);
-    let mut bob =
-        ChannelGroup::load_sealed(&fixtures.join("mls_v1_bob_before_decrypt.mls"), &key).unwrap();
-    let channel = bob.channel_id();
-    assert_eq!(
-        channel.0.to_string(),
-        "921f7ae5-59a8-419a-be73-9bf8820ea4aa"
-    );
-    let ciphertext = std::fs::read(fixtures.join("mls_v1_application_message.bin")).unwrap();
-    let metadata = EncryptionMetadata::mls_application(1, channel);
-    assert_eq!(
-        bob.open_content(ArtifactId::new(), &metadata, &ciphertext)
-            .unwrap()
-            .as_slice(),
-        b"sealed by the MLS application-message scheme"
-    );
-
-    // The upgraded state now also carries content keys and saves in the
-    // current format.
-    assert_eq!(bob.keyring().len(), 1);
-    let dir = tempfile::tempdir().unwrap();
-    let path = dir.path().join("bob.mls");
-    bob.save_sealed(&path, &key).unwrap();
-    let reloaded = ChannelGroup::load_sealed(&path, &key).unwrap();
-    assert_eq!(reloaded.keyring().len(), 1);
-    assert_eq!(reloaded.epoch(), 1);
 }

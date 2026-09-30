@@ -13,8 +13,8 @@
 //! [`ViewportState::screen_to_content`].
 
 use crate::time::Instant;
+use crate::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -955,7 +955,7 @@ impl DocumentViewport {
 }
 
 impl Widget for DocumentViewport {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if let Content::Widget(c) = &mut self.content {
             c.sync(state, path);
         }
@@ -997,9 +997,9 @@ impl Widget for DocumentViewport {
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        self.place_child(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(theme.text_scale, |tr| {
+            self.place_child(&theme, tr)
+        });
     }
 
     fn draw(
@@ -1024,30 +1024,20 @@ impl Widget for DocumentViewport {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // An active scrollbar thumb drag owns the move.
                 if self.state.drag_scrollbar(self.last_cursor) {
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.state.update_pan(self.last_cursor) {
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Otherwise brighten the hovered thumb.
@@ -1065,28 +1055,20 @@ impl Widget for DocumentViewport {
                     // the child and drag-to-pan beneath it.
                     if self.state.press_scrollbar(self.last_cursor) {
                         self.dirty = true;
-                        *handled = true;
+                        *ctx.handled = true;
                         return;
                     }
                     // Let the wrapped child take the press next (e.g. a
                     // button on the canvas); only start a pan if it didn't.
                     if let Content::Widget(_) = &self.content {
-                        self.route_to_child(
-                            event,
-                            scale_factor,
-                            *modifiers,
-                            state,
-                            path,
-                            handled,
-                            focus_target,
-                        );
-                        if *handled {
+                        self.route_to_child(event, ctx);
+                        if *ctx.handled {
                             return;
                         }
                     }
                     self.state.begin_pan(self.last_cursor);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1097,22 +1079,26 @@ impl Widget for DocumentViewport {
             } => {
                 if self.state.release_scrollbar() {
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if self.state.is_panning() {
                     self.state.end_pan();
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.rect.contains(self.last_cursor) {
-                    self.state
-                        .on_wheel(delta, &modifiers.state(), self.last_cursor, scale_factor);
+                    self.state.on_wheel(
+                        delta,
+                        &ctx.modifiers.state(),
+                        self.last_cursor,
+                        ctx.scale_factor,
+                    );
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -1121,24 +1107,16 @@ impl Widget for DocumentViewport {
             } if key_event.state == ElementState::Pressed
                 && self
                     .state
-                    .on_key(&key_event.logical_key, &modifiers.state()) =>
+                    .on_key(&key_event.logical_key, &ctx.modifiers.state()) =>
             {
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             _ => {}
         }
-        if !*handled {
-            self.route_to_child(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-            );
+        if !*ctx.handled {
+            self.route_to_child(event, ctx);
         }
     }
 
@@ -1185,20 +1163,7 @@ impl DocumentViewport {
     /// Route an event to the wrapped child, if any. Events reach the child
     /// in window/screen coordinates; its inner taffy node is passed through
     /// so child containers can recurse.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "child event routing forwards the Widget event, scale, modifiers, CRDT state and focus outputs unchanged"
-    )]
-    fn route_to_child(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-    ) {
+    fn route_to_child(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let (Content::Widget(c), Some(taffy), Some(node)) = (
             &mut self.content,
             self.inner_taffy.as_ref(),
@@ -1208,14 +1173,10 @@ impl DocumentViewport {
         };
         c.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                taffy,
+                ..ctx.reborrow(ctx.path, node)
+            },
         );
     }
 }

@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -19,7 +20,7 @@ use ui::widget::{Button, Card, Column, Container, Row, Scrollable, Text, Widget}
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use super::desktop_continuation::{self, ChoiceMode, Continuation};
 use super::folders;
@@ -271,13 +272,13 @@ impl ImportApp {
                     .map_err(|e| e.to_string())?;
                 }
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+                let deadline = ui::time::now() + SHOT_WAIT_BOUND;
                 app.wait_for_shot_terminal(deadline)?;
                 app.expanded_details.insert(0);
                 app.load_issue_page(0, 0)?;
                 while app.detail_request.is_some() {
                     app.poll_background();
-                    if std::time::Instant::now() > deadline {
+                    if ui::time::now() > deadline {
                         return Err("issue-page screenshot timed out".into());
                     }
                     std::thread::yield_now();
@@ -287,7 +288,7 @@ impl ImportApp {
                 std::fs::write(source.join("Welcome.txt"), b"verified import")
                     .map_err(|error| error.to_string())?;
                 app.prepare_and_start_shot(&source, &destination_parent)?;
-                app.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
+                app.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
             }
         }
         app.structure_dirty = true;
@@ -307,7 +308,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -327,7 +328,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("progress screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -345,7 +346,7 @@ impl ImportApp {
         std::os::unix::fs::symlink(source.join("Welcome.txt"), source.join("Old shortcut"))
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)
     }
 
     fn seed_retry_progress_shot(
@@ -361,7 +362,7 @@ impl ImportApp {
             .map_err(|error| error.to_string())?;
         }
         self.prepare_and_start_shot(source, destination_parent)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             self.poll_background();
             if self
@@ -373,7 +374,7 @@ impl ImportApp {
                 self.wait_for_shot_terminal(deadline)?;
                 break;
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("retry screenshot setup timed out".into());
             }
             std::thread::yield_now();
@@ -401,7 +402,7 @@ impl ImportApp {
                 self.status_is_error = false;
                 return Ok(());
             }
-            if std::time::Instant::now() >= deadline || self.worker.is_none() {
+            if ui::time::now() >= deadline || self.worker.is_none() {
                 return Err("retry screenshot worker finished before progress was captured".into());
             }
             std::thread::yield_now();
@@ -416,7 +417,7 @@ impl ImportApp {
         std::fs::write(source.join("Budget.txt"), b"source version")
             .map_err(|error| error.to_string())?;
         self.prepare_and_start_shot(source, destination_parent)?;
-        self.wait_for_shot_terminal(std::time::Instant::now() + SHOT_WAIT_BOUND)?;
+        self.wait_for_shot_terminal(ui::time::now() + SHOT_WAIT_BOUND)?;
         let completed = self
             .operations
             .first()
@@ -450,13 +451,13 @@ impl ImportApp {
         self.source = Some(source.to_path_buf());
         self.destination_parent = Some(destination_parent.to_path_buf());
         self.prepare_review()?;
-        self.start_operation(0)
+        self.start_copy(0)
     }
 
-    fn wait_for_shot_terminal(&mut self, deadline: std::time::Instant) -> Result<(), String> {
+    fn wait_for_shot_terminal(&mut self, deadline: ui::time::Instant) -> Result<(), String> {
         while self.worker.is_some() {
             self.poll_background();
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 return Err("screenshot worker timed out".into());
             }
             std::thread::yield_now();
@@ -466,7 +467,7 @@ impl ImportApp {
 
     fn run_shot_worker(operation: &mut OperationRecord, job: MigrationJob) -> Result<(), String> {
         let mut worker = MigrationWorker::start(job)?;
-        let deadline = std::time::Instant::now() + SHOT_WAIT_BOUND;
+        let deadline = ui::time::now() + SHOT_WAIT_BOUND;
         loop {
             if let Some(event) = worker.try_next() {
                 match event {
@@ -481,7 +482,7 @@ impl ImportApp {
                     }
                 }
             }
-            if std::time::Instant::now() >= deadline {
+            if ui::time::now() >= deadline {
                 operation.apply_outcome(WorkerOutcome::Interrupted);
                 return Err("screenshot worker timed out".into());
             }
@@ -576,7 +577,7 @@ impl ImportApp {
         })
     }
 
-    fn can_start_operation(&self, index: usize) -> bool {
+    fn can_start_copy(&self, index: usize) -> bool {
         self.operations
             .get(index)
             .is_some_and(|record| record.state() == OperationState::AwaitingReview)
@@ -691,7 +692,7 @@ impl ImportApp {
                 let details_available = operation.issue_count() > 0
                     || !operation.metadata_limitations().is_empty()
                     || operation.failure().is_some();
-                let start_available = self.can_start_operation(index);
+                let start_available = self.can_start_copy(index);
                 OperationProjection {
                     identity: operation.id().to_string(),
                     state: operation_state_key(operation.state()),
@@ -918,7 +919,7 @@ impl ImportApp {
                     return self
                         .refuse_semantic(super::strings::t("imager-import-error-stale-operation"));
                 };
-                if !self.can_start_operation(index) {
+                if !self.can_start_copy(index) {
                     return self.refuse_semantic(super::strings::t(
                         "imager-import-error-start-unavailable",
                     ));
@@ -1188,8 +1189,8 @@ impl ImportApp {
         let id = format!(
             "{}-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .map_err(|_| "system time is before the Unix epoch".to_string())?
                 .as_nanos(),
             NEXT_OPERATION.fetch_add(1, Ordering::Relaxed)
@@ -1290,7 +1291,7 @@ impl ImportApp {
                         c.select_destination_parent(index, &parent)?;
                         parent
                     } else {
-                        let parent = xdg_paths::data_local_dir()
+                        let parent = tilo_paths::data_local_dir()
                             .ok_or("No local user data directory")?
                             .join("tilo/files");
                         super::migration_store::ensure_private_root(&parent)
@@ -1396,7 +1397,7 @@ impl ImportApp {
         Ok(())
     }
 
-    fn start_operation(&mut self, index: usize) -> Result<(), String> {
+    fn start_copy(&mut self, index: usize) -> Result<(), String> {
         if self.pending_prepare_invocation.is_some() || self.pending_review_invocation.is_some() {
             return Err("Wait for the folder review to finish saving before copying.".into());
         }
@@ -1880,7 +1881,7 @@ impl ImportApp {
             Err("Review at least one saved Copy folder first.".into())
         } else {
             let first = self.batch.remove(0);
-            self.start_operation(first)
+            self.start_copy(first)
         }
     }
 
@@ -1949,7 +1950,7 @@ impl ImportApp {
                 }
             }
             ImportCommand::PrepareReview => self.prepare_review(),
-            ImportCommand::Start(index) => self.start_operation(index),
+            ImportCommand::Start(index) => self.start_copy(index),
             ImportCommand::Retry(index) => self.retry_operation(index),
             ImportCommand::Cancel => {
                 if self.cancel_active() {
@@ -2144,7 +2145,7 @@ impl ImportApp {
                     ImportCommand::Start(index),
                 )
                 .primary()
-                .with_enabled(self.can_start_operation(index)),
+                .with_enabled(self.can_start_copy(index)),
             ),
             OperationState::Running
                 if self
@@ -2528,145 +2529,30 @@ fn state_summary(state: OperationState) -> &'static str {
 }
 
 impl Widget for ImportApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[import_actions::IMPORT_OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![import_actions::resource(&self.import_projection())]
-    }
-
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        let Some(operation) = import_actions::decode(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(output) =
-                    child.invoke_resource_operation_v2(kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(output));
-                }
-            }
-            return Ok(None);
-        };
-        if kind != operation.kind() {
-            return Err(super::strings::t("imager-import-error-operation-kind"));
-        }
-        self.invoke_import_operation(operation).map(Some)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = import_actions::decode(type_id, payload)? else {
-            for child in self.children_mut() {
-                if let Some(started) =
-                    child.start_resource_operation(invocation, kind, type_id, payload, doc, path)?
-                {
-                    return Ok(Some(started));
-                }
-            }
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if kind != operation.kind() {
-            return Err(super::strings::t("imager-import-error-operation-kind"));
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let operation_ids = if operation.background() {
-            if self.pending_copy_invocation.is_some()
-                || self.pending_review_invocation.is_some()
-                || self.pending_prepare_invocation.is_some()
-            {
-                return Err("Another folder import action is still settling.".into());
-            }
-            match &operation {
-                ImportOperation::StartReviewedBatch => self
-                    .reviewed_batch_indices()
-                    .into_iter()
-                    .filter_map(|index| {
-                        self.operations
-                            .get(index)
-                            .map(|record| record.id().to_string())
-                    })
-                    .collect(),
-                ImportOperation::Start { operation_id }
-                | ImportOperation::Retry { operation_id } => vec![operation_id.clone()],
-                _ => Vec::new(),
-            }
-        } else {
-            Vec::new()
-        };
-        let review_folder = match &operation {
-            ImportOperation::ResolveFolder { folder_id }
-            | ImportOperation::PickFolderDestination { folder_id } => Some(folder_id.clone()),
-            _ => None,
-        };
-        let preparing = matches!(&operation, ImportOperation::PrepareReview);
-        let prepare_paths = if preparing {
-            Some((
-                self.source.clone().ok_or("Choose a source folder first")?,
-                self.destination_parent
-                    .clone()
-                    .ok_or("Choose a destination folder first")?,
-            ))
-        } else {
-            None
-        };
-        let output = self.invoke_import_operation(operation)?;
-        if preparing {
-            let (source, destination_parent) =
-                prepare_paths.ok_or("Folder review lost its selected locations")?;
-            let save_reply = self
-                .pending_saves
-                .pop()
-                .ok_or_else(|| "Folder review did not queue a durable index save.".to_string())?;
-            let operation_id = self
-                .operations
-                .last()
-                .ok_or("Folder review did not create a copy plan")?
-                .id()
-                .to_string();
-            self.pending_prepare_invocation = Some(PendingPrepareInvocation {
-                invocation,
-                save_reply,
-                operation_id,
-                source,
-                destination_parent,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if let Some(folder_id) = review_folder {
-            self.pending_review_invocation = Some(PendingReviewInvocation {
-                invocation,
-                folder_id,
-                cancelled: false,
-                cancellation_requested: false,
-                finished: false,
-                failure: None,
-                save_reply: None,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if !operation_ids.is_empty() {
-            self.pending_copy_invocation = Some(PendingCopyInvocation {
-                invocation,
-                operation_ids,
-                terminal_states: HashMap::new(),
-                cancellation_requested: false,
-                failure: None,
-            });
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(output)))
-        }
+        self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+        )
     }
 
     fn poll_resource_operation(
@@ -2925,7 +2811,7 @@ impl Widget for ImportApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.poll_background();
         self.drain_commands();
         if let Some(composed) = &mut self.composed {
@@ -2933,7 +2819,7 @@ impl Widget for ImportApp {
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = self.poll_background() || self.drain_commands();
         if let Some(composed) = &mut self.composed {
             changed |= composed.update(state, path);
@@ -3004,33 +2890,12 @@ impl Widget for ImportApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(composed) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = children.first()
         {
-            composed.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            composed.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 
@@ -3079,6 +2944,114 @@ impl Widget for ImportApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImportApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![import_actions::resource(&self.import_projection())]
+    }
+}
+
+impl ImportApp {
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = import_actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if kind != operation.kind() {
+            return Err(super::strings::t("imager-import-error-operation-kind"));
+        }
+        let operation_ids = if operation.background() {
+            if self.pending_copy_invocation.is_some()
+                || self.pending_review_invocation.is_some()
+                || self.pending_prepare_invocation.is_some()
+            {
+                return Err("Another folder import action is still settling.".into());
+            }
+            match &operation {
+                ImportOperation::StartReviewedBatch => self
+                    .reviewed_batch_indices()
+                    .into_iter()
+                    .filter_map(|index| {
+                        self.operations
+                            .get(index)
+                            .map(|record| record.id().to_string())
+                    })
+                    .collect(),
+                ImportOperation::Start { operation_id }
+                | ImportOperation::Retry { operation_id } => vec![operation_id.clone()],
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
+        let review_folder = match &operation {
+            ImportOperation::ResolveFolder { folder_id }
+            | ImportOperation::PickFolderDestination { folder_id } => Some(folder_id.clone()),
+            _ => None,
+        };
+        let preparing = matches!(&operation, ImportOperation::PrepareReview);
+        let prepare_paths = if preparing {
+            Some((
+                self.source.clone().ok_or("Choose a source folder first")?,
+                self.destination_parent
+                    .clone()
+                    .ok_or("Choose a destination folder first")?,
+            ))
+        } else {
+            None
+        };
+        let output = self.invoke_import_operation(operation)?;
+        if preparing {
+            let (source, destination_parent) =
+                prepare_paths.ok_or("Folder review lost its selected locations")?;
+            let save_reply = self
+                .pending_saves
+                .pop()
+                .ok_or_else(|| "Folder review did not queue a durable index save.".to_string())?;
+            let operation_id = self
+                .operations
+                .last()
+                .ok_or("Folder review did not create a copy plan")?
+                .id()
+                .to_string();
+            self.pending_prepare_invocation = Some(PendingPrepareInvocation {
+                invocation,
+                save_reply,
+                operation_id,
+                source,
+                destination_parent,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if let Some(folder_id) = review_folder {
+            self.pending_review_invocation = Some(PendingReviewInvocation {
+                invocation,
+                folder_id,
+                cancelled: false,
+                cancellation_requested: false,
+                finished: false,
+                failure: None,
+                save_reply: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if !operation_ids.is_empty() {
+            self.pending_copy_invocation = Some(PendingCopyInvocation {
+                invocation,
+                operation_ids,
+                terminal_states: HashMap::new(),
+                cancellation_requested: false,
+                failure: None,
+            });
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(output)))
+        }
+    }
+}
+
 #[must_use]
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ImportApp::new())
@@ -3104,7 +3077,6 @@ fn disposable_fixture_dir() -> std::io::Result<tempfile::TempDir> {
 mod tests {
     use std::fs;
     use std::path::Path;
-    use std::time::Instant;
 
     use super::*;
 
@@ -3124,11 +3096,33 @@ mod tests {
         )
     }
 
+    /// Waits for the worker, then settles its admitted invocation the way the
+    /// host does, so the next background action is not refused as unsettled.
     fn wait_terminal(app: &mut ImportApp) {
         let deadline = tilo_test_env::hang_deadline();
         while app.worker.is_some() {
             app.poll_background();
-            assert!(Instant::now() < deadline, "import worker did not finish");
+            assert!(ui::time::now() < deadline, "import worker did not finish");
+            std::thread::yield_now();
+        }
+        while let Some(invocation) = app
+            .pending_copy_invocation
+            .as_ref()
+            .map(|pending| pending.invocation)
+        {
+            app.poll_background();
+            if Widget::poll_resource_operation(
+                app,
+                invocation,
+                false,
+                &AutoCommit::new(),
+                &automerge::ROOT,
+            )
+            .is_some()
+            {
+                break;
+            }
+            assert!(ui::time::now() < deadline, "copy invocation did not settle");
             std::thread::yield_now();
         }
     }
@@ -3137,13 +3131,15 @@ mod tests {
         let deadline = tilo_test_env::hang_deadline();
         while !app.pending_saves.is_empty() {
             app.poll_background();
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
     }
 
     fn root_resource(app: &ImportApp) -> tilo_actions::Resource {
-        Widget::resources(app, &AutoCommit::new()).pop().unwrap()
+        ui::resources::resources(app, &AutoCommit::new())
+            .pop()
+            .unwrap()
     }
 
     fn action(resource: &tilo_actions::Resource, id: &str) -> tilo_actions::ActionSpec {
@@ -3162,33 +3158,41 @@ mod tests {
         let encoded = action
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
-        Widget::invoke_resource_operation_v2(
-            app,
-            action.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
-            &automerge::ROOT,
-        )?
-        .and_then(|output| output.value)
-        .ok_or_else(|| "import operation returned no projection".to_string())
+        start_import(app, action.kind, &encoded)
     }
 
     fn invoke_import_raw(
         app: &mut ImportApp,
         operation: &ImportOperation,
     ) -> Result<serde_json::Value, String> {
-        let encoded = import_actions::encode(operation);
-        Widget::invoke_resource_operation_v2(
+        start_import(app, operation.kind(), &import_actions::encode(operation))
+    }
+
+    /// The projection an agent sees: a synchronous result carries it, and a
+    /// background operation's admission is followed by the public status read.
+    fn start_import(
+        app: &mut ImportApp,
+        kind: tilo_actions::OperationKind,
+        encoded: &tilo_actions::EncodedAction,
+    ) -> Result<serde_json::Value, String> {
+        let started = Widget::start_operation(
             app,
-            operation.kind(),
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                kind,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut AutoCommit::new(),
             &automerge::ROOT,
-        )?
-        .and_then(|output| output.value)
-        .ok_or_else(|| "import operation returned no projection".to_string())
+        )?;
+        match started {
+            Some(ui::widget::ResourceOperationStart::Completed(output)) => output
+                .value
+                .ok_or_else(|| "import operation returned no projection".to_string()),
+            Some(ui::widget::ResourceOperationStart::Accepted) => observe_import(app),
+            None => Err("import operation was not handled".to_string()),
+        }
     }
 
     fn observe_import(app: &mut ImportApp) -> Result<serde_json::Value, String> {
@@ -3210,7 +3214,7 @@ mod tests {
                 return observed;
             }
             assert!(
-                Instant::now() < deadline,
+                ui::time::now() < deadline,
                 "issue page with {count} messages was not publicly observable"
             );
             std::thread::yield_now();
@@ -3251,13 +3255,15 @@ mod tests {
         let encoded = action
             .build_json(&serde_json::Map::new())
             .map_err(|error| error.to_string())?;
-        Widget::start_resource_operation(
+        Widget::start_operation(
             app,
-            invocation,
-            action.kind,
-            &encoded.type_id,
-            &encoded.payload,
-            &AutoCommit::new(),
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                action.kind,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut AutoCommit::new(),
             &automerge::ROOT,
         )?
         .ok_or_else(|| "import operation was not handled".into())
@@ -3305,7 +3311,7 @@ mod tests {
             app.prepare_review().unwrap();
             let operation_id = app.operations[0].id().to_string();
 
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
 
             assert_eq!(resources.len(), 1);
             assert_eq!(resources[0].kind, "imager.import");
@@ -3478,7 +3484,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while pages.detail_request.is_some() {
                 pages.poll_background();
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             }
             assert_eq!(pages.detail_pages[&0].issues.len(), 8);
@@ -3557,7 +3563,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "review save never settled");
+                assert!(ui::time::now() < deadline, "review save never settled");
                 std::thread::yield_now();
             }
             assert!(
@@ -3603,7 +3609,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "review failure never settled");
+                assert!(ui::time::now() < deadline, "review failure never settled");
                 std::thread::yield_now();
             }
         }
@@ -3641,7 +3647,7 @@ mod tests {
                     break;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "picker cancellation never settled"
                 );
                 std::thread::yield_now();
@@ -3679,7 +3685,7 @@ mod tests {
                     break update;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "disconnected picker never failed the review action"
                 );
                 std::thread::yield_now();
@@ -3855,13 +3861,16 @@ mod tests {
             );
 
             assert!(
-                Widget::invoke_resource_operation_v2(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    import_actions::IMPORT_OPERATION_TYPE,
-                    b"{not-json",
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        import_actions::IMPORT_OPERATION_TYPE,
+                        b"{not-json"
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -3934,7 +3943,7 @@ mod tests {
                 app.continuation = Continuation::load(app.store.as_ref().unwrap()).unwrap();
                 app.operations = app.store.as_ref().unwrap().load().unwrap();
                 app.identity_ready = true;
-                assert!(app.start_operation(0).is_err());
+                assert!(app.start_copy(0).is_err());
                 assert!(app.worker.is_none());
                 assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
                 assert!(app.check_continued_review_allowed(0).is_ok());
@@ -3993,7 +4002,7 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.gate_request.is_some() {
                 app.poll_background();
-                assert!(Instant::now() < deadline, "identity check did not finish");
+                assert!(ui::time::now() < deadline, "identity check did not finish");
                 std::thread::yield_now();
             }
             assert!(
@@ -4061,7 +4070,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "copy action never settled");
+                assert!(ui::time::now() < deadline, "copy action never settled");
                 std::thread::yield_now();
             }
             assert_eq!(app.operations[0].state(), OperationState::Complete);
@@ -4101,7 +4110,7 @@ mod tests {
                     ));
                     break;
                 }
-                assert!(Instant::now() < deadline, "identity failure never settled");
+                assert!(ui::time::now() < deadline, "identity failure never settled");
                 std::thread::yield_now();
             }
             assert!(app.worker.is_none());
@@ -4182,7 +4191,10 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.worker.is_some() && app.operations[0].verified_file_count() == 0 {
                 app.poll_background();
-                assert!(Instant::now() < deadline, "copy made no journaled progress");
+                assert!(
+                    ui::time::now() < deadline,
+                    "copy made no journaled progress"
+                );
                 std::thread::yield_now();
             }
             assert!(
@@ -4218,7 +4230,7 @@ mod tests {
             app.source = Some(source);
             app.destination_parent = Some(destination_parent);
             app.prepare_review().unwrap();
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             let deadline = tilo_test_env::hang_deadline();
             loop {
                 app.poll_background();
@@ -4226,7 +4238,7 @@ mod tests {
                     assert!(app.cancel_active());
                     break;
                 }
-                assert!(Instant::now() < deadline, "copy did not publish progress");
+                assert!(ui::time::now() < deadline, "copy did not publish progress");
                 std::thread::yield_now();
             }
             wait_terminal(&mut app);
@@ -4241,7 +4253,7 @@ mod tests {
                     break store;
                 }
                 assert!(
-                    Instant::now() < deadline,
+                    ui::time::now() < deadline,
                     "previous writer retained store ownership"
                 );
                 std::thread::yield_now();
@@ -4276,7 +4288,7 @@ mod tests {
             app.source = Some(source);
             app.destination_parent = Some(destination_parent);
             app.prepare_review().unwrap();
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             wait_terminal(&mut app);
 
             assert_eq!(app.operations[0].state(), OperationState::Incomplete);
@@ -4518,7 +4530,7 @@ mod tests {
                 }
                 fs::create_dir(parent.join("source")).unwrap();
                 fs::write(parent.join("source/existing"), b"keep").unwrap();
-                assert!(app.start_operation(0).is_err());
+                assert!(app.start_copy(0).is_err());
                 assert_eq!(app.operations[0].state(), OperationState::AwaitingReview);
                 assert!(!app.operations[0].journal().unwrap().exists());
                 let another = parent.join("another");
@@ -4532,7 +4544,7 @@ mod tests {
                 let deadline = tilo_test_env::hang_deadline();
                 while app.review_request.is_some() {
                     app.poll_background();
-                    assert!(Instant::now() < deadline);
+                    assert!(ui::time::now() < deadline);
                     std::thread::yield_now();
                 }
                 assert!(!app.status_is_error, "{}", app.status);
@@ -4542,7 +4554,7 @@ mod tests {
                     app.operations[0].destination().unwrap(),
                     another.join("source")
                 );
-                app.start_operation(0).unwrap();
+                app.start_copy(0).unwrap();
                 wait_terminal(&mut app);
                 assert_eq!(
                     app.operations[0].state(),
@@ -4584,7 +4596,7 @@ mod tests {
             app.prepare_continued_folder(0).unwrap();
             app.prepare_continued_folder(1).unwrap();
             settle_index(&mut app);
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             wait_terminal(&mut app);
             assert_eq!(
                 app.operations[0].state(),
@@ -4592,7 +4604,7 @@ mod tests {
                 "{}",
                 app.status
             );
-            assert!(app.start_operation(1).is_err());
+            assert!(app.start_copy(1).is_err());
             assert_eq!(app.operations[1].state(), OperationState::AwaitingReview);
             let another = parent.join("another");
             fs::create_dir(&another).unwrap();
@@ -4601,12 +4613,12 @@ mod tests {
             let deadline = tilo_test_env::hang_deadline();
             while app.review_request.is_some() {
                 app.poll_background();
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             }
             assert!(!app.status_is_error, "{}", app.status);
             settle_index(&mut app);
-            app.start_operation(1).unwrap();
+            app.start_copy(1).unwrap();
             wait_terminal(&mut app);
             assert_eq!(
                 app.operations[1].state(),
@@ -4657,7 +4669,7 @@ mod tests {
             app.prepare_continued_folder(0).unwrap();
             settle_index(&mut app);
             assert_eq!(app.operations.len(), 1);
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             wait_terminal(&mut app);
             assert_eq!(
                 app.operations[0].state(),
@@ -4671,7 +4683,7 @@ mod tests {
                 fs::read(destination_parent.join("source/hello")).unwrap(),
                 b"hello"
             );
-            assert!(app.start_operation(0).is_err());
+            assert!(app.start_copy(0).is_err());
             settle_index(&mut app);
             let root = temp.path().canonicalize().unwrap().join("state");
             drop(app);
@@ -4680,7 +4692,7 @@ mod tests {
                 if let Ok(store) = MigrationStore::open_at(&root) {
                     break store;
                 }
-                assert!(Instant::now() < deadline);
+                assert!(ui::time::now() < deadline);
                 std::thread::yield_now();
             };
             let mut reopened = ImportApp::with_store(store).unwrap();
@@ -4751,7 +4763,7 @@ mod tests {
         // waited for it would only return once the hold timed out, which
         // drops the release receiver and fails the send below.
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 1);
-        app.start_operation(0).unwrap();
+        app.start_copy(0).unwrap();
         tilo_test_env::recv("the save hook", &entered);
         assert!(!destination_parent.join("source").exists());
         app.poll_background();
@@ -4767,7 +4779,7 @@ mod tests {
                 assert_eq!(store.load().unwrap()[0].state(), OperationState::Cancelled);
                 break;
             }
-            assert!(Instant::now() < deadline);
+            assert!(ui::time::now() < deadline);
             std::thread::yield_now();
         }
         assert!(!destination_parent.join("source").exists());
@@ -4784,7 +4796,7 @@ mod tests {
         settle_index(&mut app);
         let root = app.store.as_ref().unwrap().root().to_owned();
         let (entered, release) = super::super::migration_store::test_support::hold_save(&root, 2);
-        app.start_operation(0).unwrap();
+        app.start_copy(0).unwrap();
         // Native durability includes directory fsyncs; allow slower virtual
         // disks to reach the terminal checkpoint without weakening the state
         // assertion that follows.
@@ -4815,7 +4827,7 @@ mod tests {
             let root = app.store.as_ref().unwrap().root().to_owned();
             let (entered, release) =
                 super::super::migration_store::test_support::hold_save(&root, 2);
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             // Native durability includes directory fsyncs; allow slower virtual
             // disks to reach the terminal checkpoint without weakening the state
             // assertion that follows.
@@ -4846,7 +4858,7 @@ mod tests {
                 app.store.as_ref().unwrap().root().join("replaced-lock"),
             )
             .unwrap();
-            app.start_operation(0).unwrap();
+            app.start_copy(0).unwrap();
             wait_terminal(&mut app);
             assert_eq!(app.operations[0].state(), OperationState::Failed);
             assert!(!destination_parent.join("source").exists());

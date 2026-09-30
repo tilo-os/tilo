@@ -15,7 +15,8 @@
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -28,6 +29,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{
     FileFilter, LaunchChannel, LaunchOutcome, PickRequest, PortalChannel, PortalOutcome,
@@ -607,7 +609,7 @@ impl FeedsApp {
             hamburger_rect: Rect::ZERO,
             scrim_rect: Rect::ZERO,
             back_rect: Rect::ZERO,
-            last_frame: Instant::now(),
+            last_frame: ui::time::now(),
             worker: None,
             synced: false,
             actions: ui::ActionHost::new(),
@@ -780,7 +782,7 @@ impl FeedsApp {
     }
 
     fn set_toast(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), Instant::now()));
+        self.toast = Some((msg.into(), ui::time::now()));
     }
 
     fn worker(&mut self) -> &mut FetchWorker {
@@ -1016,7 +1018,7 @@ impl FeedsApp {
     /// (a pinned actor + committed change, so it replays byte-identically on
     /// peers), exactly as the palette does. The document heads captured just
     /// before the first action of the event are stashed so the host records
-    /// **one** undo boundary bracketing it ([`Widget::take_committed_action`]).
+    /// **one** undo boundary bracketing it ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &FeedsAction) {
         self.actions.dispatch_with_context(
             doc,
@@ -1370,10 +1372,14 @@ impl FeedsApp {
             return;
         };
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::write(&path, xml) {
-                Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
-                Err(error) => self.set_toast(format!("Export failed: {error}")),
-            },
+            PortalOutcome::Opened(path) => {
+                match tilo_files::file_at(&path).and_then(|(dir, name)| {
+                    tilo_files::blocking::save_document(&dir, &name, xml.as_bytes())
+                }) {
+                    Ok(()) => self.set_toast(format!("Exported OPML → {}", path.display())),
+                    Err(error) => self.set_toast(format!("Export failed: {error}")),
+                }
+            }
             PortalOutcome::Cancelled => self.set_toast("Export cancelled"),
             PortalOutcome::Failed(reason) => self.set_toast(format!("Export failed: {reason}")),
         }
@@ -1411,7 +1417,12 @@ impl FeedsApp {
         };
         self.import_rx = None;
         match outcome {
-            PortalOutcome::Opened(path) => match std::fs::read_to_string(&path) {
+            PortalOutcome::Opened(path) => match tilo_files::file_at(&path)
+                .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+                .and_then(|bytes| {
+                    String::from_utf8(bytes)
+                        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+                }) {
                 Ok(text) => {
                     let new_ids = self.apply_opml_import(&text, doc);
                     if new_ids.is_empty() {
@@ -1792,7 +1803,7 @@ impl FeedsApp {
             && self.refresh.done >= self.refresh.total
             && self.refresh.finished_at.is_none()
         {
-            self.refresh.finished_at = Some(Instant::now());
+            self.refresh.finished_at = Some(ui::time::now());
             if let Some(invocation) = self.resource_refresh_invocation.take() {
                 self.resource_refresh_result = Some(if self.refresh.failed_feeds > 0 {
                     tilo_actions::InvocationUpdate::Failed {
@@ -2324,7 +2335,7 @@ impl FeedsApp {
 
         // Advance the sidebar flap transition with real elapsed time, then
         // recompute the eased geometry so the slide is reflected this frame.
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_frame).as_secs_f64().min(0.1);
         self.last_frame = now;
         let nav_layout = self.nav_layout();
@@ -2373,7 +2384,7 @@ impl FeedsApp {
         };
         let list_title = self.filter_title();
         draw_list(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2413,7 +2424,7 @@ impl FeedsApp {
         let article = self.selected.and_then(|id| self.store.article(id));
         let feed = article.and_then(|article| self.store.feed(article.feed_id));
         let (links, tags, open_rect, content_h) = draw_reader(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2705,7 +2716,7 @@ impl FeedsApp {
             y + bsz,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2724,7 +2735,7 @@ impl FeedsApp {
             None,
         );
         self.step_button(
-            PaintContext {
+            PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -2757,10 +2768,12 @@ impl FeedsApp {
             .position(|f| *f == self.settings.font)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &font_labels,
             font_selected,
@@ -2787,10 +2800,12 @@ impl FeedsApp {
             .position(|th| *th == self.settings.theme)
             .unwrap_or(0);
         self.seg_row(
-            scene,
-            t,
-            tr,
-            theme,
+            PaintCtx {
+                scene,
+                transform: t,
+                text: tr,
+                theme,
+            },
             Rect::new(seg_x0, y, seg_x0 + seg_w, y + bsz),
             &theme_labels,
             theme_selected,
@@ -2802,21 +2817,20 @@ impl FeedsApp {
     /// `ToggleGroup` face (HIG §8: never hand-roll a control) over rects this
     /// popover owns: equal-width segments an `s2` apart across `band`, each
     /// registered as a settings hit.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The settings segment painter combines render context and band geometry with labels, selection, and hit actions."
-    )]
     fn seg_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        paint: PaintCtx<'_>,
         band: Rect,
         labels: &[&str],
         selected: usize,
         actions: &[SettingsAction],
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = paint;
         let n = labels.len().max(1) as f64;
         let gap = f64::from(theme.tokens.spacing.s2);
         let cellw = ((band.width() - (n - 1.0) * gap) / n).max(0.0);
@@ -2845,12 +2859,12 @@ impl FeedsApp {
     /// A small square stepper button ("−"/"+") for the settings popover.
     fn step_button(
         &mut self,
-        paint: PaintContext<'_>,
+        paint: PaintCtx<'_>,
         rect: &Rect,
         glyph: &str,
         action: SettingsAction,
     ) {
-        let PaintContext {
+        let PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -3054,7 +3068,7 @@ impl FeedsApp {
     }
 
     fn open_url(&mut self, url: &str) {
-        let Some(url) = reqwest::Url::parse(url.trim())
+        let Some(url) = tilo_net::Url::parse(url.trim())
             .ok()
             .filter(|url| match url.scheme() {
                 "http" | "https" | "gemini" => url.host_str().is_some(),
@@ -3090,17 +3104,6 @@ impl FeedsApp {
 // ---------------------------------------------------------------------
 // Drawing free functions (explicit borrows keep the borrow checker happy)
 // ---------------------------------------------------------------------
-
-/// Shared renderer state passed through the custom-painted Feeds views.
-///
-/// Keeping these four values together makes view helpers describe the data
-/// they render instead of repeating backend plumbing in every signature.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
 
 #[derive(Clone, Copy)]
 struct ListView<'a> {
@@ -3167,8 +3170,8 @@ fn hline(scene: &mut Scene, t: Affine, x0: f64, x1: f64, y: f64, color: Color) {
 }
 
 /// Draw a pill badge with a number; returns its width.
-fn badge(paint: PaintContext<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
-    let PaintContext {
+fn badge(paint: PaintCtx<'_>, right_x: f64, cy: f64, n: usize, bg: Color, fg: Color) -> f64 {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3394,7 +3397,7 @@ fn draw_sidebar(
                 (alpha(c.neutral[3], 180), c.text_dim)
             };
             badge(
-                PaintContext {
+                PaintCtx {
                     scene,
                     transform: t,
                     text: tr,
@@ -3517,8 +3520,8 @@ fn draw_centered_onboarding(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_list(paint: PaintContext<'_>, view: &ListView<'_>) {
-    let PaintContext {
+fn draw_list(paint: PaintCtx<'_>, view: &ListView<'_>) {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -3912,8 +3915,8 @@ fn draw_refresh_strip(
     reason = "a single linear draw pass over this panel's fixed regions; splitting it would \
               only relocate the line count, not the amount a reader must hold in mind"
 )]
-fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
-    let PaintContext {
+fn draw_reader(paint: PaintCtx<'_>, view: &ReaderView<'_>) -> ReaderPaint {
+    let PaintCtx {
         scene,
         transform: t,
         text: tr,
@@ -4004,17 +4007,14 @@ fn draw_reader(paint: PaintContext<'_>, view: &ReaderView<'_>) -> ReaderPaint {
 
     // Title — sized relative to the reading font scale, in the chosen family.
     let title_size = settings.heading_size(1) + 6.0;
-    let title_layout = RichTextLayout::shape(
+    let title_layout = RichTextLayout::shape_styled(
         &mut tr.font_system,
         &[RichSpan::new(a.title.clone()).bold(true)],
-        true,
-        title_size,
-        content_w,
+        &RichTextLayout::block_style(true, title_size, family, 1.0),
+        Some(content_w),
         TextAlign::Left,
-        family,
         vec![],
         vec![],
-        1.0,
     );
     let th = title_layout.height();
     tr.draw_rich(
@@ -4169,17 +4169,14 @@ fn draw_block(
     // Lay out `text` in `fam` at `size` within width `width`, returning height.
     let lay =
         |tr: &mut TextRenderer, text: &str, size: f32, width: f32, fam: FontFamily, bold: bool| {
-            RichTextLayout::shape(
+            RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(text.to_string()).bold(bold)],
-                bold,
-                size,
-                width,
+                &RichTextLayout::block_style(bold, size, fam, 1.0),
+                Some(width),
                 TextAlign::Left,
-                fam,
                 vec![],
                 vec![],
-                1.0,
             )
         };
 
@@ -4223,17 +4220,14 @@ fn draw_block(
         BlockKind::Quote => {
             let tw = w - 24.0;
             // Quotes are italic — render via the styled (italic) span.
-            let layout = RichTextLayout::shape(
+            let layout = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &[RichSpan::new(block.text.clone()).italic(true)],
-                false,
-                body_size,
-                tw,
+                &RichTextLayout::block_style(false, body_size, family, 1.0),
+                Some(tw),
                 TextAlign::Left,
-                family,
                 vec![],
                 vec![],
-                1.0,
             );
             let h = layout.height();
             let bar = Rect::new(x, y, x + 3.0, y + f64::from(h) + 4.0);
@@ -4504,15 +4498,19 @@ fn chrono_date(published: i64, now: i64) -> String {
 // ---------------------------------------------------------------------
 
 impl Widget for FeedsApp {
-    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
-        self.feed_menu.is_open()
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::undo::LocalUndo,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::FEEDS_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.background_poll_deadline.set(None);
         self.now = chrono::Utc::now().timestamp();
         if !self.synced {
@@ -4574,110 +4572,35 @@ impl Widget for FeedsApp {
         }
     }
 
-    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
-    /// action palette scopes to them. Delegates to the `ResourceProvider`
-    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match (kind, operation) {
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
-                self.request_import();
-            }
-            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
-                self.export_opml();
-            }
-            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
-                if self.store.feeds.is_empty() {
-                    return Err("there are no subscriptions to refresh".into());
-                }
-                self.refresh_all();
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealFeed { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
-                if self.store.feed(id).is_none() {
-                    return Err("feed no longer exists".into());
-                }
-                self.set_filter(Filter::Feed(id));
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealArticle { id },
-            ) => {
-                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
-                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
-                    return Err("article no longer exists".into());
-                };
-                self.set_filter(Filter::Feed(feed_id));
-                self.selected = Some(id);
-                self.reader_scroll = 0.0;
-                if self.store.mark_read(id, true) {
-                    self.pending_resource_actions
-                        .push(actions::mark_read_action(id, true));
-                }
-                if self.single_pane() {
-                    self.detail_pushed = true;
-                }
-            }
-            (
-                tilo_actions::OperationKind::View,
-                crate::actions::FeedsOperation::RevealTag { tag },
-            ) => {
-                let tag = actions::normalize_tags([tag.as_str()])
-                    .into_iter()
-                    .next()
-                    .ok_or_else(|| "invalid empty tag".to_string())?;
-                if !self.store.has_tag(&tag) {
-                    return Err("tag no longer exists".into());
-                }
-                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
-            }
-            _ => return Ok(false),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect
-            || type_id != crate::actions::FEEDS_OPERATION_TYPE
-        {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
-            return Err("a feed refresh is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        self.resource_refresh_invocation = Some(invocation);
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -4697,24 +4620,6 @@ impl Widget for FeedsApp {
         } else {
             None
         }
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
-    /// palette: a snapshot
-    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
-    /// makes both findable there without touching the network, alongside the
-    /// actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
-            &self.store,
-        ))]
     }
 
     #[allow(
@@ -4804,28 +4709,25 @@ impl Widget for FeedsApp {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Persist anything the live drain queued since the last doc-holding
         // pass (keeps the CRDT current without waiting for `sync`).
-        self.flush_doc_writes(state);
+        self.flush_doc_writes(ctx.state);
         // Track the pointer everywhere so it's current when a modal closes.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         // An open dialog captures all input while it's up.
         if self.modal.is_some() {
-            self.handle_modal_event(event, scale_factor, *modifiers, state, path, handled);
+            self.handle_modal_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
         // The popover owns input while open. Right-click still reaches the
@@ -4842,25 +4744,15 @@ impl Widget for FeedsApp {
         {
             if matches!(event, WindowEvent::Focused(false)) {
                 self.close_feed_menu();
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            self.feed_menu.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.feed_menu.handle_event(event, ctx);
             if let Some(selection) = self.feed_menu.take_selection()
                 && let Some(action) = self.feed_menu_actions.get(selection).copied()
                 && let Some(feed_id) = self.feed_menu_target
             {
-                self.apply_feed_menu_action(action, feed_id, state);
+                self.apply_feed_menu_action(action, feed_id, ctx.state);
             }
             if !self.feed_menu.is_open() {
                 self.feed_menu_target = None;
@@ -4872,13 +4764,14 @@ impl Widget for FeedsApp {
                     | WindowEvent::MouseWheel { .. }
                     | WindowEvent::CursorMoved { .. }
             ) {
-                *handled = true;
+                *ctx.handled = true;
             }
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -4886,8 +4779,8 @@ impl Widget for FeedsApp {
                 ..
             } => {
                 let p = self.last_mouse;
-                if self.click(p, state) {
-                    *handled = true;
+                if self.click(p, ctx.state) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -4900,24 +4793,24 @@ impl Widget for FeedsApp {
                 let p = self.last_mouse;
                 if let Some(id) = self.feed_at(p) {
                     self.open_feed_menu(id, p);
-                    *handled = true;
+                    *ctx.handled = true;
                 } else if self.feed_menu.is_open() {
                     self.close_feed_menu();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 self.scroll_pane_under_pointer(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
-                self.handle_key(key_event, *modifiers, state, handled);
+                self.handle_key(key_event, *ctx.modifiers, ctx.state, ctx.handled);
             }
             _ => {}
         }
@@ -5291,9 +5184,10 @@ impl Widget for FeedsApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if matches!(action, A11yAction::Focus | A11yAction::ScrollIntoView) {
             return true;
         }
@@ -5465,9 +5359,9 @@ impl Widget for FeedsApp {
             return None;
         }
         let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            Instant::now()
+            ui::time::now()
                 .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
+                .unwrap_or_else(ui::time::now)
         });
         self.background_poll_deadline.set(Some(deadline));
         Some(deadline)
@@ -5491,6 +5385,143 @@ impl Widget for FeedsApp {
                 .toast
                 .as_ref()
                 .is_some_and(|(_, since)| since.elapsed().as_secs_f32() < 4.0)
+    }
+}
+
+impl ui::search::capability::SearchSource for FeedsApp {
+    /// Fold the reader's articles and subscriptions into the unified Ctrl+K
+    /// palette: a snapshot
+    /// [`FeedsSearchProvider`](crate::search_provider::FeedsSearchProvider)
+    /// makes both findable there without touching the network, alongside the
+    /// actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::FeedsSearchProvider::new(
+            &self.store,
+        ))]
+    }
+}
+
+impl ui::resources::PublishesResources for FeedsApp {
+    /// Publish the reader + its folders and subscriptions so the host's Ctrl+K
+    /// action palette scopes to them. Delegates to the `ResourceProvider`
+    /// (`tilo_actions::ResourceProvider`) impl in [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::undo::LocalUndo for FeedsApp {
+    fn handle_local_undo_request(&mut self, _request: ui::undo::UndoRequest) -> bool {
+        self.feed_menu.is_open()
+    }
+}
+
+impl ui::undo::CommittedActions for FeedsApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl FeedsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match (kind, operation) {
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ImportOpml) => {
+                self.request_import();
+            }
+            (tilo_actions::OperationKind::View, crate::actions::FeedsOperation::ExportOpml) => {
+                self.export_opml();
+            }
+            (tilo_actions::OperationKind::Effect, crate::actions::FeedsOperation::RefreshAll) => {
+                if self.store.feeds.is_empty() {
+                    return Err("there are no subscriptions to refresh".into());
+                }
+                self.refresh_all();
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealFeed { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid feed id")?;
+                if self.store.feed(id).is_none() {
+                    return Err("feed no longer exists".into());
+                }
+                self.set_filter(Filter::Feed(id));
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealArticle { id },
+            ) => {
+                let id = id.parse::<Id>().map_err(|_| "invalid article id")?;
+                let Some(feed_id) = self.store.article(id).map(|article| article.feed_id) else {
+                    return Err("article no longer exists".into());
+                };
+                self.set_filter(Filter::Feed(feed_id));
+                self.selected = Some(id);
+                self.reader_scroll = 0.0;
+                if self.store.mark_read(id, true) {
+                    self.pending_resource_actions
+                        .push(actions::mark_read_action(id, true));
+                }
+                if self.single_pane() {
+                    self.detail_pushed = true;
+                }
+            }
+            (
+                tilo_actions::OperationKind::View,
+                crate::actions::FeedsOperation::RevealTag { tag },
+            ) => {
+                let tag = actions::normalize_tags([tag.as_str()])
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| "invalid empty tag".to_string())?;
+                if !self.store.has_tag(&tag) {
+                    return Err("tag no longer exists".into());
+                }
+                self.set_filter(Filter::Tag(crate::model::tag_key(&tag)));
+            }
+            _ => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect
+            || type_id != crate::actions::FEEDS_OPERATION_TYPE
+        {
+            return Ok(None);
+        }
+        if self.resource_refresh_invocation.is_some() || self.refresh.in_progress() {
+            return Err("a feed refresh is already running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        self.resource_refresh_invocation = Some(invocation);
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -5621,6 +5652,7 @@ impl FeedsApp {
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
     use super::*;
+    use ui::headless::Framed;
     use uuid::Uuid;
 
     /// Tests that exercise refresh/render over real subscriptions use the
@@ -5731,72 +5763,27 @@ mod tests {
         }
     }
 
-    /// Run one full headless frame (sync → `build_layout` → compute → apply →
-    /// draw), mirroring `ui::App`'s per-frame cycle, and return how long the
+    /// Mount `app` over an empty document in the production frame host at
+    /// 1280x800 and run its first frame, with per-pass timing on.
+    fn framed(app: FeedsApp) -> Framed<FeedsApp> {
+        let mut app = Framed::new(ui::State::new(), app, (1280, 800), ui::theme::Theme::dark());
+        Framed::harness_mut(&mut app).begin_profiling();
+        app
+    }
+
+    /// Run one full headless frame (update → sync → layout → draw), the
+    /// harness's copy of `ui::App`'s per-frame cycle, and return how long the
     /// **draw** pass took. No GPU — `TextRenderer`/`Scene` are CPU-side, so this
     /// exercises exactly the main-thread work a real frame does.
-    fn headless_frame(
-        app: &mut FeedsApp,
-        doc: &mut AutoCommit,
-        tr: &mut TextRenderer,
-    ) -> std::time::Duration {
-        use taffy::prelude::*;
-        use vello::kurbo::Point;
-        let theme = ui::theme::Theme::dark();
-        let presence = ui::presence::PresenceCtx::empty();
-        let permission = ui::permissions::PermissionContext::permissive();
-
-        app.sync(doc, &automerge::ROOT);
-
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
-            std::collections::HashMap::new();
-        let child = app.build_layout(&mut taffy, &theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(1280.0),
-                        height: Dimension::length(800.0),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let measure_map = node_map.clone();
-            let trm = &mut *tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(1280.0),
-                        height: AvailableSpace::Definite(800.0),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trm) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-
-        let mut scene = vello::Scene::new();
-        let t0 = std::time::Instant::now();
-        app.draw_with_presence(
-            &mut scene,
-            vello::kurbo::Affine::IDENTITY,
-            tr,
-            &theme,
-            &presence,
-            &permission,
-        );
-        t0.elapsed()
+    fn headless_frame(app: &mut Framed<FeedsApp>) -> std::time::Duration {
+        let harness = Framed::harness_mut(app);
+        harness.take_profile_samples();
+        harness.relayout();
+        let frame = harness
+            .take_profile_samples()
+            .pop()
+            .expect("the frame was profiled");
+        std::time::Duration::from_micros(frame.draw_us)
     }
 
     /// Feed refresh runs on a worker, drains without blocking the frame, reports completion and renders fetched articles through the store.
@@ -5809,43 +5796,30 @@ mod tests {
         // --- phase: real_worker_refresh_keeps_main_thread_responsive ---
         // A real refresh worker must not block the UI thread.
         {
-            use std::time::{Duration, Instant};
+            use ui::time::Duration;
 
-            let mut a = app();
-            let mut doc = AutoCommit::new();
-            let mut tr = TextRenderer::new();
+            let mut a = framed(app());
             // Compare active-refresh work with warmed idle frames to avoid tying
             // the assertion to a machine-specific rendering budget.
             let synth_event = || WindowEvent::CursorMoved {
                 device_id: winit::event::DeviceId::dummy(),
                 position: winit::dpi::PhysicalPosition::new(200.0, 200.0),
             };
-            let dispatch = |a: &mut FeedsApp, doc: &mut AutoCommit| {
-                let mut handled = false;
-                let mut focus: Option<NodeId> = None;
-                let node = a.node.unwrap();
+            let dispatch = |a: &mut Framed<FeedsApp>| {
+                let event = synth_event();
+                let harness = Framed::harness_mut(a);
                 let t = Instant::now();
-                a.handle_event(
-                    &synth_event(),
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &TaffyTree::new(),
-                );
+                harness.dispatch_to_root(&event);
                 t.elapsed()
             };
             for _ in 0..3 {
-                let _ = headless_frame(&mut a, &mut doc, &mut tr);
+                let _ = headless_frame(&mut a);
             }
             let mut base_draw = Duration::from_secs(9999);
             let mut base_event = Duration::from_secs(9999);
             for _ in 0..5 {
-                base_draw = base_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
-                base_event = base_event.min(dispatch(&mut a, &mut doc));
+                base_draw = base_draw.min(headless_frame(&mut a));
+                base_event = base_event.min(dispatch(&mut a));
             }
 
             // Point every feed at an unreachable host so the worker's fetches hang
@@ -5856,7 +5830,7 @@ mod tests {
             }
 
             // Worker and runtime startup must stay off the UI thread.
-            let t_refresh = Instant::now();
+            let t_refresh = ui::time::now();
             a.refresh_all();
             let refresh_cost = t_refresh.elapsed();
             assert!(
@@ -5867,13 +5841,13 @@ mod tests {
             assert!(a.refresh.in_progress());
 
             // Pump frames while requests remain outstanding.
-            let deadline = Instant::now() + Duration::from_millis(500);
+            let deadline = ui::time::now() + Duration::from_millis(500);
             let mut frames = 0u32;
             let mut best_draw = Duration::from_secs(9999);
             let mut best_event = Duration::from_secs(9999);
             while Instant::now() < deadline {
-                best_draw = best_draw.min(headless_frame(&mut a, &mut doc, &mut tr));
-                best_event = best_event.min(dispatch(&mut a, &mut doc));
+                best_draw = best_draw.min(headless_frame(&mut a));
+                best_event = best_event.min(dispatch(&mut a));
                 frames += 1;
             }
 
@@ -5917,8 +5891,6 @@ mod tests {
         // touch the network.
         {
             fn refresh_is_async_and_drains_without_blocking() {
-                use std::time::Instant;
-
                 let mut a = app();
                 let mut doc = AutoCommit::new();
                 a.sync(&mut doc, &automerge::ROOT);
@@ -5928,7 +5900,7 @@ mod tests {
                 let tx = a.install_test_worker();
 
                 // Kick off a refresh. This must return immediately — it only enqueues.
-                let start = Instant::now();
+                let start = ui::time::now();
                 a.refresh_all();
                 assert!(
                     start.elapsed().as_millis() < 50,
@@ -6017,12 +5989,9 @@ mod tests {
         // frame budget even when hundreds of articles land at once. Proves the
         // flush is bounded per frame rather than persisting everything in one go.
         {
-            use std::time::{Duration, Instant};
-
-            let mut a = app();
-            let mut doc = AutoCommit::new();
-            let mut tr = TextRenderer::new();
-            let _ = headless_frame(&mut a, &mut doc, &mut tr);
+            let mut mounted = framed(app());
+            let (a, st) = Framed::split(&mut mounted);
+            let doc = &mut st.doc;
 
             let tx = a.install_test_worker();
             a.refresh_all();
@@ -6065,15 +6034,16 @@ mod tests {
                 .unwrap();
             }
 
-            // The live drain folds everything into the store in one pass. This is
-            // pure in-memory work (no CRDT, no network) and must be cheap even for
-            // a big batch — it's what runs on the draw thread every frame.
-            let t_drain = Instant::now();
+            // The live drain folds everything into the store in one pass. It is
+            // pure in-memory work: it persists nothing to the CRDT, which is what
+            // keeps it cheap on the draw thread even for a big batch. (A wall-clock
+            // bound here measures the shared test host, not the drain.)
+            let heads_before = doc.get_heads();
             a.drain_fetches_live();
-            let drain_cost = t_drain.elapsed();
-            assert!(
-                drain_cost < Duration::from_millis(16),
-                "live in-memory drain blocked the frame with a big batch: {drain_cost:?}"
+            assert_eq!(
+                doc.get_heads(),
+                heads_before,
+                "the live drain must not persist the batch in the frame"
             );
             // The whole batch is now visible in the store immediately...
             assert!(a.store.articles.len() >= total_new);
@@ -6086,7 +6056,7 @@ mod tests {
             // ~constant per op in release; the fix is that we never do the whole
             // backlog in a single frame — that was the multi-second hang.)
             let before = a.pending_doc_writes.len();
-            a.flush_doc_writes(&mut doc);
+            a.flush_doc_writes(doc);
             let persisted_this_frame = before - a.pending_doc_writes.len();
             assert!(
                 persisted_this_frame <= FLUSH_BUDGET,
@@ -6096,12 +6066,12 @@ mod tests {
             // Drain the rest across frames; the backlog empties in bounded steps.
             let mut frames = 1;
             while !a.pending_doc_writes.is_empty() && frames < 5000 {
-                a.flush_doc_writes(&mut doc);
+                a.flush_doc_writes(doc);
                 frames += 1;
             }
             assert!(a.pending_doc_writes.is_empty(), "backlog fully drained");
             // Everything eventually persisted to the CRDT.
-            let persisted = FeedsDoc::load(&doc).articles.len();
+            let persisted = FeedsDoc::load(doc).articles.len();
             assert!(
                 persisted >= total_new,
                 "all {total_new} articles persisted (got {persisted})"
@@ -6338,10 +6308,8 @@ mod tests {
     fn accessibility_mirrors_and_operates_the_reader() {
         // --- phase: accessibility_exposes_article_and_star_through_existing_actions ---
         {
-            let mut a = app();
-            let mut doc = AutoCommit::new();
-            let mut text = TextRenderer::new();
-            let _ = headless_frame(&mut a, &mut doc, &mut text);
+            let mut mounted = framed(app());
+            let (a, st) = Framed::split(&mut mounted);
             let id = a.list_rows[0].id;
             let before = a.store.article(id).expect("sample article").starred;
             let tree = a.accessibility().expect("feeds exports a semantic window");
@@ -6350,15 +6318,15 @@ mod tests {
             assert!(a.perform_semantic_action(
                 &format!("feeds.star:{id}"),
                 &A11yAction::ToggleCheck,
-                &mut doc,
-                &automerge::ROOT,
+                &mut st.doc,
+                &st.root,
             ));
             assert_ne!(a.store.article(id).expect("sample article").starred, before);
             assert!(a.perform_semantic_action(
                 &format!("feeds.article:{id}"),
                 &A11yAction::Activate,
-                &mut doc,
-                &automerge::ROOT,
+                &mut st.doc,
+                &st.root,
             ));
             assert_eq!(a.selected_article(), Some(id));
         }
@@ -6372,9 +6340,7 @@ mod tests {
 
             let mut a = app();
             a.force_reader_settings_open();
-            let mut doc = AutoCommit::new();
-            let mut text = TextRenderer::new();
-            let _ = headless_frame(&mut a, &mut doc, &mut text);
+            let a = framed(a);
             let tree = a.accessibility().expect("feeds exports a semantic window");
             assert!(tree.children.iter().any(|node| node.role == Role::Tree));
             assert!(
@@ -6397,10 +6363,7 @@ mod tests {
 
         // --- phase: icon_only_controls_publish_teaching_tooltips ---
         {
-            let mut a = app();
-            let mut doc = AutoCommit::new();
-            let mut text = TextRenderer::new();
-            let _ = headless_frame(&mut a, &mut doc, &mut text);
+            let mut a = framed(app());
             let refresh = a
                 .toolbar_buttons
                 .iter()
@@ -6409,9 +6372,9 @@ mod tests {
                 .rect;
             a.last_mouse = refresh.center();
             a.refresh_hover_tooltip();
-            assert_eq!(Widget::tooltip(&a), Some("Refresh all (R)"));
+            assert_eq!(Widget::tooltip(&*a), Some("Refresh all (R)"));
             assert_eq!(
-                Widget::cursor_shape(&a, refresh.center()),
+                Widget::cursor_shape(&*a, refresh.center()),
                 Some(winit::window::CursorIcon::Pointer)
             );
         }
@@ -6602,35 +6565,34 @@ mod tests {
                 "the exact folder is persisted through FeedsAction::AddFolder"
             );
             assert!(
-                a.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut a).is_some(),
                 "folder creation creates one undo boundary"
             );
         }
 
         // --- phase: reader_tag_chips_filter_articles_and_are_semantically_actionable ---
         {
-            let mut a = app();
-            let mut doc = AutoCommit::new();
-            let mut text = TextRenderer::new();
-            headless_frame(&mut a, &mut doc, &mut text);
+            let mut mounted = framed(app());
 
+            let (a, st) = Framed::split(&mut mounted);
             let (chip, key) = a
                 .reader_tags
                 .first()
                 .copied()
                 .expect("featured fixture article exposes a visible tag chip");
-            assert!(a.click(chip.center(), &mut doc));
+            assert!(a.click(chip.center(), &mut st.doc));
             assert_eq!(a.active_filter(), Filter::Tag(key));
 
             // Re-render after the filter transition and drive the same tagged
             // discovery affordance through the semantic tree's stable target.
             a.select_featured();
-            headless_frame(&mut a, &mut doc, &mut text);
+            headless_frame(&mut mounted);
+            let (a, st) = Framed::split(&mut mounted);
             assert!(a.perform_semantic_action(
                 &format!("feeds.reader-tag:{key}"),
                 &A11yAction::Activate,
-                &mut doc,
-                &automerge::ROOT,
+                &mut st.doc,
+                &st.root,
             ));
             assert_eq!(a.active_filter(), Filter::Tag(key));
         }
@@ -7102,14 +7064,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &mods,
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7122,14 +7086,16 @@ mod tests {
         let mut focus_target = None;
         a.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7520,8 +7486,14 @@ mod tests {
             let mut a = app();
             lay_out(&mut a, 640.0, 480.0);
             a.open_feed_menu(a.store.feeds[0].id, Point::new(100.0, 200.0));
-            assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Undo));
-            assert!(a.handle_local_undo_request(ui::undo::UndoRequest::Redo));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Undo
+            ));
+            assert!(ui::undo::handle_local_undo_request(
+                &mut a,
+                ui::undo::UndoRequest::Redo
+            ));
         }
 
         // --- phase: feed_menu_stays_within_tiny_viewport ---

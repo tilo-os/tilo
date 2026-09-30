@@ -223,6 +223,55 @@ pub struct PeerContext {
     /// Answers remote-action frames addressed to this relay. `None` unless
     /// the host supplied one and advertises `app_serving`.
     pub app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Also hands validated live frames to the browser live relay, when the
+    /// host serves browsers.
+    pub live_bridge: Option<LiveBridge>,
+    /// Agent devices this host was told about, see [`AgentRegistry`].
+    pub agents: AgentRegistry,
+    /// Mints and checks resumable subscribers' positions; `None` refuses
+    /// resumption, and a `SubscribeFrom` replays everything.
+    pub positions: Option<crate::position::PositionIssuer>,
+    /// Keeps retained document channels short; `None` never compacts and
+    /// refuses compaction volunteers.
+    pub compactor: Option<crate::compaction::Compactor>,
+}
+
+/// Receives every validated live frame: workspace, stamped sender, frame.
+pub type LiveBridge = Arc<dyn Fn(u64, [u8; 32], &[u8]) + Send + Sync>;
+
+/// Agent devices by device key: their verified delegation, or `None` once
+/// the agent was withdrawn. An agent device is confined to its delegated
+/// rooms, is its own principal for remote actions, and a withdrawn one is
+/// refused like a revoked device.
+pub type AgentRegistry = Arc<
+    std::sync::RwLock<
+        std::collections::HashMap<[u8; 32], Option<tilo_relay_protocol::agents::AgentDelegation>>,
+    >,
+>;
+
+/// Whether `device` may be in `workspace_id` as far as agent delegation is
+/// concerned: `Err` with the reason when it is an agent outside its scope.
+fn agent_admits(
+    agents: &AgentRegistry,
+    device: &[u8; 32],
+    workspace_id: u64,
+) -> Result<(), &'static str> {
+    let agents = agents
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    match agents.get(device) {
+        None => Ok(()),
+        Some(None) => Err("the agent was withdrawn"),
+        Some(Some(delegation)) => {
+            if delegation.expires_at_ns <= unix_now_ns() {
+                Err("the agent's delegation expired")
+            } else if delegation.permits_workspace(workspace_id) {
+                Ok(())
+            } else {
+                Err("the agent is not delegated this room")
+            }
+        }
+    }
 }
 
 /// Read-mostly session state [`handle_envelope`] and its per-arm
@@ -246,6 +295,88 @@ struct SessionCtx<'a> {
     agent_reads_v1: bool,
     private_tx: &'a mpsc::Sender<PrivateOutbound>,
     revocations: &'a Arc<std::sync::RwLock<tilo_user_identity::RevocationList>>,
+    live_bridge: Option<&'a LiveBridge>,
+    agents: &'a AgentRegistry,
+    positions: Option<crate::position::PositionIssuer>,
+    compactor: Option<&'a crate::compaction::Compactor>,
+    /// This connection's resume log per resumed workspace.
+    resumes: &'a std::sync::Mutex<HashMap<u64, ResumeLog>>,
+    /// Rooms whose live deliveries this connection could not take.
+    lag: &'a Arc<Lag>,
+}
+
+/// What a resuming subscriber has received: the frames this connection wrote
+/// to it are appended to its resume log, and a [`Envelope::Position`] naming
+/// the log's length follows them.
+struct ResumeLog {
+    store: crate::store::WorkspaceStore,
+    issuer: crate::position::PositionIssuer,
+    device: [u8; 32],
+    generation: [u8; 16],
+    resume: crate::position::Resume,
+}
+
+impl ResumeLog {
+    /// Record `frames` as delivered; returns the position covering them.
+    fn record<'f>(&mut self, frames: impl IntoIterator<Item = &'f Envelope>) -> Envelope {
+        let digests: Vec<[u8; 32]> = frames
+            .into_iter()
+            .filter(|frame| matches!(frame, Envelope::Delta { .. }))
+            .filter_map(crate::store::resume::frame_digest)
+            .collect();
+        if !digests.is_empty() {
+            match self
+                .store
+                .append_resume(&self.device, &self.resume.log, &digests)
+            {
+                Ok(()) => {
+                    self.resume.len = self.resume.len.saturating_add(digests.len() as u64);
+                }
+                // A position never covers what the log did not record; the
+                // device replays those frames once more on its next resume.
+                Err(error) => tracing::warn!(%error, "resume log append failed"),
+            }
+        }
+        self.issuer.envelope(
+            self.store.workspace_id(),
+            self.device,
+            self.generation,
+            self.resume,
+        )
+    }
+}
+
+/// How often a lagging connection checks whether its queues drained.
+const LAG_POLL: std::time::Duration = std::time::Duration::from_millis(20);
+
+/// The next lagging room this connection can resume: a `SubscribeFrom` at
+/// its current position, handled as if the device had sent it. Rooms
+/// without a resume log wait for their next subscribe.
+fn lag_resume(session: &SessionCtx<'_>) -> Option<Envelope> {
+    while let Some(workspace_id) = session.lag.next() {
+        if let Some(Envelope::Position { position, .. }) = resume_record(session, workspace_id, [])
+        {
+            return Some(Envelope::SubscribeFrom {
+                workspace_id,
+                position: Some(position),
+            });
+        }
+    }
+    None
+}
+
+/// Record frames written to `workspace_id` in its resume log, if it has one,
+/// and return the position to write after them.
+fn resume_record<'f>(
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+    frames: impl IntoIterator<Item = &'f Envelope>,
+) -> Option<Envelope> {
+    let mut resumes = session
+        .resumes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    resumes.get_mut(&workspace_id).map(|log| log.record(frames))
 }
 
 /// Run one peer connection until the wire closes.
@@ -272,6 +403,26 @@ where
     W: tokio::io::AsyncWrite + Unpin + Send + 'static,
 {
     run_peer_version(peer, connection, read, write, ctx, false, false).await
+}
+
+/// [`run_peer`] over a carrier other than an iroh connection (a browser's
+/// HTTPS session): `closed` resolves when that carrier ends.
+///
+/// # Errors
+///
+/// As [`run_peer`].
+pub async fn run_peer_until<R, W>(
+    peer: AuthenticatedPeer,
+    closed: impl std::future::Future<Output = ()> + Send,
+    read: R,
+    write: W,
+    ctx: PeerContext,
+) -> Result<(), PeerError>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+    W: tokio::io::AsyncWrite + Unpin + Send + 'static,
+{
+    run_peer_stream(peer, read, write, ctx, false, false, closed).await
 }
 
 pub(crate) async fn run_peer_version<R, W>(
@@ -332,7 +483,13 @@ where
         metrics,
         own_device_public_key,
         app_serving,
+        live_bridge,
+        agents,
+        positions,
+        compactor,
     } = ctx;
+    let resumes = std::sync::Mutex::new(HashMap::new());
+    let lag = Arc::new(Lag::default());
 
     // Outbound channel — every workspace runtime this peer is
     // subscribed to writes into it; we drain to the wire.
@@ -365,6 +522,12 @@ where
         agent_reads_v1,
         private_tx: &private_tx,
         revocations: &revocations,
+        live_bridge: live_bridge.as_ref(),
+        agents: &agents,
+        positions,
+        compactor: compactor.as_ref(),
+        resumes: &resumes,
+        lag: &lag,
     };
 
     // A clean EOF is only one of the ways this ends: a write to a
@@ -381,13 +544,26 @@ where
             EnvelopeV2,
             Arc<tokio::sync::OwnedSemaphorePermit>,
         )> = std::collections::VecDeque::new();
+        let mut catching_up = false;
         loop {
             let (frame, inbound_budget) = if let Some((frame, budget)) = backlog.pop_front() {
                 (frame, Some(budget))
             } else {
                 tokio::select! {
                     _ = access_audit.tick() => { audit_subscriber_access(&revocations, &peer, &session, &subscribed).await?; continue; }
-                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) }
+                    frame = reader.read_next() => match frame? { Some(frame) => (frame, None), None => return Ok::<(), PeerError>(()) },
+                    () = lag.wake.notified() => { catching_up = true; continue; }
+                    // A lagging room resumes once everything already queued
+                    // for this connection is written, so its replay starts
+                    // where the wire left off.
+                    () = tokio::time::sleep(LAG_POLL), if catching_up => {
+                        if state_tx.capacity() < state_tx.max_capacity() || tx.capacity() < tx.max_capacity() {
+                            continue;
+                        }
+                        let resume = lag_resume(&session);
+                        catching_up = !lag.is_empty();
+                        match resume { Some(frame) => (EnvelopeV2::State(frame), None), None => continue }
+                    }
                 }
             };
             match frame {
@@ -406,9 +582,13 @@ where
                         prefix_budgets.push(Some(budget));
                     }
                     let env = prefix.remove(0);
-                    let replaying = matches!(env, Envelope::Subscribe { .. });
+                    let replaying = matches!(
+                        env,
+                        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
+                    );
                     let blocked_room = match &env {
                         Envelope::Subscribe { workspace_id }
+                        | Envelope::SubscribeFrom { workspace_id, .. }
                         | Envelope::Unsubscribe { workspace_id } => Some(*workspace_id),
                         _ => None,
                     };
@@ -460,7 +640,19 @@ where
                                             }
                                         };
                                         if let Some(reply) = reply {
-                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                            // Wait for the writer, still polling the held
+                                            // state future that it may depend on.
+                                            let sending = send_private_reply(&private_tx, reply);
+                                            tokio::pin!(sending);
+                                            loop {
+                                                tokio::select! {
+                                                    biased;
+                                                    result = &mut operation, if completed.is_none() => {
+                                                        completed = Some(result?);
+                                                    }
+                                                    result = &mut sending => break result?,
+                                                }
+                                            }
                                         }
                                         if let Some(reply) = completed {
                                             break reply;
@@ -505,7 +697,7 @@ where
                             tokio::select! {
                                 biased;
                                 result = &mut sending => {
-                                    result.map_err(|_| PeerError::Protocol("reply backpressure".into()))?;
+                                    result.map_err(|_| PeerError::Protocol("reply writer closed".into()))?;
                                     break;
                                 }
                                 frame = reader.read_next(), if backlog.len() < 32 => {
@@ -513,7 +705,7 @@ where
                                     let can_route = private_may_overtake(&frame, None, backlog.iter().map(|(frame, _)| frame));
                                     if can_route {
                                         if let Some(reply) = handle_private(frame, &peer, &session).await? {
-                                            private_tx.try_send(PrivateOutbound::Reply(reply)).map_err(|_| PeerError::Protocol("private reply backpressure".into()))?;
+                                            send_private_reply(&private_tx, reply).await?;
                                         }
                                     } else {
                                         let budget = crate::persistence::delivery_budget(inbound_bytes(&frame))?;
@@ -531,11 +723,7 @@ where
                 }
                 frame => {
                     if let Some(reply) = handle_private(frame, &peer, &session).await? {
-                        private_tx
-                            .try_send(PrivateOutbound::Reply(reply))
-                            .map_err(|_| {
-                                PeerError::Protocol("private reply backpressure".into())
-                            })?;
+                        send_private_reply(&private_tx, reply).await?;
                     }
                 }
             }
@@ -678,7 +866,9 @@ impl Drop for ConnectionLease {
 fn control_room(frame: &EnvelopeV2) -> Option<u64> {
     match frame {
         EnvelopeV2::State(
-            Envelope::Subscribe { workspace_id } | Envelope::Unsubscribe { workspace_id },
+            Envelope::Subscribe { workspace_id }
+            | Envelope::SubscribeFrom { workspace_id, .. }
+            | Envelope::Unsubscribe { workspace_id },
         ) => Some(*workspace_id),
         EnvelopeV2::EnableActions { room }
         | EnvelopeV2::EnableBrokerClient { room }
@@ -905,6 +1095,19 @@ struct ReplayWrite {
     reply: Option<Envelope>,
     replaying: bool,
 }
+/// Queue a reply to the peer's own private request. A full queue means the
+/// peer is not reading its replies yet: wait for the writer, which stops this
+/// reader and so backpressures the peer, rather than dropping the connection.
+async fn send_private_reply(
+    private_tx: &mpsc::Sender<PrivateOutbound>,
+    reply: EnvelopeV2,
+) -> Result<(), PeerError> {
+    private_tx
+        .send(PrivateOutbound::Reply(reply))
+        .await
+        .map_err(|_| PeerError::Protocol("private reply writer closed".into()))
+}
+
 async fn write_private<W: tokio::io::AsyncWrite + Unpin>(
     private: PrivateOutbound,
     peer: &AuthenticatedPeer,
@@ -1013,6 +1216,9 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                                 frame, session.v2,
                             )?)
                             .await?;
+                        // The position follows after `Ready`; a reconnect
+                        // before it replays these frames once more.
+                        let _ = resume_record(session, workspace_id, [frame]);
                         frames.pop_written();
                     }
                     written = Some(WrittenBatch(frames.number));
@@ -1145,6 +1351,15 @@ async fn finish_replay_write<W: tokio::io::AsyncWrite + Unpin>(
                 &reply, session.v2,
             )?)
             .await?;
+        if let Envelope::Ready { workspace_id, .. } = &reply
+            && let Some(position) = resume_record(session, *workspace_id, [])
+        {
+            write
+                .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                    &position, session.v2,
+                )?)
+                .await?;
+        }
         if let Some((catchup, workspace, source, ticket)) = completed_replay {
             complete_replay_ready(&workspace, &source, &ticket.authority, &catchup).await?;
         }
@@ -1402,6 +1617,8 @@ async fn audit_subscriber_access(
         ));
     }
     for workspace_id in subscribed {
+        agent_admits(session.agents, &peer.device_public_key, *workspace_id)
+            .map_err(|reason| PeerError::Protocol(reason.into()))?;
         let Some(workspace) = session.workspaces.lock().await.get(workspace_id).cloned() else {
             continue;
         };
@@ -1454,7 +1671,10 @@ async fn handle_inbound_frame<W>(
 where
     W: tokio::io::AsyncWrite + Unpin,
 {
-    let replaying = matches!(env, Envelope::Subscribe { .. });
+    let replaying = matches!(
+        env,
+        Envelope::Subscribe { .. } | Envelope::SubscribeFrom { .. }
+    );
     let mut ticket = None;
     let reply = handle_envelope(peer, env, session, subscribed, &mut ticket).await?;
     let pending = std::sync::atomic::AtomicUsize::new(usize::from(replaying));
@@ -1483,7 +1703,29 @@ async fn handle_envelope(
 ) -> Result<Option<Envelope>, PeerError> {
     match env {
         Envelope::Subscribe { workspace_id } => {
-            handle_subscribe(peer, session, subscribed, replay, workspace_id).await
+            handle_subscribe(
+                peer,
+                session,
+                subscribed,
+                replay,
+                workspace_id,
+                Subscription::Whole,
+            )
+            .await
+        }
+        Envelope::SubscribeFrom {
+            workspace_id,
+            position,
+        } => {
+            handle_subscribe(
+                peer,
+                session,
+                subscribed,
+                replay,
+                workspace_id,
+                Subscription::From(position),
+            )
+            .await
         }
         Envelope::Unsubscribe { workspace_id } => {
             handle_unsubscribe(peer, session, subscribed, workspace_id).await
@@ -1516,13 +1758,34 @@ async fn handle_envelope(
             frame,
         )
         .await),
+        env @ Envelope::Commit { .. } => handle_commit(peer, session, subscribed, env).await,
+        Envelope::LiveJoin { workspace_id } => {
+            handle_live_join(peer, session, subscribed, workspace_id).await
+        }
+        Envelope::LiveLeave { workspace_id } => {
+            handle_live_leave(peer, session, workspace_id).await
+        }
+        Envelope::Live {
+            workspace_id,
+            frame,
+            ..
+        } => handle_live(peer, session, subscribed, workspace_id, frame).await,
+        env @ (Envelope::CompactVolunteer { .. } | Envelope::Compacted { .. }) => {
+            handle_compaction(peer, session, subscribed, env).await;
+            Ok(None)
+        }
         // Envelopes the relay only *sends*, never receives; ignore
         // silently so a peer bug doesn't wedge the connection.
-        Envelope::Ready { .. }
+        Envelope::CompactRequest { .. }
+        | Envelope::Ready { .. }
         | Envelope::NotAuthorised { .. }
         | Envelope::Pong
         | Envelope::SyncResponse { .. }
-        | Envelope::RemoteActionUndeliverable { .. } => Ok(None),
+        | Envelope::RemoteActionUndeliverable { .. }
+        | Envelope::Committed { .. }
+        | Envelope::CommitRefused { .. }
+        | Envelope::LiveMember { .. }
+        | Envelope::Position { .. } => Ok(None),
     }
 }
 
@@ -1530,6 +1793,89 @@ async fn handle_envelope(
 enum SubscribeReplayCompletion {
     Ready(ReplayHandle),
     Superseded,
+}
+
+/// How a subscription asks for its replay.
+enum Subscription {
+    /// `Subscribe`: everything, with no positions.
+    Whole,
+    /// `SubscribeFrom`: what the device has not received since the position.
+    From(Option<Vec<u8>>),
+}
+
+/// Set up this subscription's resume log. A plain `Subscribe` has none. A
+/// `SubscribeFrom` with a position this host issued to this device for this
+/// store continues that log and returns the retained frames the device holds,
+/// which its replay leaves out; any other `SubscribeFrom` starts a new log
+/// and replays everything.
+async fn open_resume(
+    session: &SessionCtx<'_>,
+    peer: &AuthenticatedPeer,
+    workspace_id: u64,
+    store: crate::store::WorkspaceStore,
+    resume: Subscription,
+) -> Result<Option<crate::store::replay::ResumeSkip>, PeerError> {
+    let (Subscription::From(position), Some(issuer)) = (resume, session.positions) else {
+        session
+            .resumes
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&workspace_id);
+        return Ok(None);
+    };
+    let device = peer.device_public_key;
+    let opened = tokio::task::spawn_blocking(move || {
+        let generation = store.generation()?;
+        let held = match position
+            .as_deref()
+            .and_then(|position| issuer.verify(position, workspace_id, &device, &generation))
+        {
+            Some(resume) => match store.load_resume(&device, &resume.log, resume.len)? {
+                Some(held) => store
+                    .fork_resume(&device, &resume.log, resume.len)?
+                    .map(|log| {
+                        (
+                            crate::position::Resume {
+                                log,
+                                len: resume.len,
+                            },
+                            held,
+                        )
+                    }),
+                None => None,
+            },
+            None => None,
+        };
+        let (resume, skip) = match held {
+            Some((resume, held)) => (resume, Some(Arc::new(held))),
+            None => (
+                crate::position::Resume {
+                    log: store.start_resume(&device)?,
+                    len: 0,
+                },
+                None,
+            ),
+        };
+        Ok::<_, crate::store::StoreError>((
+            ResumeLog {
+                store,
+                issuer,
+                device,
+                generation,
+                resume,
+            },
+            skip,
+        ))
+    })
+    .await
+    .map_err(|error| PeerError::Io(std::io::Error::other(error)))??;
+    let (log, skip) = opened;
+    session
+        .resumes
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .insert(workspace_id, log);
+    Ok(skip)
 }
 
 /// Handle `Subscribe`: gate on membership (or admit, for a
@@ -1549,7 +1895,14 @@ async fn handle_subscribe(
     subscribed: &mut Vec<u64>,
     replay: &mut Option<(u64, ReplayTicket, ReplayHandle, Arc<ReplayCatchup>)>,
     workspace_id: u64,
+    resume: Subscription,
 ) -> Result<Option<Envelope>, PeerError> {
+    if let Err(reason) = agent_admits(session.agents, &peer.device_public_key, workspace_id) {
+        return Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: reason.into(),
+        }));
+    }
     let ws = get_or_autobind_workspace(session.workspaces, session.autobind, workspace_id).await?;
     let Some(ws) = ws else {
         return Ok(Some(Envelope::NotAuthorised {
@@ -1608,7 +1961,9 @@ async fn handle_subscribe(
         .subscribers
         .get(&peer.device_public_key)
         .map(|sub| sub.tx.clone());
+    let store = wr.store.clone();
     drop(wr);
+    let skip = open_resume(session, peer, workspace_id, store, resume).await?;
     let owner = crate::persistence::handle(&ws).await;
     let source = StateSource::new(peer, session);
     let state_tx = session
@@ -1621,6 +1976,7 @@ async fn handle_subscribe(
     let bind = ticket.authority.clone();
     let catchup = Arc::new(ReplayCatchup::new());
     let session_catchup = catchup.clone();
+    let session_lag = session.lag.clone();
 
     let rx = owner
         .submit_replay_resumable_wait(
@@ -1628,7 +1984,7 @@ async fn handle_subscribe(
             1,
             async { Ok(()) },
             move |state, _| {
-                let step = state.capture_replay(&capture)?;
+                let step = state.capture_resumed_replay(&capture, skip.clone())?;
                 match step {
                     Step::More => Ok(Step::More),
                     Step::Done(handle) => Ok(Step::Done(SubscribeReplayCompletion::Ready(handle))),
@@ -1688,6 +2044,7 @@ async fn handle_subscribe(
                         peer: source.peer,
                         tx: state_tx,
                         replay: Some(session_catchup),
+                        lag: Some(session_lag),
                     },
                 );
                 drop(wr);
@@ -1741,7 +2098,57 @@ pub(crate) struct StateSession {
     pub(crate) tx: mpsc::Sender<StateDelivery>,
     pub(crate) live: Arc<std::sync::atomic::AtomicBool>,
     replay: Option<Arc<ReplayCatchup>>,
+    lag: Option<Arc<Lag>>,
 }
+impl StateSession {
+    /// Everything fanned out to this session so far reached its wire: none
+    /// of it is queued, left on disk while it lagged, or still replaying.
+    pub(crate) fn caught_up(&self) -> bool {
+        self.tx.capacity() == self.tx.max_capacity()
+            && self.lag.as_ref().is_none_or(|lag| lag.is_empty())
+            && self.replay.as_ref().is_none_or(|replay| {
+                replay.phase.load(std::sync::atomic::Ordering::SeqCst) != ReplayCatchup::ACTIVE
+            })
+    }
+}
+/// The rooms whose live deliveries a connection could not take and left on
+/// disk (its pending queue and the retained log). Once the connection's
+/// queues drain it resumes each of them from its position, so the replay
+/// carries exactly what it missed; a lagging reader costs disk and latency,
+/// never its session. A subscription without a resume log catches up on its
+/// next subscribe instead.
+#[derive(Default)]
+pub(crate) struct Lag {
+    rooms: std::sync::Mutex<std::collections::BTreeSet<u64>>,
+    wake: tokio::sync::Notify,
+}
+impl Lag {
+    fn mark(&self, workspace_id: u64) {
+        let first = self
+            .rooms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(workspace_id);
+        if first {
+            self.wake.notify_one();
+        }
+    }
+
+    fn next(&self) -> Option<u64> {
+        self.rooms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pop_first()
+    }
+
+    fn is_empty(&self) -> bool {
+        self.rooms
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty()
+    }
+}
+
 struct ReplayCatchup {
     phase: std::sync::atomic::AtomicU8,
     dirty: std::sync::atomic::AtomicBool,
@@ -3381,6 +3788,8 @@ async fn publish_checkpoint_commit(
                         .live
                         .store(false, std::sync::atomic::Ordering::SeqCst);
                     let _ = sub.disconnect.try_send(());
+                } else if let Some(lag) = &target.lag {
+                    lag.mark(runtime.store.workspace_id());
                 }
                 continue;
             };
@@ -3409,6 +3818,8 @@ async fn publish_checkpoint_commit(
                             .live
                             .store(false, std::sync::atomic::Ordering::SeqCst);
                         let _ = sub.disconnect.try_send(());
+                    } else if let Some(lag) = &target.lag {
+                        lag.mark(runtime.store.workspace_id());
                     }
                 }
                 Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -3871,6 +4282,15 @@ async fn enqueue_state(
         workspace, envelope, source, role, metrics, false,
     ))
     .await
+    .map(drop)
+}
+
+/// A state commit admitted to its workspace's ordered persistence owner.
+struct AdmittedState {
+    /// Resolves once the commit is durable and published.
+    completion: tokio::sync::oneshot::Receiver<Result<StateCommit, StoreError>>,
+    /// The durable host order it took; 0 until then, or when unpublished.
+    sequence: Arc<std::sync::atomic::AtomicU64>,
 }
 pub(crate) async fn enqueue_federated(
     workspace: &SharedWorkspace,
@@ -3888,6 +4308,7 @@ pub(crate) async fn enqueue_federated(
         sync,
     ))
     .await
+    .map(drop)
 }
 #[expect(
     clippy::too_many_lines,
@@ -3904,7 +4325,7 @@ async fn enqueue_state_inner(
     role: crate::auth::PeerRole,
     metrics: Arc<crate::metrics::Metrics>,
     sync: bool,
-) -> Result<(), PeerError> {
+) -> Result<AdmittedState, PeerError> {
     let Envelope::Delta {
         author_device_public_key: author,
         delta,
@@ -3951,7 +4372,9 @@ async fn enqueue_state_inner(
     let mut retained_build: Option<crate::store::retained::RetainBuild> = None;
     let mut pending_work = None;
     let mut replay_pending_work: Option<ReplayPendingWork> = None;
-    Box::pin(owner.submit_resumable_wait(
+    let durable = Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let durable_sequence = durable.clone();
+    let completion = Box::pin(owner.submit_resumable_wait(
         charge,
         async move {
             let runtime = crate::workspace_io::fresh_membership(&prepare_workspace).await?;
@@ -4050,6 +4473,7 @@ async fn enqueue_state_inner(
                 }
                 let seq = state.next_sequence()?;
                 sequence = Some(seq);
+                durable_sequence.store(seq, std::sync::atomic::Ordering::SeqCst);
                 let continuity = continuity_evidence.clone().map(|evidence| evidence.accept(seq));
                 let raw = crate::transport::encode(&envelope)
                     .map_err(|e| crate::persistence::error(e.to_string()))?;
@@ -4298,6 +4722,8 @@ async fn enqueue_state_inner(
                             if replay_phase == Some(ReplayCatchup::BOUNDARY) {
                                 target.live.store(false, std::sync::atomic::Ordering::SeqCst);
                                 let _ = sub.disconnect.try_send(());
+                            } else if let Some(lag) = &target.lag {
+                                lag.mark(runtime.store.workspace_id());
                             }
                             continue
                         };
@@ -4332,6 +4758,8 @@ async fn enqueue_state_inner(
                                         .live
                                         .store(false, std::sync::atomic::Ordering::SeqCst);
                                     let _ = sub.disconnect.try_send(());
+                                } else if let Some(lag) = &target.lag {
+                                    lag.mark(runtime.store.workspace_id());
                                 }
                             }
                             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -4388,7 +4816,10 @@ async fn enqueue_state_inner(
         },
     ))
     .await?;
-    Ok(())
+    Ok(AdmittedState {
+        completion,
+        sequence: durable,
+    })
 }
 
 #[expect(
@@ -4460,6 +4891,13 @@ async fn write_state_delivery<W: tokio::io::AsyncWrite + Unpin>(
             session.v2,
         )?)
         .await?;
+    if let Some(position) = resume_record(session, *workspace_id, [&*delivery.envelope]) {
+        write
+            .write_all(&tilo_delivery_protocol::transport_v2::encode_state(
+                &position, session.v2,
+            )?)
+            .await?;
+    }
     if let Some(path) = &delivery.cleanup {
         let path = path.clone();
         // Enqueue is never receipt. Exact cleanup is admitted only after the
@@ -4526,8 +4964,317 @@ async fn handle_delta(
             reason: "workspace membership changed".into(),
         }));
     };
+    let observed = match (&env, session.compactor) {
+        (Envelope::Delta { delta, .. }, Some(_)) => crate::compaction::Compactor::observe(delta),
+        _ => None,
+    };
+    let admitting = session
+        .compactor
+        .zip(observed)
+        .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
     enqueue_state(&ws, env, Some(source), peer.role, session.metrics.clone()).await?;
+    if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
+        compactor.note(&ws, workspace_id, observed);
+    }
+    drop(admitting);
 
+    Ok(None)
+}
+
+/// A member volunteering to compact sealed routes, or its coverage
+/// statement for one: the host removes the entries the statement names. A
+/// refused statement removes nothing and only costs the member its snapshot
+/// upload.
+async fn handle_compaction(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) {
+    let Some(compactor) = session.compactor else {
+        return;
+    };
+    let (Envelope::CompactVolunteer { workspace_id } | Envelope::Compacted { workspace_id, .. }) =
+        env
+    else {
+        return;
+    };
+    if !subscribed.contains(&workspace_id) || peer.role != crate::auth::PeerRole::Device {
+        return;
+    }
+    let Envelope::Compacted {
+        statement,
+        signature,
+        ..
+    } = env
+    else {
+        compactor.volunteer(workspace_id, peer.device_public_key);
+        return;
+    };
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return;
+    };
+    if let Err(error) = compactor
+        .compacted(
+            &ws,
+            workspace_id,
+            peer.device_public_key,
+            &statement,
+            &signature,
+        )
+        .await
+    {
+        tracing::warn!(workspace_id, %error, "refused a compaction statement");
+    }
+}
+
+/// Handle an inbound `Commit`: admit it exactly like a `Delta` (the reply
+/// waits until the host persisted it), then tell the author its host order.
+/// A commit the host cannot admit is refused to the author without closing
+/// the session. A resent commit the host already admitted is answered with
+/// its original order from the workspace's commit ledger and neither
+/// persisted nor fanned out again.
+async fn handle_commit(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    env: Envelope,
+) -> Result<Option<Envelope>, PeerError> {
+    let Envelope::Commit {
+        workspace_id,
+        op,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+    } = env
+    else {
+        return Err(PeerError::Protocol(
+            "handle_commit called with a non-Commit envelope".into(),
+        ));
+    };
+    let refused = |reason: &str| {
+        Ok(Some(Envelope::CommitRefused {
+            workspace_id,
+            op,
+            reason: reason.into(),
+        }))
+    };
+    if !subscribed.contains(&workspace_id) {
+        return refused("commit sent before subscribing to workspace");
+    }
+    if peer.role != crate::auth::PeerRole::Device
+        || author_device_public_key != peer.device_public_key
+    {
+        return refused("author does not match authenticated device");
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused("workspace not bound on this relay");
+    };
+    let Some(source) = authorized_state_source(&ws, peer, session).await? else {
+        return refused("workspace membership changed");
+    };
+    let digest = *blake3::hash(&delta).as_bytes();
+    let gate = ws.lock().await.commit_gate.clone();
+    let _admitting = gate.lock().await;
+    let admitted = ws
+        .lock()
+        .await
+        .admitted_commit(&author_device_public_key, &op);
+    if let Some(admitted) = admitted {
+        return Ok(Some(resent_commit(workspace_id, admitted, digest)));
+    }
+    let observed = session
+        .compactor
+        .and_then(|_| crate::compaction::Compactor::observe(&delta));
+    let admitting = session
+        .compactor
+        .zip(observed)
+        .map(|(compactor, observed)| compactor.admitting(workspace_id, observed));
+    let delta = Envelope::Delta {
+        workspace_id,
+        author_device_public_key,
+        authored_at_ns,
+        delta,
+        signature: [0; 64],
+    };
+    let authored = delta.clone();
+    let admitted = Box::pin(enqueue_state_inner(
+        &ws,
+        delta,
+        Some(source),
+        peer.role,
+        session.metrics.clone(),
+        false,
+    ))
+    .await?;
+    // What an author is told is committed never depends on work that can
+    // still fail: wait for the change to be durable and published.
+    crate::persistence::receipt(admitted.completion).await?;
+    let durable = admitted.sequence.load(std::sync::atomic::Ordering::SeqCst);
+    if let (Some(compactor), Some(observed)) = (session.compactor, observed) {
+        compactor.note(&ws, workspace_id, observed);
+    }
+    drop(admitting);
+    // The author holds what it committed; a resume never replays it to it.
+    if let Some(position) = resume_record(session, workspace_id, [&authored]) {
+        let _ = session.outbound.try_send(position);
+    }
+    let seq = remember_commit(
+        &ws,
+        crate::store::CommitRecord {
+            author: author_device_public_key,
+            op,
+            seq: durable,
+            digest,
+        },
+    )
+    .await?;
+    Ok(Some(Envelope::Committed {
+        workspace_id,
+        op,
+        seq,
+    }))
+}
+
+/// The answer to a resent commit the ledger already holds: its original
+/// host order, or a refusal when the same operation id carries other content.
+fn resent_commit(
+    workspace_id: u64,
+    admitted: crate::store::CommitRecord,
+    digest: [u8; 32],
+) -> Envelope {
+    if admitted.digest != digest {
+        return Envelope::CommitRefused {
+            workspace_id,
+            op: admitted.op,
+            reason: "operation id already committed with different content".into(),
+        };
+    }
+    tracing::debug!(
+        workspace_id,
+        seq = admitted.seq,
+        "resent commit answered from the ledger"
+    );
+    Envelope::Committed {
+        workspace_id,
+        op: admitted.op,
+        seq: admitted.seq,
+    }
+}
+
+/// Record an admitted commit in the workspace's commit ledger and return the
+/// host order it is acknowledged at: the durable sequence it was published
+/// in (`record.seq`), or the next one when persistence assigned none. Every
+/// member then receives commits in the order their authors were told.
+async fn remember_commit(
+    ws: &SharedWorkspace,
+    mut record: crate::store::CommitRecord,
+) -> Result<u64, PeerError> {
+    let (ledger, store) = {
+        let mut runtime = ws.lock().await;
+        if record.seq == 0 {
+            record.seq = runtime.next_seq(unix_now_ns());
+        }
+        (runtime.remember_commit(record), runtime.store.clone())
+    };
+    tokio::task::spawn_blocking(move || ledger.persist(&store))
+        .await
+        .map_err(|_| PeerError::Io(std::io::Error::other("commit ledger write panicked")))?;
+    Ok(record.seq)
+}
+
+/// Handle `LiveJoin`: add a subscribed device to the workspace's live plane
+/// and send it one `LiveMember` per member already present.
+async fn handle_live_join(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+) -> Result<Option<Envelope>, PeerError> {
+    let refused = || {
+        Ok(Some(Envelope::NotAuthorised {
+            workspace_id,
+            reason: "live join requires a subscription".into(),
+        }))
+    };
+    if !subscribed.contains(&workspace_id) {
+        return refused();
+    }
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return refused();
+    };
+    let Some(members) = ws
+        .lock()
+        .await
+        .live_join(peer.device_public_key, workspace_id)
+    else {
+        return refused();
+    };
+    for device in members {
+        // Live state is never authority: a member notice lost to a full
+        // queue costs only a late cursor.
+        let _ = session.outbound.try_send(Envelope::LiveMember {
+            workspace_id,
+            device_public_key: device,
+            active: true,
+        });
+    }
+    Ok(None)
+}
+
+/// Handle `LiveLeave`.
+#[allow(
+    clippy::significant_drop_tightening,
+    reason = "the guard only lives for the lookup; the value kept is a clone"
+)]
+async fn handle_live_leave(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    workspace_id: u64,
+) -> Result<Option<Envelope>, PeerError> {
+    let ws = session.workspaces.lock().await.get(&workspace_id).cloned();
+    if let Some(ws) = ws {
+        let mut ws = ws.lock().await;
+        ws.live_leave(&peer.device_public_key, workspace_id);
+        drop(ws);
+    }
+    Ok(None)
+}
+
+/// Handle an inbound `Live` frame: decode it canonically, stamp the
+/// authenticated sender and relay it within the sender's rate budget.
+/// Invalid, over-budget or non-member frames are dropped: live traffic is
+/// never authority, and dropping it costs only a stale cursor.
+async fn handle_live(
+    peer: &AuthenticatedPeer,
+    session: &SessionCtx<'_>,
+    subscribed: &[u64],
+    workspace_id: u64,
+    frame: Vec<u8>,
+) -> Result<Option<Envelope>, PeerError> {
+    if !subscribed.contains(&workspace_id) {
+        return Ok(None);
+    }
+    let Ok(decoded) = crate::live::LiveFrame::decode(&frame) else {
+        return Ok(None);
+    };
+    let presence = matches!(decoded, crate::live::LiveFrame::Presence(_));
+    let Some(ws) = session.workspaces.lock().await.get(&workspace_id).cloned() else {
+        return Ok(None);
+    };
+    if let Some(bridge) = session.live_bridge
+        && ws.lock().await.is_live_member(&peer.device_public_key)
+    {
+        bridge(workspace_id, peer.device_public_key, &frame);
+    }
+    let stamped = Envelope::Live {
+        workspace_id,
+        from_device_public_key: peer.device_public_key,
+        frame,
+    };
+    ws.lock()
+        .await
+        .fanout_live(&peer.device_public_key, presence, &stamped, unix_now_ns());
     Ok(None)
 }
 
@@ -4758,7 +5505,21 @@ fn serve_locally(
 ) -> Result<Option<Envelope>, &'static str> {
     use tilo_actions::remote::{Caller, RemoteActionFrame};
     let request = RemoteActionFrame::decode(frame).map_err(|_| "malformed remote action frame")?;
-    let caller = Caller::authenticated(peer.user_public_key, peer.device_public_key);
+    let agent = session
+        .agents
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .get(&peer.device_public_key)
+        .cloned();
+    let caller = match agent {
+        Some(Some(delegation)) => Caller::delegated_agent(
+            delegation.agent_id,
+            peer.user_public_key,
+            peer.device_public_key,
+        ),
+        Some(None) => return Err("the agent was withdrawn"),
+        None => Caller::authenticated(peer.user_public_key, peer.device_public_key),
+    };
     let Some(reply) = plane.serve(workspace_id, &caller, request.message) else {
         return Ok(None);
     };
@@ -6051,6 +6812,7 @@ mod private_transport_tests {
                 tx: observer_state_tx,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         runtime
@@ -6072,6 +6834,7 @@ mod private_transport_tests {
                 tx: fenced_observer_state_tx,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let workspace = Arc::new(AsyncMutex::new(runtime));
@@ -6195,6 +6958,7 @@ mod private_transport_tests {
                     tx: replacement_state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
         }
@@ -6249,6 +7013,7 @@ mod private_transport_tests {
                     tx: reopened_state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
         }
@@ -6566,6 +7331,10 @@ mod private_transport_tests {
                 own_device_public_key: peer.cert.device_public_key,
                 app_serving: None,
                 metrics,
+                live_bridge: None,
+                agents: crate::peer::AgentRegistry::default(),
+                positions: None,
+                compactor: None,
             },
             true,
             false,
@@ -6756,6 +7525,7 @@ mod private_transport_tests {
                     tx: state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
             peers.push(peer);
@@ -6874,6 +7644,7 @@ mod private_transport_tests {
                     tx: new_state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
         }
@@ -7060,6 +7831,7 @@ mod private_transport_tests {
                     tx: state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
             peers.push(peer);
@@ -7129,6 +7901,7 @@ mod private_transport_tests {
                     tx: new_state_tx,
                     live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                     replay: None,
+                    lag: None,
                 },
             );
         }
@@ -7249,6 +8022,7 @@ mod private_transport_tests {
                 tx: state_tx,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let (slow, _) = certified_device(&root, user.public_key, "saturated recipient");
@@ -7269,6 +8043,7 @@ mod private_transport_tests {
                 tx: slow_state,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let workspace = Arc::new(AsyncMutex::new(runtime));
@@ -7392,6 +8167,99 @@ mod private_transport_tests {
         paused_state_private_roundtrip(true, false, false, false).await;
     }
 
+    /// A peer that pipelines more private requests than the reply queue holds,
+    /// while its own replies are not yet read, is backpressured: the relay
+    /// stops reading until the writer drains, and never disconnects it.
+    #[tokio::test(start_paused = true)]
+    async fn pipelined_private_requests_backpressure_instead_of_disconnecting() {
+        const REQUESTS: usize = PEER_OUTBOUND_CAPACITY * 4;
+        let (root, user) = UserIdentity::generate("alice", 1);
+        let (a, _) = certified_device(&root, user.public_key, "a");
+        let room = uuid::Uuid::from_u128(7);
+        let id = crate::room_workspace_id(&room.to_string()).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let mut runtime = crate::workspace::WorkspaceRuntime::open(
+            tmp.path(),
+            id,
+            true,
+            crate::workspace::Membership::default(),
+        )
+        .unwrap();
+        runtime.admit_device(a.device_public_key).unwrap();
+        let registry = Arc::new(AsyncMutex::new(HashMap::from([(
+            id,
+            Arc::new(AsyncMutex::new(runtime)),
+        )])));
+        let ctx = PeerContext {
+            workspaces: registry,
+            autobind: None,
+            revocations: Arc::new(std::sync::RwLock::new(RevocationList::new())),
+            trust_policy: Arc::new(std::sync::RwLock::new(
+                crate::policy::TrustPolicy::AllowMatchingUser,
+            )),
+            own_user_public_key: user.public_key,
+            own_device_cert: a.cert.clone(),
+            own_device_public_key: a.cert.device_public_key,
+            app_serving: None,
+            metrics: Arc::new(crate::metrics::Metrics::default()),
+            live_bridge: None,
+            agents: crate::peer::AgentRegistry::default(),
+            positions: None,
+            compactor: None,
+        };
+        // Requests flow through a roomy pipe; replies through a small one, so
+        // the relay's writer blocks until the client reads.
+        let (mut requests, server_read) = tokio::io::duplex(1 << 20);
+        let (server_write, replies) = tokio::io::duplex(256);
+        let (server_read, _) = tokio::io::split(server_read);
+        let (_, server_write) = tokio::io::split(server_write);
+        let (replies, _) = tokio::io::split(replies);
+        let relay = tokio::spawn(run_peer_stream(
+            a.clone(),
+            server_read,
+            server_write,
+            ctx,
+            true,
+            false,
+            std::future::pending::<()>(),
+        ));
+        let mut reader = SessionReader::new(replies, true);
+        requests
+            .write_all(
+                &tilo_delivery_protocol::transport_v2::encode_state(
+                    &Envelope::Subscribe { workspace_id: id },
+                    true,
+                )
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(
+            reader.read_next().await.unwrap(),
+            Some(EnvelopeV2::State(Envelope::Ready { .. }))
+        ));
+        let enable =
+            tilo_delivery_protocol::transport_v2::encode(&EnvelopeV2::EnableActions { room })
+                .unwrap();
+        for _ in 0..REQUESTS {
+            requests.write_all(&enable).await.unwrap();
+        }
+        // The clock is paused: this returns only once the relay has nothing
+        // left to do, its writer blocked on the unread replies.
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        assert!(
+            !relay.is_finished(),
+            "the relay dropped a backpressured peer"
+        );
+        for _ in 0..REQUESTS {
+            assert!(matches!(
+                reader.read_next().await.unwrap(),
+                Some(EnvelopeV2::ActionsReady { .. })
+            ));
+        }
+        assert!(!relay.is_finished());
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
     async fn paused_state_persistence_allows_same_connection_private_roundtrip() {
         paused_state_private_roundtrip(false, false, false, false).await;
@@ -7460,6 +8328,10 @@ mod private_transport_tests {
                 own_device_public_key: a.cert.device_public_key,
                 app_serving: None,
                 metrics: Arc::new(crate::metrics::Metrics::default()),
+                live_bridge: None,
+                agents: crate::peer::AgentRegistry::default(),
+                positions: None,
+                compactor: None,
             };
             tasks.push(tokio::spawn(run_peer_stream(
                 peer.clone(),
@@ -7799,6 +8671,10 @@ mod private_transport_tests {
                     own_device_public_key: a.cert.device_public_key,
                     app_serving: None,
                     metrics: Arc::new(crate::metrics::Metrics::default()),
+                    live_bridge: None,
+                    agents: crate::peer::AgentRegistry::default(),
+                    positions: None,
+                    compactor: None,
                 },
                 true,
                 false,
@@ -8083,6 +8959,12 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &private,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let (mut broken, reader) = tokio::io::duplex(1);
         drop(reader);
@@ -8299,6 +9181,12 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -8420,6 +9308,12 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -8557,6 +9451,12 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &source_private,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         assert!(matches!(
             handle_private(EnvelopeV2::EnableActions { room }, &source, &source_session)
@@ -8771,6 +9671,12 @@ mod private_transport_tests {
             agent_reads_v1: agent_read,
             private_tx: &ap,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let receiver = SessionCtx {
             outbound: &btx,
@@ -9232,6 +10138,12 @@ mod private_transport_tests {
             agent_reads_v1: false,
             private_tx: &ptx,
             revocations: &revocations,
+            live_bridge: None,
+            agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         // The browser sends a SyncReq as presence.
         handle_presence(

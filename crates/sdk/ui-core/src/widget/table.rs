@@ -27,6 +27,7 @@
 //! row height); the widget paints the grid lines, header band, row banding,
 //! and the insert / delete / resize affordances in the gutters on top.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
@@ -42,6 +43,7 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -369,6 +371,14 @@ enum Hover {
     EmptyAdd,
 }
 
+/// Pixel-snapped grid geometry for one paint: the interior column and row
+/// edges, and the body they bound.
+struct PaintedGrid {
+    xs: Vec<f64>,
+    ys: Vec<f64>,
+    body: Rect,
+}
+
 /// Active column-resize drag.
 struct Resize {
     col: usize,
@@ -491,10 +501,7 @@ impl Table {
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
-            let state = self
-                .cells
-                .get(self.projected_index(row, column)?)?
-                .get_state();
+            let state = crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?);
             Some((row, column, state))
         });
         let shape_changed = self.n_rows() != rows.len() || self.n_cols() != columns;
@@ -565,9 +572,7 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        self.cells
-            .get(self.projected_index(row, column)?)?
-            .get_state()
+        crate::undo::get_state(self.cells.get(self.projected_index(row, column)?)?)
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -580,7 +585,7 @@ impl Table {
         let Some(input) = self.cells.get_mut(index) else {
             return;
         };
-        input.set_state(state);
+        crate::undo::set_state(input, state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
         input.set_caret_position(caret);
@@ -696,27 +701,15 @@ impl Table {
         }
     }
 
-    #[allow(clippy::too_many_arguments, reason = "shared TextInput event context")]
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "the Widget event interface supplies modifiers by reference"
-    )]
     pub(super) fn handle_projected_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> Option<(usize, usize, String)> {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
             ));
         }
         if matches!(
@@ -735,7 +728,7 @@ impl Table {
                 if let Some((row, column)) = self.projected_position(index) {
                     self.focus_projected_cell(row, column);
                 }
-                *focus_target = Some(node);
+                *ctx.focus_target = Some(ctx.node_id);
             } else {
                 self.blur_projection();
             }
@@ -745,11 +738,12 @@ impl Table {
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
         {
-            let backwards = modifiers.state().shift_key();
+            let backwards = ctx.modifiers.state().shift_key();
             let step = match event.logical_key {
                 Key::Named(NamedKey::Tab) => Some(1),
                 Key::Named(NamedKey::Enter)
-                    if !modifiers.state().control_key() && !modifiers.state().super_key() =>
+                    if !ctx.modifiers.state().control_key()
+                        && !ctx.modifiers.state().super_key() =>
                 {
                     Some(self.n_cols())
                 }
@@ -771,28 +765,18 @@ impl Table {
                     self.blur_projection();
                     self.projection_exit = Some(!backwards);
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return None;
             }
             if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
                 self.blur_projection();
                 self.projection_exit = Some(true);
-                *handled = true;
+                *ctx.handled = true;
                 return None;
             }
         }
         let input = self.cells.get_mut(focused)?;
-        input.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            taffy,
-        );
+        input.handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
         input.take_dirty().map(|text| (row, column, text))
     }
 
@@ -978,25 +962,43 @@ impl Table {
         );
     }
 
+    /// The grid as painted. Painted geometry snaps to whole pixels so a 1 px
+    /// rule is exactly one row or column: a column width is a doc value and
+    /// fractional after a drag. Hit-testing keeps the exact edges; the
+    /// difference is under half a pixel.
+    fn painted_grid(&self) -> PaintedGrid {
+        let (xs, ys) = self.grid_edges();
+        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
+        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
+        // Painted only past `is_empty()`, so both edge lists have >= 2
+        // entries; the fallbacks below never actually apply.
+        let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
+        let gr = self.grid_right().round();
+        let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
+        let gb = self.grid_bottom().round();
+        PaintedGrid {
+            xs,
+            ys,
+            body: Rect::new(gl, gt, gr, gb),
+        }
+    }
+
     /// Draw the grid's line work: interior rules, the heavier separator
     /// under a header row, and the always-on insert ticks at every boundary.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "grid-edge geometry passed through from `draw`, which already computed it \
-                  once for the frame"
-    )]
-    fn draw_grid_lines(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        xs: &[f64],
-        ys: &[f64],
-        gl: f64,
-        gt: f64,
-        gr: f64,
-        gb: f64,
-    ) {
+    fn draw_grid_lines(&self, ctx: &mut PaintCtx<'_>, grid: &PaintedGrid) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let (xs, ys) = (grid.xs.as_slice(), grid.ys.as_slice());
+        let Rect {
+            x0: gl,
+            y0: gt,
+            x1: gr,
+            y1: gb,
+        } = grid.body;
         let tk = &theme.tokens;
         let line = Stroke::new(1.0);
         // Rules derive from the body surface they cross (HIG §9.5): a white
@@ -1060,22 +1062,20 @@ impl Table {
     /// A hover index that no longer matches the current grid (stale from
     /// just before a structural edit) is silently skipped rather than
     /// indexing out of bounds.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "grid-edge geometry passed through from `draw`, which already computed it once for the frame"
-    )]
-    fn draw_hover_affordance(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        xs: &[f64],
-        ys: &[f64],
-        gl: f64,
-        gt: f64,
-        gr: f64,
-        gb: f64,
-    ) {
+    fn draw_hover_affordance(&self, ctx: &mut PaintCtx<'_>, grid: &PaintedGrid) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let (xs, ys) = (grid.xs.as_slice(), grid.ys.as_slice());
+        let Rect {
+            x0: gl,
+            y0: gt,
+            x1: gr,
+            y1: gb,
+        } = grid.body;
         let tk = &theme.tokens;
         let accent = theme.accent_primary;
         // The glyph inside a gutter affordance is a mark on a themed chip, so
@@ -1258,21 +1258,11 @@ impl Table {
     /// Forward an event to the cell editors: a pointer-capture short-circuit
     /// to whichever cell is mid-drag, otherwise each cell is tried in order
     /// until one consumes the event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "thin pass-through of `handle_event`'s own parameters plus the child-node \
-                  ids it already resolved"
-    )]
     fn forward_to_cells(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut crate::widget::EventCtx<'_>,
         child_nodes: &[NodeId],
-        taffy: &TaffyTree<()>,
     ) {
         let Some(cells_obj) = self.cells_obj.clone() else {
             return;
@@ -1286,32 +1276,12 @@ impl Table {
             && let Some(&cn) = child_nodes.get(idx)
             && let Some(cell) = self.cells.get_mut(idx)
         {
-            cell.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                &cells_obj,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            cell.handle_event(event, &mut ctx.reborrow(&cells_obj, cn));
             return;
         }
         for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
-            cell.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                &cells_obj,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
-            if *handled {
+            cell.handle_event(event, &mut ctx.reborrow(&cells_obj, cn));
+            if *ctx.handled {
                 break;
             }
         }
@@ -1359,7 +1329,10 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 }
 
 impl Widget for Table {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         ensure(state, path);
         // First-run seed.
         if let Some((r, c)) = self.seed.take() {
@@ -1504,20 +1477,9 @@ impl Widget for Table {
             return;
         }
 
-        let (xs, ys) = self.grid_edges();
-        // Painted geometry snaps to whole pixels so a 1 px rule is exactly
-        // one row or column: a column width is a doc value and fractional
-        // after a drag. Hit-testing keeps the exact edges; the difference is
-        // under half a pixel.
-        let xs: Vec<f64> = xs.into_iter().map(f64::round).collect();
-        let ys: Vec<f64> = ys.into_iter().map(f64::round).collect();
-        // Reached only past `is_empty()`, so both edge lists have >= 2
-        // entries; the fallbacks below never actually apply.
-        let gl = xs.first().copied().unwrap_or(self.rect.x0 + LEFT_GUTTER);
-        let gr = self.grid_right().round();
-        let gt = ys.first().copied().unwrap_or(self.rect.y0 + TOP_GUTTER);
-        let gb = self.grid_bottom().round();
-        let body = Rect::new(gl, gt, gr, gb);
+        let grid = self.painted_grid();
+        let (ys, body) = (&grid.ys, grid.body);
+        let (gl, gr) = (body.x0, body.x1);
 
         // Grid body surface + header band + zebra rows.
         scene.fill(
@@ -1555,36 +1517,27 @@ impl Widget for Table {
             cell.draw(scene, transform, text_renderer, theme, presence);
         }
 
-        self.draw_grid_lines(scene, transform, theme, &xs, &ys, gl, gt, gr, gb);
-        self.draw_hover_affordance(scene, transform, theme, &xs, &ys, gl, gt, gr, gb);
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
+        self.draw_grid_lines(&mut ctx, &grid);
+        self.draw_hover_affordance(&mut ctx, &grid);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let child_nodes = taffy.children(node_id).unwrap_or_default();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
 
         // ---- active column resize captures the pointer ----
         if let Some(rz) = self.resize.as_ref() {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
-                    let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                    let p =
+                        Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                     let new_w = (rz.orig_w + (p.x - rz.start_x)).max(MIN_COL_W);
                     if let Some(cid) = self.col_ids.get(rz.col).cloned() {
-                        set_col_width(state, path, &cid, new_w);
+                        set_col_width(ctx.state, ctx.path, &cid, new_w);
                     }
                     self.structure_dirty = true; // re-run build_layout with new tracks
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 WindowEvent::MouseInput {
@@ -1593,7 +1546,7 @@ impl Widget for Table {
                 } => {
                     self.resize = None;
                     self.pending_commit = true;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -1602,7 +1555,7 @@ impl Widget for Table {
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = Some(p);
                 let h = self.hit(p);
                 if h != self.hover {
@@ -1617,7 +1570,7 @@ impl Widget for Table {
                 ..
             } => {
                 if let Some(p) = self.last_cursor
-                    && self.handle_press(p, state, path, handled)
+                    && self.handle_press(p, ctx.state, ctx.path, ctx.handled)
                 {
                     return;
                 }
@@ -1630,7 +1583,7 @@ impl Widget for Table {
                     && let Some(focused) = self.cells.iter().position(super::Widget::is_focused)
                 {
                     let cols = self.n_cols().max(1);
-                    let up = modifiers.state().shift_key();
+                    let up = ctx.modifiers.state().shift_key();
                     let target = if up {
                         focused.checked_sub(cols)
                     } else {
@@ -1639,8 +1592,8 @@ impl Widget for Table {
                     if let Some(t) = target
                         && let Some(&tn) = child_nodes.get(t)
                     {
-                        *focus_target = Some(tn);
-                        *handled = true;
+                        *ctx.focus_target = Some(tn);
+                        *ctx.handled = true;
                         return;
                     }
                 }
@@ -1648,16 +1601,7 @@ impl Widget for Table {
             _ => {}
         }
 
-        self.forward_to_cells(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            handled,
-            focus_target,
-            &child_nodes,
-            taffy,
-        );
+        self.forward_to_cells(event, ctx, &child_nodes);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1724,19 +1668,25 @@ impl Widget for Table {
         self.structure_dirty || self.cells.iter().any(super::Widget::is_layout_dirty)
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, Role};
+        Some(AccessNode::new(Role::Table))
+    }
+}
+
+impl crate::undo::UndoPoints for Table {
     fn needs_commit(&self) -> bool {
-        self.pending_commit || self.cells.iter().any(super::Widget::needs_commit)
+        self.pending_commit
+            || self
+                .cells
+                .iter()
+                .any(|cell| crate::undo::needs_commit(cell))
     }
     fn on_commit(&mut self) {
         self.pending_commit = false;
         for c in &mut self.cells {
             c.on_commit();
         }
-    }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
-        Some(AccessNode::new(Role::Table))
     }
 }
 
@@ -1987,14 +1937,16 @@ mod tests {
         let mut focus_target = None;
         table.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         (handled, focus_target)
     }

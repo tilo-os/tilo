@@ -5,9 +5,9 @@
 //! so these functions are pure views.
 
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::time::UNIX_EPOCH;
 use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
@@ -2766,7 +2766,7 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = SystemTime::now()
+    let current = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
     format!("Last synced {}", ui::format::relative(current - time))
@@ -2997,12 +2997,7 @@ mod search_screen_tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use taffy::prelude::*;
-
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
     use ui::widget::Widget;
-    use vello::Scene;
-    use vello::kurbo::{Affine, Point};
     use vello_encoding::DrawTag;
 
     /// A tiny valid PNG (4×4 opaque green) so a test can seed the image store
@@ -3100,42 +3095,15 @@ mod search_screen_tests {
             let palette_query = ui::LocalState::new(model.palette_query.clone());
             let theme = Theme::dark();
             let bus = crate::action::new_bus();
-            let mut palette =
+            let palette =
                 command_palette(&model, &theme, &bus, &palette_query).expect("open palette");
-            let (w, h) = (560.0f32, 720.0f32);
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let child = palette.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: length(w),
-                            height: length(h),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .expect("root layout node");
-            let mut tr = TextRenderer::new();
-            let map = node_map.clone();
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(w),
-                        height: AvailableSpace::Definite(h),
-                    },
-                    |known, available, node_id, _, _| {
-                        map.get(&node_id).map_or(taffy::Size::ZERO, |ptr| unsafe {
-                            (**ptr).measure(known, available, &mut tr)
-                        })
-                    },
-                )
-                .expect("palette layout");
-            palette.apply_layout(&taffy, child, Point::ORIGIN);
-            let card = rect_for_id(&palette, "palette_card").expect("palette card rect");
+            let palette = ui::headless::Framed::new(
+                ui::State::new(),
+                palette,
+                ui::headless::viewport((560.0, 720.0)),
+                theme,
+            );
+            let card = rect_for_id(&*palette, "palette_card").expect("palette card rect");
             assert!(
                 card.x0 >= 16.0 && card.x1 <= 544.0,
                 "card has safe side insets: {card:?}"
@@ -3175,62 +3143,18 @@ mod search_screen_tests {
             let theme = Theme::dark();
             let bus = crate::action::new_bus();
             let imgs = Imgs(Some(&store));
-            let mut screen = search(&model, &theme, &bus, imgs, "q");
+            let screen = search(&model, &theme, &bus, imgs, "q");
 
-            // Lay the real screen out in a definite viewport, then draw it.
-            let (w, h) = (1280.0f32, 800.0f32);
-            let mut taffy: TaffyTree<()> = TaffyTree::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut tr = TextRenderer::new();
-            let child = screen.build_layout(&mut taffy, &theme, &mut node_map);
-            let root = taffy
-                .new_with_children(
-                    Style {
-                        size: Size {
-                            width: length(w),
-                            height: length(h),
-                        },
-                        ..Default::default()
-                    },
-                    &[child],
-                )
-                .unwrap();
-            {
-                let map = node_map.clone();
-                let trr = &mut tr;
-                taffy
-                    .compute_layout_with_measure(
-                        root,
-                        taffy::Size {
-                            width: AvailableSpace::Definite(w),
-                            height: AvailableSpace::Definite(h),
-                        },
-                        |known, available, node_id, _, _| {
-                            if let Some(&ptr) = map.get(&node_id) {
-                                unsafe { (*ptr).measure(known, available, trr) }
-                            } else {
-                                taffy::Size::ZERO
-                            }
-                        },
-                    )
-                    .unwrap();
-            }
-            screen.apply_layout(&taffy, child, Point::ORIGIN);
-
-            // The thumbnail resolves its decoded image lazily in `sync` (from the
-            // pre-warmed store), so run it — the real per-frame path — before drawing.
-            let mut doc = automerge::AutoCommit::new();
-            let root_obj = automerge::ROOT;
-            screen.sync(&mut doc, &root_obj);
-
-            let mut scene = Scene::new();
-            screen.draw(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
-                &PresenceCtx::empty(),
+            // Lay the real screen out in a definite viewport, then draw it. The
+            // thumbnail resolves its decoded image lazily in `sync` (from the
+            // pre-warmed store), which the production frame runs before drawing.
+            let screen = ui::headless::Framed::new(
+                ui::State::new(),
+                screen,
+                ui::headless::viewport((1280.0, 800.0)),
+                theme,
             );
+            let scene = ui::headless::Framed::harness(&screen).scene();
             let images = scene
                 .encoding()
                 .draw_tags

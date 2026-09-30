@@ -30,7 +30,7 @@ use tilo_actions::{
 #[derive(Default)]
 pub struct ActionHost {
     /// Drained via
-    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action)
+    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action)
     /// to record exactly one undo boundary bracketing the action(s).
     commit_before: Option<Vec<ChangeHash>>,
     /// Lets a test prove an affordance and the Ctrl+K
@@ -240,7 +240,7 @@ impl ActionHost {
 
     /// Rising-edge: reading clears it, so it returns `Some` once per
     /// dispatched batch, then `None`. Wire this straight to
-    /// [`Widget::take_committed_action`](crate::widget::Widget::take_committed_action).
+    /// [`CommittedActions::take_committed_action`](crate::undo::CommittedActions::take_committed_action).
     pub fn take_committed(&mut self) -> Option<Vec<ChangeHash>> {
         self.commit_before.take()
     }

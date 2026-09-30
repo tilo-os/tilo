@@ -6,14 +6,14 @@
 //! ```text
 //! root
 //! └── "wb" (Map)
-//!     ├── "active" (Int)              # active sheet index
 //!     └── "sheets" (List)
 //!          └── [i] (Map)
 //!              ├── "name"  (Str)
 //!              └── "cells" (Map)      # key "col,row" -> Map
 //!                   └── "<c>,<r>" (Map)
 //!                        ├── "raw" (Str)   # raw input: "=SUM(A1:A3)" or "42"
-//!                        └── "fmt" (Str)   # CellFormat::as_str()
+//!                        ├── "fmt" (Str)   # CellFormat::as_str()
+//!                        └── "b"   (Bool)  # bold text; absent means regular
 //! ```
 //!
 //! Cells are keyed by a `"col,row"` string (zero-based) rather than A1 so
@@ -34,6 +34,8 @@ pub struct SheetSnapshot {
     pub raw: std::collections::HashMap<Addr, String>,
     /// per-cell format (only present when not General)
     pub fmt: std::collections::HashMap<Addr, CellFormat>,
+    /// cells whose text is bold
+    pub bold: std::collections::HashSet<Addr>,
 }
 
 /// The first chart set deliberately stays compact: it is sufficient for the
@@ -225,19 +227,6 @@ impl SheetsDoc {
         Self::sheet_count(doc) == 0
     }
 
-    /// Active sheet index (clamped to a valid sheet when out of range).
-    pub fn active_index(doc: &mut AutoCommit) -> usize {
-        let wb = Self::wb_map(doc);
-        let raw = read_i64_coerced(doc, &wb, "active").unwrap_or(0);
-        let count = Self::sheet_count(doc).max(1);
-        (raw.max(0) as usize).min(count - 1)
-    }
-
-    pub fn set_active_index(doc: &mut AutoCommit, idx: usize) {
-        let wb = Self::wb_map(doc);
-        let _ = doc.put(&wb, "active", idx as i64);
-    }
-
     /// The Map `ObjId` for sheet `idx`, if it exists.
     fn sheet_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheets = Self::sheets_list(doc);
@@ -248,9 +237,8 @@ impl SheetsDoc {
     }
 
     /// Stable logical identity for history, search and the action palette.
-    /// Legacy sheets fall back to their Automerge object id; structural moves
-    /// copy that value into the replacement map so identity survives index and
-    /// name changes.
+    /// Structural moves copy it into the replacement map so identity survives
+    /// index and name changes.
     pub fn sheet_resource_id(doc: &AutoCommit, idx: usize) -> Option<String> {
         let Ok(Some((Value::Object(ObjType::Map), wb))) = doc.get(&ROOT, "wb") else {
             return None;
@@ -261,7 +249,7 @@ impl SheetsDoc {
         let Ok(Some((Value::Object(ObjType::Map), sheet))) = doc.get(&sheets, idx) else {
             return None;
         };
-        Some(read_str(doc, &sheet, "resource_id").unwrap_or_else(|| sheet.to_string()))
+        read_str(doc, &sheet, "resource_id")
     }
 
     /// Resolve a durable sheet identity to its current list position. This is
@@ -293,7 +281,7 @@ impl SheetsDoc {
     }
 
     /// Append a sheet carrying the action-authored durable identity. Empty is
-    /// reserved for legacy local seeding, which retains the object-id fallback.
+    /// stores the new sheet's own object id, for local seeding.
     pub fn add_sheet_with_id(doc: &mut AutoCommit, name: &str, resource_id: &str) -> usize {
         let sheets = Self::sheets_list(doc);
         let idx = doc.length(&sheets);
@@ -385,6 +373,9 @@ impl SheetsDoc {
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, new_idx, *addr, *fmt);
         }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, new_idx, *addr, true);
+        }
         Self::copy_annotations(doc, idx, new_idx);
         if let Some(c) = color {
             Self::set_sheet_color(doc, new_idx, Some(c));
@@ -418,6 +409,9 @@ impl SheetsDoc {
         }
         for (addr, fmt) in &snap.fmt {
             Self::set_cell_format(doc, insert_at, *addr, *fmt);
+        }
+        for addr in &snap.bold {
+            Self::set_cell_bold(doc, insert_at, *addr, true);
         }
         for chart in charts {
             Self::put_chart(doc, insert_at, &chart);
@@ -487,7 +481,8 @@ impl SheetsDoc {
         if raw.is_empty() {
             // Keep any format but clear the value; if both gone, delete.
             if let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) {
-                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)));
+                let has_fmt = matches!(doc.get(&cell, "fmt"), Ok(Some(_)))
+                    || matches!(doc.get(&cell, "b"), Ok(Some(_)));
                 if has_fmt {
                     let _ = doc.put(&cell, "raw", "");
                 } else {
@@ -514,6 +509,33 @@ impl SheetsDoc {
             _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
         };
         let _ = doc.put(&cell, "fmt", fmt.as_str());
+    }
+
+    /// Make a cell's text bold, or regular again. A regular cell stores no
+    /// flag, and one left with neither value nor format disappears.
+    pub fn set_cell_bold(doc: &mut AutoCommit, idx: usize, addr: Addr, bold: bool) {
+        let Some(cells) = Self::cells_map(doc, idx) else {
+            return;
+        };
+        let key = Self::cell_key(addr);
+        if bold {
+            let cell = match doc.get(&cells, key.as_str()) {
+                Ok(Some((Value::Object(ObjType::Map), id))) => id,
+                _ => Self::put_object_or_panic(doc, &cells, key.as_str(), ObjType::Map),
+            };
+            let _ = doc.put(&cell, "b", true);
+            return;
+        }
+        let Ok(Some((Value::Object(ObjType::Map), cell))) = doc.get(&cells, key.as_str()) else {
+            return;
+        };
+        if matches!(doc.get(&cell, "b"), Ok(Some(_))) {
+            let _ = doc.delete(&cell, "b");
+        }
+        let empty_raw = read_str(doc, &cell, "raw").is_none_or(|raw| raw.is_empty());
+        if empty_raw && !matches!(doc.get(&cell, "fmt"), Ok(Some(_))) {
+            let _ = doc.delete(&cells, key.as_str());
+        }
     }
 
     /// Get-or-create the per-document `settings` Map under `wb`.
@@ -761,29 +783,6 @@ impl SheetsDoc {
                 ) else {
                     continue;
                 };
-                let mut replies = Vec::new();
-                // Legacy nested replies remain materialised; no migration write
-                // is required merely to read an older collaborative document.
-                if let Ok(Some((Value::Object(ObjType::Map), reply_map))) =
-                    doc.get(&object, "replies")
-                {
-                    for reply_id in doc.keys(&reply_map) {
-                        if let Ok(Some((Value::Object(ObjType::Map), reply))) =
-                            doc.get(&reply_map, reply_id.as_str())
-                            && let (Some(author), Some(body)) = (
-                                read_str(doc, &reply, "author"),
-                                read_str(doc, &reply, "body"),
-                            )
-                        {
-                            replies.push(CommentReply {
-                                id: reply_id,
-                                author,
-                                body,
-                            });
-                        }
-                    }
-                }
-                replies.sort_by(|a, b| a.id.cmp(&b.id));
                 out.push(CommentThread {
                     id,
                     start: (c0, r0),
@@ -791,12 +790,12 @@ impl SheetsDoc {
                     author,
                     body,
                     resolved,
-                    replies,
+                    replies: Vec::new(),
                 });
             }
         }
-        // Current-schema replies are independently-addressable records under
-        // the eager root. Read every conflicting legacy migration branch.
+        // Replies are independently-addressable records under
+        // the eager root. Read every conflicting branch.
         let mut seen_replies = std::collections::HashSet::new();
         for reply_map in Self::annotation_maps(doc, idx, "comment_replies") {
             for reply_id in doc.keys(&reply_map) {
@@ -915,6 +914,9 @@ impl SheetsDoc {
                     snap.fmt.insert(addr, f);
                 }
             }
+            if read_bool(doc, &cell, "b") == Some(true) {
+                snap.bold.insert(addr);
+            }
         }
         snap
     }
@@ -1014,15 +1016,13 @@ mod tests {
 
     /// Multiple sheets, insert/delete, duplicate and move.
     #[test]
-    fn sheet_structure_edits_keep_cells_and_active_sheet() {
-        // Case `multiple_sheets_and_active`.
+    fn sheet_structure_edits_keep_cells() {
+        // Case `multiple_sheets`.
         {
             let mut doc = AutoCommit::new();
             SheetsDoc::add_sheet(&mut doc, "One");
             SheetsDoc::add_sheet(&mut doc, "Two");
             assert_eq!(SheetsDoc::sheet_count(&mut doc), 2);
-            SheetsDoc::set_active_index(&mut doc, 1);
-            assert_eq!(SheetsDoc::active_index(&mut doc), 1);
             assert_eq!(SheetsDoc::sheet_names(&mut doc), vec!["One", "Two"]);
         }
 

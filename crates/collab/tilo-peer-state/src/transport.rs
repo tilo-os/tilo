@@ -24,10 +24,15 @@ pub fn retention(msg: &NeighbourMsg, shell_checkpoint: bool) -> Option<([u8; 32]
             ..
         } => {
             let route = format!("app\0{app_id}\0{record_id}");
-            let mutation = collab_types::DocumentMutation::decode(&envelope.payload).ok()?;
-            let retention = match mutation {
-                collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
-                collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+            // A host cannot tell a sealed snapshot from a sealed increment: it
+            // keeps every sealed write after the record's last checkpoint.
+            let retention = if envelope.encryption.is_some() {
+                Retention::Delta
+            } else {
+                match collab_types::DocumentMutation::decode(&envelope.payload).ok()? {
+                    collab_types::DocumentMutation::Snapshot(_) => Retention::Checkpoint,
+                    collab_types::DocumentMutation::Incremental(_) => Retention::Delta,
+                }
             };
             return Some((*blake3::hash(route.as_bytes()).as_bytes(), retention));
         }

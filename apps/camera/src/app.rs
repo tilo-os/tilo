@@ -19,10 +19,11 @@ use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::mpsc;
-use std::time::{Duration, Instant};
 #[cfg(test)]
 use tilo_actions::EncodedAction;
 use tilo_clock::unix_now_i64;
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -119,19 +120,19 @@ fn shrink(r: Rect, d: f64) -> Rect {
     Rect::new(r.x0 + d, r.y0 + d, r.x1 - d, r.y1 - d)
 }
 
-const fn scan_color_label(color: os_actions::printing::ScanColor) -> &'static str {
+const fn scan_color_label(color: tilo_capture::scanner::ScanColor) -> &'static str {
     match color {
-        os_actions::printing::ScanColor::Color => "Color",
-        os_actions::printing::ScanColor::Grayscale => "Grayscale",
-        os_actions::printing::ScanColor::LineArt => "Black & white",
+        tilo_capture::scanner::ScanColor::Color => "Color",
+        tilo_capture::scanner::ScanColor::Grayscale => "Grayscale",
+        tilo_capture::scanner::ScanColor::LineArt => "Black & white",
     }
 }
 
-const fn scan_source_label(source: os_actions::printing::ScanSource) -> &'static str {
+const fn scan_source_label(source: tilo_capture::scanner::ScanSource) -> &'static str {
     match source {
-        os_actions::printing::ScanSource::Flatbed => "Flatbed",
-        os_actions::printing::ScanSource::Feeder => "Feeder",
-        os_actions::printing::ScanSource::FeederDuplex => "Duplex feeder",
+        tilo_capture::scanner::ScanSource::Flatbed => "Flatbed",
+        tilo_capture::scanner::ScanSource::Feeder => "Feeder",
+        tilo_capture::scanner::ScanSource::FeederDuplex => "Duplex feeder",
     }
 }
 
@@ -253,7 +254,7 @@ impl OcrLanguage {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct DocumentSettings {
-    scan: os_actions::printing::ScanSettings,
+    scan: tilo_capture::scanner::ScanSettings,
     ocr_language: OcrLanguage,
 }
 
@@ -281,10 +282,10 @@ impl DocumentChoice {
 impl Default for DocumentSettings {
     fn default() -> Self {
         Self {
-            scan: os_actions::printing::ScanSettings {
+            scan: tilo_capture::scanner::ScanSettings {
                 resolution_dpi: 300,
-                color: os_actions::printing::ScanColor::Color,
-                source: os_actions::printing::ScanSource::Flatbed,
+                color: tilo_capture::scanner::ScanColor::Color,
+                source: tilo_capture::scanner::ScanSource::Flatbed,
             },
             ocr_language: OcrLanguage::English,
         }
@@ -394,7 +395,7 @@ pub struct CameraApp {
     document_choice: Option<DocumentChoice>,
     document_choice_anchors: [Rect; 5],
     document_popover: Popover,
-    scanner_devices: Vec<os_actions::printing::Scanner>,
+    scanner_devices: Vec<tilo_capture::scanner::Scanner>,
     selected_scanner: Option<String>,
     document_save_picker: Option<ui::portal::PortalChannel>,
     scan_image_picker: Option<ui::portal::PortalChannel>,
@@ -496,11 +497,11 @@ impl CameraApp {
 
     fn with(storage: Storage, initial_screen: Screen) -> Self {
         let scanner_devices = match &storage {
-            Storage::Sample => vec![os_actions::printing::Scanner {
+            Storage::Sample => vec![tilo_capture::scanner::Scanner {
                 device: "sample:document-scanner".into(),
                 description: "Document scanner".into(),
             }],
-            Storage::Disk(_) => os_actions::printing::scanners().unwrap_or_default(),
+            Storage::Disk(_) => tilo_capture::scanner::scanners().unwrap_or_default(),
         };
         let selected_scanner = scanner_devices
             .first()
@@ -724,7 +725,7 @@ impl CameraApp {
             return self.fire_shutter();
         }
         self.countdown = Some(Countdown {
-            due: Instant::now() + Duration::from_secs(seconds as u64),
+            due: ui::time::now() + Duration::from_secs(seconds as u64),
             mode: self.mode,
         });
         self.toast = Some(format!("Timer set for {seconds} seconds"));
@@ -750,7 +751,7 @@ impl CameraApp {
         let Some(countdown) = self.countdown.as_ref() else {
             return;
         };
-        if Instant::now() < countdown.due {
+        if ui::time::now() < countdown.due {
             self.dirty = true;
             return;
         }
@@ -810,7 +811,7 @@ impl CameraApp {
             return Err("Camera job counter exhausted; restart Camera".into());
         };
         let dir = match &self.storage {
-            Storage::Disk(dir) => Some(dir.clone()),
+            Storage::Disk(dir) => native_paths().then(|| dir.clone()),
             Storage::Sample => None,
         };
         // AVI muxing can copy tens of MiB, including when screenshots/tests
@@ -879,6 +880,28 @@ impl CameraApp {
             }
         }
         Vec::new()
+    }
+
+    /// Whether a real camera is open and delivering the viewfinder.
+    fn viewfinder_live(&self) -> bool {
+        #[cfg(feature = "live-capture")]
+        {
+            self.camera.is_some()
+        }
+        #[cfg(not(feature = "live-capture"))]
+        {
+            false
+        }
+    }
+
+    /// Whether the live viewfinder has no camera yet on a platform whose
+    /// devices appear only after the user is asked.
+    fn awaiting_camera(&self) -> bool {
+        matches!(self.storage, Storage::Disk(_))
+            && self.screen == Screen::Camera
+            && !self.viewfinder_live()
+            && tilo_capture::availability(tilo_capture::Feature::Camera)
+                == tilo_capture::Availability::Prompt
     }
 
     fn viewfinder_seed(facing: Facing) -> u8 {
@@ -1267,7 +1290,7 @@ impl CameraApp {
     /// replays byte-identically on peers), exactly as the palette does. The doc
     /// heads captured just before the first action of the event are stashed so the
     /// host records **one** undo boundary bracketing it
-    /// ([`ui::widget::Widget::take_committed_action`]).
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)).
     fn perform_action(&mut self, doc: &mut AutoCommit, action: &crate::actions::CameraAction) {
         if let Err(error) = self.try_perform_action(doc, action) {
             self.toast = Some(format!("Couldn't save change: {error}"));
@@ -1461,18 +1484,16 @@ impl CameraApp {
                 self.document_job = Some(receiver);
                 self.document_job_kind = Some(DocumentJobKind::Capture);
                 let settings = self.document_settings.scan;
-                let spawn = std::thread::Builder::new()
-                    .name("camera-document-capture".into())
-                    .spawn(move || {
-                        let result = os_actions::printing::scan_page(&scanner_device, settings)
-                            .and_then(|bytes| {
-                                image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
-                                    .map_err(|error| {
-                                        format!("scanner returned an invalid PNG: {error}")
-                                    })
-                            });
-                        let _ = sender.send(DocumentJobResult::Capture(result));
-                    });
+                let spawn = ui::rt::spawn_thread("camera-document-capture", move || {
+                    let result = tilo_capture::scanner::scan_page(&scanner_device, settings)
+                        .and_then(|bytes| {
+                            image::load_from_memory_with_format(&bytes, image::ImageFormat::Png)
+                                .map_err(|error| {
+                                    format!("scanner returned an invalid PNG: {error}")
+                                })
+                        });
+                    let _ = sender.send(DocumentJobResult::Capture(result));
+                });
                 if let Err(error) = spawn {
                     self.document_job = None;
                     self.document_job_kind = None;
@@ -1527,18 +1548,18 @@ impl CameraApp {
                 "Scan color",
                 &["Color", "Grayscale", "Black & white"],
                 match self.document_settings.scan.color {
-                    os_actions::printing::ScanColor::Color => 0,
-                    os_actions::printing::ScanColor::Grayscale => 1,
-                    os_actions::printing::ScanColor::LineArt => 2,
+                    tilo_capture::scanner::ScanColor::Color => 0,
+                    tilo_capture::scanner::ScanColor::Grayscale => 1,
+                    tilo_capture::scanner::ScanColor::LineArt => 2,
                 },
             ),
             DocumentChoice::Source => (
                 "Paper source",
                 &["Flatbed", "Feeder", "Duplex feeder"],
                 match self.document_settings.scan.source {
-                    os_actions::printing::ScanSource::Flatbed => 0,
-                    os_actions::printing::ScanSource::Feeder => 1,
-                    os_actions::printing::ScanSource::FeederDuplex => 2,
+                    tilo_capture::scanner::ScanSource::Flatbed => 0,
+                    tilo_capture::scanner::ScanSource::Feeder => 1,
+                    tilo_capture::scanner::ScanSource::FeederDuplex => 2,
                 },
             ),
             DocumentChoice::Language => (
@@ -1579,9 +1600,9 @@ impl CameraApp {
             }
             Some(DocumentChoice::Color) => {
                 if let Some(value) = [
-                    os_actions::printing::ScanColor::Color,
-                    os_actions::printing::ScanColor::Grayscale,
-                    os_actions::printing::ScanColor::LineArt,
+                    tilo_capture::scanner::ScanColor::Color,
+                    tilo_capture::scanner::ScanColor::Grayscale,
+                    tilo_capture::scanner::ScanColor::LineArt,
                 ]
                 .get(index)
                 {
@@ -1590,9 +1611,9 @@ impl CameraApp {
             }
             Some(DocumentChoice::Source) => {
                 if let Some(value) = [
-                    os_actions::printing::ScanSource::Flatbed,
-                    os_actions::printing::ScanSource::Feeder,
-                    os_actions::printing::ScanSource::FeederDuplex,
+                    tilo_capture::scanner::ScanSource::Flatbed,
+                    tilo_capture::scanner::ScanSource::Feeder,
+                    tilo_capture::scanner::ScanSource::FeederDuplex,
                 ]
                 .get(index)
                 {
@@ -1648,15 +1669,13 @@ impl CameraApp {
         self.document_job = Some(receiver);
         self.document_job_kind = Some(DocumentJobKind::Recognize);
         let language = self.document_settings.ocr_language.code();
-        let spawn = std::thread::Builder::new()
-            .name("camera-document-ocr".into())
-            .spawn(move || {
-                let result = tilo_ocr::recognize_detailed(&image, language);
-                let _ = sender.send(DocumentJobResult::Recognize {
-                    page: index,
-                    result,
-                });
+        let spawn = ui::rt::spawn_thread("camera-document-ocr", move || {
+            let result = tilo_ocr::recognize_detailed(&image, language);
+            let _ = sender.send(DocumentJobResult::Recognize {
+                page: index,
+                result,
             });
+        });
         if spawn.is_err() {
             self.document_job = None;
             self.document_job_kind = None;
@@ -1874,7 +1893,7 @@ impl CameraApp {
                     path.set_extension("pdf");
                 }
                 self.toast = Some(
-                    match std::fs::write(&path, self.document_scan.searchable_pdf()) {
+                    match crate::files::save(&path, &self.document_scan.searchable_pdf()) {
                         Ok(()) => format!(
                             "Saved {}",
                             path.file_name()
@@ -2151,7 +2170,7 @@ impl CameraApp {
                 self.worker.submit(crate::worker::PhotoJob {
                     invocation,
                     generation,
-                    dir: dir.clone(),
+                    dir: native_paths().then(|| dir.clone()),
                     frame,
                     format: self.settings.photo_format,
                     facing: self.facing,
@@ -2434,17 +2453,7 @@ impl CameraApp {
                         self.camera_issue = None;
                     }
                     Err(error) => {
-                        let message = error.to_string().to_ascii_lowercase();
-                        self.camera_issue = Some(
-                            if message.contains("permission")
-                                || message.contains("not permitted")
-                                || message.contains("access denied")
-                            {
-                                CameraIssue::PermissionDenied
-                            } else {
-                                CameraIssue::StartFailed
-                            },
-                        );
+                        self.camera_issue = Some(camera_issue_for(error.downcast_ref()));
                     }
                 }
             } else if std::env::var_os("CAMERA_SHOT_CAMERA_STATE").is_none() {
@@ -2453,8 +2462,19 @@ impl CameraApp {
             self.cam_config = want;
         }
 
-        if let Some(cam) = &self.camera
-            && let Some(f) = cam.frames.take_latest()
+        // A start the user refused, or a camera that went away, ends the
+        // session; the settings key stays so a new request is not made every
+        // frame.
+        if let Some(error) = self
+            .camera
+            .as_mut()
+            .and_then(crate::capture::Capture::failure)
+        {
+            self.camera = None;
+            self.camera_issue = Some(camera_issue_for(Some(&error)));
+        }
+        if let Some(cam) = &mut self.camera
+            && let Some(f) = cam.take_latest()
         {
             let _ = self.push_camera_frame(FrameBuf {
                 rgba: f.rgba,
@@ -2471,6 +2491,24 @@ fn cycle<T: Copy + PartialEq>(all: &[T], cur: T) -> T {
     // back to `cur` rather than panicking if that ever stops holding.
     let next = (i + 1) % all.len().max(1);
     all.get(next).copied().unwrap_or(cur)
+}
+
+/// The empty-state category for a capture that could not start.
+#[cfg(feature = "live-capture")]
+/// Whether captures can be projected into a native directory here; a
+/// browser page keeps them only in the content store.
+fn native_paths() -> bool {
+    matches!(
+        tilo_files::availability(tilo_files::Feature::NativePaths),
+        tilo_files::Availability::Available
+    )
+}
+
+fn camera_issue_for(error: Option<&tilo_capture::CaptureError>) -> CameraIssue {
+    match error {
+        Some(tilo_capture::CaptureError::PermissionDenied) => CameraIssue::PermissionDenied,
+        _ => CameraIssue::StartFailed,
+    }
 }
 
 /// The frame size to request from a webcam for a chosen resolution preset.
@@ -2548,178 +2586,43 @@ fn sample_recent_capture() -> Capture {
 }
 
 impl Widget for CameraApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::CAMERA_OPERATION_TYPE]
     }
 
-    /// Publish capture resources so the host's Ctrl+K action palette
-    /// scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        // Photos and Video Player are destinations, not Camera resources.
-        // Their typed launch operation is attached only to the one current
-        // capture resource, so search and agents cannot mistake Camera for a
-        // second media library.
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.photos_browse
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
-            .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        // The visible recent-capture tile is one control whose canonical
-        // cross-app destination depends on the current capture type. Preserve
-        // that one semantic identity while attaching the same emitter the
-        // pointer path uses; do not inventory two invisible destination
-        // controls.
-        let recent_handoff = self.captures.first().and_then(|capture| {
-            if capture.is_video() {
-                self.video_handoff.as_ref()
-            } else {
-                self.photos_handoff.as_ref()
-            }
-        });
-        if let Some(handoff) = recent_handoff
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "camera.open-recent-capture")
-        {
-            *binding = handoff.metadata("camera.open-recent-capture");
-        }
-        if let Some(handoff) = self.photos_browse.as_ref()
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "camera.open-photos")
-        {
-            *binding = handoff.metadata("camera.open-photos");
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
+    fn start_operation(
         &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(handoff) = self.photos_handoff.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
-        if let Some(handoff) = self.photos_browse.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
-        if let Some(handoff) = self.video_handoff.as_mut() {
-            handoff.refresh_availability(allowed);
-        }
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation)?;
-        Ok(true)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &mut AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match operation {
-            crate::actions::CameraOperation::Capture => {
-                self.capture(Some(invocation))?;
-                if matches!(self.storage, Storage::Disk(_)) {
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-            }
-            crate::actions::CameraOperation::ToggleRecording if self.is_recording() => {
-                self.stop_recording(Some(invocation))?;
-                // Both live and hermetic paths finalize through the bounded
-                // worker, so neither may report completion before the clip is
-                // muxed, verified, and canonically registered.
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ImportCodeImage => {
-                self.request_scan_image();
-                if self.scan_image_picker.is_none() {
-                    return Err("The image picker could not be opened".into());
-                }
-                self.pending_scan_import = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::CaptureDocumentPage => {
-                let pages_before = self.document_scan.pages.len();
-                self.capture_document_page();
-                if self.document_job.is_some() {
-                    self.pending_document_job = Some(invocation);
-                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-                }
-                if self.document_scan.pages.len() == pages_before {
-                    return Err("No document scanner is available".into());
-                }
-            }
-            crate::actions::CameraOperation::RecognizeDocumentPage => {
-                self.recognize_document_page();
-                if self.document_job.is_none() {
-                    return Err("Text recognition could not start".into());
-                }
-                self.pending_document_job = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            crate::actions::CameraOperation::ExportDocument => {
-                self.request_document_export();
-                if self.document_save_picker.is_none() {
-                    return Err("Document export could not start".into());
-                }
-                self.pending_document_export = Some(invocation);
-                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
-            }
-            operation => self.perform_resource_operation(operation)?,
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its metadata action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2784,7 +2687,8 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "sync is the one ordered document/lifecycle boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.poll_document_job();
         self.poll_document_export();
         self.poll_scan_image_picker();
@@ -2805,8 +2709,10 @@ impl Widget for CameraApp {
             // A cancelled/superseded agent invocation owns no durable result.
             // Local shutter jobs have no invocation and remain valid.
             if result.invocation.is_some() && terminal.is_none() {
-                if let Ok(saved) = result.result {
-                    let _ = std::fs::remove_file(saved.local_path);
+                if let Ok(saved) = result.result
+                    && let Some(path) = &saved.local_path
+                {
+                    crate::files::remove(path);
                 }
                 continue;
             }
@@ -2824,7 +2730,9 @@ impl Widget for CameraApp {
                         facing: saved.facing,
                     };
                     if let Err(error) = self.try_perform_action(state, &action) {
-                        let _ = std::fs::remove_file(&saved.local_path);
+                        if let Some(path) = &saved.local_path {
+                            crate::files::remove(path);
+                        }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
                             self.completed_operations.insert(
@@ -2890,7 +2798,7 @@ impl Widget for CameraApp {
                 if let Ok(saved) = result.result
                     && let Some(path) = saved.local_path
                 {
-                    let _ = std::fs::remove_file(path);
+                    crate::files::remove(&path);
                 }
                 continue;
             }
@@ -2909,7 +2817,7 @@ impl Widget for CameraApp {
                     };
                     if let Err(error) = self.try_perform_action(state, &action) {
                         if let Some(path) = &saved.local_path {
-                            let _ = std::fs::remove_file(path);
+                            crate::files::remove(path);
                         }
                         self.toast = Some(format!("Save failed: {error}"));
                         if let Some(invocation) = terminal {
@@ -3106,7 +3014,7 @@ impl Widget for CameraApp {
             if std::env::var_os("CAMERA_SHOT_TIMER_RUNNING").is_some() && self.countdown.is_none() {
                 self.settings.timer = Timer::S3;
                 self.countdown = Some(Countdown {
-                    due: Instant::now() + Duration::from_secs(3),
+                    due: ui::time::now() + Duration::from_secs(3),
                     mode: self.mode,
                 });
             }
@@ -3260,33 +3168,12 @@ impl Widget for CameraApp {
         clippy::too_many_lines,
         reason = "the root event router keeps pointer, touch, keyboard, crop, modal, and drawer precedence together so painted and semantic hit-testing cannot diverge"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, TouchPhase};
         use winit::keyboard::{Key, NamedKey};
 
         if self.document_popover.is_open() {
-            self.document_popover.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
+            self.document_popover.handle_event(event, ctx);
             if let Some(index) = self.document_popover.take_selection() {
                 self.apply_document_choice(index);
             }
@@ -3294,14 +3181,15 @@ impl Widget for CameraApp {
             return;
         }
         if let Some(editor) = self.document_crop_editor.as_mut()
-            && editor.handle_event_at(event, scale_factor)
+            && editor.handle_event_at(event, ctx.scale_factor)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.dirty = true;
             }
             WindowEvent::MouseInput {
@@ -3309,14 +3197,14 @@ impl Widget for CameraApp {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.hit(self.last_mouse, state, path) {
-                    *handled = true;
+                if self.hit(self.last_mouse, ctx.state, ctx.path) {
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Touch(touch) => {
                 let point = Point::new(
-                    touch.location.x / scale_factor,
-                    touch.location.y / scale_factor,
+                    touch.location.x / ctx.scale_factor,
+                    touch.location.y / ctx.scale_factor,
                 );
                 match touch.phase {
                     TouchPhase::Started if self.active_touch.is_none() => {
@@ -3333,7 +3221,7 @@ impl Widget for CameraApp {
                                 action,
                                 cancelled: false,
                             });
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Moved => {
@@ -3343,7 +3231,7 @@ impl Widget for CameraApp {
                             if !target.rect.contains(point) {
                                 target.cancelled = true;
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Ended => {
@@ -3357,9 +3245,9 @@ impl Widget for CameraApp {
                                 && !target.cancelled
                                 && target.rect.contains(point)
                             {
-                                self.apply(target.action, state, path);
+                                self.apply(target.action, ctx.state, ctx.path);
                             }
-                            *handled = true;
+                            *ctx.handled = true;
                         }
                     }
                     TouchPhase::Cancelled
@@ -3369,7 +3257,7 @@ impl Widget for CameraApp {
                             .is_some_and(|target| target.id == touch.id) =>
                     {
                         self.active_touch = None;
-                        *handled = true;
+                        *ctx.handled = true;
                     }
                     TouchPhase::Cancelled | TouchPhase::Started => {}
                 }
@@ -3377,13 +3265,13 @@ impl Widget for CameraApp {
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / ctx.scale_factor,
                 };
                 // Wheel up (dy > 0) scrolls toward the top of the content.
                 if self.screen == Screen::Settings {
                     self.settings_scroll = (self.settings_scroll - dy).max(0.0);
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3431,8 +3319,8 @@ impl Widget for CameraApp {
                     _ => None,
                 };
                 if let Some(a) = act {
-                    self.apply(a, state, path);
-                    *handled = true;
+                    self.apply(a, ctx.state, ctx.path);
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -3486,9 +3374,10 @@ impl Widget for CameraApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(editor) = self.document_crop_editor.as_mut()
             && editor.perform_semantic_action(target, action, state, path)
         {
@@ -3517,14 +3406,21 @@ impl Widget for CameraApp {
         // it advances the elapsed indicator and drains the real camera worker.
         // Reduced-motion users receive the same capture correctness through a
         // low-frequency wake deadline below, without a continuous UI loop.
-        (self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced
+        // A live viewfinder is content, not motion: it runs regardless.
+        self.viewfinder_live()
+            || ((self.recording.is_some() || self.countdown.is_some()) && !self.motion_reduced)
     }
     fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.awaiting_camera() {
+            // Where access is prompted (the page, macOS) devices appear
+            // asynchronously; look again rather than wait for input.
+            return Some(ui::time::now() + Duration::from_secs(1));
+        }
         if self.motion_reduced && (self.recording.is_some() || self.countdown.is_some()) {
             // The visible counter changes once per second; four wakeups per
             // second keep worker settlement responsive without recreating a
             // 30 fps decorative frame loop for reduced-motion users.
-            Some(Instant::now() + Duration::from_millis(250))
+            Some(ui::time::now() + Duration::from_millis(250))
         } else {
             None
         }
@@ -3547,6 +3443,183 @@ impl Widget for CameraApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, t, tr, theme, presence);
+    }
+}
+
+impl ui::search::capability::SearchSource for CameraApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for CameraApp {
+    /// Publish capture resources so the host's Ctrl+K action palette
+    /// scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        // Photos and Video Player are destinations, not Camera resources.
+        // Their typed launch operation is attached only to the one current
+        // capture resource, so search and agents cannot mistake Camera for a
+        // second media library.
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
+    }
+}
+
+impl ui::widget::controls::ActionControls for CameraApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.photos_browse
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.photos_handoff.as_mut().and_then(ActionEmitter::take))
+            .or_else(|| self.video_handoff.as_mut().and_then(ActionEmitter::take))
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        // The visible recent-capture tile is one control whose canonical
+        // cross-app destination depends on the current capture type. Preserve
+        // that one semantic identity while attaching the same emitter the
+        // pointer path uses; do not inventory two invisible destination
+        // controls.
+        let recent_handoff = self.captures.first().and_then(|capture| {
+            if capture.is_video() {
+                self.video_handoff.as_ref()
+            } else {
+                self.photos_handoff.as_ref()
+            }
+        });
+        if let Some(handoff) = recent_handoff
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-recent-capture")
+        {
+            *binding = handoff.metadata("camera.open-recent-capture");
+        }
+        if let Some(handoff) = self.photos_browse.as_ref()
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "camera.open-photos")
+        {
+            *binding = handoff.metadata("camera.open-photos");
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(handoff) = self.photos_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.photos_browse.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+        if let Some(handoff) = self.video_handoff.as_mut() {
+            handoff.refresh_availability(allowed);
+        }
+    }
+}
+
+impl ui::undo::CommittedActions for CameraApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its metadata action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl CameraApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation)?;
+        Ok(true)
+    }
+
+    fn admit_resource_operation_with_document(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &mut AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match operation {
+            crate::actions::CameraOperation::Capture => {
+                self.capture(Some(invocation))?;
+                if matches!(self.storage, Storage::Disk(_)) {
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+            }
+            crate::actions::CameraOperation::ToggleRecording if self.is_recording() => {
+                self.stop_recording(Some(invocation))?;
+                // Both live and hermetic paths finalize through the bounded
+                // worker, so neither may report completion before the clip is
+                // muxed, verified, and canonically registered.
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::ImportCodeImage => {
+                self.request_scan_image();
+                if self.scan_image_picker.is_none() {
+                    return Err("The image picker could not be opened".into());
+                }
+                self.pending_scan_import = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::CaptureDocumentPage => {
+                let pages_before = self.document_scan.pages.len();
+                self.capture_document_page();
+                if self.document_job.is_some() {
+                    self.pending_document_job = Some(invocation);
+                    return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+                }
+                if self.document_scan.pages.len() == pages_before {
+                    return Err("No document scanner is available".into());
+                }
+            }
+            crate::actions::CameraOperation::RecognizeDocumentPage => {
+                self.recognize_document_page();
+                if self.document_job.is_none() {
+                    return Err("Text recognition could not start".into());
+                }
+                self.pending_document_job = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            crate::actions::CameraOperation::ExportDocument => {
+                self.request_document_export();
+                if self.document_save_picker.is_none() {
+                    return Err("Document export could not start".into());
+                }
+                self.pending_document_export = Some(invocation);
+                return Ok(Some(ui::widget::ResourceOperationStart::Accepted));
+            }
+            operation => self.perform_resource_operation(operation)?,
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+            tilo_actions::ActionOutput::default(),
+        )))
     }
 }
 
@@ -4714,7 +4787,7 @@ impl CameraApp {
         let Some(countdown) = self.countdown.as_ref() else {
             return;
         };
-        let duration = countdown.due.saturating_duration_since(Instant::now());
+        let duration = countdown.due.saturating_duration_since(ui::time::now());
         let remaining = (duration.as_secs() + u64::from(duration.subsec_nanos() != 0)).max(1);
         let label = format!("{remaining}  ·  Tap shutter to cancel");
         let tw = f64::from(p::text_w(tr, &label, 12.5));
@@ -4793,17 +4866,16 @@ impl CameraApp {
         let request = match (&cap.path, media) {
             (Some(path), _) => {
                 let key = address_key.or_else(|| {
-                    let meta = std::fs::metadata(path).ok()?;
+                    let meta = crate::files::metadata(path)?;
                     let mtime_ms = meta
-                        .modified()
-                        .ok()?
-                        .duration_since(std::time::UNIX_EPOCH)
+                        .modified
+                        .duration_since(ui::time::UNIX_EPOCH)
                         .ok()?
                         .as_millis();
                     Some(thumbnail::ThumbKey::of_path_meta(
                         path,
                         u64::try_from(mtime_ms).unwrap_or(u64::MAX),
-                        meta.len(),
+                        meta.len,
                         size,
                     ))
                 });
@@ -5401,10 +5473,6 @@ impl CameraApp {
 
     /// A compact floating glass header (title + subtitle) used as an overlay
     /// label on the scanner's edge-to-edge feed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "paint helpers receive the shared scene, text, theme, geometry, and copy explicitly"
-    )]
     fn draw_glass_header(
         scene: &mut Scene,
         t: Affine,
@@ -6218,12 +6286,6 @@ impl CameraApp {
 
     /// Capture group: resolution, photo format, HDR, self-timer. Returns the
     /// y coordinate the next group should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_capture_group(
         &mut self,
         scene: &mut Scene,
@@ -6290,12 +6352,6 @@ impl CameraApp {
 
     /// Composition group: grid, level guide, mirror front camera. Returns the
     /// y coordinate the next group should start at.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_composition_group(
         &mut self,
         scene: &mut Scene,
@@ -6352,12 +6408,6 @@ impl CameraApp {
     }
 
     /// Privacy & camera group: location tags, default camera.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the drawing context plus the group's column geometry (x0, y, colw), shared \
-                  by every settings group; bundling them would only re-create this argument \
-                  list as a throwaway struct"
-    )]
     fn draw_settings_privacy_group(
         &mut self,
         scene: &mut Scene,
@@ -6644,6 +6694,7 @@ impl CameraApp {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ui::headless::{Framed, viewport};
 
     fn sample_app() -> (CameraApp, AutoCommit, ObjId) {
         let mut app = CameraApp::sample();
@@ -6660,7 +6711,7 @@ mod tests {
         mut done: impl FnMut(&CameraApp) -> bool,
     ) {
         let deadline = tilo_test_env::hang_deadline();
-        while !done(app) && Instant::now() < deadline {
+        while !done(app) && ui::time::now() < deadline {
             app.sync(doc, root);
             std::thread::sleep(Duration::from_millis(1));
         }
@@ -6676,89 +6727,44 @@ mod tests {
         );
     }
 
-    /// Run the full five-pass frame (sync → layout → draw) for `app` at a
-    /// given viewport, on the caller's shared doc. CPU-only; no GPU needed
-    /// (rasterization is skipped — we only exercise layout + scene build).
-    fn render_at(app: &mut CameraApp, doc: &mut AutoCommit, root: &ObjId, w: f32, h: f32) {
-        render_with_theme(app, doc, root, w, h, &Theme::dark());
+    /// Mount `app` over the case's `doc` in the production frame host and run
+    /// one full frame (sync → layout → draw) at a given viewport. CPU-only; no
+    /// GPU needed (rasterization is skipped — we only exercise layout + scene
+    /// build).
+    fn render_at(app: CameraApp, doc: AutoCommit, w: f32, h: f32) -> Framed<CameraApp> {
+        render_with_theme(app, doc, w, h, Theme::dark())
     }
 
     fn render_at_scaled(
-        app: &mut CameraApp,
-        doc: &mut AutoCommit,
-        root: &ObjId,
+        app: CameraApp,
+        doc: AutoCommit,
         w: f32,
         h: f32,
         text_scale: f32,
-    ) {
-        render_with_theme(
-            app,
-            doc,
-            root,
-            w,
-            h,
-            &Theme::dark().with_text_scale(text_scale),
-        );
+    ) -> Framed<CameraApp> {
+        render_with_theme(app, doc, w, h, Theme::dark().with_text_scale(text_scale))
     }
 
     fn render_with_theme(
-        app: &mut CameraApp,
-        doc: &mut AutoCommit,
-        root: &ObjId,
+        app: CameraApp,
+        doc: AutoCommit,
         w: f32,
         h: f32,
-        theme: &Theme,
-    ) {
-        let presence = PresenceCtx::empty();
-        let perms = ui::permissions::PermissionContext::permissive();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(theme.text_scale);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        app.sync(doc, root);
-        let child = app.build_layout(&mut taffy, theme, &mut node_map);
-        let rootn = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(w),
-                        height: Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        {
-            let mm = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    rootn,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(w),
-                        height: taffy::AvailableSpace::Definite(h),
-                    },
-                    |known, avail, id, _, _| {
-                        if let Some(&p) = mm.get(&id) {
-                            unsafe { (*p).measure(known, avail, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
-        }
-        app.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        app.draw_with_presence(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            theme,
-            &presence,
-            &perms,
+        theme: Theme,
+    ) -> Framed<CameraApp> {
+        let mut state = ui::State::new();
+        assert!(
+            state.adopt_doc(doc),
+            "the harness adopts the case's document"
         );
+        Framed::new(state, app, viewport((w, h)), theme)
+    }
+
+    /// Rebuild and run the next frame of an already-rendered app at `w`x`h`.
+    fn rerender_at(app: &mut Framed<CameraApp>, w: f32, h: f32) {
+        Framed::harness_mut(app)
+            .relayout_themed(viewport((w, h)), Theme::dark())
+            .expect("camera frame lays out");
     }
 
     fn wheel(dy: f32) -> WindowEvent {
@@ -6777,14 +6783,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -6813,8 +6821,8 @@ mod tests {
                 "the widest label sizes every segment"
             );
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut doc, root) = sample_app();
-                render_at_scaled(&mut app, &mut doc, &root, 800.0, 900.0, scale);
+                let (app, doc, _root) = sample_app();
+                let app = render_at_scaled(app, doc, 800.0, 900.0, scale);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let tree = app.accessibility().expect("camera has a semantic window");
@@ -6860,9 +6868,9 @@ mod tests {
         }
         // Phase `viewfinder_keeps_the_full_stage_at_wide_narrow_and_large_text_sizes`.
         {
-            let (mut app, mut doc, root) = sample_app();
+            let (app, mut doc, _root) = sample_app();
             let heads = doc.get_heads();
-            render_at(&mut app, &mut doc, &root, 1_100.0, 720.0);
+            let mut app = render_at(app, doc, 1_100.0, 720.0);
             assert_eq!(app.rect.width(), 1_100.0);
             assert!(
                 app.accessibility()
@@ -6872,7 +6880,7 @@ mod tests {
                     .any(|node| { node.action_target.as_deref() == Some("camera.open-photos") })
             );
 
-            render_at(&mut app, &mut doc, &root, 390.0, 720.0);
+            rerender_at(&mut app, 390.0, 720.0);
             assert_eq!(app.rect.width(), 390.0);
             assert!(
                 app.accessibility()
@@ -6881,7 +6889,11 @@ mod tests {
                     .iter()
                     .any(|node| { node.action_target.as_deref() == Some("camera.shutter") })
             );
-            assert_eq!(doc.get_heads(), heads, "viewfinder layout remains local");
+            assert_eq!(
+                Framed::split(&mut app).1.doc.get_heads(),
+                heads,
+                "viewfinder layout remains local"
+            );
         }
         // Phase `viewfinder_capsules_contain_their_labels_at_accessibility_scale`.
         // corrected-review-1 (2026-09-15) camera P2: at 200% text the "12 MP /
@@ -6895,8 +6907,8 @@ mod tests {
             // the painted capsule itself, and centres are always painted centres.
             const TOUCH_MIN: f64 = 44.0;
             for scale in [1.0_f32, 2.0] {
-                let (mut app, mut doc, root) = sample_app();
-                render_at_scaled(&mut app, &mut doc, &root, 1366.0, 768.0, scale);
+                let (app, doc, _root) = sample_app();
+                let app = render_at_scaled(app, doc, 1366.0, 768.0, scale);
                 let mut tr = TextRenderer::new();
                 tr.set_text_scale(scale);
                 let pill_label_h = f64::from(tr.measure("HDR", CTRL_PILL_LABEL_SIZE, None).1);
@@ -6975,15 +6987,8 @@ mod tests {
         }
         // Phase `large_text_mode_switcher_keeps_each_destination_separate`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_with_theme(
-                &mut app,
-                &mut doc,
-                &root,
-                390.0,
-                844.0,
-                &Theme::dark().with_text_scale(2.0),
-            );
+            let (app, doc, _root) = sample_app();
+            let app = render_with_theme(app, doc, 390.0, 844.0, Theme::dark().with_text_scale(2.0));
 
             let tree = app.accessibility().expect("camera accessibility tree");
             let bounds_for = |target| {
@@ -7009,8 +7014,8 @@ mod tests {
         }
         // Phase `compact_mode_switcher_stays_within_the_viewport`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 260.0, 700.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 260.0, 700.0);
             let tree = app.accessibility().expect("camera has a semantic window");
             let mode_controls: Vec<_> = tree
                 .children
@@ -7034,16 +7039,15 @@ mod tests {
             // The breakpoint must be re-derived from the current width every frame:
             // one instance rendered wide THEN narrow must reflow, not stay frozen
             // at the first frame's layout.
-            let mut app = CameraApp::with(Storage::Sample, Screen::Scanner);
-            let mut doc = AutoCommit::new();
-            let root = automerge::ROOT;
+            let app = CameraApp::with(Storage::Sample, Screen::Scanner);
+            let doc = AutoCommit::new();
 
-            render_at(&mut app, &mut doc, &root, 1280.0, 720.0);
+            let mut app = render_at(app, doc, 1280.0, 720.0);
             assert_eq!(app.screen, Screen::Scanner);
             let wide_w = app.scan_view.as_ref().expect("wide viewfinder").0;
             assert!(app.rect.width() >= 1279.0);
 
-            render_at(&mut app, &mut doc, &root, 560.0, 720.0);
+            rerender_at(&mut app, 560.0, 720.0);
             let narrow_w = app.scan_view.as_ref().expect("narrow viewfinder").0;
             assert!(app.rect.width() <= 561.0, "rect tracked the resize");
 
@@ -7169,8 +7173,8 @@ mod tests {
         }
         // Phase `accessibility_exports_named_controls_from_the_painted_hit_map`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 900.0, 700.0);
             let tree = app.accessibility().expect("camera has a semantic window");
             assert_eq!(tree.role, Role::Window);
             assert_eq!(tree.name.as_deref(), Some("Camera"));
@@ -7193,8 +7197,8 @@ mod tests {
         }
         // Phase `capture_switcher_exposes_document_capture_without_a_gallery_surface`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 1_200.0, 760.0);
+            let (app, doc, _root) = sample_app();
+            let app = render_at(app, doc, 1_200.0, 760.0);
             let tree = app
                 .accessibility()
                 .expect("camera has semantic capture controls");
@@ -7211,15 +7215,16 @@ mod tests {
         }
         // Phase `browse_photos_uses_the_typed_owner_handoff_without_a_gallery`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
-            assert!(app.perform_semantic_action(
+            let (app, doc, root) = sample_app();
+            let mut app = render_at(app, doc, 900.0, 700.0);
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.open-photos",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
-            let invocation = Widget::take_control_invocation(&mut app)
+            let invocation = ui::widget::controls::take_control_invocation(&mut *app)
                 .expect("Photos browse emits a typed external invocation");
             assert_eq!(invocation.address.resource, "camera.capture");
             assert_eq!(invocation.address.action, "open-photos");
@@ -7231,13 +7236,14 @@ mod tests {
         }
         // Phase `accessibility_activation_reuses_camera_action_dispatch`.
         {
-            let (mut app, mut doc, root) = sample_app();
-            render_at(&mut app, &mut doc, &root, 900.0, 700.0);
+            let (app, doc, root) = sample_app();
+            let mut app = render_at(app, doc, 900.0, 700.0);
             let before = app.captures[0].id.clone();
-            assert!(app.perform_semantic_action(
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.shutter",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
             assert_eq!(app.captures.len(), 1);
@@ -7255,7 +7261,7 @@ mod tests {
             let root = automerge::ROOT;
             app.sync(&mut doc, &root);
             app.camera_issue = Some(CameraIssue::PermissionDenied);
-            render_at(&mut app, &mut doc, &root, 320.0, 680.0);
+            let mut app = render_at(app, doc, 320.0, 680.0);
             let tree = app.accessibility().expect("camera has semantics");
             let privacy = tree
                 .children
@@ -7271,10 +7277,11 @@ mod tests {
                 let bounds = node.bounds.expect("recovery has bounds");
                 assert!(bounds.x1 - bounds.x0 >= 44.0 && bounds.y1 - bounds.y0 >= 44.0);
             }
-            assert!(app.perform_semantic_action(
+            let (camera, state) = Framed::split(&mut app);
+            assert!(camera.perform_semantic_action(
                 "camera.retry-camera",
                 &A11yAction::Activate,
-                &mut doc,
+                &mut state.doc,
                 &root,
             ));
             // Device discovery is deliberately real. The test host may expose a
@@ -7294,10 +7301,10 @@ mod tests {
             // camera and private imagery.  An explicit permission result must
             // still win over that procedural feed, otherwise visual regressions
             // would accidentally hide the most important recovery state.
-            let (mut app, mut doc, root) = sample_app();
+            let (mut app, doc, _root) = sample_app();
             app.camera_issue = Some(CameraIssue::PermissionDenied);
             assert!(!app.feed_active());
-            render_at(&mut app, &mut doc, &root, 390.0, 844.0);
+            let app = render_at(app, doc, 390.0, 844.0);
             let tree = app.accessibility().expect("camera has semantics");
             assert!(
                 tree.children
@@ -7410,7 +7417,7 @@ mod tests {
             app.apply(Action::Shutter, &mut doc, &root);
             assert!(app.is_counting_down());
             assert_eq!(app.captures.len(), before, "timer does not capture early");
-            app.countdown.as_mut().expect("armed timer").due = Instant::now();
+            app.countdown.as_mut().expect("armed timer").due = ui::time::now();
             app.sync(&mut doc, &root);
             assert!(!app.is_counting_down());
             assert_eq!(app.captures.len(), 1);
@@ -7478,21 +7485,23 @@ mod tests {
             let mut focus = None;
             app.handle_event(
                 &event,
-                1.0,
-                &mods,
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             assert!(handled, "space should be handled on the camera screen");
 
             // Saving is now bounded background work; pump the real sync boundary
             // until it settles rather than assuming UI event delivery did disk IO.
             let deadline = tilo_test_env::hang_deadline();
-            while Instant::now() < deadline
+            while ui::time::now() < deadline
                 && std::fs::read_dir(&dir).map_or(true, |entries| {
                     !entries.flatten().any(|e| {
                         e.path().extension().is_some_and(|x| x == "jpg")
@@ -7675,14 +7684,16 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::Capture).unwrap();
             assert!(matches!(
-                Widget::start_resource_operation_with_document(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CAMERA_OPERATION_TYPE,
-                    &payload,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CAMERA_OPERATION_TYPE,
+                        &payload
+                    ),
                     &mut doc,
-                    &root,
+                    &root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7726,14 +7737,16 @@ mod tests {
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::ToggleRecording)
                 .expect("video operation payload");
             assert!(matches!(
-                Widget::start_resource_operation_with_document(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::CAMERA_OPERATION_TYPE,
-                    &payload,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::CAMERA_OPERATION_TYPE,
+                        &payload
+                    ),
                     &mut doc,
-                    &root,
+                    &root
                 )
                 .expect("accepted video finalization"),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -7764,12 +7777,14 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::CameraOperation::CaptureDocumentPage)
                 .expect("document capture payload");
-            let result = Widget::start_resource_operation_with_document(
+            let result = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::CAMERA_OPERATION_TYPE,
-                &payload,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::CAMERA_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -7850,7 +7865,7 @@ mod tests {
         // Phase `document_capture_never_falls_back_to_a_different_scanner`.
         {
             let (mut app, _doc, _root) = sample_app();
-            app.scanner_devices.push(os_actions::printing::Scanner {
+            app.scanner_devices.push(tilo_capture::scanner::Scanner {
                 device: "sample:office-scanner".into(),
                 description: "Office scanner".into(),
             });
@@ -7934,7 +7949,7 @@ mod tests {
         {
             let (mut app, mut doc, root) = sample_app();
             assert_eq!(app.document_settings, DocumentSettings::default());
-            app.scanner_devices.push(os_actions::printing::Scanner {
+            app.scanner_devices.push(tilo_capture::scanner::Scanner {
                 device: "sample:office-scanner".into(),
                 description: "Office scanner".into(),
             });
@@ -7957,11 +7972,11 @@ mod tests {
             assert_eq!(app.document_settings.scan.resolution_dpi, 600);
             assert_eq!(
                 app.document_settings.scan.color,
-                os_actions::printing::ScanColor::Grayscale
+                tilo_capture::scanner::ScanColor::Grayscale
             );
             assert_eq!(
                 app.document_settings.scan.source,
-                os_actions::printing::ScanSource::Feeder
+                tilo_capture::scanner::ScanSource::Feeder
             );
             assert_eq!(app.document_settings.ocr_language.code(), "deu");
             assert_eq!(
@@ -7998,14 +8013,16 @@ mod tests {
                 let mut focus = None;
                 app.handle_event(
                     event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    doc,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    tree,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: doc,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: tree,
+                    },
                 );
                 assert!(handled);
             }
@@ -8079,7 +8096,7 @@ mod tests {
             app.apply(Action::Nav(Screen::Settings), &mut doc, &root);
             assert_eq!(app.screen, Screen::Settings);
             assert_eq!(doc.get_heads(), before);
-            assert!(app.take_committed_action().is_none());
+            assert!(ui::undo::take_committed_action(&mut app).is_none());
         }
         // Phase `cycle_facing_and_persist`.
         {
@@ -8234,13 +8251,13 @@ mod tests {
         // Phase `synchronized_app_searches_and_resolves_canonical_scanner_actions`.
         {
             let (app, doc, _root) = sample_app();
-            let providers = Widget::search_providers(&app);
+            let providers = ui::search::capability::search_providers(&app);
             assert_eq!(providers.len(), 1);
             let hits = providers[0].search_limited("scan existing image", 4);
             assert_eq!(hits.len(), 1);
             let address = hits[0].action_address().expect("search action");
             assert_eq!(address.action.as_str(), "import-image");
-            let resource = Widget::resource(&app, &doc, address.resource.as_str())
+            let resource = ui::resources::resource(&app, &doc, address.resource.as_str())
                 .expect("widget resolves search result");
             assert_eq!(resource.id.as_str(), address.resource);
             assert!(

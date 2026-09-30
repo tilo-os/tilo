@@ -14,15 +14,13 @@
 //! series carries its own [`Series::color`] (callers typically pull these
 //! from the theme accent / semantic ramps). Nothing is hard-coded.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
-use winit::event::WindowEvent;
 
-use crate::paint::with_alpha;
+use crate::paint::{PaintCtx, with_alpha};
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
@@ -554,22 +552,13 @@ impl Chart {
     /// Immediate-mode draw: render a full chart into `scene` at `rect`,
     /// reading colours from `theme`. Lets a host that lays out its own
     /// dashboard cards paint a chart at a known rect without a widget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Chart painting combines render context and bounds with series, scale maximum, area mode, title, and axis labels."
-    )]
     pub fn draw_at(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
         series: &[Series],
         max: f32,
         area: bool,
-        title: &str,
-        axis_hi: &str,
-        axis_lo: &str,
+        labels: ChartLabels<'_>,
     ) {
         let style = if area {
             ChartStyle::default()
@@ -577,18 +566,11 @@ impl Chart {
             ChartStyle::default().with_trend(TrendStyle::CHART.with_fill(TrendFill::None))
         };
         Self::draw_styled(
-            scene,
-            transform,
-            text_renderer,
+            ctx,
             rect,
-            theme,
             series,
             TrendRange::up_to(f64::from(max)),
-            ChartLabels {
-                title,
-                axis_hi,
-                axis_lo,
-            },
+            labels,
             &style,
         );
     }
@@ -597,16 +579,19 @@ impl Chart {
     /// series shares, the header/axis `labels`, and the grid and trend
     /// `style`. A header-less style gives the whole rect to the plot.
     pub fn draw_styled(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
         series: &[Series],
         range: TrendRange,
         labels: ChartLabels<'_>,
         style: &ChartStyle,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let tokens = &theme.tokens;
         // The header band holds the title's line plus the smallest step, so
         // at 2× the title no longer clips and the legend clears the top axis
@@ -792,8 +777,6 @@ impl ChartStyle {
 }
 
 impl Widget for Chart {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -836,11 +819,8 @@ impl Widget for Chart {
                 .with_trend(self.style.trend.with_fill(TrendFill::None))
         };
         Chart::draw_styled(
-            scene,
-            transform,
-            text_renderer,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            theme,
             &self.series,
             TrendRange::up_to(f64::from(self.ceiling())),
             ChartLabels {
@@ -850,20 +830,6 @@ impl Widget for Chart {
             },
             &style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -995,8 +961,6 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1042,20 +1006,6 @@ impl Widget for Sparkline {
             self.color,
             &self.style,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {
@@ -1141,31 +1091,21 @@ mod tests {
 
             let mut plain = Scene::new();
             Chart::draw_at(
-                &mut plain,
-                Affine::IDENTITY,
-                &mut tr,
+                &mut PaintCtx::new(&mut plain, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 200.0, 120.0),
-                &theme,
                 &series,
                 5.0,
                 false,
-                "",
-                "",
-                "",
+                ChartLabels::default(),
             );
             let mut filled = Scene::new();
             Chart::draw_at(
-                &mut filled,
-                Affine::IDENTITY,
-                &mut tr,
+                &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 200.0, 120.0),
-                &theme,
                 &series,
                 5.0,
                 true,
-                "",
-                "",
-                "",
+                ChartLabels::default(),
             );
             assert!(
                 count_color_tags(&filled) > count_color_tags(&plain),
@@ -1185,17 +1125,12 @@ mod tests {
             let empty: Vec<Series> = vec![];
             let mut grid_only = Scene::new();
             Chart::draw_at(
-                &mut grid_only,
-                Affine::IDENTITY,
-                &mut tr,
+                &mut PaintCtx::new(&mut grid_only, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 200.0, 120.0),
-                &theme,
                 &empty,
                 1.0,
                 false,
-                "",
-                "",
-                "",
+                ChartLabels::default(),
             );
             let grid_tags = count_color_tags(&grid_only);
             assert!(grid_tags > GRID_DIVISIONS, "grid rules must paint");
@@ -1203,17 +1138,12 @@ mod tests {
             let series = vec![Series::new(vec![1.0, 2.0, 3.0], theme.accent_primary)];
             let mut with_line = Scene::new();
             Chart::draw_at(
-                &mut with_line,
-                Affine::IDENTITY,
-                &mut tr,
+                &mut PaintCtx::new(&mut with_line, Affine::IDENTITY, &mut tr, &theme),
                 Rect::new(0.0, 0.0, 200.0, 120.0),
-                &theme,
                 &series,
                 3.0,
                 false,
-                "",
-                "",
-                "",
+                ChartLabels::default(),
             );
             assert!(
                 count_color_tags(&with_line) > grid_tags,
@@ -1344,11 +1274,8 @@ mod tests {
         let mut scene = Scene::new();
         let style = ChartStyle::default().without_header().with_grid(3, None);
         Chart::draw_styled(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
+            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
             Rect::new(0.0, 0.0, 200.0, 10.0),
-            &theme,
             &[],
             TrendRange::up_to(1.0),
             ChartLabels::default(),

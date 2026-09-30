@@ -34,8 +34,6 @@ impl RecordingContent {
 }
 
 impl Widget for RecordingContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -74,18 +72,7 @@ impl Widget for RecordingContent {
     ) {
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, _ctx: &mut ui::widget::EventCtx<'_>) {
         let label = match event {
             WindowEvent::CursorMoved { .. } => "CursorMoved",
             WindowEvent::MouseInput {
@@ -462,14 +449,16 @@ fn pump_with_modifiers(
     let mut handled = false;
     h.host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        h.root_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.root_node,
+            taffy: &h.taffy,
+        },
     );
     handled
 }
@@ -517,8 +506,8 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
 
         // This is the exact lock-boundary call made by native.rs after it
         // cancels the backend stream. Late End events must not turn a partial
-        // vertical three-finger swipe into a workspace switch.
-        for id in 0..3 {
+        // vertical four-finger swipe into a workspace switch.
+        for id in 0..4 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -529,7 +518,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 ),
             );
         }
-        for id in 0..3 {
+        for id in 0..4 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -541,7 +530,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
             ));
         }
         h.host.cancel_direct_touch_gestures();
-        for id in 0..3 {
+        for id in 0..4 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -556,7 +545,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         // Physical removal runs through the raw Cancelled phase instead of
         // the explicit lock helper. It must have the same no-terminal-action
         // property even if stale End edges arrive after unplug.
-        for id in 10..13 {
+        for id in 10..14 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -567,7 +556,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 ),
             );
         }
-        for id in 10..13 {
+        for id in 10..14 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -578,7 +567,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 )
             ));
         }
-        for id in 10..13 {
+        for id in 10..14 {
             assert!(pump(
                 &mut h,
                 &touch_at(
@@ -589,7 +578,7 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
                 )
             ));
         }
-        for id in 10..13 {
+        for id in 10..14 {
             let _ = pump(
                 &mut h,
                 &touch_at(
@@ -613,8 +602,80 @@ fn keys_and_touch_gestures_cancel_cleanly_without_terminal_actions() {
         );
     }
 
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "the test renders bounded contact indices as touch coordinates"
+    )]
+    fn touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four() {
+        fn swipe_up(h: &mut AbsorbHarness, first_id: u64, fingers: u64) {
+            let ids = first_id..first_id + fingers;
+            let x = |id: u64| 400.0 + (id - first_id) as f64 * 8.0;
+            for id in ids.clone() {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Started, x(id), 500.0),
+                );
+            }
+            for id in ids.clone() {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Moved, x(id), 250.0),
+                );
+            }
+            for id in ids {
+                let _ = pump(
+                    h,
+                    &touch_at(id, winit::event::TouchPhase::Ended, x(id), 250.0),
+                );
+            }
+        }
+        let mut h = build_harness();
+        {
+            let mut chrome = h.chrome.borrow_mut();
+            let mut tree = chrome.tree_mut();
+            let second = tree.append_empty_workspace("Second");
+            tree.desktop.active = second;
+            let ws = tree.desktop.active_workspace_mut().expect("a workspace");
+            ws.strips.push(crate::shell::state::Strip::new(
+                crate::shell::state::StripId(9_000),
+                "Below".to_owned(),
+            ));
+            drop(tree);
+            let (_, focused) = chrome.strip_focus();
+            if focused == 0 {
+                assert!(chrome.switch_strip(1), "fixture focuses the lower strip");
+            }
+        }
+        let workspace = h.chrome.borrow().tree().desktop.active;
+        let (_, strip) = h.chrome.borrow().strip_focus();
+        assert!(strip > 0, "there is a strip above to swipe to");
+
+        swipe_up(&mut h, 0, 3);
+        {
+            let chrome = h.chrome.borrow();
+            assert_eq!(
+                chrome.strip_focus().1,
+                strip - 1,
+                "three fingers up focus the strip above, as Super+↑ does"
+            );
+            assert_eq!(
+                chrome.tree().desktop.active,
+                workspace,
+                "three fingers stay on the workspace"
+            );
+        }
+
+        swipe_up(&mut h, 10, 4);
+        assert_ne!(
+            h.chrome.borrow().tree().desktop.active,
+            workspace,
+            "four fingers up go one level out, to the previous workspace"
+        );
+    }
+
     first_local_key_releases_follow_without_also_running_a_shell_chord();
     lock_and_device_removal_cancel_partial_touch_gestures_without_terminal_actions();
+    touchscreen_swipes_take_strips_with_three_fingers_and_workspaces_with_four();
 }
 
 fn left_button_pressed() -> WindowEvent {
@@ -2569,4 +2630,49 @@ fn workspace_lens_and_shortcut_help_adapt_between_wide_and_compact_outputs() {
     workspace_lens_promotes_to_one_inset_sheet_on_narrow_outputs();
     compact_shortcut_help_keeps_content_inside_a_comfortable_footer_inset();
     wide_shortcut_help_remains_a_contextual_card();
+}
+
+#[test]
+fn shortcut_guide_tab_stops_only_land_on_painted_bindings() {
+    let (vw, vh) = (1280.0, 800.0);
+    let mut h = build_harness_sized(vw, vh);
+    h.chrome.borrow_mut().overlays.shortcut_help = true;
+    settle(&mut h, vw, vh);
+    let painted: Vec<settings_store::hardware::ShortcutAction> = h
+        .host
+        .shortcut_binding_rects
+        .iter()
+        .map(|(action, _)| *action)
+        .collect();
+    assert!(!painted.is_empty(), "the guide paints its bindings");
+
+    let mut focused = Vec::new();
+    for _ in 0..64 {
+        let mut handled = false;
+        assert!(h.host.handle_shell_keyboard_event(
+            &Key::Named(NamedKey::Tab),
+            winit::event::Modifiers::default(),
+            false,
+            &AutoCommit::new(),
+            &automerge::ROOT,
+            &mut handled,
+        ));
+        match h.host.shortcut_guide_focus {
+            Some(ShortcutGuideFocus::Binding(action)) => focused.push(action),
+            Some(ShortcutGuideFocus::Done) => break,
+            _ => {}
+        }
+    }
+    let hidden: Vec<_> = focused
+        .iter()
+        .filter(|action| !painted.contains(action))
+        .collect();
+    assert!(
+        hidden.is_empty(),
+        "Tab must never focus a binding the guide does not draw: {hidden:?}"
+    );
+    assert_eq!(
+        focused, painted,
+        "Tab walks the painted bindings in painted order"
+    );
 }

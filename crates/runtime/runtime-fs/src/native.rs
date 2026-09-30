@@ -1412,7 +1412,6 @@ impl FsSession {
         })
     }
     #[allow(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "bounded read-only directory, file and link verification share one confinement gate"
     )]

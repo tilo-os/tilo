@@ -16,7 +16,7 @@ else
   ok 'workflows use Forgejo authorization/OIDC controls without ignored permissions keys'
 fi
 
-desktop="$workflows/package-desktop.yml"
+desktop="$workflows/release-desktop.yml"
 apps="$workflows/release-apps.yml"
 os="$workflows/build-image.yml"
 imager="$workflows/release-imager.yml"
@@ -29,7 +29,7 @@ else
 fi
 
 cache_driver_ok=1
-for workflow in build-builder-image.yml build-image.yml build-kernel.yml release-relay.yml snapshot-rpms.yml; do
+for workflow in build-ci-builder.yml build-image.yml build-kernel.yml release-relay.yml build-rpms.yml; do
   file="$workflows/$workflow"
   if grep -Fq 'cache-to: type=registry' "$file" \
      && ! grep -Fq 'uses: ./.forgejo/actions/setup-buildx' "$file"; then
@@ -54,7 +54,7 @@ fi
 persistent_ok=1
 for file in "$workflows"/*.yml "$workflows"/*.yaml; do
   case "$(basename "$file")" in
-    release-relay.yml|registry-server-image.yml) continue ;;
+    release-relay.yml|release-registry-server.yml) continue ;;
   esac
   if grep -Eq '^ +persistent:' "$file"; then
     printf 'persistent BuildKit builder outside its allowed workflows: %s\n' "$(basename "$file")" >&2
@@ -73,8 +73,8 @@ else
 fi
 
 grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
-  && grep -Fq 'tilo-kernel-buildcache:{1},mode=min' "$workflows/build-kernel.yml" \
-  && ! grep -Eq 'cache-to:.*tilo-kernel-buildcache:.*mode=max' "$workflows/build-kernel.yml" \
+  && grep -Fq 'scope=kernel-{0},mode=min' "$workflows/build-kernel.yml" \
+  && ! grep -Eq 'cache-to:.*scope=kernel-.*mode=max' "$workflows/build-kernel.yml" \
   && ok 'kernel cache export skips PRs and excludes its multi-gigabyte intermediate build tree' \
   || bad 'kernel cache export can duplicate work or exhaust a PR runner'
 
@@ -82,7 +82,7 @@ grep -Fq "github.event_name != 'pull_request'" "$workflows/build-kernel.yml" \
 # its best-effort cache write nor discard the build: the cache export ignores
 # errors, and a failed publication push retries the already-loaded image a
 # bounded number of times before the signing gate consumes its digest.
-grep -Fq 'tilo-kernel-buildcache:{1},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
+grep -Fq 'scope=kernel-{0},mode=min,ignore-error=true' "$workflows/build-kernel.yml" \
   && grep -Fq "if: \${{ steps.build.outcome == 'failure' }}" "$workflows/build-kernel.yml" \
   && grep -Fq 'for attempt in 1 2 3; do' "$workflows/build-kernel.yml" \
   && grep -Fq 'docker image inspect "$LOCAL_IMAGE"' "$workflows/build-kernel.yml" \
@@ -95,7 +95,7 @@ grep -Fq 'tilo-kernel-buildcache:{1},mode=min,ignore-error=true' "$workflows/bui
 # that stage by digest as its wpe-builder context; os/Containerfile fails
 # closed without it.
 [ "$(grep -Fc 'file: os/Containerfile.wpe' "$os")" = 2 ] \
-  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 4 ] \
+  && [ "$(grep -Fc "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe@{0}', steps.wpe-stage.outputs.digest)" "$os")" = 8 ] \
   && grep -Fq "format('wpe-builder=oci-layout:///var/tmp/tilo-wpe-uncached@{0}', steps.wpe-uncached.outputs.digest)" "$os" \
   && grep -Fq "no-cache: \${{ matrix.role == 'reproduce' }}" "$os" \
   && ok 'OS image builds take the browser engine from its isolated recipe' \
@@ -105,10 +105,10 @@ grep -Fq 'tilo-kernel-buildcache:{1},mode=min,ignore-error=true' "$workflows/bui
 # layer's content is needed. The OS build treats exactly that as a cache miss:
 # rebuild without cache-from, rewrite every cache tag, consume either digest.
 uncached=$(awk '/- name: Build the Tilo image without the damaged layer cache/,/# Dev VMs must not wait/' "$os")
-[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the browser engine stage/,/- name: Recognize a missing registry cache blob/' "$os"))" = 3 ] \
+[ "$(grep -c "continue-on-error: true" <(awk '/- name: Build and cache the browser engine stage/,/- name: Recognize a missing registry cache blob/' "$os"))" = 6 ] \
   && grep -Fq 'run: ./os/dev/recognize-missing-cache-blob.sh "$BUILDER_NAME"' "$os" \
   && ! grep -Fq 'cache-from:' <<<"$uncached" \
-  && [ "$(grep -c 'mode=max,ignore-error=true' <<<"$uncached")" = 2 ] \
+  && [ "$(grep -c 'ignore-error=true' <<<"$uncached")" = 1 ] \
   && ! grep -Fq "'\${{ steps.build.outputs.digest }}'" "$os" \
   && grep -Fq "'\${{ steps.build.outputs.digest || steps.build-uncached.outputs.digest }}'" "$os" \
   && grep -A1 -F -- '- name: Build the browser engine stage without the damaged layer cache' "$os" \
@@ -139,11 +139,11 @@ else
   bad 'native kernel builds can bypass resource bounds or diverge on their compilation cache key'
 fi
 
-if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-builder-image.yml" \
-  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-builder-image.yml" \
-  && grep -Fq 'runner: runner-arm64' "$workflows/build-builder-image.yml" \
-  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-builder-image.yml" \
+if grep -Fq 'needs: [plan, build, images, cache-cold, cache-warm]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'needs: [plan, build, images, accept-builder]' "$workflows/build-ci-builder.yml" \
+  && grep -Fq "needs.accept-builder.result == 'success'" "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'runner: runner-arm64' "$workflows/build-ci-builder.yml" \
+  && grep -Fq 'python3 os/dev/promote-native-index.py' "$workflows/build-ci-builder.yml" \
   && grep -Fq 'runs-on: ${{ matrix.runner }}' "$workflows/check.yml"; then
   ok 'native CI builder publication waits for cache acceptance on both architectures'
 else
@@ -216,7 +216,7 @@ fi
 if grep -Fq 'runner: runner-disk-100g' "$kernel_workflow" \
    && grep -Fq 'runner: runner-disk-100g-arm64' "$kernel_workflow" \
    && grep -Fq 'assert-native-arch.sh "${{ matrix.arch }}"' "$kernel_workflow" \
-   && grep -Fq "format('type=registry,ref={0}/tilo/tilo-kernel-buildcache:{1}', env.TILO_LAYER_CACHE_REGISTRY, matrix.arch)" "$kernel_workflow" \
+   && grep -Fq "format('type=gha,scope=kernel-{0}', matrix.arch)" "$kernel_workflow" \
    && grep -Fq "variable=\"KERNEL_RPMS_\$(printf '%s' '\${{ matrix.arch }}' | tr '[:lower:]' '[:upper:]')_REF\"" "$kernel_workflow" \
    && grep -Fq 'KERNEL_RPMS_X86_64_REF|KERNEL_RPMS_AARCH64_REF) ;;' "$kernel_workflow" \
    && ! grep -Fq 'variable=KERNEL_RPMS_${{ matrix.arch }}_REF' "$kernel_workflow" \
@@ -262,8 +262,8 @@ kernel_triggers="$(sed -n '/^on:/,/^concurrency:/p' "$kernel_workflow")"
 if grep -Fq '"os/kernel-buildroot-snapshot.env"' <<<"$kernel_triggers" \
    && grep -Fq '"os/kernel/**"' <<<"$kernel_triggers" \
    && ! grep -Eq 'rpms-snapshot\.env|base-snapshot\.env|derive-rpm-package-set|kernel-snapshot\.env"|workflow_call' <<<"$kernel_triggers" \
-   && ! grep -Fq 'build-kernel.yml' "$workflows/snapshot-rpms.yml" \
-   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/snapshot-rpms.yml" \
+   && ! grep -Fq 'build-kernel.yml' "$workflows/build-rpms.yml" \
+   && ! grep -Fq 'os/kernel/Containerfile' "$workflows/build-rpms.yml" \
    && ! grep -Fq 'os/kernel/Containerfile' "$repo/os/dev/derive-rpm-package-set.py" \
    && grep -Fq 'os/kernel-buildroot-snapshot.env' <<<"$(sed -n '/KERNEL_SNAPSHOT_INPUTS: |/,/^    steps:/p' "$kernel_workflow")"; then
   ok 'only kernel inputs rebuild the kernel; OS package changes do not'
@@ -312,8 +312,8 @@ grep -Fq 'payload_source=$(jq -r '"'"'.source // empty'"'"' "$work/manifest.json
 
 grep -Fq 'with_browser=0' "$os" \
   && grep -Fq 'WITH_BROWSER: ${{ env.TILO_WITH_BROWSER }}' "$os" \
-  && grep -Fq 'max-parallelism = 1' "$os" \
-  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 4 \
+  && grep -Fq "max-parallelism = \${{ github.event_name == 'workflow_call' && 4 || 1 }}" "$os" \
+  && test "$(grep -Fc 'TILO_CFS_DIGEST=00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000' "$os")" -eq 8 \
   && grep -Fq 'TILO_PROVISIONAL_CFS_DIGEST="$(printf '\''0%.0s'\'' {1..128})"' "$repo/os/dev/build-image.sh" \
   && ! grep -Fq 'id=tilo-composefs-' "$repo/os/Containerfile" \
   && grep -Fq 'find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +' "$repo/os/Containerfile" \
@@ -338,7 +338,7 @@ grep -Fq 'cron: "0 2 * * *"' "$os" \
 
 grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
   && grep -Fq 'if [[ -n ${WPE_BUILDROOT_X86_64_REF:-} && -n ${WPE_BUILDROOT_AARCH64_REF:-} ]]; then' "$os" \
-  && grep -Fq "no digest-pinned WPE buildroot for %s; run snapshot-wpe-buildroot" "$os" \
+  && grep -Fq "no digest-pinned WPE buildroot for %s; run build-buildroots" "$os" \
   && ok 'tags always ship the browser; the nightly ships it once both WPE buildroots are promoted' \
   || bad 'the nightly browser profile can fail on a missing WPE pin, or a tag can omit the browser'
 
@@ -347,7 +347,7 @@ grep -Fq 'refs/tags/v*) with_browser=1 ;;' "$os" \
 grep -Fq 'python3 os/dev/windows_provider.py mode --arch "$(uname -m)"' "$os" \
   && grep -Fq 'FEX_PAYLOAD_REF: ${{ vars.TILO_FEX_PAYLOAD_REF }}' "$os" \
   && grep -Fq 'WINDOWS_GUEST_REF: ${{ vars.TILO_WINDOWS_GUEST_REF }}' "$os" \
-  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 4 ] \
+  && [ "$(grep -Fc 'TILO_WITH_WINDOWS=${{ env.TILO_WITH_WINDOWS }}' "$os")" = 8 ] \
   && grep -Fq 'windows_provider.py" mode --arch "$TILO_WINDOWS_ARCH"' "$repo/os/dev/build-image.sh" \
   && grep -Fq -- '--build-arg "TILO_WITH_WINDOWS=$TILO_WITH_WINDOWS"' "$repo/os/dev/build-image.sh" \
   && grep -Fq 'FROM windows-provider-${TILO_WINDOWS_ARCH}-${TILO_WITH_WINDOWS} AS windows-provider' "$repo/os/Containerfile" \
@@ -426,7 +426,7 @@ grep -Fq 'TILO_APP_COLLECTION_SHA256' "$os" \
   && test "$(grep -Fc 'https:\/\/code.tilo.so}' "$os")" -eq 2 \
   && ! grep -Fq -- "--proto '=http'" "$os" \
   && ! grep -Fq '[[ $EVENT_NAME != pull_request ]] || exit 0' "$os" \
-  && grep -Fq 'Authorization: Bearer $jwt' "$os" \
+  && grep -Fq 'auth="Bearer $jwt"' "$os" \
   && grep -Fq 'TILO_PREBUILT_APPS=${{ env.TILO_PREBUILT_APPS }}' "$os" \
   && grep -Fq 'TAPP_DIR=/out/prebuilt-apps' "$repo/os/Containerfile" \
   && grep -Fq 'cp -a /build/os/app-runtime/tilo-runtime /usr/lib/' "$repo/os/Containerfile" \

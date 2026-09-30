@@ -53,8 +53,6 @@ impl ExportConfigBody {
 }
 
 impl Widget for ExportConfigBody {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -151,20 +149,6 @@ impl Widget for ExportConfigBody {
             None,
             TextWeight::Regular,
         );
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

@@ -81,12 +81,14 @@ jobs:
               echo '::error::offline medium requires main, installer_only, an immutable signed target, and a full source revision'; exit 1;
             }
             echo 'linux-matrix={"include":[]}' >> "$GITHUB_OUTPUT"
+            # No runner carries the imager fleet's labels any more; the large
+            # ARM runners have nested KVM and the disk these media need.
             if [[ -n ${LENOVO_TARGET_IMAGE:-} && ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"},{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"},{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             elif [[ ${GENERIC_TARGET:-false} == true ]]; then
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"generic"}]}' >> "$GITHUB_OUTPUT"
             else
-              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"imager-linux-aarch64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
+              echo 'medium-matrix={"include":[{"arch":"aarch64","runner":"runner-large-arm64","target_profile":"lenovo-83ed"}]}' >> "$GITHUB_OUTPUT"
             fi
             exit 0
           fi
@@ -123,7 +125,7 @@ jobs:
           }
 
   medium:
-    timeout-minutes: 240
+    timeout-minutes: 180
     # Build and boot-test install media only on architecture-matched native
     # hosts. Tags use the dedicated KVM/DRI fleet; manual rehearsals may use
     # the isolated large-disk fleet with Podman plus software QEMU installed
@@ -551,10 +553,9 @@ jobs:
 
   # USB-free installation VM round trip on the x86_64 medium this run just
   # built and boot-tested (design spec §9). Opt-in with the same repository
-  # variable as the bundle export. The same os/dev/ci-internal-install-cycle.sh
-  # backs the manual internal-install-cycle.yml workflow.
+  # variable as the bundle export.
   internal-install-cycle:
-    timeout-minutes: 480
+    timeout-minutes: 180
     needs: medium
     # Needs the dedicated KVM release host, which installer-only rehearsals
     # deliberately do not use.
@@ -648,7 +649,7 @@ jobs:
           path: dist/tilo-installer-catalog/*
 
   linux:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true'
     needs: catalog
     # Forgejo injects ACTIONS_ID_TOKEN_REQUEST_* only when this native setting
@@ -802,7 +803,7 @@ jobs:
           if-no-files-found: error
 
   windows:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true
@@ -915,7 +916,7 @@ jobs:
           if-no-files-found: error
 
   macos:
-    timeout-minutes: 240
+    timeout-minutes: 180
     if: github.event.inputs.installer_only != 'true' && (startsWith(github.ref, 'refs/tags/imager-v') || github.event.inputs.full_native == 'true')
     needs: catalog
     enable-openid-connect: true

@@ -9,9 +9,9 @@
 //! selection, mode — is per-peer and stays local.
 
 use std::collections::HashMap;
-use std::io::Read;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::prelude::*;
@@ -24,10 +24,11 @@ use winit::keyboard::{Key, NamedKey};
 use tilo_rich_text::{FieldOutcome, RichTextField, RichTextSurface, SubmitKey};
 use ui::ColorCompat;
 use ui::icons::{Icon, draw_icon};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Embedded;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
@@ -48,9 +49,9 @@ use crate::model::{
 };
 use crate::overview_grid::{OverviewGrid, scroll_from_thumb_drag, scrollbar_rects};
 use crate::presentation::{Blank, Command as PresentCommand, Presentation, PresentationFrame};
-use crate::render;
+use crate::render::{self, DeckAssets};
 use crate::strings::{tr, tr_args};
-use crate::toolbar_tools::{MenuPress, ToolbarTools, ToolbarToolsLayout};
+use crate::toolbar_tools::{MenuPress, ToolMetrics, ToolbarTools, ToolbarToolsLayout};
 use tilo_content::ContentStore;
 use ui::i18n::ArgValue;
 
@@ -90,17 +91,12 @@ fn presentation_filter() -> FileFilter {
 }
 
 fn read_presentation_file(path: &std::path::Path) -> std::io::Result<Vec<u8>> {
-    let file = std::fs::File::open(path)?;
-    let mut bytes = Vec::with_capacity(64 * 1024);
-    file.take((MAX_PRESENTATION_FILE_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)?;
-    if bytes.len() > MAX_PRESENTATION_FILE_BYTES {
-        return Err(std::io::Error::new(
+    crate::assets::read_bounded(path, MAX_PRESENTATION_FILE_BYTES)?.ok_or_else(|| {
+        std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             "presentation file is larger than 64 MiB",
-        ));
-    }
-    Ok(bytes)
+        )
+    })
 }
 
 fn load_presentation_from_path(
@@ -131,7 +127,9 @@ fn save_presentation_to_path(
             crate::odp::write_odp(deck, content).map_err(|error| error.to_string())?,
         )
     };
-    std::fs::write(path, bytes).map_err(|error| error.to_string())
+    tilo_files::file_at(&path)
+        .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+        .map_err(|error| error.to_string())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,31 +180,29 @@ impl DocumentWorker {
     fn new(content: ContentStore) -> Result<Self, String> {
         let (tx, jobs) = std::sync::mpsc::sync_channel(1);
         let (results, rx) = std::sync::mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("slides-document-io".into())
-            .spawn(move || {
-                while let Ok(job) = jobs.recv() {
-                    let result = match job {
-                        DocumentJob::Open { generation, path } => DocumentJobResult::Open {
-                            generation,
-                            result: load_presentation_from_path(&path, &content),
-                        },
-                        DocumentJob::Save {
-                            generation,
-                            path,
-                            deck,
-                        } => DocumentJobResult::Save {
-                            generation,
-                            result: save_presentation_to_path(&deck, &path, &content),
-                        },
-                    };
-                    if results.send(result).is_err() {
-                        break;
-                    }
+        ui::rt::spawn_thread("slides-document-io", move || {
+            while let Ok(job) = jobs.recv() {
+                let result = match job {
+                    DocumentJob::Open { generation, path } => DocumentJobResult::Open {
+                        generation,
+                        result: load_presentation_from_path(&path, &content),
+                    },
+                    DocumentJob::Save {
+                        generation,
+                        path,
+                        deck,
+                    } => DocumentJobResult::Save {
+                        generation,
+                        result: save_presentation_to_path(&deck, &path, &content),
+                    },
+                };
+                if results.send(result).is_err() {
+                    break;
                 }
-            })
-            .map(|_| Self { tx, rx })
-            .map_err(|error| format!("could not start presentation I/O worker: {error}"))
+            }
+        })
+        .map(|_| Self { tx, rx })
+        .map_err(|error| format!("could not start presentation I/O worker: {error}"))
     }
 }
 
@@ -468,6 +464,16 @@ struct ChromeMetrics {
     s4: f64,
 }
 
+impl ToolMetrics for ChromeMetrics {
+    fn pill_w(&self, label: &str, icon: bool) -> f64 {
+        Self::pill_w(self, label, icon)
+    }
+
+    fn menu_row_h(&self) -> f64 {
+        self.control_h()
+    }
+}
+
 impl ChromeMetrics {
     fn key(text: &str, font: f32, weight: TextWeight) -> (String, u16, u16) {
         (
@@ -678,14 +684,6 @@ struct RoutedEvent<'a> {
     taffy: &'a TaffyTree<()>,
 }
 
-/// Mutable rendering resources forwarded together through editor paint layers.
-struct PaintContext<'a> {
-    scene: &'a mut Scene,
-    transform: Affine,
-    text: &'a mut TextRenderer,
-    theme: &'a Theme,
-}
-
 /// The words of one text box being edited on the canvas: the SDK editor,
 /// embedded where the box is drawn and laid out at the slide's size, editing
 /// the element's rich-text body through `SlidesAction::EditElementText`.
@@ -802,6 +800,9 @@ pub struct SlidesApp {
     rect: Rect,
     node: Option<NodeId>,
     seeded: bool,
+    /// Mounted on a record another participant created: its deck is theirs
+    /// to seed, so an uninitialized document is left untouched.
+    joined: bool,
     bootstrapped: bool,
 
     mode: Mode,
@@ -840,7 +841,7 @@ pub struct SlidesApp {
     /// on the same element within the double-click window enters text edit; a
     /// single press just selects and arms a move, so a selected element drags on
     /// the very first grab.
-    last_click: Option<(Id, std::time::Instant, Point)>,
+    last_click: Option<(Id, ui::time::Instant, Point)>,
     /// A press inside the text box being edited is held: its drag selects
     /// text in the box, not the element.
     text_drag: bool,
@@ -876,7 +877,7 @@ pub struct SlidesApp {
     inspector_breakpoint: f64,
     /// Last instant the flap animation advanced, for frame-rate-independent
     /// easing across `draw` calls.
-    last_flap_tick: std::time::Instant,
+    last_flap_tick: ui::time::Instant,
     /// Cleared after the first layout is resolved; until then the flap's eased
     /// reveal is snapped to the resolved default so the very first frame at a
     /// narrow width shows the (closed) flap without a one-frame flash.
@@ -1052,6 +1053,7 @@ impl SlidesApp {
             rect: Rect::ZERO,
             node: None,
             seeded: false,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             bootstrapped: false,
             mode: Mode::Edit,
             canonical_deck: None,
@@ -1077,7 +1079,7 @@ impl SlidesApp {
             rail_flap: FlapState::open_when_docked(),
             inspector_flap: FlapState::open_when_docked(),
             inspector_breakpoint: INSPECTOR_BREAKPOINT,
-            last_flap_tick: std::time::Instant::now(),
+            last_flap_tick: ui::time::now(),
             flap_uninitialised: true,
             text_scale: 1.0,
             breakpoint: NARROW_BREAKPOINT,
@@ -1870,14 +1872,9 @@ impl SlidesApp {
         let tools_first = buttons.len();
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            tools_x,
-            tools_right,
-            by,
-            bh,
+            Rect::new(tools_x, by, tools_right, by + bh),
             toolbar,
-            &|label| m.pill_w(label, false),
-            &|label| m.pill_w(label, true),
-            m.control_h(),
+            m,
         );
         // The overflow button may sit left of the nominal tools slot when
         // nothing else fits, so the title yields to the leftmost control that
@@ -2030,14 +2027,9 @@ impl SlidesApp {
         ];
         let toolbar_tools = self.toolbar_tools.layout(
             &mut buttons,
-            r.x0 + 390.0,
-            r.x0 + 620.0,
-            r.y0 + 10.0,
-            62.0,
+            Rect::new(r.x0 + 390.0, r.y0 + 10.0, r.x0 + 620.0, r.y0 + 72.0),
             toolbar,
-            &|label| self.chrome_metrics.pill_w(label, false),
-            &|label| self.chrome_metrics.pill_w(label, true),
-            self.chrome_metrics.control_h(),
+            &self.chrome_metrics,
         );
         let mut labels = vec![Label {
             pos: Point::new(r.x0 + 650.0, r.y0 + 22.0),
@@ -3993,14 +3985,16 @@ impl SlidesApp {
         let mut h = false;
         self.title_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         // Live-splice each edit into the CRDT title (the mirror is refreshed on
         // commit; while editing, the field is the source of truth).
@@ -4056,14 +4050,16 @@ impl SlidesApp {
         let mut input_handled = false;
         self.notes_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut input_handled,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut input_handled,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if self.notes_input.take_dirty().is_some() {
             self.mark();
@@ -4117,7 +4113,7 @@ impl SlidesApp {
         tr.set_text_scale(1.0);
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4159,7 +4155,7 @@ impl SlidesApp {
         }
 
         {
-            let mut paint = PaintContext {
+            let mut paint = PaintCtx {
                 scene,
                 transform: t,
                 text: tr,
@@ -4180,7 +4176,7 @@ impl SlidesApp {
     /// painted later, on top of the dimming scrim.
     fn draw_editor_panels_base(
         &self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         rail_overlay: bool,
         insp_overlay: bool,
@@ -4267,15 +4263,14 @@ impl SlidesApp {
             .filter(|_| self.editing_text)
             .map(|editor| editor.element_id.as_str());
         render::draw_slide_except(
-            scene,
-            t,
-            tr,
-            theme,
-            pal,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            DeckAssets {
+                palette: pal,
+                images: &self.images,
+            },
             slide,
             chrome.slide_dest,
             14.0,
-            &self.images,
             editing,
         );
         chrome::stroke_round(
@@ -4410,7 +4405,7 @@ impl SlidesApp {
     /// viewport so it can never bleed over the pinned Add/Dup/Del row.
     fn draw_editor_rail(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         rail_overlay: bool,
@@ -4500,7 +4495,16 @@ impl SlidesApp {
         let images = &self.images;
         sb.render(scene, t, tr, theme, |scene, tr, base, i, rect| {
             if let Some(slide) = deck.slides.get(i) {
-                render::draw_slide(scene, base, tr, theme, pal, slide, rect, 6.0, images);
+                render::draw_slide(
+                    &mut PaintCtx::new(scene, base, tr, theme),
+                    DeckAssets {
+                        palette: pal,
+                        images,
+                    },
+                    slide,
+                    rect,
+                    6.0,
+                );
             }
         });
         self.page_sidebar = sb;
@@ -4567,7 +4571,7 @@ impl SlidesApp {
     /// labels.
     fn draw_editor_inspector_layer(
         &mut self,
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         chrome: &Chrome,
         pal: &Palette,
         insp_overlay: bool,
@@ -4790,7 +4794,7 @@ impl SlidesApp {
         b: &UiButton,
     ) {
         let c = &theme.tokens.colors;
-        let mut paint = PaintContext {
+        let mut paint = PaintCtx {
             scene,
             transform: t,
             text: tr,
@@ -4842,7 +4846,7 @@ impl SlidesApp {
     }
 
     fn draw_button_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -4872,20 +4876,17 @@ impl SlidesApp {
         };
         if !label.is_empty() {
             chrome::text_centered(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 label,
                 rect,
-                13.0,
+                &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
                 fg,
-                TextWeight::Semibold,
             );
         }
     }
 
     fn draw_button_icon_text(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         icon: Icon,
@@ -4903,15 +4904,14 @@ impl SlidesApp {
         let ir = Rect::new(rect.x0 + 11.0, rect.y0 + 8.0, rect.x0 + 29.0, rect.y1 - 8.0);
         draw_icon(paint.scene, paint.transform, ir, icon, fg, 1.8);
         chrome::text_vcenter(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
-            rect,
-            ir.x1 + 5.0,
-            13.0,
+            Rect {
+                x0: ir.x1 + 5.0,
+                ..rect
+            },
+            &TextStyle::new(13.0).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -4967,7 +4967,7 @@ impl SlidesApp {
     }
 
     fn draw_button_palette(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         rect: Rect,
         kind: PaletteKind,
         selected: bool,
@@ -4998,22 +4998,21 @@ impl SlidesApp {
                 &rect,
             );
             chrome::text_vcenter(
-                paint.scene,
-                paint.transform,
-                paint.text,
+                paint,
                 kind.label(),
-                rect,
-                dot.x1 + 6.0,
-                12.0,
+                Rect {
+                    x0: dot.x1 + 6.0,
+                    ..rect
+                },
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                TextWeight::Semibold,
             );
             paint.scene.pop_layer();
         }
     }
 
     fn draw_button_segment(
-        paint: &mut PaintContext<'_>,
+        paint: &mut PaintCtx<'_>,
         pal: &Palette,
         rect: Rect,
         label: &str,
@@ -5050,14 +5049,11 @@ impl SlidesApp {
             &shape_of(rect.inset(-0.5), r - 0.5),
         );
         chrome::text_centered(
-            paint.scene,
-            paint.transform,
-            paint.text,
+            paint,
             label,
             rect,
-            12.5,
+            &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
             fg,
-            TextWeight::Semibold,
         );
     }
 
@@ -5164,15 +5160,14 @@ impl SlidesApp {
     fn draw_overview(&self, scene: &mut Scene, t: Affine, tr: &mut TextRenderer, theme: &Theme) {
         let palette = self.palette(theme);
         self.overview.draw(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             self.rect,
             &self.deck,
             self.cur_slide,
-            &palette,
-            &self.images,
+            DeckAssets {
+                palette: &palette,
+                images: &self.images,
+            },
         );
     }
 }
@@ -5266,7 +5261,7 @@ fn write_demo_image() -> Option<PathBuf> {
         let blue = (120.0 + 60.0 * (1.0 - ring)) as u8;
         *px = Rgb([red, green, blue]);
     }
-    let path = std::env::temp_dir().join("slides-demo-image.png");
+    let path = tilo_paths::temp_dir()?.join("slides-demo-image.png");
     img.save(&path).ok()?;
     Some(path)
 }
@@ -5586,179 +5581,49 @@ impl AudiencePresentationProvider for SlidesApp {
 }
 
 impl Widget for SlidesApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::widget::AudiencePresentationProvider,
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
 
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        Some(self)
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::SLIDES_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        use crate::actions::SlidesOperation;
-        self.reconcile_canonical(doc);
-
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        // Keep the registered wire type on the canonical dispatch path.  This
-        // is both a cheap rejection of foreign operation payloads and makes
-        // the runtime registry auditable independently from the decoder.
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
-            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
-            SlidesOperation::StartPresentation => self.enter_present(),
-            SlidesOperation::StartPresentationOn { output } => {
-                self.presentation_target = match output {
-                    crate::actions::PresentationOutput::LargestExternal => {
-                        ui::fullscreen::FullscreenTarget::Largest
-                    }
-                    crate::actions::PresentationOutput::PrimaryExternal => {
-                        ui::fullscreen::FullscreenTarget::PrimaryExternal
-                    }
-                };
-                self.enter_present();
-            }
-            SlidesOperation::EndPresentation => self.exit_present(),
-            SlidesOperation::RevealSlide { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                self.mode = Mode::Edit;
-                self.editing_notes = false;
-                self.goto_slide(idx);
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::RevealElement {
-                slide,
-                element,
-                edit_text,
-            } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                let Some(target) = self
-                    .deck
-                    .slides
-                    .get(idx)
-                    .and_then(|candidate| candidate.element(&element))
-                else {
-                    return Err("element no longer exists".into());
-                };
-                if edit_text && target.kind != ElementKind::Text {
-                    return Err("element is not editable text".into());
-                }
-                self.mode = Mode::Edit;
-                self.editing_notes = false;
-                self.goto_slide(idx);
-                self.sel = Some(element);
-                self.editing_text = edit_text;
-                if edit_text {
-                    // A text search result restores an immediately useful edit
-                    // state: the exact text resource is selected in full.
-                    self.begin_text_edit(true);
-                }
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::RevealNotes { slide } => {
-                let Some(idx) = self.deck.index_of(&slide) else {
-                    return Err("slide no longer exists".into());
-                };
-                self.mode = Mode::Edit;
-                self.goto_slide(idx);
-                self.editing_notes = true;
-                self.editing_text = false;
-                self.sel = None;
-                self.scroll_rail_to_current();
-            }
-            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
-                return Err(
-                    "presentation file operations require the lifecycle-capable host".into(),
-                );
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        self.reconcile_canonical(doc);
-        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
-        match operation {
-            crate::actions::SlidesOperation::Open { path: file }
-            | crate::actions::SlidesOperation::SaveAs { path: file } => {
-                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
-                    return Err("another presentation file operation is running".into());
-                }
-                let save = save_operation;
-                self.resource_invocation = Some(invocation);
-                let direct = file.is_some();
-                if let Some(file) = file {
-                    self.resource_file = Some((save, file.into()));
-                } else if save {
-                    self.request_odp_save();
-                } else {
-                    self.request_odp_open();
-                }
-                if !direct && self.doc_portal_rx.is_none() {
-                    self.resource_invocation = None;
-                    return Err("presentation picker could not be started".into());
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            _ => self
-                .invoke_resource_operation(kind, type_id, payload, doc, path)
-                .map(|handled| {
-                    handled.then(|| {
-                        ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )
-                    })
-                }),
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -5791,7 +5656,11 @@ impl Widget for SlidesApp {
         None
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
+        if self.joined && SlidesDoc::is_uninitialized(state) {
+            return;
+        }
         self.reconcile_canonical(state);
         if let Some((save, file)) = self.resource_file.take() {
             let queued = if save {
@@ -5910,7 +5779,7 @@ impl Widget for SlidesApp {
         // Reconcile the rail flap with the current width (so resizing across
         // the breakpoint returns to the layout default) and advance its eased
         // reveal using real elapsed time, frame-rate independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_flap_tick).as_secs_f64().min(0.1);
         self.last_flap_tick = now;
         self.sync_flaps(dt, theme.reduce_motion);
@@ -6013,22 +5882,11 @@ impl Widget for SlidesApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.reconcile_canonical(state);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.reconcile_canonical(ctx.state);
         // Restore replaces Text object identities; the first event may precede sync.
         if self.editing_notes {
-            self.sync_notes_input(state, false);
+            self.sync_notes_input(ctx.state, false);
         }
         if matches!(
             event,
@@ -6047,16 +5905,16 @@ impl Widget for SlidesApp {
         }
         let mut routed = RoutedEvent {
             event,
-            scale_factor,
-            modifiers: *modifiers,
-            state,
-            path,
-            focus_target,
-            node_id,
-            taffy,
+            scale_factor: ctx.scale_factor,
+            modifiers: *ctx.modifiers,
+            state: ctx.state,
+            path: ctx.path,
+            focus_target: ctx.focus_target,
+            node_id: ctx.node_id,
+            taffy: ctx.taffy,
         };
         if self.route_notes_edit(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // A right-press (re)opens a context menu — handled before the modal
@@ -6067,27 +5925,27 @@ impl Widget for SlidesApp {
             ..
         } = routed.event
         {
-            self.on_right_press(routed.state, self.last_mouse, handled);
+            self.on_right_press(routed.state, self.last_mouse, ctx.handled);
             return;
         }
         // While a context menu is open it is modal: every other event goes to it.
         if self.route_context_menu(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The inline title editor owns input while renaming.
         if self.route_title_edit(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The inspector's embedded widgets (font-size field, fill picker) get
         // first refusal on events over them.
         if self.route_inspector_widgets(&mut routed) {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // The text box being edited owns the keyboard and its own pointer.
-        if self.route_text_edit(&mut routed, handled) {
+        if self.route_text_edit(&mut routed, ctx.handled) {
             return;
         }
         self.dispatch_unmodal_event(
@@ -6095,7 +5953,7 @@ impl Widget for SlidesApp {
             routed.scale_factor,
             routed.modifiers,
             routed.state,
-            handled,
+            ctx.handled,
         );
     }
 
@@ -6239,13 +6097,18 @@ impl Widget for SlidesApp {
                 }
                 let (role, name, mut state) = self.semantic_copy(&button.hit);
                 state.focusable = !state.disabled;
-                Some(
-                    AccessNode::new(role)
-                        .with_name(name)
-                        .with_action_target(target)
-                        .with_bounds(button.rect)
-                        .with_state(state),
-                )
+                let node = AccessNode::new(role)
+                    .with_name(name)
+                    .with_action_target(target)
+                    .with_bounds(button.rect)
+                    .with_state(state);
+                // The notes box reads out what it holds, as a field would.
+                Some(match (&button.hit, self.slide()) {
+                    (Hit::EditNotes, Some(slide)) if !slide.notes.is_empty() => {
+                        node.with_value(slide.notes.clone())
+                    }
+                    _ => node,
+                })
             })
             .collect();
 
@@ -6319,9 +6182,10 @@ impl Widget for SlidesApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         self.reconcile_canonical(state);
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -6421,20 +6285,32 @@ impl Widget for SlidesApp {
             .flatten()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.needs_commit
-    }
-
     /// Keep receiving pointer events for the whole of a canvas move/resize or a
     /// thumbnail reorder, even if the cursor briefly leaves the source rect.
     fn wants_pointer_capture(&self) -> bool {
         self.drag.active() || self.page_sidebar.is_pending_drag()
     }
+}
 
+impl ui::undo::UndoPoints for SlidesApp {
+    fn needs_commit(&self) -> bool {
+        self.needs_commit
+    }
     fn on_commit(&mut self) {
         self.needs_commit = false;
     }
+}
 
+impl ui::search::capability::SearchSource for SlidesApp {
+    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
+    /// palette. Every row addresses an exported resource `View` operation, so
+    /// search uses the same brokered navigation route as agents and a11y.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SlidesApp {
     /// The deck's resource tree for the shell's one Ctrl+K palette — every
     /// document-mutating affordance exported as the same action it dispatches on
     /// screen. See [`crate::actions`].
@@ -6444,7 +6320,6 @@ impl Widget for SlidesApp {
         }
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
-
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         if !self.canonical_matches(doc) {
             return None;
@@ -6452,6 +6327,28 @@ impl Widget for SlidesApp {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
 
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        address
+            .resource
+            .as_str()
+            .starts_with("slides.")
+            .then(|| crate::outline::of_document(doc).map(serde_json::Value::String))
+            .flatten()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for SlidesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for SlidesApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its slides action, so it records one undo boundary for it (see
     /// `Self::perform_action`). Rising-edge: cleared on read.
@@ -6462,19 +6359,173 @@ impl Widget for SlidesApp {
             .and_then(|editor| editor.host.widget_mut().take_committed_action());
         typed.or_else(|| self.actions.take_committed())
     }
-
     /// Typing a word into a text box is one undo step, open until the word ends.
     fn keeps_undo_step_open(&self) -> bool {
         self.text_editor
             .as_ref()
             .is_some_and(|editor| editor.host.widget().keeps_undo_step_open())
     }
+}
 
-    /// Fold the deck's slides, elements, text and notes into the unified Ctrl+K
-    /// palette. Every row addresses an exported resource `View` operation, so
-    /// search uses the same brokered navigation route as agents and a11y.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+impl SlidesApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        use crate::actions::SlidesOperation;
+        self.reconcile_canonical(doc);
+
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        // Keep the registered wire type on the canonical dispatch path.  This
+        // is both a cheap rejection of foreign operation payloads and makes
+        // the runtime registry auditable independently from the decoder.
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            SlidesOperation::ShowEditor => self.mode = Mode::Edit,
+            SlidesOperation::ShowOverview => self.mode = Mode::Overview,
+            SlidesOperation::StartPresentation => self.enter_present(),
+            SlidesOperation::StartPresentationOn { output } => {
+                self.presentation_target = match output {
+                    crate::actions::PresentationOutput::LargestExternal => {
+                        ui::fullscreen::FullscreenTarget::Largest
+                    }
+                    crate::actions::PresentationOutput::PrimaryExternal => {
+                        ui::fullscreen::FullscreenTarget::PrimaryExternal
+                    }
+                };
+                self.enter_present();
+            }
+            SlidesOperation::EndPresentation => self.exit_present(),
+            SlidesOperation::RevealSlide { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealElement {
+                slide,
+                element,
+                edit_text,
+            } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                let Some(target) = self
+                    .deck
+                    .slides
+                    .get(idx)
+                    .and_then(|candidate| candidate.element(&element))
+                else {
+                    return Err("element no longer exists".into());
+                };
+                if edit_text && target.kind != ElementKind::Text {
+                    return Err("element is not editable text".into());
+                }
+                self.mode = Mode::Edit;
+                self.editing_notes = false;
+                self.goto_slide(idx);
+                self.sel = Some(element);
+                self.editing_text = edit_text;
+                if edit_text {
+                    // A text search result restores an immediately useful edit
+                    // state: the exact text resource is selected in full.
+                    self.begin_text_edit(true);
+                }
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::RevealNotes { slide } => {
+                let Some(idx) = self.deck.index_of(&slide) else {
+                    return Err("slide no longer exists".into());
+                };
+                self.mode = Mode::Edit;
+                self.goto_slide(idx);
+                self.editing_notes = true;
+                self.editing_text = false;
+                self.sel = None;
+                self.scroll_rail_to_current();
+            }
+            SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => {
+                return Err(
+                    "presentation file operations require the lifecycle-capable host".into(),
+                );
+            }
+            SlidesOperation::Read => return Ok(false),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        self.reconcile_canonical(doc);
+        if type_id != crate::actions::SLIDES_OPERATION_TYPE {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        let save_operation = matches!(&operation, crate::actions::SlidesOperation::SaveAs { .. });
+        match operation {
+            crate::actions::SlidesOperation::Open { path: file }
+            | crate::actions::SlidesOperation::SaveAs { path: file } => {
+                if self.resource_invocation.is_some() || self.dispatched_save.is_some() {
+                    return Err("another presentation file operation is running".into());
+                }
+                let save = save_operation;
+                self.resource_invocation = Some(invocation);
+                let direct = file.is_some();
+                if let Some(file) = file {
+                    self.resource_file = Some((save, file.into()));
+                } else if save {
+                    self.request_odp_save();
+                } else {
+                    self.request_odp_open();
+                }
+                if !direct && self.doc_portal_rx.is_none() {
+                    self.resource_invocation = None;
+                    return Err("presentation picker could not be started".into());
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::SlidesOperation::Read => Ok(Some(
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+                    value: Some(
+                        crate::outline::of_document(doc)
+                            .map_or(serde_json::Value::Null, serde_json::Value::String),
+                    ),
+                    ..tilo_actions::ActionOutput::default()
+                }),
+            )),
+            _ => self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                }),
+        }
     }
 }
 
@@ -7008,7 +7059,7 @@ impl SlidesApp {
             let double = self.last_click.as_ref().is_some_and(|(cid, t, cp)| {
                 cid == &id && t.elapsed().as_millis() < 400 && cp.distance(p) < 6.0
             });
-            self.last_click = Some((id.clone(), std::time::Instant::now(), p));
+            self.last_click = Some((id.clone(), ui::time::now(), p));
             self.editing_notes = false;
 
             // Already editing this exact text box → a click inside it places
@@ -7158,14 +7209,16 @@ impl SlidesApp {
         let mut menu_handled = false;
         self.ctx_menu.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut menu_handled,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut menu_handled,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let Some(idx) = self.ctx_menu.take_selection()
             && let Some(Some(hit)) = self.ctx_hits.get(idx).cloned()
@@ -7229,14 +7282,16 @@ impl SlidesApp {
         let mut h = false;
         self.fill_picker.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
@@ -7267,14 +7322,16 @@ impl SlidesApp {
                 let mut h = false;
                 self.font_input.handle_event(
                     routed.event,
-                    routed.scale_factor,
-                    &routed.modifiers,
-                    routed.state,
-                    routed.path,
-                    &mut h,
-                    routed.focus_target,
-                    routed.node_id,
-                    routed.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: routed.scale_factor,
+                        modifiers: &routed.modifiers,
+                        state: routed.state,
+                        path: routed.path,
+                        handled: &mut h,
+                        focus_target: routed.focus_target,
+                        node_id: routed.node_id,
+                        taffy: routed.taffy,
+                    },
                 );
                 if let Some(v) = self.font_input.take_changed() {
                     self.set_sel_f64(routed.state, "font_size", v);
@@ -7291,14 +7348,16 @@ impl SlidesApp {
                     let mut h = false;
                     self.font_input.handle_event(
                         routed.event,
-                        routed.scale_factor,
-                        &routed.modifiers,
-                        routed.state,
-                        routed.path,
-                        &mut h,
-                        routed.focus_target,
-                        routed.node_id,
-                        routed.taffy,
+                        &mut ui::widget::EventCtx {
+                            scale_factor: routed.scale_factor,
+                            modifiers: &routed.modifiers,
+                            state: routed.state,
+                            path: routed.path,
+                            handled: &mut h,
+                            focus_target: routed.focus_target,
+                            node_id: routed.node_id,
+                            taffy: routed.taffy,
+                        },
                     );
                     Widget::set_focus(&mut self.font_input, true);
                     if let Some(v) = self.font_input.take_changed() {
@@ -7346,14 +7405,16 @@ impl SlidesApp {
         let mut h = false;
         self.font_input.handle_event(
             routed.event,
-            routed.scale_factor,
-            &routed.modifiers,
-            routed.state,
-            routed.path,
-            &mut h,
-            routed.focus_target,
-            routed.node_id,
-            routed.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: routed.scale_factor,
+                modifiers: &routed.modifiers,
+                state: routed.state,
+                path: routed.path,
+                handled: &mut h,
+                focus_target: routed.focus_target,
+                node_id: routed.node_id,
+                taffy: routed.taffy,
+            },
         );
         if let Some(v) = self.font_input.take_changed() {
             self.set_sel_f64(routed.state, "font_size", v);
@@ -8472,23 +8533,27 @@ mod tests {
         // Case `presentation_output_resource_policy_is_local_and_selects_primary_external`.
         {
             let mut app = SlidesApp::new();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload =
                 serde_json::to_vec(&crate::actions::SlidesOperation::StartPresentationOn {
                     output: crate::actions::PresentationOutput::PrimaryExternal,
                 })
                 .expect("presentation output operation serializes");
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::SLIDES_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .expect("presentation output operation is accepted")
-            );
+                .expect("presentation output operation is accepted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.mode, Mode::Present);
             assert_eq!(
                 app.presentation_target,
@@ -10285,14 +10350,16 @@ mod tests {
         let root = automerge::ROOT;
         app.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -10721,6 +10788,23 @@ mod tests {
     // --- shared multiline speaker-notes editor ------------------------------
 
     #[test]
+    fn the_notes_box_reads_out_the_slides_notes() {
+        fn find(node: &ui::a11y::AccessNode) -> Option<&ui::a11y::AccessNode> {
+            if node.name.as_deref() == Some("Edit speaker notes") {
+                return Some(node);
+            }
+            node.children.iter().find_map(find)
+        }
+        let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
+        sized(&mut app, 1280.0, 800.0);
+        crate::doc::SlidesDoc::splice_notes(&mut doc, 0, 0, 0, "thank the hosts");
+        app.reload(&doc);
+        let tree = app.accessibility().expect("editor semantics");
+        let notes = find(&tree).expect("the notes box is exposed");
+        assert_eq!(notes.value.as_deref(), Some("thank the hosts"));
+    }
+
+    #[test]
     fn notes_typing_writes_through_and_up_down_move_the_caret() {
         let (mut app, mut doc) = app_doc(Slide::new(Layout::Blank));
         sized(&mut app, 1280.0, 800.0);
@@ -11106,17 +11190,21 @@ mod tests {
             })
             .unwrap();
 
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::SLIDES_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::SLIDES_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.cur_slide, slide_index);
             assert_eq!(app.sel.as_deref(), Some(element_id.as_str()));
             assert!(app.editing_text);
@@ -11270,13 +11358,15 @@ mod history_interruption_tests {
         })
         .unwrap();
         assert!(matches!(
-            app.start_resource_operation(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::SLIDES_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::SLIDES_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .unwrap(),
             Some(ui::widget::ResourceOperationStart::Accepted)
@@ -11316,13 +11406,15 @@ mod history_interruption_tests {
         );
         let other_invocation = tilo_actions::InvocationId::new();
         assert!(
-            app.start_resource_operation(
-                other_invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::SLIDES_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    other_invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::SLIDES_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -11448,21 +11540,21 @@ mod history_interruption_tests {
             app.cur_slide = 1;
             app.begin_notes_edit(&mut doc);
             assert!(
-                Widget::resources(&app, &doc)
+                ui::resources::resources(&app, &doc)
                     .iter()
                     .any(|r| r.id.as_str().contains("slides"))
             );
             restore(&mut doc, &selected);
             let heads = doc.get_heads();
             assert!(
-                Widget::resources(&app, &doc).is_empty(),
+                ui::resources::resources(&app, &doc).is_empty(),
                 "unreconciled resources cannot retain old action payloads"
             );
             app.sync(&mut doc, &automerge::ROOT);
             assert!(!app.editing_notes);
             assert!(app.deck.index_of(&id).is_none());
             assert_eq!(doc.get_heads(), heads);
-            assert!(!Widget::resources(&app, &doc).is_empty());
+            assert!(!ui::resources::resources(&app, &doc).is_empty());
         }
     }
 }

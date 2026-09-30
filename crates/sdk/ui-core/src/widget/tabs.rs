@@ -1,6 +1,7 @@
 use crate::color_compat::ColorCompat;
 use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
 use crate::icons;
+use crate::paint::PaintCtx;
 use crate::presence::{PresenceCtx, PresenceKey};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextWeight};
@@ -10,7 +11,7 @@ use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -74,6 +75,29 @@ fn compose(a: Affine, b: Affine) -> Affine {
     clippy::arithmetic_side_effects,
     reason = "Rect + Vec2 is float component addition and cannot panic"
 )]
+/// One pill's paint state, resolved once per frame by `draw_pill_inner` and
+/// shared by the helpers that paint its body and chips.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "each flag is an independent fact about the pill this frame"
+)]
+struct PillPaint<'a> {
+    i: usize,
+    tab: &'a TabDescriptor,
+    /// Where the pill paints: its sprung visual rect, or the drag ghost's.
+    rect: Rect,
+    /// `rect` less the pill's laid-out target; the cached chip rects shift by it.
+    offset: vello::kurbo::Vec2,
+    look: PillAppearance,
+    is_pinned: bool,
+    is_active: bool,
+    is_hover: bool,
+    /// The drag ghost paints without hover emphasis.
+    suppress_hover: bool,
+    /// This frame's trailing reveal width.
+    zone: f64,
+}
+
 fn shift_rect(r: Rect, d: vello::kurbo::Vec2) -> Rect {
     r + d
 }
@@ -451,37 +475,29 @@ impl TabBar {
     /// or the cursor-following ghost rect. `self.close_rects` etc. are cached at
     /// the pill's *target* position, so they're offset by `r - self.tab_rects[i]`
     /// before painting; hit-testing still consults the unoffset rects.
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "A tab pill uses render context, tab index, animated bounds, collaborator presence, and drag-driven hover suppression."
-    )]
     fn draw_pill_inner(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
+        ctx: &mut PaintCtx<'_>,
+        presence: &PresenceCtx,
         i: usize,
         r: Rect,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
         suppress_hover: bool,
     ) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let Some(t) = self.tabs.get(i) else {
             return;
         };
         let is_pinned = self.pinned_ids.contains(&t.id);
         let pill_height = (self.rect.height() - 2.0 * TAB_PILL_INSET_Y).max(0.0);
         let radius = pill_height / 2.0;
-        let text_primary = theme.tokens.colors.text_primary;
-        let text_dim = theme.tokens.colors.text_dim;
         let Some(&target) = self.tab_rects.get(i) else {
             return;
         };
-        let dx = r.x0 - target.x0;
-        let dy = r.y0 - target.y0;
 
         let is_active = t.id == self.active_id;
         let is_hover = !suppress_hover && Some(i) == self.hover_idx;
@@ -531,9 +547,6 @@ impl TabBar {
         let transform = pill_transform;
 
         Self::draw_pill_presence(scene, transform, &shape, r, t, theme, presence);
-        self.draw_pill_body(
-            scene, transform, r, tr, theme, i, t, is_pinned, is_active, is_hover,
-        );
 
         // Chip strength ramps 0→1 as the trailing zone opens, reaching full once the
         // zone clears the chip by CHIP_FADE_PX. Close-hover tints red; tab-hover
@@ -544,59 +557,43 @@ impl TabBar {
             .get(i)
             .copied()
             .unwrap_or_else(|| Reveal::None.reserve());
-        self.draw_pill_close_chip(
-            scene,
-            transform,
+        let pill = PillPaint {
             i,
-            t,
-            dx,
-            dy,
-            &look,
+            tab: t,
+            rect: r,
+            offset: r.origin() - target.origin(),
+            look,
             is_pinned,
             is_active,
             is_hover,
             suppress_hover,
             zone,
-            text_primary,
-            text_dim,
-            theme,
-        );
-        self.draw_pill_action_chips(
-            scene,
-            transform,
-            i,
-            dx,
-            dy,
-            is_pinned,
-            suppress_hover,
-            zone,
-            text_primary,
-            text_dim,
-            theme,
-        );
+        };
+        let mut ctx = PaintCtx::new(scene, transform, tr, theme);
+        self.draw_pill_body(&mut ctx, &pill);
+        self.draw_pill_close_chip(&mut ctx, &pill);
+        self.draw_pill_action_chips(&mut ctx, &pill);
     }
 
     /// The pill's icon/dot/title content — pinned pills get an app icon or
     /// accent dot only; unpinned pills add the (elided) title text. Split out
     /// of `draw_pill_inner` to keep it inside the `too_many_lines` budget.
-    // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Tab title painting reuses the resolved tab descriptor/index, bounds, pin/active/hover states, and render context from the pill painter."
-    )]
-    fn draw_pill_body(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        r: Rect,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        i: usize,
-        t: &TabDescriptor,
-        is_pinned: bool,
-        is_active: bool,
-        is_hover: bool,
-    ) {
+    fn draw_pill_body(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let &PillPaint {
+            i,
+            tab: t,
+            rect: r,
+            is_pinned,
+            is_active,
+            is_hover,
+            ..
+        } = pill;
         let text_primary = theme.tokens.colors.text_primary;
         let text_dim = theme.tokens.colors.text_dim;
         let text_color = if is_active || is_hover {
@@ -779,38 +776,33 @@ impl TabBar {
 
     /// The close × (or unsaved-changes dot) chip. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
-    // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "each bool is an independent fact about the pill's per-frame render state \
-                  `draw_pill_inner` already resolved once; bundling into a struct would just \
-                  move the count, not reduce it"
-    )]
-    fn draw_pill_close_chip(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        i: usize,
-        t: &TabDescriptor,
-        dx: f64,
-        dy: f64,
-        look: &PillAppearance,
-        is_pinned: bool,
-        is_active: bool,
-        is_hover: bool,
-        suppress_hover: bool,
-        zone: f64,
-        text_primary: vello::peniko::Color,
-        text_dim: vello::peniko::Color,
-        theme: &Theme,
-    ) {
+    fn draw_pill_close_chip(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let &PillPaint {
+            i,
+            tab: t,
+            offset,
+            ref look,
+            is_pinned,
+            is_active,
+            is_hover,
+            suppress_hover,
+            zone,
+            ..
+        } = pill;
+        let text_primary = theme.tokens.colors.text_primary;
+        let text_dim = theme.tokens.colors.text_dim;
         let close_rect_target = self.close_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if !(close_affordance_visible(look, is_pinned) && close_rect_target.area() > 0.0) {
             return;
         }
         let alpha = chip_alpha_at(zone, CLOSE_HIT_PX);
-        let close_r = shift_rect(close_rect_target, vello::kurbo::Vec2::new(dx, dy));
+        let close_r = shift_rect(close_rect_target, offset);
         let close_hover = !suppress_hover && Some(i) == self.hover_close_idx;
         if self.modified_ids.contains(&t.id) && !is_hover && !close_hover {
             // Unsaved changes, pointer elsewhere: the slot reads as a dot
@@ -868,36 +860,32 @@ impl TabBar {
     /// Maximize/search chips, painted exactly when `apply_layout` found room,
     /// so they slide out of the pill's right edge as it opens. Split out of
     /// `draw_pill_inner` to keep it inside the `too_many_lines` budget.
-    // Every parameter is state `draw_pill_inner` already resolved once per pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Action chips reuse the tab index, animated offset, pin/hover flags, reveal width, resolved text colors, and themed render context."
-    )]
-    fn draw_pill_action_chips(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        i: usize,
-        dx: f64,
-        dy: f64,
-        is_pinned: bool,
-        suppress_hover: bool,
-        zone: f64,
-        text_primary: vello::peniko::Color,
-        text_dim: vello::peniko::Color,
-        theme: &Theme,
-    ) {
+    fn draw_pill_action_chips(&self, ctx: &mut PaintCtx<'_>, pill: &PillPaint<'_>) {
+        let PaintCtx {
+            scene,
+            transform,
+            theme,
+            ..
+        } = ctx.reborrow();
+        let &PillPaint {
+            i,
+            offset,
+            is_pinned,
+            suppress_hover,
+            zone,
+            ..
+        } = pill;
         if suppress_hover || is_pinned {
             return;
         }
         let chip_tint = chip_hover_tint(theme, ACTION_HOVER_TINT_ALPHA);
-        let icon_idle = text_dim;
-        let icon_active = text_primary;
+        let icon_idle = theme.tokens.colors.text_dim;
+        let icon_active = theme.tokens.colors.text_primary;
 
         let max_rect_target = self.max_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if self.show_maximize && max_rect_target.area() > 0.0 {
             let alpha = chip_alpha_at(zone, CLOSE_HIT_PX + ACTION_GAP + ACTION_W);
-            let max_r = shift_rect(max_rect_target, vello::kurbo::Vec2::new(dx, dy));
+            let max_r = shift_rect(max_rect_target, offset);
             let max_hover = Some(i) == self.hover_max_idx;
             if max_hover {
                 // The same round the close chip gets, centred on the glyph,
@@ -927,7 +915,7 @@ impl TabBar {
         let search_rect_target = self.search_rects.get(i).copied().unwrap_or(Rect::ZERO);
         if search_rect_target.area() > 0.0 {
             let alpha = chip_alpha_at(zone, CHIP_CLUSTER_W);
-            let search_r = shift_rect(search_rect_target, vello::kurbo::Vec2::new(dx, dy));
+            let search_r = shift_rect(search_rect_target, offset);
             let search_hover = Some(i) == self.hover_search_idx;
             if search_hover {
                 let ring = chip_hover_ring(search_r);
@@ -2252,7 +2240,6 @@ fn chip_hover_tint(theme: &Theme, alpha: u8) -> vello::peniko::Color {
 }
 
 impl Widget for TabBar {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2438,28 +2425,17 @@ impl Widget for TabBar {
         self.draw_drag_ghost(scene, transform, tr, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == ElementState::Pressed
             && self.handle_keyboard_navigation(&event.logical_key)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.on_cursor_moved(*position, scale_factor, handled);
+                self.on_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2476,7 +2452,7 @@ impl Widget for TabBar {
                     && let Some(t) = self.tabs.get(idx)
                 {
                     self.pending_context_menu = Some((t.id, p));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -2484,9 +2460,9 @@ impl Widget for TabBar {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(handled);
-                if *handled {
-                    *focus_target = Some(node_id);
+                self.on_left_press(ctx.handled);
+                if *ctx.handled {
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
@@ -2494,7 +2470,7 @@ impl Widget for TabBar {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.finish_drag_release(handled);
+                self.finish_drag_release(ctx.handled);
             }
             _ => {}
         }
@@ -2598,8 +2574,8 @@ impl Widget for TabBar {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;
@@ -2781,10 +2757,6 @@ impl TabBar {
     /// out of `draw` to keep that dispatcher inside the `too_many_lines` budget.
     // Every parameter here is state `draw` already resolved once per frame — no
     // hidden refetching.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The tab-strip pass needs render context and presence together with the current layout interpolation and insertion-fade duration."
-    )]
     fn draw_pills(
         &self,
         scene: &mut Scene,
@@ -2864,7 +2836,13 @@ impl TabBar {
             }
             // Uses `pill_transform` so the fade's y-offset composes with any
             // layout-spring dx/dy.
-            self.draw_pill_inner(scene, pill_transform, i, r, tr, theme, presence, false);
+            self.draw_pill_inner(
+                &mut PaintCtx::new(scene, pill_transform, tr, theme),
+                presence,
+                i,
+                r,
+                false,
+            );
 
             // Must mirror the push above exactly — `pill_alpha_active` tracks that.
             if pill_alpha_active {
@@ -3118,7 +3096,11 @@ impl TabBar {
             &clip,
         );
         self.draw_pill_inner(
-            scene, transform, source_idx, ghost_rect, tr, theme, presence, true,
+            &mut PaintCtx::new(scene, transform, tr, theme),
+            presence,
+            source_idx,
+            ghost_rect,
+            true,
         );
         scene.pop_layer();
     }
@@ -3441,6 +3423,7 @@ fn draw_app_icon(
 mod tests {
     use super::*;
     use crate::presence::user_color;
+    use automerge::AutoCommit;
 
     fn bar() -> TabBar {
         TabBar::new(
@@ -4100,14 +4083,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert_eq!(
@@ -4170,14 +4155,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert_eq!(
@@ -4382,14 +4369,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
 
             assert!(
@@ -4793,14 +4782,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.drop_zone_target(),
@@ -4820,14 +4811,16 @@ mod tests {
             };
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(b.drop_zone_target(), Some(3), "past C's mid → gap 3");
 
@@ -4838,14 +4831,16 @@ mod tests {
             };
             b.handle_event(
                 &release,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(b.drop_zone_target(), None, "release clears target");
             assert!(
@@ -4885,14 +4880,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_drop_idx(),
@@ -4911,14 +4908,16 @@ mod tests {
             };
             b.handle_event(
                 &release,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_drop_idx(),
@@ -5523,14 +5522,16 @@ mod tests {
             };
             b.handle_event(
                 &moved,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             // Pressing the closing pill's old close chip must NOT re-enter start_closing(2).
             let before_count = b.closing_tab_ids().len();
@@ -5542,14 +5543,16 @@ mod tests {
             };
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             // The closing set may stay the same or *add* tab 3 (its close chip
             // overlaps tab 2's old one here) — the invariant is that tab 2 isn't
@@ -6015,14 +6018,16 @@ mod tests {
             let root_id = automerge::ROOT;
             b.handle_event(
                 &press,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state,
-                &root_id,
-                &mut handled,
-                &mut focus_target,
-                node,
-                &tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state,
+                    path: &root_id,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: node,
+                    taffy: &tree,
+                },
             );
             assert_eq!(
                 b.hover_idx, None,
@@ -6444,14 +6449,16 @@ mod tests {
                 device_id: unsafe { std::mem::zeroed() },
                 position: winit::dpi::PhysicalPosition::new(p.x, p.y),
             },
-            1.0,
-            &mods,
-            &mut doc,
-            &obj,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &obj,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -6476,14 +6483,16 @@ mod tests {
                 state,
                 button: MouseButton::Left,
             },
-            1.0,
-            &mods,
-            &mut doc,
-            &obj,
-            handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &obj,
+                handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

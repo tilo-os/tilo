@@ -32,7 +32,7 @@ fn report_identity() -> String {
     format!(
         "{}-{:?}-{}",
         std::process::id(),
-        std::time::SystemTime::now(),
+        ui::time::wall(),
         NEXT_REPORT.fetch_add(1, Ordering::Relaxed)
     )
 }
@@ -419,7 +419,7 @@ pub(super) struct MigrationStore {
 
 impl MigrationStore {
     pub(super) fn open_default() -> Result<Self, String> {
-        let root = xdg_paths::data_local_dir()
+        let root = tilo_paths::data_local_dir()
             .ok_or_else(|| "no private local data directory is available".to_string())?
             .join("tilo-imager")
             .join("migrations");
@@ -622,8 +622,8 @@ impl MigrationStore {
     }
 
     fn save_issues(&self, operation: &OperationRecord) -> Result<String, String> {
-        let stamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let stamp = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_err(|e| e.to_string())?
             .as_nanos();
         let name = format!("{}.{stamp}.issues", operation.id);
@@ -1156,7 +1156,7 @@ mod tests {
                 .unwrap();
             let deadline = tilo_test_env::hang_deadline();
             while !root.join("owner-ready").exists() {
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
                     panic!(

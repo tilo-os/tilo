@@ -84,7 +84,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&ContainersApp::new(false), doc),
+        resources: |doc| ui::resources::resources(&ContainersApp::new(false), doc),
         palette: ["Open web-frontend", "Open postgres"],
     }
 
@@ -140,14 +140,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -317,7 +319,7 @@ mod tests {
             // A stray click on the surface, too.
             send(&mut app, &mut doc, &left_press());
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one container-engine root");
             let engine = &resources[0];
             assert_eq!(engine.kind, "containers.engine");
@@ -338,7 +340,7 @@ mod tests {
                     && !action.contract.availability.is_available()
             }));
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
         }

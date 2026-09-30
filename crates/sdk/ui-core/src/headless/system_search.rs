@@ -5,8 +5,9 @@ use super::{
     PresenceCtx, Rect, TaffyTree, Theme, Widget, WindowEvent,
 };
 use crate::CommandPalette;
+use crate::paint::PaintCtx;
 use crate::search::system::filters::{
-    FilterAction, FilterText, KindChip, ScopeSegment, SearchFilters, toggle_kind,
+    FilterAction, FilterStripSlot, FilterText, KindChip, ScopeSegment, SearchFilters, toggle_kind,
 };
 use crate::search::system::{
     self, Provider, Query, ResourceKind, SearchBudget, SearchCursor, SearchPage, SearchRow,
@@ -156,7 +157,6 @@ struct Overlay {
     hover: Option<Point>,
 }
 impl Widget for Overlay {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -178,13 +178,12 @@ impl Widget for Overlay {
     ) {
         self.palette.draw(scene, transform, text, theme, presence);
         self.filters.draw(
-            scene,
-            transform,
-            text,
-            theme,
-            self.palette.filter_strip_rect(),
-            self.palette.filter_strip_row_height(),
-            self.palette.host_filter_strip_rows(),
+            &mut PaintCtx::new(scene, transform, text, theme),
+            FilterStripSlot {
+                band: self.palette.filter_strip_rect(),
+                row_height: self.palette.filter_strip_row_height(),
+                reserved_rows: self.palette.host_filter_strip_rows(),
+            },
             self.hover,
         );
         let rect = self.palette.get_rect();
@@ -197,21 +196,8 @@ impl Widget for Overlay {
             Some((rect.width() - 24.0).max(1.0) as f32),
         );
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.palette.handle_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.palette.handle_event(event, ctx);
     }
     fn name(&self) -> &str {
         "SystemSearch"
@@ -825,14 +811,16 @@ impl FrameHarness {
         let mut focus = None;
         overlay.palette.handle_event(
             event,
-            self.input_scale,
-            &self.modifiers,
-            &mut self.state.doc,
-            &self.state.root,
-            &mut handled,
-            &mut focus,
-            NodeId::from(0u64),
-            &self.taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: self.input_scale,
+                modifiers: &self.modifiers,
+                state: &mut self.state.doc,
+                path: &self.state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::from(0u64),
+                taffy: &self.taffy,
+            },
         );
         let edited = before != overlay.palette.query();
         if edited {
@@ -875,13 +863,12 @@ impl FrameHarness {
                 &self.presence,
             );
             let rows = overlay.filters.draw(
-                &mut scratch,
-                Affine::IDENTITY,
-                &mut self.text,
-                &self.theme,
-                overlay.palette.filter_strip_rect(),
-                overlay.palette.filter_strip_row_height(),
-                overlay.palette.host_filter_strip_rows(),
+                &mut PaintCtx::new(&mut scratch, Affine::IDENTITY, &mut self.text, &self.theme),
+                FilterStripSlot {
+                    band: overlay.palette.filter_strip_rect(),
+                    row_height: overlay.palette.filter_strip_row_height(),
+                    reserved_rows: overlay.palette.host_filter_strip_rows(),
+                },
                 overlay.hover,
             );
             if !overlay.palette.set_host_filter_strip_rows(rows) {

@@ -1,9 +1,9 @@
 //! The identity broker over this session's workspace tree and channel service.
 
-use crate::shell::channel_encryption::{ChannelAccess, ChannelKeyProvider};
+use crate::shell::channel_encryption::ChannelKeyProvider;
 use crate::shell::state::{RoomId, Workspace, WorkspaceTreeHandle};
 use std::{io, path::PathBuf, sync::Arc};
-use tilo_identity_host::broker::{ChannelKeySource, ChannelKeys, WorkspaceMembership};
+use tilo_identity_host::broker::WorkspaceMembership;
 pub use tilo_identity_host::broker::{
     IdentityBrokerHandle, LocalDeviceIdentity, trusted_current_device_public,
 };
@@ -37,29 +37,6 @@ impl WorkspaceMembership for Membership {
         {
             read(workspace);
         }
-    }
-}
-
-impl ChannelKeySource for ChannelKeyProvider {
-    fn access(
-        &self,
-        room: RoomId,
-        channel: collab_types::ChannelId,
-        known_generation: u64,
-    ) -> Option<Result<ChannelKeys, String>> {
-        use runtime_identity::wire::ChannelAccess as Wire;
-        let channels = self.get()?;
-        let (access, generation) = channels.access(room, channel);
-        Some(match access {
-            ChannelAccess::Ready(keys) if generation != known_generation => keys
-                .to_bytes()
-                .map(|bytes| (Wire::Ready, generation, bytes.to_vec()))
-                .map_err(|error| error.to_string()),
-            ChannelAccess::Ready(_) => Ok((Wire::Ready, generation, Vec::new())),
-            ChannelAccess::Waiting => Ok((Wire::Waiting, generation, Vec::new())),
-            ChannelAccess::Removed => Ok((Wire::Removed, generation, Vec::new())),
-            ChannelAccess::Unavailable => Ok((Wire::Unavailable, generation, Vec::new())),
-        })
     }
 }
 

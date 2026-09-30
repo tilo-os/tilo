@@ -87,8 +87,7 @@ pub struct HostedProcessServices {
 #[cfg(unix)]
 impl Default for HostedProcessServices {
     fn default() -> Self {
-        let ush = std::env::var_os("XDG_RUNTIME_DIR")
-            .map(std::path::PathBuf::from)
+        let ush = xdg_paths::xdg::runtime_dir()
             .and_then(|runtime| Self::discover_from_runtime_dir(&runtime).ush);
         Self { ush }
     }
@@ -260,9 +259,9 @@ fn wait_for_unix_connect(
     fd: std::os::fd::RawFd,
     timeout: std::time::Duration,
 ) -> std::io::Result<()> {
-    let deadline = std::time::Instant::now() + timeout;
+    let deadline = ui::time::now() + timeout;
     loop {
-        let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+        let remaining = deadline.saturating_duration_since(ui::time::now());
         let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
         let mut event = libc::pollfd {
             fd,

@@ -2,7 +2,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_ui::ColorCompat;
 use tilo_ui::offscreen::OffscreenRenderer;
@@ -35,8 +34,6 @@ impl Preview {
 }
 
 impl Widget for Preview {
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
-
     #[allow(
         clippy::expect_used,
         reason = "a fresh visual-harness layout tree cannot reject its first leaf"
@@ -188,20 +185,6 @@ impl Widget for Preview {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "FloatingSurfacePreview"
     }
@@ -229,7 +212,7 @@ fn stamp(window: &mut dyn Widget, theme: &Theme, tr: &mut TextRenderer, scene: &
 pub fn run(_: &[String]) {
     let light = std::env::var("TILO_SHOTS_THEME").is_ok_and(|v| v == "light");
     let theme = if light { Theme::light() } else { Theme::dark() }.with_reduce_motion(true);
-    let out = std::env::var("QUICK_UI_SNAPSHOT_OUT")
+    let out = tilo_ui::env::var("TILO_UI_SNAPSHOT_OUT")
         .unwrap_or_else(|_| "/tmp/tilo-floating-surfaces.png".into());
     let mut renderer = OffscreenRenderer::new(1280, 720);
     let mut scene = Scene::new();

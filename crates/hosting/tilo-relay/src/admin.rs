@@ -321,11 +321,7 @@ fn cmd_home_peer_remove(
         let mut revocation = tilo_user_identity::RevocationEntry {
             user_public_key: root.verifying_key().to_bytes(),
             revoked_device_public_key: target,
-            revoked_at_ns: std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map_or(0, |duration| {
-                    u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-                }),
+            revoked_at_ns: tilo_clock::unix_now_ns(),
             reason: tilo_user_identity::RevocationReason::Retired,
             signature: [0; 64],
         };
@@ -482,9 +478,7 @@ fn persist_canonical_revocation(
 fn persist_fleet_revocation(
     revocation: &tilo_user_identity::RevocationEntry,
 ) -> anyhow::Result<()> {
-    let config = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    let config = xdg_paths::xdg::config_home()
         .ok_or_else(|| anyhow::anyhow!("user configuration directory is unavailable"))?;
     let path = config
         .join("tilo/identities/fleets")
@@ -705,11 +699,7 @@ fn cmd_revoke_device(
     let mut entry = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: pk,
-        revoked_at_ns: std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_or(0, |duration| {
-                u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-            }),
+        revoked_at_ns: tilo_clock::unix_now_ns(),
         reason,
         signature: [0; 64],
     };

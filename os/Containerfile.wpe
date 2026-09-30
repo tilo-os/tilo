@@ -20,7 +20,11 @@ ARG WPE_BUILDROOT_REF
 # CI restores these checksum-pinned archives before the build; local builds use
 # the same resumable verifier (os/dev/cache-github-assets.sh).
 FROM scratch AS external-assets
-COPY --from=github-assets / /
+# Only these three archives are WPE inputs. Copying the whole asset cache
+# invalidates the hour-long compile when an unrelated OS/Windows asset changes.
+COPY --from=github-assets /libwpe-1.16.3.tar.xz /
+COPY --from=github-assets /wpebackend-fdo-1.16.1.tar.xz /
+COPY --from=github-assets /wpewebkit-2.52.6.tar.xz /
 
 # The browser's engine is WPE WebKit; Fedora ships no WPE packages, so the
 # stack (libwpe + wpebackend-fdo + wpewebkit) is compiled from release
@@ -53,3 +57,10 @@ RUN --mount=type=cache,target=/wpe-cache \
     JOBS="$WPE_BUILD_JOBS" \
     bash /build-wpe.sh build \
     && { [ ! -L /wpe/usr/lib ] || rm /wpe/usr/lib; }
+
+# The engine alone, as build-buildroots.yml publishes it and os/Containerfile
+# consumes it (`wpe-builder=docker-image://…`): the /wpe tree and the
+# architecture it was compiled for, without the multi-gigabyte buildroot.
+FROM scratch AS wpe-stage
+COPY --from=wpe-builder-1 /wpe/ /wpe/
+COPY --from=wpe-builder-1 /usr/lib/tilo/wpe-buildroot-arch /usr/lib/tilo/wpe-stage-arch

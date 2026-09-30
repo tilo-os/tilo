@@ -211,12 +211,16 @@ pub fn local_moment() -> settings_store::day_schedule::LocalMoment {
 }
 
 impl Theme {
-    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
-        // Derived here, the single funnel every constructor passes through,
-        // so the terminal and every syntax-highlighting surface track the OS
-        // theme instead of a hard-coded one.
+    /// Derived on every colour change, so the terminal and every
+    /// syntax-highlighting surface track the OS theme instead of a
+    /// hard-coded one.
+    fn derive_palettes(tokens: &mut Tokens) {
         tokens.terminal_palette = crate::tokens::TerminalPalette::from_colors(&tokens.colors);
         tokens.syntax = crate::tokens::SyntaxPalette::from_colors(&tokens.colors);
+    }
+
+    fn from_tokens(name: &str, mut tokens: Tokens) -> Self {
+        Self::derive_palettes(&mut tokens);
         let c = &tokens.colors;
         Self {
             name: name.into(),
@@ -632,6 +636,11 @@ impl Theme {
     /// machine with no preference and one whose settings file is corrupt
     /// both want a desktop that starts.
     pub fn configured() -> Self {
+        if let Some(source) = settings_store::installed_source() {
+            let text = serde_json::Value::Object(source.load()).to_string();
+            let reduce_motion_override = crate::host::environment().accessibility.reduce_motion;
+            return Self::configured_from_text(&text, reduce_motion_override);
+        }
         Self::configured_from(settings_store::settings_path().as_deref())
     }
 
@@ -646,9 +655,20 @@ impl Theme {
     }
 
     fn configured_from_text(text: &str, reduce_motion_override: bool) -> Self {
-        let mut theme = Self::from_settings_json(text).unwrap_or_else(Self::dark);
-        let thick = serde_json::from_str::<serde_json::Value>(text)
-            .ok()
+        let document = serde_json::from_str::<serde_json::Value>(text).ok();
+        // The accessibility switch is separate from the theme choice and wins
+        // over it, as it does for apps reading the appearance portal.
+        let high_contrast = document
+            .as_ref()
+            .and_then(|v| v.get("appearance")?.get("high_contrast")?.as_bool())
+            .unwrap_or(false);
+        let mut theme = if high_contrast {
+            Self::high_contrast()
+        } else {
+            Self::from_settings_json(text).unwrap_or_else(Self::dark)
+        };
+        let thick = document
+            .as_ref()
             .and_then(|v| v.get("accessibility")?.get("thick_text_caret")?.as_bool())
             .unwrap_or(false);
         theme.caret_width = if thick { 4.0 } else { 2.0 };
@@ -813,6 +833,22 @@ impl Theme {
             "highcontrast" | "contrast" => Self::high_contrast(),
             _ => return None,
         })
+    }
+
+    /// Re-accented with a colour the host chose — the macOS or desktop
+    /// accent a standalone app follows. The ramp, focus ring and derived
+    /// palettes follow it as they follow a preset's accent; hover is the same
+    /// colour a shade darker.
+    #[must_use]
+    pub fn with_accent(mut self, accent: [u8; 3]) -> Self {
+        let hover = rgb(mix_rgb(accent, [0, 0, 0], 0.15));
+        self.tokens.colors.set_accent(rgb(accent), hover);
+        Self::derive_palettes(&mut self.tokens);
+        let c = &self.tokens.colors;
+        self.accent_primary = c.accent[ACCENT_PRIMARY_IDX];
+        self.accent_hover = c.accent[ACCENT_HOVER_IDX];
+        self.border_focus = c.border_focus;
+        self
     }
 
     #[must_use]
@@ -1753,6 +1789,27 @@ mod configured_theme {
                 Theme::configured_from(Some(&settings)).name,
                 Theme::high_contrast().name,
                 "a settings file asking for high contrast must produce it",
+            );
+
+            // The accessibility switch, whatever theme is chosen beside it.
+            std::fs::write(
+                &settings,
+                r#"{"appearance":{"theme":"Light","high_contrast":true}}"#,
+            )
+            .expect("write settings");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).name,
+                Theme::high_contrast().name,
+                "appearance.high_contrast must reach the shell's chrome",
+            );
+            std::fs::write(
+                &settings,
+                r#"{"appearance":{"theme":"Light","high_contrast":false}}"#,
+            )
+            .expect("write settings");
+            assert_eq!(
+                Theme::configured_from(Some(&settings)).name,
+                Theme::light().name
             );
         }
 

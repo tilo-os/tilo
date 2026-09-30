@@ -46,7 +46,7 @@
 use std::rc::Rc;
 
 #[cfg(feature = "client")]
-use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
+use runtime_portal::NotAvailable;
 
 // Checked-in bindings let app developers build `tilo-app` without installing
 // the Cap'n Proto compiler. build.rs keeps the schema and generated source in
@@ -64,9 +64,6 @@ use runtime_portal::{NotAvailable, UnixCapnpClient, service_fd};
 pub mod collab_capnp {
     include!("generated/collab_capnp.rs");
 }
-
-#[cfg(feature = "client")]
-use capnp_rpc::rpc_twoparty_capnp;
 
 pub mod committed_document;
 pub mod native_media;
@@ -311,9 +308,7 @@ impl CertifiedJoinIdentity {
 /// if the connection fails to establish.
 #[cfg(feature = "client")]
 pub fn try_connect() -> Result<CollabClient, NotAvailable> {
-    let fd = service_fd("collab").ok_or(NotAvailable::ServiceFdMissing)?;
-    let unix = UnixCapnpClient::from_connected_fd(fd, rpc_twoparty_capnp::Side::Client)?;
-    let client: CollabServiceClient = unix.bootstrap();
+    let client: CollabServiceClient = runtime_portal::connect_service("collab")?.bootstrap();
     Ok(CollabClient::from_raw(client))
 }
 
@@ -401,6 +396,17 @@ impl CollabClient {
             inner: Rc::new(handle),
         })
     }
+}
+
+/// One published application action a leased task asks to run: the app
+/// peer that publishes it, its resource and action, and the argument it
+/// carries.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TaskAction<'a> {
+    pub peer_id: u64,
+    pub resource: &'a str,
+    pub action: &'a str,
+    pub argument: Option<&'a str>,
 }
 
 /// Outcome of [`ChannelHandle::invoke_task_step`].
@@ -1545,18 +1551,11 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the broker call fails or its update is not
     /// valid UTF-8.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the arguments mirror the fixed Cap'n Proto task-action method"
-    )]
     pub async fn invoke_task_action(
         &self,
         run_id: u64,
         lease: &str,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
+        target: TaskAction<'_>,
         confirmation_json: &str,
         invocation: &str,
     ) -> Result<(u64, String), NotAvailable> {
@@ -1565,11 +1564,11 @@ impl ChannelHandle {
             let mut params = request.get();
             params.set_run_id(run_id);
             params.set_lease(lease);
-            params.set_peer_id(peer_id);
-            params.set_resource(resource);
-            params.set_action(action);
-            params.set_argument(argument.unwrap_or(""));
-            params.set_has_argument(argument.is_some());
+            params.set_peer_id(target.peer_id);
+            params.set_resource(target.resource);
+            params.set_action(target.action);
+            params.set_argument(target.argument.unwrap_or(""));
+            params.set_has_argument(target.argument.is_some());
             params.set_confirmation_json(confirmation_json);
             params.set_invocation(invocation);
         }
@@ -1599,30 +1598,23 @@ impl ChannelHandle {
     ///
     /// Returns [`NotAvailable`] if the broker refuses the step or its reply
     /// is malformed, including a reply without a committed continuation.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the arguments mirror the fixed Cap'n Proto task-action method"
-    )]
     pub async fn invoke_task_step(
         &self,
         run_id: u64,
         lease: &str,
         step: u32,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
+        target: TaskAction<'_>,
     ) -> Result<TaskStepReply, NotAvailable> {
         let mut request = self.inner.invoke_task_action_request();
         {
             let mut params = request.get();
             params.set_run_id(run_id);
             params.set_lease(lease);
-            params.set_peer_id(peer_id);
-            params.set_resource(resource);
-            params.set_action(action);
-            params.set_argument(argument.unwrap_or(""));
-            params.set_has_argument(argument.is_some());
+            params.set_peer_id(target.peer_id);
+            params.set_resource(target.resource);
+            params.set_action(target.action);
+            params.set_argument(target.argument.unwrap_or(""));
+            params.set_has_argument(target.argument.is_some());
             params.set_confirmation_json("");
             params.set_step_index(step);
             params.set_has_step(true);
@@ -4035,14 +4027,14 @@ mod resolved_invocation_tests {
                 let network = twoparty::VatNetwork::new(
                     read.compat(),
                     write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
                     capnp::message::ReaderOptions::default(),
                 );
                 let task =
                     tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
-                    rpc_twoparty_capnp::Side::Client,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
                 );
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),
@@ -4465,10 +4457,6 @@ impl ChannelHandle {
     /// No error triggers a fallback or generates another invocation identity.
     /// # Errors
     /// Refuses invalid inputs, unsupported servers and uncorrelated observations.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the RPC retains the caller ID and exact immutable invocation fields"
-    )]
     pub async fn invoke_resolved_published_action_durable(
         &self,
         invocation: &[u8; 16],
@@ -4793,14 +4781,14 @@ mod reliable_invocation_tests {
                 let network = twoparty::VatNetwork::new(
                     read.compat(),
                     write.compat_write(),
-                    rpc_twoparty_capnp::Side::Server,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Server,
                     capnp::message::ReaderOptions::default(),
                 );
                 let task =
                     tokio::task::spawn_local(RpcSystem::new(Box::new(network), Some(raw.client)));
                 let connection = runtime_portal::CapnpClient::from_connected_io(
                     client_io,
-                    rpc_twoparty_capnp::Side::Client,
+                    capnp_rpc::rpc_twoparty_capnp::Side::Client,
                 );
                 let channel = ChannelHandle {
                     inner: Rc::new(connection.bootstrap()),

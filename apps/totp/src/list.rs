@@ -16,7 +16,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -25,7 +24,7 @@ use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
 use ui::color_compat::ColorCompat;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{Avatar, Widget};
 
@@ -514,16 +513,15 @@ impl AccountList {
         let code_x = l.code_right - f64::from(code_w);
         // The code and the ring share one centre line (`l.ring_c.y`).
         let code_y = l.ring_c.y - f64::from(code_h) / 2.0;
-        text_renderer.draw_text_styled(
+        text_renderer.draw_style(
             scene,
             &grouped,
-            code_size,
             code_color,
             transform * Affine::translate((code_x, code_y)),
             None,
-            TextWeight::Bold,
-            false,
-            true,
+            &TextStyle::new(code_size)
+                .with_weight(TextWeight::Bold)
+                .with_family(FontChoice::Monospace),
         );
         // "Copy" affordance under the code on hover.
         if copy_hot {
@@ -800,8 +798,6 @@ fn stroke(w: f64) -> vello::kurbo::Stroke {
 }
 
 impl Widget for AccountList {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -868,21 +864,10 @@ impl Widget for AccountList {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 let hit = self.hit(p);
                 let (row, zone) = match hit {
@@ -892,7 +877,7 @@ impl Widget for AccountList {
                 if row != self.hover_row || zone != self.hover_zone {
                     self.hover_row = row;
                     self.hover_zone = zone;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -921,7 +906,7 @@ impl Widget for AccountList {
                         self.selected = Some(id);
                     }
                     self.events.push(ev);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -929,10 +914,10 @@ impl Widget for AccountList {
             {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(pos) => pos.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(pos) => pos.y / ctx.scale_factor,
                 };
                 self.scroll = (self.scroll - dy).clamp(0.0, self.max_scroll());
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -957,6 +942,7 @@ impl Widget for AccountList {
 mod tests {
     use super::*;
     use crate::model::demo_accounts;
+    use automerge::AutoCommit;
 
     fn list_with_demo() -> AccountList {
         let mut l = AccountList::new();
@@ -1196,14 +1182,16 @@ mod tests {
         let mut handled = false;
         l.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut None,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

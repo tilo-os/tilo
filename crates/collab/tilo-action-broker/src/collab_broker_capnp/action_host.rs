@@ -14,20 +14,21 @@ use collab_types::caps::Actor;
 use tilo_desktop_model::Workspace;
 
 use tilo_actions::remote::{
-    APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, ActionHostError, Caller, CallerPrincipal,
-    CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueResource, CatalogueRow, Completer,
-    Confirmation, InvocationReceipt, InvocationState, InvokeRequest, OWN_PROVIDER, Pending,
-    ReceiptStatus, Reservation, RowVisibility, pending, workspace_provider,
-    workspace_provider_room,
+    APPLICATION_CLOSE_ACTION, APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX,
+    ActionHostError, Caller, CallerPrincipal, CataloguePage, CatalogueProvider, CatalogueQuery,
+    CatalogueResource, CatalogueRow, Completer, Confirmation, InvocationReceipt, InvocationState,
+    InvokeRequest, OWN_PROVIDER, Pending, ReceiptStatus, Reservation, RowVisibility, pending,
+    workspace_provider, workspace_provider_room,
 };
 use tilo_actions::{ActionAddress, ActionDescriptor, Collects, ExecutionLocus, InputSpec};
 
 use super::launchable::{is_launchable_provider, launchable_provider};
 use super::{
     ActionDirectoryBridgeError, ActionDirectoryBridgeReply, ActionDirectoryBridgeResponse,
-    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationOwner, LaunchScope,
-    PublishedAction, PublishedInput, PublishedSurface, ResourceRef, Verb, confirmation_satisfied,
-    permission_verb, published_directory_action, validate_directory_target_input,
+    ActionDirectoryRoot, BrokerActor, CapDecision, CapnpBrokerState, InvocationInputs,
+    InvocationOwner, LaunchScope, PublishedAction, PublishedInput, PublishedSurface, ResourceRef,
+    Verb, confirmation_satisfied, permission_verb, published_directory_action,
+    validate_directory_target_input,
 };
 use crate::automation;
 use crate::collab_broker::CrdtRoute;
@@ -36,7 +37,7 @@ use tilo_automation::SHORTCUTS_APP_ID;
 impl BrokerActor {
     /// The broker actor a caller is admitted as.
     #[must_use]
-    pub fn for_caller(caller: &Caller) -> Self {
+    pub(super) fn for_caller(caller: &Caller) -> Self {
         match caller.principal() {
             CallerPrincipal::Person(id) => Self::person(id.clone()),
             CallerPrincipal::Agent(id) => Self::agent(format!("agent:{id}")),
@@ -162,21 +163,63 @@ fn descriptor(action: &PublishedAction) -> ActionDescriptor {
     }
 }
 
-fn app_open_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+fn app_open_descriptor(app: &crate::services::LaunchableApplication) -> ActionDescriptor {
+    let display_name = &app.display_name;
+    let (resource_kind, description) = if app.unconfined {
+        (
+            "applications.host-app",
+            "Launch this unconfined host application into the current workspace. It runs \
+             outside every Tilo sandbox with the user's own files and publishes no typed \
+             actions: drive its window with the computer tool",
+        )
+    } else {
+        (
+            "applications.app",
+            "Launch this application into the current workspace",
+        )
+    };
     ActionDescriptor {
         address: ActionAddress::new(
-            format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
+            format!("{APPLICATION_RESOURCE_PREFIX}{}", app.package_id),
             APPLICATION_OPEN_ACTION,
         ),
-        resource_kind: "applications.app".into(),
-        resource_label: display_name.to_string(),
+        resource_kind: resource_kind.into(),
+        resource_label: display_name.clone(),
         action_label: format!("Open {display_name}"),
-        description: Some("Launch this application into the current workspace".into()),
+        description: Some(description.into()),
         locus: ExecutionLocus::default(),
         kind: tilo_actions::OperationKind::Effect,
         contract: tilo_actions::ActionContract::default(),
         // An invocation may carry the content hash of bytes to open
         // read-only as its text argument; without one the app opens empty.
+        input: InputSpec::None,
+        params: Vec::new(),
+        view: None,
+    }
+}
+
+fn app_close_descriptor(package_id: &str, display_name: &str) -> ActionDescriptor {
+    ActionDescriptor {
+        address: ActionAddress::new(
+            format!("{APPLICATION_RESOURCE_PREFIX}{package_id}"),
+            APPLICATION_CLOSE_ACTION,
+        ),
+        resource_kind: "applications.app".into(),
+        resource_label: display_name.to_string(),
+        action_label: format!("Close {display_name}"),
+        description: Some(
+            "Close this application's windows in the current workspace; opening it again \
+             starts it with the permissions it holds now"
+                .into(),
+        ),
+        locus: ExecutionLocus::default(),
+        kind: tilo_actions::OperationKind::Effect,
+        contract: tilo_actions::ActionContract {
+            permission: tilo_actions::PermissionRequirement::Write,
+            risk: tilo_actions::RiskLevel::Low,
+            retry: tilo_actions::RetryPolicy::Idempotent,
+            ..tilo_actions::ActionContract::default()
+        },
         input: InputSpec::None,
         params: Vec::new(),
         view: None,
@@ -367,7 +410,6 @@ impl CapnpBrokerState {
         let Ok(tree) = membership.snapshot() else {
             return Vec::new();
         };
-        let actor = BrokerActor::for_caller(caller);
         tree.workspaces
             .into_iter()
             .filter(|workspace| {
@@ -384,7 +426,9 @@ impl CapnpBrokerState {
                 }
             })
             .map(|workspace| {
-                let policy = actor.policy_in(&workspace, now);
+                let policy = self
+                    .caller_actor(caller, &workspace.room.to_string())
+                    .policy_in(&workspace, now);
                 (workspace, policy, now)
             })
             .collect()
@@ -596,7 +640,32 @@ impl CapnpBrokerState {
                             action_row(
                                 workspace_provider(&room),
                                 &app.package_id,
-                                app_open_descriptor(&app.package_id, &app.display_name),
+                                app_open_descriptor(&app),
+                            )
+                        }),
+                );
+                rows.extend(
+                    self.services
+                        .launcher
+                        .as_ref()
+                        .filter(|launcher| launcher.closes_applications())
+                        .map(|launcher| launcher.applications())
+                        .unwrap_or_default()
+                        .into_iter()
+                        .filter(|app| live_apps.contains(&app.package_id))
+                        .filter(|app| {
+                            workspace.decide_at(
+                                &policy,
+                                &ResourceRef::App(app.package_id.clone()),
+                                Verb::Write,
+                                now,
+                            ) == CapDecision::Allow
+                        })
+                        .map(|app| {
+                            action_row(
+                                workspace_provider(&room),
+                                &app.package_id,
+                                app_close_descriptor(&app.package_id, &app.display_name),
                             )
                         }),
                 );
@@ -712,7 +781,7 @@ impl CapnpBrokerState {
         root: &ActionDirectoryRoot,
         query: &CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionHostError>> {
-        let actor = BrokerActor::for_caller(caller);
+        let actor = self.caller_actor(caller, &root.cluster_id);
         let queue = self.action_directory_request_queue();
         let reply = if let Some(target) = &query.target {
             let Some(revision) = query
@@ -1124,7 +1193,7 @@ impl CapnpBrokerState {
             Ok(Reservation::Reserved) => {}
         }
         let resolved = self.action_directory_request_queue().try_resolve_pending(
-            BrokerActor::for_caller(caller),
+            self.caller_actor(caller, &root.cluster_id),
             &root.cluster_id,
             root.peer_id,
             revision,
@@ -1206,7 +1275,7 @@ impl CapnpBrokerState {
         };
         let offered =
             published_directory_action(&row).map_err(|_| ActionHostError::UnknownAction)?;
-        let actor = BrokerActor::for_caller(caller);
+        let actor = self.caller_actor(caller, &root.cluster_id);
         let token = self.confirmation_token(
             root.peer_id,
             &offered,
@@ -1228,10 +1297,12 @@ impl CapnpBrokerState {
         self.start_invocation_from_offered(
             root.peer_id,
             (surface, offered),
-            argument,
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument,
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             request.revision.as_deref(),
         )
         .map(|job| job.id)
@@ -1246,14 +1317,13 @@ impl CapnpBrokerState {
         origin: Option<&super::published_invocation::InvocationCaller>,
         request: &InvokeRequest,
     ) -> Result<u64, ActionHostError> {
-        let actor = BrokerActor::for_caller(caller);
         let address = &request.target.address;
         let argument = request.argument.to_slot();
         let provider = request.target.provider.as_str();
         if let Some(room) = workspace_provider_room(provider) {
             return self.start_workspace_action(
                 caller,
-                &actor,
+                &self.caller_actor(caller, room),
                 room,
                 launch,
                 request,
@@ -1267,7 +1337,7 @@ impl CapnpBrokerState {
                 .parse::<u64>()
                 .map_err(|_| ActionHostError::UnknownAction)?
         };
-        let offered = self
+        let (offered, room) = self
             .published_surfaces()
             .into_iter()
             .find(|surface| surface.peer_id == peer_id && surface.live)
@@ -1293,9 +1363,10 @@ impl CapnpBrokerState {
                     &action.action,
                     action.contract.permission,
                 )
-                .then_some(action)
+                .then_some((action, surface.route.cluster_id))
             })
             .ok_or(ActionHostError::UnknownAction)?;
+        let actor = self.caller_actor(caller, &room);
         let token = self.confirmation_token(
             peer_id,
             &offered,
@@ -1307,10 +1378,12 @@ impl CapnpBrokerState {
             peer_id,
             &address.resource,
             &address.action,
-            argument.as_deref(),
-            &actor,
-            token.as_deref(),
-            request.context.clone(),
+            InvocationInputs {
+                argument: argument.as_deref(),
+                actor: &actor,
+                confirmation_token: token.as_deref(),
+                context: request.context.clone(),
+            },
             None,
             origin.cloned(),
         )
@@ -1341,6 +1414,15 @@ impl CapnpBrokerState {
             if caller.room().is_none() {
                 return Err(ActionHostError::UnknownAction);
             }
+            let author = match caller.principal() {
+                CallerPrincipal::Person(person)
+                    if workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Write, now)
+                        == CapDecision::Allow =>
+                {
+                    Some(person.as_str())
+                }
+                _ => None,
+            };
             return self
                 .launch_application(
                     &workspace,
@@ -1351,8 +1433,19 @@ impl CapnpBrokerState {
                     crate::services::LaunchContent {
                         hash: launch_content_hash(argument),
                         caller: launch,
+                        author,
                     },
                 )
+                .map_err(refusal);
+        }
+        if let Some(app_id) = address.resource.strip_prefix(APPLICATION_RESOURCE_PREFIX)
+            && address.action == APPLICATION_CLOSE_ACTION
+        {
+            if caller.room().is_none() {
+                return Err(ActionHostError::UnknownAction);
+            }
+            return self
+                .close_application(&workspace, &policy, now, actor, app_id)
                 .map_err(refusal);
         }
         if address.resource == automation::LIBRARY_RESOURCE
@@ -1917,6 +2010,65 @@ impl CapnpBrokerState {
         Ok(id)
     }
 
+    /// Close `app_id`'s windows in `workspace` and record the terminal
+    /// outcome as an invocation.
+    ///
+    /// # Errors
+    ///
+    /// Returns a message when the caller may not change the application or
+    /// the host cannot close applications.
+    pub fn close_application(
+        &self,
+        workspace: &Workspace,
+        policy: &Actor,
+        now: u64,
+        actor: &BrokerActor,
+        app_id: &str,
+    ) -> Result<u64, String> {
+        if workspace.decide_at(
+            policy,
+            &ResourceRef::App(app_id.to_string()),
+            Verb::Write,
+            now,
+        ) != CapDecision::Allow
+        {
+            return Err("the caller is not allowed to close that application".into());
+        }
+        let launcher = self
+            .services
+            .launcher
+            .as_ref()
+            .filter(|launcher| launcher.closes_applications())
+            .ok_or_else(|| "closing applications is unsupported on this host".to_string())?;
+        let id = self
+            .invocation_id
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let invocation = tilo_actions::InvocationId(uuid::Uuid::from_u128(u128::from(id)));
+        let update = match launcher.close(app_id, workspace) {
+            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
+                invocation,
+                output: tilo_actions::ActionOutput::default(),
+            },
+            Err(error) => tilo_actions::InvocationUpdate::Failed {
+                invocation,
+                error: tilo_actions::ActionFailure {
+                    code: "close_failed".into(),
+                    message: error,
+                    details: None,
+                    retryable: false,
+                },
+            },
+        };
+        self.record_completion(
+            id,
+            InvocationOwner::Local {
+                actor: actor.id.clone(),
+            },
+            update,
+        );
+        Ok(id)
+    }
+
     #[must_use]
     pub fn remote_job(&self, caller: &Caller, id: &tilo_actions::InvocationId) -> Option<u64> {
         self.remote_invocations
@@ -2079,5 +2231,210 @@ mod launch_content_tests {
             tilo_actions::ARGUMENTS_JSON_PREFIX
         );
         assert_eq!(launch_content_hash(Some(&nonempty)), nonempty);
+    }
+}
+
+#[cfg(test)]
+mod foreign_caller_tests {
+    use super::super::{BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher};
+    use super::{CapDecision, ResourceRef, Verb};
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+    use tilo_actions::remote::Caller;
+
+    /// Every room is governed by one device.
+    struct GovernedBy([u8; 32]);
+
+    impl crate::peer_actions::CertificateAuthority for GovernedBy {
+        fn authorize(
+            &self,
+            _room: uuid::Uuid,
+            _certificate: &tilo_user_identity::DeviceCert,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+            device == Some(&self.0)
+        }
+    }
+
+    #[test]
+    fn a_foreign_caller_is_capped_only_in_rooms_its_device_does_not_govern() {
+        let user = [26; 32];
+        let mut workspace = Workspace::new(WorkspaceId(6), "Callers");
+        workspace.owner = Some(hex::encode(user));
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared()),
+            None,
+        );
+        let governor = [7; 32];
+        let authority: Arc<dyn crate::peer_actions::CertificateAuthority> =
+            Arc::new(GovernedBy(governor));
+        assert!(state.certificate_authority.set(authority).is_ok());
+        let may_administer = |caller: &Caller| {
+            let (workspace, policy, now) = state.workspaces_for(caller).pop().unwrap();
+            workspace.decide_at(&policy, &ResourceRef::Workspace, Verb::Admin, now)
+                == CapDecision::Allow
+        };
+        let caller =
+            |device, foreign| Caller::authenticated(user, device).from_foreign_device(foreign);
+
+        assert!(may_administer(&caller(governor, true)));
+        assert!(!may_administer(&caller([8; 32], true)));
+        assert!(may_administer(&caller([8; 32], false)));
+    }
+}
+
+#[cfg(test)]
+mod app_close_tests {
+    use super::super::{
+        BrokerActor, BrokerChannels, CapnpBrokerState, FanoutState, PeerPublisher, PublishedSurface,
+    };
+    use crate::route::CrdtRoute;
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+    use std::sync::{Arc, Mutex};
+    use tilo_actions::remote::Caller;
+
+    #[derive(Default)]
+    struct Launcher {
+        closes: bool,
+        closed: Mutex<Vec<(String, String)>>,
+    }
+
+    impl crate::services::LauncherServices for Launcher {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            vec![crate::services::LaunchableApplication {
+                package_id: "so.tilo.word-processor".into(),
+                display_name: "Writer".into(),
+                unconfined: false,
+            }]
+        }
+        fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
+            Ok(())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+        fn closes_applications(&self) -> bool {
+            self.closes
+        }
+        fn close(
+            &self,
+            app: &str,
+            workspace: &tilo_desktop_model::Workspace,
+        ) -> Result<(), String> {
+            self.closed
+                .lock()
+                .unwrap()
+                .push((app.to_string(), workspace.room.to_string()));
+            Ok(())
+        }
+    }
+
+    fn broker(launcher: Arc<Launcher>, live: bool) -> (Arc<CapnpBrokerState>, Caller, String) {
+        let user = [31; 32];
+        let mut workspace = Workspace::new(WorkspaceId(8), "Close");
+        workspace.owner = Some(hex::encode(user));
+        let room = workspace.room.to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.workspaces.push(workspace);
+        let (state, _bridge_rx) = CapnpBrokerState::new_configured(
+            &Arc::new(FanoutState::new()),
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.shared().authority()),
+            None,
+            None,
+            crate::services::HostServices {
+                launcher: Some(launcher),
+                ..Default::default()
+            },
+        );
+        if live {
+            state.replace_published_surfaces_for_test(vec![PublishedSurface {
+                peer_id: 4,
+                app_id: "so.tilo.word-processor".into(),
+                route: CrdtRoute::record("so.tilo.word-processor", &room, "doc"),
+                actions: Vec::new(),
+                live: true,
+            }]);
+        }
+        let caller = Caller::authenticated(user, [32; 32]).in_room(room.clone());
+        (state, caller, room)
+    }
+
+    fn app_actions(state: &CapnpBrokerState, caller: &Caller) -> Vec<String> {
+        state
+            .eager_catalogue(caller, true)
+            .0
+            .into_iter()
+            .filter_map(|row| row.action)
+            .filter(|action| action.address.resource == "app.so.tilo.word-processor")
+            .map(|action| action.address.action)
+            .collect()
+    }
+
+    #[test]
+    fn a_running_app_offers_close_where_the_host_can_close_it() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, caller, _) = broker(Arc::clone(&launcher), false);
+        assert_eq!(app_actions(&state, &caller), ["open"]);
+        let (state, caller, room) = broker(Arc::clone(&launcher), true);
+        assert_eq!(app_actions(&state, &caller), ["close"]);
+
+        let (workspace, policy, now) = state.workspaces_for(&caller).pop().unwrap();
+        let job = state
+            .close_application(
+                &workspace,
+                &policy,
+                now,
+                &BrokerActor::person(hex::encode([31; 32])),
+                "so.tilo.word-processor",
+            )
+            .unwrap();
+        assert!(matches!(
+            state.invocation_status(job),
+            Some(tilo_actions::InvocationUpdate::Succeeded { .. })
+        ));
+        assert_eq!(
+            *launcher.closed.lock().unwrap(),
+            [("so.tilo.word-processor".to_string(), room)]
+        );
+
+        let unsupported = Arc::new(Launcher::default());
+        let (state, caller, _) = broker(unsupported, true);
+        assert!(app_actions(&state, &caller).is_empty());
+        let (workspace, policy, now) = state.workspaces_for(&caller).pop().unwrap();
+        assert!(
+            state
+                .close_application(
+                    &workspace,
+                    &policy,
+                    now,
+                    &BrokerActor::person("someone"),
+                    "so.tilo.word-processor",
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn a_caller_who_may_not_change_the_app_cannot_close_it() {
+        let launcher = Arc::new(Launcher {
+            closes: true,
+            ..Default::default()
+        });
+        let (state, _, room) = broker(Arc::clone(&launcher), true);
+        let stranger = Caller::authenticated([99; 32], [98; 32]).in_room(room);
+        assert!(app_actions(&state, &stranger).is_empty());
+        assert!(launcher.closed.lock().unwrap().is_empty());
     }
 }

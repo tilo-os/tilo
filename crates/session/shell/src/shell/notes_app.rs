@@ -13,6 +13,7 @@
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -25,8 +26,12 @@ use ui::text_selection::{
 
 use crate::shell::crdt_text::{CrdtTextBody, full_bleed_leaf, full_bleed_rect};
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::theme::Theme;
-use ui::widget::{AppKind, AppWidget, CompleteContentProvider, EmptyState, IconDescriptor, Widget};
+use ui::widget::{
+    AppKind, AppWidget, CompleteContentProvider, EmptyState, EmptyStateContent, IconDescriptor,
+    Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Size};
 use vello::peniko::Fill;
@@ -300,19 +305,16 @@ impl CompleteContentProvider for NotesApp {
 }
 
 impl Widget for NotesApp {
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::CompleteContentProvider,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
+    );
 
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        Some(self)
-    }
-
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&HISTORY)
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.clamp_cursor();
     }
@@ -367,15 +369,14 @@ impl Widget for NotesApp {
             let body = crate::shell::i18n::t("notes-empty-body");
             let action = crate::shell::i18n::t("notes-empty-action");
             self.empty_action_rect = EmptyState::paint(
-                scene,
-                transform,
-                tr,
-                &card_theme,
+                &mut PaintCtx::new(scene, transform, tr, &card_theme),
                 self.rect,
-                Some(Icon::PenTool),
-                &crate::shell::i18n::t("notes-empty-title"),
-                Some(body.as_str()),
-                Some(action.as_str()),
+                &EmptyStateContent {
+                    icon: Some(Icon::PenTool),
+                    title: &crate::shell::i18n::t("notes-empty-title"),
+                    message: Some(body.as_str()),
+                    action_label: Some(action.as_str()),
+                },
                 self.last_mouse,
             )
             .unwrap_or(Rect::ZERO);
@@ -400,34 +401,35 @@ impl Widget for NotesApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(*position, scale_factor, handled);
+                self.handle_cursor_moved(*position, ctx.scale_factor, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: es,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_mouse_input(*es, *modifiers, handled, focus_target, node_id);
+                self.handle_mouse_input(
+                    *es,
+                    *ctx.modifiers,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
+                self.handle_keyboard_input(
+                    key_event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -435,16 +437,6 @@ impl Widget for NotesApp {
 
     fn name(&self) -> &'static str {
         "NotesApp"
-    }
-
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
     }
 
     fn get_rect(&self) -> Rect {
@@ -473,15 +465,15 @@ impl Widget for NotesApp {
         (self.empty_action_rect.area() > 0.0 && self.empty_action_rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
     }
+}
 
+impl ui::undo::UndoPoints for NotesApp {
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.body.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         // Encode "anchor:cursor" so undo/redo restores selection state.
         Some(format!(
@@ -489,7 +481,6 @@ impl Widget for NotesApp {
             self.selection.anchor, self.selection.cursor
         ))
     }
-
     fn set_state(&mut self, s: &str) {
         if let Some((a, c)) = s.split_once(':')
             && let (Ok(anchor), Ok(cursor)) = (a.parse::<usize>(), c.parse::<usize>())
@@ -504,6 +495,26 @@ impl Widget for NotesApp {
             self.selection = Selection::collapsed(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::record::capability::RecordScoped for NotesApp {
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for NotesApp {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for NotesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&HISTORY)
     }
 }
 
@@ -1263,17 +1274,17 @@ mod tests {
             let mut app = NotesApp::with_seed("hello world");
             app.selection.anchor = 6;
             app.selection.cursor = 11;
-            let s = app.get_state().unwrap();
+            let s = ui::undo::get_state(&app).unwrap();
             assert_eq!(s, "6:11");
             let mut app2 = NotesApp::with_seed("hello world");
-            app2.set_state(&s);
+            ui::undo::set_state(&mut app2, &s);
             assert_eq!(app2.selection.anchor, 6);
             assert_eq!(app2.selection.cursor, 11);
         }
 
         fn state_backcompat_cursor_only() {
             let mut app = NotesApp::with_seed("hello");
-            app.set_state("3");
+            ui::undo::set_state(&mut app, "3");
             assert_eq!(app.selection.cursor, 3);
             assert_eq!(app.selection.anchor, 3);
         }
@@ -1342,7 +1353,7 @@ mod framework_history_tests {
         tile.bind_record(records.clone(), checkout.clone());
         tile.bind_record(records.clone(), checkout.clone());
         let mut surfaces = 0;
-        tile.visit_framework_history(&mut |_, _| surfaces += 1);
+        ui::history_mode::capability::visit_framework_history(&tile, &mut |_, _| surfaces += 1);
         assert_eq!(surfaces, 1);
         let original = records
             .read(&checkout.id, |doc| doc.base_heads()[0])

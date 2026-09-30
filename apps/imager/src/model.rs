@@ -597,10 +597,8 @@ impl InstallMode {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Filesystem {
-    #[serde(alias = "BtrfsSubvols")]
     #[default]
     Btrfs,
-    #[serde(alias = "WholeDisk", alias = "SeparateHome")]
     Ext4,
     Xfs,
 }
@@ -623,7 +621,7 @@ impl Filesystem {
     pub fn from_key(k: &str) -> Option<Self> {
         match k {
             "btrfs" => Some(Self::Btrfs),
-            "ext4" | "whole" | "home" => Some(Self::Ext4),
+            "ext4" => Some(Self::Ext4),
             "xfs" => Some(Self::Xfs),
             _ => None,
         }
@@ -670,7 +668,6 @@ pub struct InstallProfile {
     pub locale: String,
     pub keyboard: String,
     pub timezone: String,
-    #[serde(default, alias = "layout")]
     pub filesystem: Filesystem,
     pub encrypt: bool,
     /// Host-session draft value only; never serialized into installation media.
@@ -1357,24 +1354,6 @@ mod tests {
                     serde_json::from_slice(&profile.to_media_profile_json().unwrap()).unwrap();
                 assert_eq!(value["filesystem"], filesystem.key());
             }
-        }
-
-        // Phase `legacy_layout_profile_migrates_to_typed_filesystem`.
-        {
-            let value = serde_json::json!({
-                "mode": "Live",
-                "hostname": "tilo",
-                "user": UserAccount::default(),
-                "locale": "en_US.UTF-8",
-                "keyboard": "us",
-                "timezone": "UTC",
-                "layout": "WholeDisk",
-                "encrypt": false,
-                "encryption_passphrase": "",
-                "persist_mb": 4096
-            });
-            let profile: InstallProfile = serde_json::from_value(value).unwrap();
-            assert_eq!(profile.filesystem, Filesystem::Ext4);
         }
 
         // Phase `media_profile_validation_rejects_each_consumer_invalid_field`.

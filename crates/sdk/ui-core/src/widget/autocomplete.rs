@@ -20,17 +20,18 @@
 //! The editable path bar in the file manager is the canonical consumer, but
 //! the widget knows nothing about paths.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::TextRenderer;
@@ -481,21 +482,15 @@ impl Autocomplete {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "an internal per-row painting step; each argument is independently needed by the row and bundling them would only hide that"
-    )]
-    fn draw_row(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        tokens: &crate::tokens::Tokens,
-        accent: vello::peniko::Color,
-        row: Rect,
-        i: usize,
-        s: &Suggestion,
-    ) {
+    fn draw_row(&self, ctx: &mut PaintCtx<'_>, row: Rect, i: usize, s: &Suggestion) {
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
+        let tokens = &theme.tokens;
+        let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let armed = self.highlight == Some(i);
         let hovered = self.hover == Some(i) && !armed;
         Self::draw_row_background(scene, transform, tokens, accent, row, armed, hovered);
@@ -605,61 +600,39 @@ impl Autocomplete {
     /// keep that under the line cap. Navigation/accept/cancel keys are
     /// intercepted here since the field itself never consumes them;
     /// everything else forwards to the field and recomputes on change.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards Widget::handle_event's own parameter list to the inner field; \
-                  bundling it would mean bundling the trait method too"
-    )]
     fn handle_key_while_editing(
         &mut self,
-        logical_key: &Key,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
+        logical_key: &Key,
     ) {
         match logical_key {
             Key::Named(NamedKey::ArrowDown) => {
                 self.move_highlight(true);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::ArrowUp) => {
                 self.move_highlight(false);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
                 let value = self
                     .highlighted()
                     .map_or_else(|| self.input.value().to_string(), |s| s.value.clone());
                 self.accept(value);
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Tab) if !self.suggestions.is_empty() => {
                 self.complete_to_highlight();
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Escape) => {
                 self.cancel();
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {
                 // Forward to the field, then recompute if the text changed.
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.recompute();
                     self.open = !self.suggestions.is_empty();
@@ -671,15 +644,7 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.input.install_control_custody(domain, attachment);
-    }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _root: &ObjId) {}
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -739,7 +704,6 @@ impl Widget for Autocomplete {
             return;
         };
         let tokens = &theme.tokens;
-        let accent = tokens.colors.accent.stops[ACCENT_PRIMARY_IDX];
         let shape = RoundedRect::from_rect(panel, f64::from(tokens.radii.md));
         // The suggestion list is a Panel (HIG §9.1 / §9.5): panel ground and
         // panel edge, like the toolkit's other popovers.
@@ -776,26 +740,17 @@ impl Widget for Autocomplete {
             }
             return;
         }
+        let mut ctx = PaintCtx::new(scene, transform, text_renderer, theme);
         for (i, s) in self.suggestions.iter().enumerate().take(self.max_visible) {
             let row = self.row_rect(panel, i);
-            self.draw_row(scene, transform, text_renderer, tokens, accent, row, i, s);
+            self.draw_row(&mut ctx, row, i, s);
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_pointer =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.hover = self.row_at(self.last_pointer);
         }
         if !self.is_editing() {
@@ -812,18 +767,7 @@ impl Widget for Autocomplete {
                         ..
                     },
                 ..
-            } => self.handle_key_while_editing(
-                logical_key,
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
+            } => self.handle_key_while_editing(event, ctx, logical_key),
             // A left press on a dropdown row accepts it.
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -835,7 +779,7 @@ impl Widget for Autocomplete {
                 {
                     let value = s.value.clone();
                     self.accept(value);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             // A left press outside the field and the dropdown cancels. Not
@@ -852,17 +796,7 @@ impl Widget for Autocomplete {
                 self.cancel();
             }
             _ => {
-                self.input.handle_event(
-                    event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    root,
-                    handled,
-                    focus_target,
-                    node_id,
-                    taffy,
-                );
+                self.input.handle_event(event, ctx);
                 if self.input.take_dirty().is_some() {
                     self.recompute();
                     self.open = !self.suggestions.is_empty();
@@ -972,10 +906,11 @@ impl Widget for Autocomplete {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
         match action {
             Action::Focus | Action::Expand => {
                 self.begin_edit();
@@ -1003,8 +938,8 @@ impl Widget for Autocomplete {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
@@ -1034,9 +969,21 @@ impl Widget for Autocomplete {
     }
 }
 
+impl crate::widget::controls::ActionControls for Autocomplete {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        self.input.install_control_custody(domain, attachment);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
+    use winit::event::Modifiers;
 
     #[test]
     fn suggestions_open_highlight_accept_or_cancel() {
@@ -1266,14 +1213,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         ac.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

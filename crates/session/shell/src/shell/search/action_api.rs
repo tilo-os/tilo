@@ -146,10 +146,6 @@ impl ActionCatalog {
     /// Fan `query` out to `registry` under `scope`, then apply `visibility`.
     /// An empty `query` returns every provider's default set (score 0), so
     /// a caller can list the full surface without guessing a needle.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "catalog queries need registry, query scope and active provider alongside chrome, CRDT location and visibility policy"
-    )]
     pub fn build(
         registry: &SearchRegistry,
         query: &str,
@@ -193,14 +189,9 @@ impl ActionCatalog {
     /// providers use this path to retain the page that originally disclosed
     /// an opaque id while rechecking its current route and authority at
     /// invocation time.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "exact resolution keeps provider/resource identity and query context separate from chrome, CRDT location and visibility policy"
-    )]
     pub fn build_exact(
         registry: &SearchRegistry,
-        provider: &str,
-        id: &str,
+        resource: &ResourceRef,
         scope: SearchScope,
         active_provider_id: Option<&str>,
         chrome: &ChromeState,
@@ -209,7 +200,7 @@ impl ActionCatalog {
         visibility: &dyn ActionVisibility,
     ) -> Self {
         let args = QueryArgs {
-            needle: id,
+            needle: &resource.id,
             scope,
             active_provider_id,
             wanted_kinds: &[],
@@ -218,7 +209,7 @@ impl ActionCatalog {
             doc_root,
         };
         let results = registry
-            .query_provider_exact(provider, id, &args)
+            .query_provider_exact(&resource.provider, &resource.id, &args)
             .into_iter()
             .collect::<Vec<_>>();
         let visible: Vec<usize> = results
@@ -259,10 +250,6 @@ impl ActionCatalog {
         hierarchies
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "resource resolution keeps its address and query context separate from chrome, CRDT location and visibility policy"
-    )]
     pub fn build_for_resource(
         registry: &SearchRegistry,
         resource: &ResourceRef,

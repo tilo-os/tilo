@@ -12,7 +12,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 
 use crate::shell::i18n::t;
 use crate::shell::overlay_host::layers::{
-    LayerCx, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
+    LayerCx, LayerGeometry, LayerId, LayerIntent, LayerPaint, Routed, ShellLayer,
 };
 
 /// A Panel opens and closes over the motion token's `base` (HIG §9.7). The
@@ -45,6 +45,10 @@ pub(crate) struct PowerMenu {
     /// Whether the display manager can open a greeter beside this session.
     /// Without it, Switch user is not offered at all rather than failing.
     user_switching: bool,
+    /// Whether this session owns the machine's power. A headless or nested
+    /// session shares the host with another desktop, so it offers no
+    /// suspend, restart or shut down.
+    owns_host_power: bool,
 }
 
 impl Default for PowerMenu {
@@ -106,22 +110,33 @@ impl PowerMenu {
             selected: 0,
             text_scale: 1.0,
             user_switching,
+            owns_host_power: true,
         }
+    }
+
+    /// Hide the rows that act on the host: switching user, suspend, restart
+    /// and shut down.
+    pub(crate) fn detach_from_host(&mut self) {
+        self.user_switching = false;
+        self.owns_host_power = false;
+        self.selected = 0;
     }
 
     /// The rows this session offers, in paint order. Paint, clicks, keys,
     /// semantic targets and the accessibility tree all index this list.
     fn rows(&self) -> impl Iterator<Item = &'static PowerMenuRow> + '_ {
-        ACTIONS.iter().filter(|(action, ..)| {
-            self.user_switching
-                || !matches!(
-                    action,
-                    PowerMenuAction::External(os_actions::SessionAction::SwitchUser)
-                )
+        ACTIONS.iter().filter(|(action, ..)| match action {
+            PowerMenuAction::External(os_actions::SessionAction::SwitchUser) => self.user_switching,
+            PowerMenuAction::External(
+                os_actions::SessionAction::Suspend
+                | os_actions::SessionAction::Restart
+                | os_actions::SessionAction::ShutDown,
+            ) => self.owns_host_power,
+            _ => true,
         })
     }
 
-    fn row_count(&self) -> usize {
+    pub(crate) fn row_count(&self) -> usize {
         self.rows().count()
     }
 
@@ -588,7 +603,7 @@ impl ShellLayer for PowerMenu {
                 button: MouseButton::Left,
                 ..
             } => match cx.cursor {
-                Some(point) => self.click(cx.viewport, point),
+                Some(point) => self.click(cx.geometry.viewport, point),
                 None => return Routed::Pass,
             },
             _ => return Routed::Pass,
@@ -606,7 +621,7 @@ impl ShellLayer for PowerMenu {
 
     fn draw(&mut self, cx: &mut LayerPaint<'_>) {
         self.draw(
-            cx.viewport,
+            cx.geometry.viewport,
             cx.scene,
             cx.transform,
             cx.text_renderer,
@@ -614,12 +629,12 @@ impl ShellLayer for PowerMenu {
         );
     }
 
-    fn accessibility(&self, _viewport: Rect) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self, _geometry: LayerGeometry<'_>) -> Option<ui::a11y::AccessNode> {
         self.accessibility_snapshot()
     }
 
-    fn accessibility_rect(&self, viewport: Rect, path: &[usize]) -> Option<Rect> {
-        self.accessibility_rect_for_path(viewport, path)
+    fn accessibility_rect(&self, geometry: LayerGeometry<'_>, path: &[usize]) -> Option<Rect> {
+        self.accessibility_rect_for_path(geometry.viewport, path)
     }
 
     fn focus_accessibility(&mut self, path: &[usize]) -> bool {

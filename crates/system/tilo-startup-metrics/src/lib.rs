@@ -251,19 +251,14 @@ pub fn mark(name: &str) {
     // mark phases, not frames, so this never enters a hot render path. The
     // lock is held across the write so concurrent marks cannot interleave
     // their temporary files.
-    let temporary = m.output_path.with_extension("json.tmp");
     let payload = serde_json::json!({
         "origin_epoch_ms": m.origin_epoch_ms,
         "events": *events,
     });
-    if std::fs::write(
-        &temporary,
-        serde_json::to_vec_pretty(&payload).unwrap_or_default(),
-    )
-    .is_ok()
-    {
-        let _ = std::fs::rename(temporary, &m.output_path);
-    }
+    let _ = atomic_file::write_regenerable(
+        &m.output_path,
+        &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
+    );
     drop(events);
 }
 

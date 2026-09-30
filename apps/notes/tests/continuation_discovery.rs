@@ -262,19 +262,18 @@ fn notes_continuation_dynamic_declarations_identify_actual_resolution_domains() 
 
 #[test]
 fn notes_continuation_actual_notes_and_search_cover_lazy_invocation_domains() {
-    use ui::Widget;
     let f = LegacyFixture::rich();
     let checkout = imported(&f);
     let doc = f.records.read(&checkout.id, Clone::clone).unwrap();
     let app = notes::NotesApp::from_document(&doc, &f.author).unwrap();
     assert!(
         matches!(
-            app.action_directory_invocation_domain(&doc),
+            ui::resources::action_directory_invocation_domain(&app, &doc),
             ui::widget::ActionDirectoryInvocationDomain::Versioned(_)
         ),
         "actual Notes has omitted lazy page/block/tag actions"
     );
-    let providers = app.search_providers();
+    let providers = ui::search::capability::search_providers(&app);
     assert!(!providers.is_empty());
     for provider in providers {
         assert!(

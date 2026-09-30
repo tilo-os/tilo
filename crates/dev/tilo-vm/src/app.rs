@@ -1224,22 +1224,40 @@ impl App {
                 )),
             }
         }
-        run_all(&mut self.runner, &adapter.stop(&vm.vm()))?;
-        let started = Instant::now();
-        let limit = Duration::from_secs(120);
-        let mut down = lock.as_mut().map(|l| l.wait_for_shutdown(limit));
-        // SSH closes early in a shutdown; where the hypervisor can say, "down"
-        // means the VM is off, so a following vm start finds it stopped.
-        if down != Some(false) && adapter.running(&vm.vm(), &mut self.runner).is_some() {
-            down = Some(loop {
-                match adapter.running(&vm.vm(), &mut self.runner) {
-                    Some(true) if started.elapsed() < limit => {
-                        std::thread::sleep(Duration::from_millis(500));
-                    }
-                    Some(true) => break false,
-                    _ => break true,
-                }
+        // A session holding logind's power-key lock (on seat0 it owns the
+        // key) turns the ACPI request into its own power-key action, so the
+        // guest is asked directly next, and powered off as a last resort.
+        let poweroff = adapter
+            .ssh_endpoint(&vm.vm(), &mut self.runner)
+            .ok()
+            .map(|endpoint| {
+                remote::ssh_command(
+                    &endpoint,
+                    vm.entry.key.as_deref(),
+                    &["systemctl".into(), "poweroff".into()],
+                    false,
+                )
             });
+        let (down, step) = stop_escalating(
+            &mut self.runner,
+            adapter.as_ref(),
+            &vm.vm(),
+            poweroff.as_ref(),
+            lock.as_mut(),
+            StopGraces::default(),
+        )?;
+        match step {
+            StopStep::Acpi => {}
+            StopStep::GuestPoweroff => self.warnings.push(format!(
+                "VM {} ignored the ACPI shutdown request (a session holding the power key?); \
+                 it powered off on `systemctl poweroff` over SSH",
+                vm.name
+            )),
+            StopStep::HardPowerOff => self.warnings.push(format!(
+                "VM {} ignored both the ACPI shutdown request and `systemctl poweroff`; \
+                 it was powered off hard",
+                vm.name
+            )),
         }
         let text = match down {
             Some(true) if lock.is_some() => format!(
@@ -1248,13 +1266,17 @@ impl App {
             ),
             Some(true) => format!("VM {} shut down", vm.name),
             Some(false) => format!(
-                "VM {} was asked to shut down but is still up after 120s; tilo-vm vm status",
+                "VM {} was asked to shut down but is still up; tilo-vm vm status",
                 vm.name
             ),
             None => format!("VM {} is shutting down", vm.name),
         };
         drop(lock);
-        Ok(Outcome::new(text, json!({ "vm": vm.name, "down": down })).next(&["tilo-vm vm start"]))
+        Ok(Outcome::new(
+            text,
+            json!({ "vm": vm.name, "down": down, "step": step.as_str() }),
+        )
+        .next(&["tilo-vm vm start"]))
     }
 
     /// Delete a VM: power it off (with `force`), unregister it from the
@@ -1587,6 +1609,12 @@ impl App {
                 alternative: "use --hypervisor whpx on Windows ARM64, or omit --headless".into(),
             });
         }
+        if (args.heads.is_some() || args.resolution.is_some() || args.gl) && adapter != "libvirt" {
+            return Err(CliError::Unsupported {
+                what: format!("--heads, --resolution or --gl with the {adapter} adapter"),
+                alternative: "use --hypervisor libvirt, or omit them".into(),
+            });
+        }
         if args.direct_boot_bundle.is_some() && adapter != "whpx" {
             return Err(CliError::Unsupported {
                 what: format!("--direct-boot-bundle with the {adapter} adapter"),
@@ -1730,6 +1758,9 @@ impl App {
             emulated: args.emulated,
             memory_mb: args.memory_mb,
             headless: args.headless,
+            heads: args.heads,
+            gl: args.gl,
+            resolution: args.resolution,
             cpus: args.cpus,
             ssh_port: args.ssh_port,
             template: args.template,
@@ -1943,6 +1974,24 @@ impl App {
         }
     }
 
+    fn ensure_whpx_running(
+        &mut self,
+        vm: &Resolved,
+        adapter: &dyn Hypervisor,
+    ) -> Result<(), CliError> {
+        if adapter.running(&vm.vm(), &mut self.runner) == Some(false) {
+            return Err(CliError::Unreachable {
+                vm: vm.name.clone(),
+                detail: format!(
+                    "QEMU exited before SSH answered; inspect {}.stderr.log and Windows Application errors",
+                    vm.entry.disk.as_deref().unwrap_or("the VM disk")
+                ),
+                debug: Self::debug_commands(adapter, &vm.name),
+            });
+        }
+        Ok(())
+    }
+
     fn vm_start(&mut self, name: Option<&str>) -> Result<Outcome, CliError> {
         let vm = self.resolve_vm(name)?;
         let floor = vm_free_floor(self.registry()?.min_free_bytes(), &vm.entry.hypervisor);
@@ -1969,6 +2018,7 @@ impl App {
         let mut reachable = false;
         let mut no_daemon = None;
         let mut remote = None;
+        let mut last_whpx_running_check = started;
         while started.elapsed() < Duration::from_secs(180) {
             match self.connect(&vm) {
                 Ok(connected) => {
@@ -1983,7 +2033,22 @@ impl App {
                     break;
                 }
                 // Connection transport failures can resolve while the VM boots.
-                Err(CliError::Unreachable { .. }) => std::thread::sleep(Duration::from_secs(2)),
+                Err(CliError::Unreachable { .. }) => {
+                    if vm.entry.hypervisor == "whpx"
+                        && last_whpx_running_check.elapsed() >= Duration::from_secs(2)
+                    {
+                        self.ensure_whpx_running(&vm, adapter.as_ref())?;
+                        last_whpx_running_check = Instant::now();
+                    }
+                    // WHPX boots quickly enough that a two-second SSH poll
+                    // accounts for a noticeable part of the restart time.
+                    let interval = if vm.entry.hypervisor == "whpx" {
+                        Duration::from_millis(500)
+                    } else {
+                        Duration::from_secs(2)
+                    };
+                    std::thread::sleep(interval);
+                }
                 // SSH and tilo-vmd already answered. Waiting cannot fix a refused
                 // key, incompatible protocol, or any other semantic failure.
                 Err(error) => return Err(error),
@@ -2139,12 +2204,13 @@ impl App {
     }
 
     /// `image disk`: the disk step of the build, for an image `image build`
-    /// wrote (here or on the rcargo builder): the layout into podman's storage,
+    /// wrote (here or on another machine): the layout into podman's storage,
     /// then `os/dev/build-image.sh` with `TILO_SKIP_BUILD=1`, as
     /// `build-dev-image.sh` runs it.
     fn image_disk(&mut self, layout: &Path) -> Result<Outcome, CliError> {
         let started = Instant::now();
         let root = self.checkout()?;
+        let local_image = imageup::local_dev_image()?;
         let layout = if layout.is_absolute() {
             layout.to_path_buf()
         } else {
@@ -2154,7 +2220,9 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: layout.display().to_string(),
                 problem: "is not an OCI layout".into(),
-                fix: "build one: tilo-vm image build (tilo-vm image build --help for the rcargo builder)".into(),
+                fix:
+                    "build one: tilo-vm image build (tilo-vm image build --help to build elsewhere)"
+                        .into(),
             });
         }
         let facts_file = layout.with_extension("facts");
@@ -2171,7 +2239,7 @@ impl App {
             .parent()
             .map_or_else(|| root.clone(), Path::to_path_buf);
         let scratch = build_scratch(&out);
-        let import = imageup::import_layout_command(&layout, imageup::LOCAL_DEV_IMAGE);
+        let import = imageup::import_layout_command(&layout, &local_image);
         let runner = &mut self.runner;
         let imported = self.receipt.phase("import", || runner.output(&import))?;
         if !imported.success {
@@ -2181,7 +2249,7 @@ impl App {
                 stderr: imported.stderr.trim().to_owned(),
             });
         }
-        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &scratch);
+        let command = image_disk_command(&root.join(imageup::DISK_SCRIPT), &local_image, &scratch);
         self.runner.cwd = Some(root);
         let runner = &mut self.runner;
         let written = self
@@ -2238,12 +2306,12 @@ impl App {
         let scratch = build_scratch(&out);
         std::fs::create_dir_all(&out).map_err(CliError::io(format!("create {}", out.display())))?;
         if self.worktree.is_none() && std::env::var_os("SOURCE_DATE_EPOCH").is_none() {
-            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (RCARGO_ENV_SOURCE_DATE_EPOCH=$(git log -1 --format=%ct) through rcargo)".into());
+            self.warnings.push("no git checkout here and no SOURCE_DATE_EPOCH: the image is dated 1970, so a VM on a newer base refuses it without --allow-older-base; pass the commit time (SOURCE_DATE_EPOCH=$(git log -1 --format=%ct))".into());
         }
-        let command = image_build_command(&script, disk, &scratch);
+        let local_image = imageup::local_dev_image()?;
+        let command = image_build_command(&script, &local_image, disk, &scratch);
         eprintln!(
-            "tilo-vm: building {} ({}); cached steps are skipped",
-            imageup::LOCAL_DEV_IMAGE,
+            "tilo-vm: building {local_image} ({}); cached steps are skipped",
             if disk { "and its disk" } else { "no disk" }
         );
         self.runner.cwd = Some(root);
@@ -2261,16 +2329,16 @@ impl App {
         }
         let layout = out.join(imageup::BUILT_LAYOUT);
         let runner = &mut self.runner;
-        let digest = self.receipt.phase("export", || {
-            export_layout(runner, imageup::LOCAL_DEV_IMAGE, &layout)
-        })?;
+        let digest = self
+            .receipt
+            .phase("export", || export_layout(runner, &local_image, &layout))?;
         let runner = &mut self.runner;
-        let facts_text = self.receipt.phase("check", || {
-            image_facts_text(runner, imageup::LOCAL_DEV_IMAGE)
-        })?;
+        let facts_text = self
+            .receipt
+            .phase("check", || image_facts_text(runner, &local_image))?;
         let (image, facts) =
             imageup::parse_layout_facts(&facts_text).map_err(|detail| CliError::CommandFailed {
-                command: imageup::inspect_command(imageup::LOCAL_DEV_IMAGE).display(),
+                command: imageup::inspect_command(&local_image).display(),
                 status: "unreadable output".into(),
                 stderr: detail,
             })?;
@@ -2314,7 +2382,7 @@ impl App {
     }
 
     /// `--image <dir>`: an OCI layout `tilo-vm image build` wrote, here or on
-    /// the rcargo builder, with its facts and digest beside it.
+    /// another machine, with its facts and digest beside it.
     fn vm_upgrade_layout(
         &mut self,
         vm: &Resolved,
@@ -2345,10 +2413,6 @@ impl App {
 
     /// The image is in `layout` with `digest`: check it, send the VM its new
     /// blobs, and boot it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the image, its facts, its layout and its digest are one move, from three sources"
-    )]
     fn move_onto_layout(
         &mut self,
         vm: &Resolved,
@@ -2480,7 +2544,25 @@ impl App {
                     return Ok(Some(CiUpgrade::Base(base.clone())));
                 }
             }
-            Ok(None)
+            // Not a main build: a branch or pull request build of the commit.
+            let Some(sha) = imageup::ci_commit(tag) else {
+                return Ok(None);
+            };
+            let mut listing = |repository| -> Result<String, CliError> {
+                let output = runner.output(&imageup::list_tags_command(repository))?;
+                Ok(if output.success {
+                    output.stdout
+                } else {
+                    String::new()
+                })
+            };
+            let vm_tags = listing("registry.tilo.so/tilo/tilo-vm")?;
+            let ci_tags = listing("registry.tilo.so/tilo/tilo-ci")?;
+            let refs = imageup::ci_ref_candidates(sha, std::env::consts::ARCH, &vm_tags, &ci_tags);
+            if let Some(image) = refs.dev_images.first() {
+                return Ok(Some(CiUpgrade::Published(image.clone())));
+            }
+            Ok(refs.bases.first().cloned().map(CiUpgrade::Base))
         })?;
         let Some(found) = found else {
             let tried = candidates
@@ -2493,7 +2575,7 @@ impl App {
             return Err(CliError::ImageRefused {
                 image: format!("ci:{tag}"),
                 problem: format!("names no CI build this host can pull (tried {tried})"),
-                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   a main build is tagged main-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
+                fix: "list the builds CI pushed: skopeo list-tags docker://registry.tilo.so/tilo/tilo-ci   |   main and pull request builds are tagged <ref>-<sha7>: tilo-vm vm upgrade --from sha:<commit>   |   or build this worktree: tilo-vm vm upgrade --from local".into(),
             });
         };
         if let CiUpgrade::Base(base) = &found {
@@ -2610,9 +2692,12 @@ impl App {
         if let Some(base) = base {
             command = command.env("TILO_DEV_BASE", base);
         }
+        let base_name = match base {
+            Some(base) => base.to_owned(),
+            None => imageup::local_base()?,
+        };
         eprintln!(
-            "tilo-vm: building {image} FROM {} ({}); podman's layer cache skips unchanged steps",
-            base.unwrap_or(imageup::LOCAL_BASE),
+            "tilo-vm: building {image} FROM {base_name} ({}); podman's layer cache skips unchanged steps",
             match base_build {
                 "1" => "rebuilding the base first",
                 "0" => "the base as it is",
@@ -2962,6 +3047,7 @@ impl App {
                 headless: _,
                 headful,
                 outputs,
+                identity,
                 ..
             } => {
                 let name = self.slot_name(name)?;
@@ -2981,7 +3067,15 @@ impl App {
                     kind,
                     owner,
                     outputs,
+                    identity,
                 })?;
+                if identity && result.identity.is_none() {
+                    return Err(CliError::Unsupported {
+                        what: "slot create --identity by this VM's tilo-vmd".into(),
+                        alternative:
+                            "tilo-vm vm upgrade --from local, or tilo-vm swap vmd --slot vm".into(),
+                    });
+                }
                 let text = slot_created_text(&name, kind, &result);
                 self.receipt.set("slot", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
@@ -3245,6 +3339,7 @@ impl App {
             if let ci::Source::Ci { tag, commit } = source {
                 self.ci_layer(&mut remote, &vm, entry, &tag, commit)?
             } else {
+                worktree_buildable(entry)?;
                 let entry = entry.clone().with_profile(profile);
                 self.build_worktree_layer(&mut remote, &vm, &entry, builder)?
             }
@@ -3783,15 +3878,16 @@ impl App {
                 &desktop_id,
                 &app_id,
                 &type_text,
-                Duration::from_millis(maximum_launch_ms),
-                Duration::from_millis(maximum_control_ms),
-                Duration::from_secs(timeout_seconds),
+                FlightBudget {
+                    maximum_launch: Duration::from_millis(maximum_launch_ms),
+                    maximum_control: Duration::from_millis(maximum_control_ms),
+                    timeout: Duration::from_secs(timeout_seconds),
+                },
             ),
         }
     }
 
     #[expect(
-        clippy::too_many_arguments,
         clippy::too_many_lines,
         reason = "one linear acceptance flight keeps every measured phase and failure invariant visible"
     )]
@@ -3801,10 +3897,13 @@ impl App {
         desktop_id: &str,
         app_id: &str,
         type_text: &str,
-        maximum_launch: Duration,
-        maximum_control: Duration,
-        timeout: Duration,
+        budget: FlightBudget,
     ) -> Result<Outcome, CliError> {
+        let FlightBudget {
+            maximum_launch,
+            maximum_control,
+            timeout,
+        } = budget;
         let slot = self.slot_name(slot)?;
         let vm = self.resolve_vm(None)?;
         let mut remote = self.connect(&vm)?;
@@ -4075,7 +4174,7 @@ fn local_image_facts(
 }
 
 /// The Tilo checkout `dir` is in, found by its dev image build script (for a
-/// copy of the tree without git, such as the one rcargo builds in).
+/// copy of the tree without git, such as a synced copy on a build machine).
 fn checkout_root(dir: &Path) -> Option<PathBuf> {
     dir.ancestors()
         .find(|d| d.join(imageup::BUILD_SCRIPT).is_file())
@@ -4084,19 +4183,19 @@ fn checkout_root(dir: &Path) -> Option<PathBuf> {
 
 /// What `image build` runs: `--from local`'s build, the base rebuilt only
 /// when its inputs changed, with or without the disk step.
-fn image_build_command(script: &Path, disk: bool, scratch: &Path) -> CommandLine {
+fn image_build_command(script: &Path, image: &str, disk: bool, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
         .env("TILO_DEV_DISK", if disk { "1" } else { "0" })
-        .env("TILO_DEV_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_DEV_IMAGE", image)
         .env("TILO_DEV_BASE_BUILD", "auto")
         .env("TILO_OUTPUT", scratch.display().to_string())
 }
 
 /// What `image disk` runs: the build's disk step for an image already in
 /// podman's storage.
-fn image_disk_command(script: &Path, scratch: &Path) -> CommandLine {
+fn image_disk_command(script: &Path, image: &str, scratch: &Path) -> CommandLine {
     CommandLine::new(&script.display().to_string(), &[])
-        .env("TILO_IMAGE", imageup::LOCAL_DEV_IMAGE)
+        .env("TILO_IMAGE", image)
         .env("TILO_SKIP_BUILD", "1")
         .env("TILO_OUTPUT", scratch.display().to_string())
         // The size os/dev/build-dev-image.sh and the published dev disks use.
@@ -4290,6 +4389,139 @@ pub fn describe_tools(tools: &VmTools) -> String {
         "CI layers pulled on this host"
     };
     format!("{build}; {ci}")
+}
+
+/// The step of `vm stop` that got the VM down (or the last one tried).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopStep {
+    /// The hypervisor's ACPI shutdown request.
+    Acpi,
+    /// `systemctl poweroff` in the guest, over SSH.
+    GuestPoweroff,
+    /// The hypervisor's hard power-off.
+    HardPowerOff,
+}
+
+impl StopStep {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Acpi => "acpi",
+            Self::GuestPoweroff => "guest-poweroff",
+            Self::HardPowerOff => "hard-power-off",
+        }
+    }
+}
+
+/// How long each [`StopStep`] may take before the next one.
+#[derive(Debug, Clone, Copy)]
+pub struct StopGraces {
+    pub acpi: Duration,
+    pub guest: Duration,
+    pub hard: Duration,
+    pub poll: Duration,
+}
+
+impl Default for StopGraces {
+    fn default() -> Self {
+        Self {
+            acpi: Duration::from_secs(30),
+            guest: Duration::from_secs(90),
+            hard: Duration::from_secs(30),
+            poll: Duration::from_millis(500),
+        }
+    }
+}
+
+/// Stop `vm`: ask over ACPI, then run `poweroff` (the guest's
+/// `systemctl poweroff` over SSH) where there is one, then power it off
+/// hard where the hypervisor can. Each step waits its grace for the VM to be
+/// down; only a VM the hypervisor reports still running moves on. Returns
+/// whether it is down (`None`: nothing can tell) and the last step taken.
+///
+/// # Errors
+/// A hypervisor command could not run.
+pub fn stop_escalating(
+    runner: &mut dyn Runner,
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    poweroff: Option<&CommandLine>,
+    mut lock: Option<&mut remote::VmLock>,
+    graces: StopGraces,
+) -> Result<(Option<bool>, StopStep), CliError> {
+    run_all(runner, &adapter.stop(vm))?;
+    let mut down = await_down(
+        runner,
+        adapter,
+        vm,
+        lock.as_deref_mut(),
+        graces.acpi,
+        graces.poll,
+    );
+    if down != Some(false) {
+        return Ok((down, StopStep::Acpi));
+    }
+    let mut step = StopStep::Acpi;
+    if let Some(poweroff) = poweroff {
+        step = StopStep::GuestPoweroff;
+        // ssh fails as the guest drops the connection; the wait below judges.
+        let _ = runner.output(poweroff);
+        down = await_down(runner, adapter, vm, lock, graces.guest, graces.poll);
+        if down != Some(false) {
+            return Ok((down, step));
+        }
+    }
+    if let Some(off) = adapter.power_off(vm) {
+        step = StopStep::HardPowerOff;
+        run_all(runner, &[off])?;
+        down = await_down(runner, adapter, vm, None, graces.hard, graces.poll);
+    }
+    Ok((down, step))
+}
+
+/// Wait up to `limit` for `vm` to be down: the VM lock's SSH session closing
+/// and, where the hypervisor can say, the VM no longer running.
+fn await_down(
+    runner: &mut dyn Runner,
+    adapter: &dyn Hypervisor,
+    vm: &Vm<'_>,
+    lock: Option<&mut remote::VmLock>,
+    limit: Duration,
+    poll: Duration,
+) -> Option<bool> {
+    let started = Instant::now();
+    let mut down = lock.map(|lock| lock.wait_for_shutdown(limit));
+    if down != Some(false) && adapter.running(vm, runner).is_some() {
+        down = Some(loop {
+            match adapter.running(vm, runner) {
+                Some(true) if started.elapsed() < limit => std::thread::sleep(poll),
+                Some(true) => break false,
+                _ => break true,
+            }
+        });
+    }
+    down
+}
+
+/// Refuse `swap --from worktree` for a component only the image build
+/// assembles: either builder would run a cargo build that cannot produce it.
+///
+/// # Errors
+/// [`CliError::Unsupported`], naming the swaps that do work.
+pub fn worktree_buildable(component: &Component) -> Result<(), CliError> {
+    if !component.image_assembled {
+        return Ok(());
+    }
+    Err(CliError::Unsupported {
+        what: format!(
+            "--from worktree for '{}', which the image build assembles and signs",
+            component.name
+        ),
+        alternative: format!(
+            "one app from this worktree: tilo-vm swap app:<dir>; the published set: \
+             tilo-vm swap {} --from ci:<tag>; this worktree's image: tilo-vm vm upgrade --from local",
+            component.name
+        ),
+    })
 }
 
 /// Which builder `swap --from worktree` uses.
@@ -4520,9 +4752,17 @@ fn slot_created_text(
         tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
         _ => None,
     });
+    // The restart that gives a new identity fresh desktop state is not a
+    // start of a stopped session.
     let started = result
         .actions
         .iter()
+        .take_while(|action| {
+            !matches!(
+                action,
+                tilo_vm_protocol::Action::ProvisionTestIdentity { .. }
+            )
+        })
         .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
     let text = if result.created {
         format!(
@@ -4535,6 +4775,17 @@ fn slot_created_text(
         format!("slot {name} already exists and its session is running")
     } else {
         format!("slot {name} already exists and its session is running; nothing to do")
+    };
+    let text = match &result.identity {
+        Some(identity) if identity.created => format!(
+            "{text}\nthrowaway test identity \"{}\" minted; the session restarted with fresh desktop state",
+            identity.display_name
+        ),
+        Some(identity) => format!(
+            "{text}\nits user keeps throwaway test identity \"{}\"",
+            identity.display_name
+        ),
+        None => text,
     };
     match set_outputs {
         Some(outputs) => format!(
@@ -4701,6 +4952,15 @@ pub fn forward_target(slot: &str, info: Option<&SlotInfo>) -> Result<u64, CliErr
 }
 
 /// The remote words of `slot exec`, quoted for the remote shell.
+/// The limits an app flight must stay within: the launch, the slowest control
+/// round trip, and the whole flight.
+#[derive(Clone, Copy)]
+struct FlightBudget {
+    maximum_launch: Duration,
+    maximum_control: Duration,
+    timeout: Duration,
+}
+
 fn exec_words(daemon: Option<&str>, slot: &str, timeout: u64, command: &[String]) -> Vec<String> {
     let mut words = vmbuild::daemon_command(daemon, "exec");
     words.extend([
@@ -5203,6 +5463,7 @@ mod tests {
     fn image_build_runs_the_local_build_into_its_own_directory() {
         let command = image_build_command(
             Path::new("/w/os/dev/build-dev-image.sh"),
+            "localhost/tilo-vm:mine",
             true,
             Path::new("/w/target/tilo-vm-build"),
         );
@@ -5215,10 +5476,15 @@ mod tests {
                 .map(|(_, v)| v.as_str())
         };
         assert_eq!(env("TILO_DEV_DISK"), Some("1"));
-        assert_eq!(env("TILO_DEV_IMAGE"), Some(imageup::LOCAL_DEV_IMAGE));
+        assert_eq!(env("TILO_DEV_IMAGE"), Some("localhost/tilo-vm:mine"));
         assert_eq!(env("TILO_DEV_BASE_BUILD"), Some("auto"));
         assert_eq!(env("TILO_OUTPUT"), Some("/w/target/tilo-vm-build"));
-        let no_disk = image_build_command(Path::new("/s"), false, Path::new("/o"));
+        let no_disk = image_build_command(
+            Path::new("/s"),
+            "localhost/tilo-vm:x",
+            false,
+            Path::new("/o"),
+        );
         assert!(no_disk.env.contains(&("TILO_DEV_DISK".into(), "0".into())));
 
         assert_eq!(
@@ -5229,6 +5495,7 @@ mod tests {
         // image disk: the build's own disk step, on the layout imported into podman.
         let disk = image_disk_command(
             Path::new("/w/os/dev/build-image.sh"),
+            "localhost/tilo-vm:mine",
             Path::new("/w/target/tilo-vm-build"),
         );
         assert!(disk.env.contains(&("TILO_SKIP_BUILD".into(), "1".into())));
@@ -5240,7 +5507,7 @@ mod tests {
         )));
         assert!(
             disk.env
-                .contains(&("TILO_IMAGE".into(), imageup::LOCAL_DEV_IMAGE.into()))
+                .contains(&("TILO_IMAGE".into(), "localhost/tilo-vm:mine".into()))
         );
         assert_eq!(
             imageup::import_layout_command(
@@ -5535,6 +5802,125 @@ mod tests {
                 connect_failure("dev", Some(true), &debug, &older_tool).next,
                 ["cargo build -p tilo-vm"]
             );
+        }
+
+        // Phase: vm_stop_escalates_past_a_guest_that_ignores_acpi.
+        {
+            struct Guest {
+                /// The command whose run brings the VM down.
+                obeys: &'static str,
+                ran: Vec<String>,
+                down: bool,
+            }
+            impl Runner for Guest {
+                fn output(
+                    &mut self,
+                    command: &CommandLine,
+                ) -> Result<crate::hypervisor::Output, CliError> {
+                    let line = command.display();
+                    if line.contains("--state-running") {
+                        let stdout = if self.down { "" } else { "dev\n" };
+                        return Ok(crate::hypervisor::Output {
+                            success: true,
+                            status: "exit status: 0".into(),
+                            stdout: stdout.into(),
+                            stderr: String::new(),
+                        });
+                    }
+                    self.down |= line.contains(self.obeys);
+                    self.ran.push(line);
+                    Ok(crate::hypervisor::Output {
+                        success: true,
+                        status: "exit status: 0".into(),
+                        stdout: String::new(),
+                        stderr: String::new(),
+                    })
+                }
+                fn interactive(&mut self, command: &CommandLine) -> Result<bool, CliError> {
+                    self.output(command).map(|o| o.success)
+                }
+            }
+            let entry = VmEntry {
+                hypervisor: "libvirt".into(),
+                ..VmEntry::default()
+            };
+            let vm = Vm {
+                name: "dev",
+                entry: &entry,
+            };
+            let graces = StopGraces {
+                acpi: Duration::from_millis(30),
+                guest: Duration::from_millis(30),
+                hard: Duration::from_millis(30),
+                poll: Duration::from_millis(1),
+            };
+            let poweroff = CommandLine::new("ssh", &["dev", "systemctl", "poweroff"]);
+            let stop = |obeys: &'static str, poweroff: Option<&CommandLine>| {
+                let mut guest = Guest {
+                    obeys,
+                    ran: Vec::new(),
+                    down: false,
+                };
+                let result = stop_escalating(
+                    &mut guest,
+                    &hypervisor::Libvirt,
+                    &vm,
+                    poweroff,
+                    None,
+                    graces,
+                )
+                .unwrap();
+                (result, guest.ran)
+            };
+            let acpi = "virsh --connect qemu:///session shutdown dev";
+            let hard = "virsh --connect qemu:///session destroy dev";
+            assert_eq!(
+                stop("shutdown dev", Some(&poweroff)),
+                ((Some(true), StopStep::Acpi), vec![acpi.to_owned()])
+            );
+            assert_eq!(
+                stop("systemctl poweroff", Some(&poweroff)),
+                (
+                    (Some(true), StopStep::GuestPoweroff),
+                    vec![acpi.to_owned(), poweroff.display()]
+                )
+            );
+            assert_eq!(
+                stop("destroy dev", Some(&poweroff)),
+                (
+                    (Some(true), StopStep::HardPowerOff),
+                    vec![acpi.to_owned(), poweroff.display(), hard.to_owned()]
+                )
+            );
+            assert_eq!(
+                stop("destroy dev", None),
+                (
+                    (Some(true), StopStep::HardPowerOff),
+                    vec![acpi.to_owned(), hard.to_owned()]
+                )
+            );
+            assert_eq!(
+                stop("nothing brings it down", Some(&poweroff)).0,
+                (Some(false), StopStep::HardPowerOff)
+            );
+        }
+
+        // Phase: image_assembled_components_refuse_a_worktree_build.
+        {
+            let manifest = Manifest::parse(
+                "[[component]]\nname = \"apps+runtime\"\npackages = [\"runtime-dylib\"]\n\
+                 features = [\"music/audio\"]\nlayer = \"direct\"\n\
+                 [[component]]\nname = \"fs\"\npackages = [\"fs\"]\n",
+            )
+            .unwrap();
+            let error = worktree_buildable(manifest.get("apps+runtime").unwrap()).unwrap_err();
+            let CliError::Unsupported { what, alternative } = &error else {
+                panic!("{error:?}");
+            };
+            assert!(what.contains("apps+runtime"), "{what}");
+            assert!(alternative.contains("swap app:"), "{alternative}");
+            assert!(alternative.contains("--from ci:"), "{alternative}");
+            worktree_buildable(manifest.get("fs").unwrap()).unwrap();
         }
 
         // Phase: builder_choice_prefers_the_vm_and_explains_fallbacks.
@@ -5927,6 +6313,9 @@ mod tests {
             emulated: false,
             memory_mb: None,
             headless: false,
+            heads: None,
+            gl: false,
+            resolution: None,
             cpus: None,
             ssh: None,
             ssh_port: None,

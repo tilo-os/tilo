@@ -110,10 +110,6 @@ pub fn transport_rects(row: Rect, scale: f64) -> [(Transport, Rect); 3] {
 /// the primary action, previous and next are ghost buttons, and a control the
 /// player does not offer is disabled rather than hidden so the row keeps its
 /// shape.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "an immediate-mode painter needs the frame context plus the row's live interaction state"
-)]
 pub fn paint_transport(
     scene: &mut Scene,
     transform: Affine,
@@ -338,7 +334,12 @@ impl NowPlayingCard {
         } else {
             0.0
         };
-        2.0 * PANEL_PAD + self.header_height() + RELATED_GAP + seek + ROW_HEIGHT + picker
+        let speakers = if view.speakers.is_some() {
+            self.caption_line() + RELATED_GAP
+        } else {
+            0.0
+        };
+        2.0 * PANEL_PAD + self.header_height() + RELATED_GAP + seek + speakers + ROW_HEIGHT + picker
     }
 
     fn inner(&self) -> Rect {
@@ -386,11 +387,29 @@ impl NowPlayingCard {
         self.caption_line() * 3.0
     }
 
-    fn transport_row(&self, view: &NowPlayingView) -> Rect {
+    /// The speaker-group line under the track, when this device plays to
+    /// one.
+    fn speakers_rect(&self, view: &NowPlayingView) -> Option<Rect> {
+        view.speakers.as_ref()?;
         let inner = self.inner();
         let top = self
             .seek_rect(view)
             .map_or_else(|| self.header_rect().y1, |seek| seek.y1)
+            + RELATED_GAP;
+        Some(Rect::new(
+            inner.x0,
+            top,
+            inner.x1,
+            top + self.caption_line(),
+        ))
+    }
+
+    fn transport_row(&self, view: &NowPlayingView) -> Rect {
+        let inner = self.inner();
+        let top = self
+            .speakers_rect(view)
+            .or_else(|| self.seek_rect(view))
+            .map_or_else(|| self.header_rect().y1, |above| above.y1)
             + RELATED_GAP;
         Rect::new(inner.x0, top, inner.x1, top + ROW_HEIGHT)
     }
@@ -662,6 +681,10 @@ impl NowPlayingCard {
             description.push_str(", ");
             description.push_str(subline);
         }
+        if let Some(speakers) = &view.speakers {
+            description.push_str(". ");
+            description.push_str(&speakers.text());
+        }
         let mut group = AccessNode::new(Role::Group)
             .with_name(tr("now-playing-title"))
             .with_description(description)
@@ -739,10 +762,6 @@ impl NowPlayingCard {
     }
 
     /// Paint the whole card, its Panel surface included, into `rect`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the retained-rendering entry point receives the frame context and the live model together"
-    )]
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered paint of artwork, text, seek bar, transport and picker keeps each region beside the geometry it reads"
@@ -861,6 +880,26 @@ impl NowPlayingCard {
             );
         }
 
+        if let (Some(band), Some(speakers)) = (self.speakers_rect(view), &view.speakers) {
+            #[allow(
+                clippy::cast_possible_truncation,
+                reason = "card widths are bounded by the output; f32 is the shaping precision"
+            )]
+            let line = text.elide_to_width(&speakers.text(), caption_size, band.width() as f32);
+            text.draw_text(
+                scene,
+                &line,
+                caption_size,
+                if speakers.failed() {
+                    colors.semantic.danger
+                } else {
+                    colors.text_dim
+                },
+                transform.pre_translate((band.x0, band.y0).into()),
+                None,
+            );
+        }
+
         let row = self.transport_row(view);
         let rects = transport_rects(row, 1.0);
         let focused = match self.focus {
@@ -955,10 +994,6 @@ impl NowPlayingCard {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one list row's paint needs the frame context, its content and its interaction state"
-    )]
     fn draw_picker_row(
         scene: &mut Scene,
         transform: Affine,

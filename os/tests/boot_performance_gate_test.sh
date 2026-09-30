@@ -243,14 +243,11 @@ if grep -Fq 'systemctl enable tilo-growfs-sysroot.service' "$repo/os/Containerfi
   exit 1
 fi
 device_key_unit="$repo/os/usr/lib/systemd/system/tilo-device-key-init.service"
-grep -Fqx 'ConditionPathExists=|!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
-grep -Fqx 'ConditionPathExists=|/var/lib/tilo/device/keypair.bin' "$device_key_unit"
-identity_unit="$repo/os/usr/lib/systemd/user/tilo-identity.service"
-grep -Fqx 'ConditionPathExists=%E/tilo/identity/primary.json' "$identity_unit"
-grep -Fqx 'ConditionPathExists=!%E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/mkdir -p %E/tilo/identity' "$identity_unit"
-grep -Fqx 'ExecStartPost=/usr/bin/touch %E/tilo/identity/.chain-v1-repaired' "$identity_unit"
-grep -Fqx 'UMask=0077' "$identity_unit"
+grep -Fqx 'ConditionPathExists=!/var/lib/tilo/device-private/keypair.bin' "$device_key_unit"
+if grep -Fq 'tilo-identity.service' "$repo/os/Containerfile"; then
+  echo 'a pre-session identity unit is back in the login path' >&2
+  exit 1
+fi
 if grep -Fq 'systemctl enable tilo-boot-entries.service' "$repo/os/Containerfile"; then
   echo 'boot-entry ESP maintenance still blocks first login' >&2
   exit 1

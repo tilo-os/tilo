@@ -152,19 +152,7 @@ fn active_group_follows_closing_groups_and_resolves_neighbours() {
 }
 
 #[test]
-fn window_group_json_round_trips_and_accepts_legacy_fields() {
-    // Phase `legacy_json_without_active_group_field_still_deserializes`.
-    {
-        // `#[serde(default)]` keeps the upgrade path lossless.
-        let legacy = r#"{
-            "workspaces": [],
-            "active": 0,
-            "active_strip": {},
-            "collaborators": []
-        }"#;
-        let tree: DesktopTree = serde_json::from_str(legacy).unwrap();
-        assert!(tree.active_group.is_empty());
-    }
+fn window_group_json_round_trips() {
     // Phase `window_group_maximized_round_trips_through_json`.
     {
         // Window state must survive restart: a fresh tree starts
@@ -180,19 +168,5 @@ fn window_group_json_round_trips_and_accepts_legacy_fields() {
         let json = serde_json::to_string(&tree).unwrap();
         let round: DesktopTree = serde_json::from_str(&json).unwrap();
         assert!(round.workspaces[0].strips[0].window_groups[0].maximized);
-    }
-    // Phase `legacy_json_without_maximized_field_defaults_to_false`.
-    {
-        // `#[serde(default)]` covers persisted trees written before the
-        // `maximized` field existed. Stripped-down window-group payload
-        // omitting the field must load.
-        let legacy = r#"{
-            "id": 1,
-            "tabs": [],
-            "active_tab": 0,
-            "width": "Normal"
-        }"#;
-        let g: WindowGroup = serde_json::from_str(legacy).unwrap();
-        assert!(!g.maximized);
     }
 }

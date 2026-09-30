@@ -41,14 +41,16 @@ impl RetainedEditor {
         ] {
             self.editor.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut self.doc,
-                &automerge::ROOT,
-                &mut false,
-                &mut None,
-                self.root,
-                &self.tree,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut self.doc,
+                    path: &automerge::ROOT,
+                    handled: &mut false,
+                    focus_target: &mut None,
+                    node_id: self.root,
+                    taffy: &self.tree,
+                },
             );
             self.frame();
         }
@@ -166,14 +168,16 @@ impl RetainedEditor {
                 event,
                 is_synthetic: false,
             },
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            self.root,
-            &self.tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: self.root,
+                taffy: &self.tree,
+            },
         );
         assert!(handled, "editor must receive each test keystroke");
         // Notes publishes edits into its document before the next layout.

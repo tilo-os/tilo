@@ -7,10 +7,10 @@
 //! caller persists a choice into its own (e.g. CRDT-backed) storage.
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, Size, Style, TaffyTree};
 use vello::Scene;
@@ -2619,56 +2619,24 @@ impl<T, M: TreeModel> TreeView<T, M> {
         self.mounted_rows = mounted;
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the Widget event contract plus its handled/focus outputs"
-    )]
-    fn route_to_delegates(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn route_to_delegates(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(row) = self
             .mounted_rows
             .iter_mut()
             .find(|row| row.widget.wants_pointer_capture())
             && let Some(node) = row.node
         {
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
             return;
         }
         for row in self.mounted_rows.iter_mut().rev() {
             let Some(node) = row.node else {
                 continue;
             };
-            row.widget.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 break;
             }
         }
@@ -2702,14 +2670,14 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_dirty = true;
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.reconcile_mounted_rows();
         for row in &mut self.mounted_rows {
             row.widget.sync(state, path);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let model_changes = self.model.poll_changes();
         let received_changes = !model_changes.is_empty();
         if received_changes {
@@ -3310,7 +3278,7 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         self.paint_context_menu(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         self.route_event(event, ctx);
         // Pointer motion repaints only through what the view signature sees
         // (hover, affordance hover, drags), so a resting pointer stays inert.
@@ -3658,10 +3626,11 @@ impl<T: 'static, M: TreeModel + 'static> Widget for TreeView<T, M> {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
+        let (state, path) = crate::doc::document(state, path);
 
         self.paint_dirty = true;
         if let Some(performed) = self.perform_affordance_action(target, action, state, path) {
@@ -3767,40 +3736,47 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
         }
         if self.route_context_menu(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
         if self.route_rename(
             event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target,
+                node_id,
+                taffy,
+            },
         ) {
             return;
         }
         if !self.reorder.is_tracking() && !self.drag_scroll.is_tracking() {
             self.route_to_delegates(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
+                &mut EventCtx {
+                    scale_factor,
+                    modifiers,
+                    state,
+                    path,
+                    handled,
+                    focus_target,
+                    node_id,
+                    taffy,
+                },
             );
         }
         if *handled {
@@ -4037,10 +4013,6 @@ impl<T: 'static, M: TreeModel + 'static> TreeView<T, M> {
 
 /// Paint a decorated row's leading icon centred vertically on `anchor.y`,
 /// starting at `anchor.x`. Returns the width it occupied.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one icon's paint context: scene, transform, text, theme, the icon, its anchor, the row's line box and the row's transition opacity"
-)]
 fn paint_row_icon(
     scene: &mut Scene,
     transform: Affine,
@@ -4119,6 +4091,7 @@ fn paint_row_icon(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::{Cell, RefCell};
     use std::rc::Rc;
     use taffy::TaffyTree;
@@ -4666,8 +4639,6 @@ mod tests {
     }
 
     impl Widget for DelegateProbe {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -4705,7 +4676,7 @@ mod tests {
         ) {
         }
 
-        fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.cursor = Some(Point::new(position.x, position.y));
             }
@@ -4810,14 +4781,16 @@ mod tests {
         let root = automerge::ROOT;
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -4832,14 +4805,16 @@ mod tests {
         let mut doc = AutoCommit::new();
         view.handle_event(
             event,
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy,
+            },
         );
         handled
     }

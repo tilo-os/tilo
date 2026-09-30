@@ -8,7 +8,7 @@
 //! cargo run -p ui-examples --example ui-shots -- widget_snapshot
 //! ```
 //! The PNG is written to `/tmp/quick-ui-widget-gallery.png`. Override
-//! the path with `QUICK_UI_SNAPSHOT_OUT=…`.
+//! the path with `TILO_UI_SNAPSHOT_OUT=…`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -122,7 +122,6 @@ impl TinyText {
     }
 }
 impl Widget for TinyText {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -200,19 +199,6 @@ impl Widget for TinyText {
             text_transform,
             None,
         );
-    }
-    fn handle_event(
-        &mut self,
-        _event: &winit::event::WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut automerge::AutoCommit,
-        _path: &automerge::ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
     fn name(&self) -> &'static str {
         "TinyText"
@@ -586,7 +572,7 @@ fn draw_row8_modal(ctx: &mut GalleryCtx<'_>, pad: f64, canvas_w: u32, y: f64) {
 }
 
 pub fn run(_args: &[String]) {
-    let out = std::env::var("QUICK_UI_SNAPSHOT_OUT")
+    let out = tilo_ui::env::var("TILO_UI_SNAPSHOT_OUT")
         .unwrap_or_else(|_| "/tmp/quick-ui-widget-gallery.png".to_string());
     let (canvas_w, canvas_h) = (1100u32, 1500u32);
 

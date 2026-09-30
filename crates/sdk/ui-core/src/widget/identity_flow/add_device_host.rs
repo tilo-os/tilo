@@ -17,7 +17,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use collab_types::Ed25519PublicKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
 use rand_core::Rng;
@@ -27,6 +26,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -361,30 +361,19 @@ impl AddDeviceHostScreen {
     // this is invoked from the trait impl, forwarding the same event,
     // scale, modifiers, CRDT handle, and out-params the screen host
     // received; bundling it would mean bundling the trait method too.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "screen event handling preserves the Widget event contract, including CRDT, focus and layout parameters"
-    )]
     pub fn handle_event_screen(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) -> ScreenOutcome {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = p;
                 let h = self.cancel_rect.contains(p);
                 if h != self.cancel_hovered {
                     self.cancel_hovered = h;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -394,14 +383,14 @@ impl AddDeviceHostScreen {
                 ..
             } => {
                 if self.cancel_rect.contains(self.last_cursor) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return ScreenOutcome::Back;
                 }
                 ScreenOutcome::Stay
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 if self.scroll.wheel(delta) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -415,7 +404,7 @@ impl AddDeviceHostScreen {
                 ..
             } => {
                 if self.scroll.key(logical_key, self.body_height) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 ScreenOutcome::Stay
             }
@@ -491,8 +480,6 @@ impl AddDeviceHostScreen {
 }
 
 impl Widget for AddDeviceHostScreen {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -553,10 +540,7 @@ impl Widget for AddDeviceHostScreen {
         } else {
             paint_cell(scene, transform, theme, plan.qr, false);
             paint_text(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 plan.qr,
                 QR_PLACEHOLDER,
                 Role::Caption,
@@ -565,10 +549,7 @@ impl Widget for AddDeviceHostScreen {
             );
         }
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.code,
             &self.code_text(),
             Role::Code,
@@ -576,10 +557,7 @@ impl Widget for AddDeviceHostScreen {
             false,
         );
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             plan.status,
             &self.status,
             Role::Caption,
@@ -588,20 +566,6 @@ impl Widget for AddDeviceHostScreen {
         );
         scene.pop_layer();
         sheet.paint_actions(scene, transform, text_renderer, theme, &spec);
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
     }
 
     fn name(&self) -> &'static str {

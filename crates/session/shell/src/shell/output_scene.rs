@@ -21,8 +21,9 @@ use vello::peniko::{BlendMode, Fill};
 /// One display the shell draws across.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OutputGeometry {
-    /// The compositor's stable id for the display (`OutputId`); `0` is the
-    /// primary.
+    /// The compositor's stable id for the display (`OutputId`). It says
+    /// nothing about which display is primary: the backend lists that one
+    /// first.
     pub id: u32,
     /// The physical monitor behind the output, stable across restarts and
     /// port swaps that renumber [`Self::id`]: its EDID identity, told apart

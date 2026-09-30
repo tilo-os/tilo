@@ -9,6 +9,7 @@ include!("deferred_remote_tests.rs");
 use super::*;
 use crate::a11y_tree::{SemanticActionKind, SemanticId};
 use crate::state::State;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Widget};
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
@@ -323,7 +324,13 @@ impl CounterCard {
     }
 }
 impl Widget for CounterCard {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
+    crate::provides!(
+        dyn crate::resources::PublishesResources,
+        dyn crate::search::capability::SearchSource
+    );
+
+    fn sync(&mut self, s: &mut AppModel, p: &ModelPath) {
+        let (s, p) = crate::doc::document(s, p);
         self.button.sync(s, p);
         for scope in std::mem::take(&mut self.scoped_jobs) {
             let invocation = scope.invocation();
@@ -377,7 +384,6 @@ impl Widget for CounterCard {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![&self.button]
     }
@@ -390,6 +396,76 @@ impl Widget for CounterCard {
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
     }
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &crate::widget::ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        let (request, scope) = op.with_custody();
+        if scope.is_none()
+            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
+        {
+            return Ok(Some(started));
+        }
+        op.check()?;
+        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
+            match scope {
+                Some(scope) => self.scoped_jobs.push(scope.clone()),
+                None => self.pending_bump = Some(request.invocation),
+            }
+            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+        }
+        Ok(
+            (request.kind == tilo_actions::OperationKind::Effect
+                && request.type_id == COUNTER_TYPE)
+                .then(|| {
+                    crate::widget::ResourceOperationStart::Completed(
+                        tilo_actions::ActionOutput::default(),
+                    )
+                }),
+        )
+    }
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &automerge::AutoCommit,
+        _path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if let Some(index) = self
+            .scoped_results
+            .iter()
+            .position(|update| update.invocation() == invocation)
+        {
+            return Some(self.scoped_results.remove(index));
+        }
+        if self
+            .resource_result
+            .as_ref()
+            .is_some_and(|update| update.invocation() == invocation)
+        {
+            self.resource_result.take()
+        } else {
+            None
+        }
+    }
+}
+
+impl crate::search::capability::SearchSource for CounterCard {
+    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
+        self.directory_provider
+            .clone()
+            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
+            .unwrap_or_default()
+    }
+}
+
+impl crate::resources::PublishesResources for CounterCard {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<Resource> {
         self.lazy_resource
             .is_none()
@@ -470,70 +546,6 @@ impl Widget for CounterCard {
                     .with_contract(tilo_actions::ActionContract::view()),
                 )
             })
-    }
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.directory_provider
-            .clone()
-            .map(|provider| vec![Box::new(provider) as Box<dyn crate::search::SearchProvider>])
-            .unwrap_or_default()
-    }
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
-    }
-
-    fn start_operation(
-        &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        let (request, scope) = op.with_custody();
-        if scope.is_none()
-            && let Some(started) = crate::widget::start_in_children(self, op, doc, path)?
-        {
-            return Ok(Some(started));
-        }
-        op.check()?;
-        if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
-            match scope {
-                Some(scope) => self.scoped_jobs.push(scope.clone()),
-                None => self.pending_bump = Some(request.invocation),
-            }
-            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
-        }
-        Ok(
-            (request.kind == tilo_actions::OperationKind::Effect
-                && request.type_id == COUNTER_TYPE)
-                .then(|| {
-                    crate::widget::ResourceOperationStart::Completed(
-                        tilo_actions::ActionOutput::default(),
-                    )
-                }),
-        )
-    }
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &automerge::AutoCommit,
-        _path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if let Some(index) = self
-            .scoped_results
-            .iter()
-            .position(|update| update.invocation() == invocation)
-        {
-            return Some(self.scoped_results.remove(index));
-        }
-        if self
-            .resource_result
-            .as_ref()
-            .is_some_and(|update| update.invocation() == invocation)
-        {
-            self.resource_result.take()
-        } else {
-            None
-        }
     }
 }
 
@@ -1946,4 +1958,47 @@ fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
         max_depth: 1,
     });
     assert!(page.stale_cursor);
+}
+
+#[test]
+fn a_needle_finds_actions_published_only_in_the_resource_tree() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "ping".into();
+    let page = app.action_directory_page(query);
+    assert!(page.exhausted, "{page:?}");
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("ping"))]);
+
+    let mut query = directory_query("", "", 1, 65_536, 64);
+    query.needle = "BUMP".into();
+    let first = app.action_directory_page(query.clone());
+    assert_eq!(first.rows.len(), 1);
+    assert!(!first.exhausted);
+    query.revision = first.revision.clone();
+    query.cursor = first.next_cursor.clone();
+    let second = app.action_directory_page(query);
+    assert_eq!(second.rows.len(), 1);
+    assert_ne!(
+        first.rows[0].action, second.rows[0].action,
+        "the cursor resumes after the returned match"
+    );
+}
+
+#[test]
+fn a_needle_finds_an_action_by_its_parameters() {
+    let mut app = app();
+    let mut query = directory_query("", "", 8, 65_536, 64);
+    query.needle = "value".into();
+    let page = app.action_directory_page(query);
+    let found = page
+        .rows
+        .iter()
+        .map(|row| (row.resource.as_str(), row.action.as_deref()))
+        .collect::<Vec<_>>();
+    assert_eq!(found, [("test.counter", Some("set-label"))], "{page:?}");
 }

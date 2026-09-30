@@ -4,6 +4,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
 use crate::widget::Widget;
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::any::Any;
 use taffy::style_helpers::{auto, length, percent};
@@ -244,6 +245,12 @@ impl Container {
 }
 
 impl Widget for Container {
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
+
     fn start_operation(
         &mut self,
         op: &crate::widget::ResourceOperation<'_>,
@@ -254,13 +261,7 @@ impl Widget for Container {
         crate::widget::start_in_children(self, op, doc, path)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         match &mut self.child {
             Some(child) => child.update(state, path),
             None => false,
@@ -380,32 +381,11 @@ impl Widget for Container {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child
-            && let Some(&child_node) = taffy.children(node_id).unwrap_or_default().first()
+            && let Some(&child_node) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first()
         {
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -468,33 +448,11 @@ impl Widget for Container {
     fn is_focused(&self) -> bool {
         false
     }
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
 
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty())
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
     }
 
     fn draw_with_presence(
@@ -529,7 +487,7 @@ impl Widget for Container {
             );
         }
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -542,12 +500,43 @@ impl Widget for Container {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::undo::UndoPoints for Container {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for Container {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for Container {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 

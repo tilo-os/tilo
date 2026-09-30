@@ -15,7 +15,7 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -180,7 +180,7 @@ impl UndoButton {
 }
 
 impl Widget for UndoButton {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(dyn crate::undo::UndoControl);
 
     fn build_layout(
         &mut self,
@@ -257,18 +257,7 @@ impl Widget for UndoButton {
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Unavailable: reject input outright, matching every other disabled
         // widget. No hover feedback, no request, not consumed.
         if !self.is_available() {
@@ -281,7 +270,8 @@ impl Widget for UndoButton {
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
@@ -298,9 +288,9 @@ impl Widget for UndoButton {
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
                         self.dirty = true;
-                        *handled = true;
+                        *ctx.handled = true;
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         } else {
                             // Fires on release-while-hovered, like `Button`.
                             self.activate();
@@ -309,7 +299,7 @@ impl Widget for UndoButton {
                 } else if self.is_pressed {
                     self.is_pressed = false;
                     self.dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -373,8 +363,8 @@ impl Widget for UndoButton {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             crate::a11y::Action::Activate => self.activate(),
@@ -401,6 +391,20 @@ impl Widget for UndoButton {
         )
     }
 
+    fn needs_redraw(&self) -> bool {
+        self.dirty || self.paint_state() != self.last_paint_state
+    }
+
+    fn mark_drawn(&mut self) {
+        self.dirty = false;
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl crate::undo::UndoControl for UndoButton {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.access.publish(&status());
         // Surrender focus when the verb goes away. Undoing the last action
@@ -416,21 +420,8 @@ impl Widget for UndoButton {
             self.dirty = true;
         }
     }
-
     fn take_undo_request(&mut self) -> Option<UndoRequest> {
         self.access.take_request()
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.dirty || self.paint_state() != self.last_paint_state
-    }
-
-    fn mark_drawn(&mut self) {
-        self.dirty = false;
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
     }
 }
 
@@ -438,6 +429,7 @@ impl Widget for UndoButton {
 mod tests {
     use super::*;
     use crate::a11y::Action;
+    use automerge::AutoCommit;
     use automerge::ROOT;
 
     fn button_at(kind: UndoRequest, rect: Rect) -> UndoButton {
@@ -487,14 +479,16 @@ mod tests {
         ] {
             b.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut doc,
-                &ROOT,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut doc,
+                    path: &ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
     }
@@ -517,7 +511,7 @@ mod tests {
             assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
             assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
 
-            b.set_undo_status(&mut || status(true, false));
+            crate::undo::set_undo_status(&mut b, &mut || status(true, false));
             let node = Widget::accessibility(&b).unwrap();
             assert!(!node.state.disabled, "an action on the stack enables it");
             assert!(node.state.focusable);
@@ -531,8 +525,8 @@ mod tests {
         {
             let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
             let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
-            undo.set_undo_status(&mut || status(true, false));
-            redo.set_undo_status(&mut || status(true, false));
+            crate::undo::set_undo_status(&mut undo, &mut || status(true, false));
+            crate::undo::set_undo_status(&mut redo, &mut || status(true, false));
             assert!(undo.is_enabled(), "undo is available");
             assert!(!redo.is_enabled(), "redo is not, despite undo being");
             assert_eq!(
@@ -551,7 +545,7 @@ mod tests {
             b.dirty = false;
             assert!(!b.needs_redraw(), "nothing has changed yet");
 
-            b.set_undo_status(&mut || status(true, false));
+            crate::undo::set_undo_status(&mut b, &mut || status(true, false));
             assert!(
                 b.needs_redraw(),
                 "gaining an undoable action must repaint the control"
@@ -565,7 +559,7 @@ mod tests {
         // just left the focus order.
         {
             let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-            b.set_undo_status(&mut || status(true, false));
+            crate::undo::set_undo_status(&mut b, &mut || status(true, false));
             b.set_focus(true);
             assert!(b.is_focused());
             assert!(
@@ -574,7 +568,7 @@ mod tests {
             );
 
             // The action is undone; the stack is empty.
-            b.set_undo_status(&mut || status(false, true));
+            crate::undo::set_undo_status(&mut b, &mut || status(false, true));
             assert!(!b.is_focused(), "focus is surrendered with the verb");
             let node = Widget::accessibility(&b).unwrap();
             assert!(!node.state.focused, "and is not reported to an AT");
@@ -591,15 +585,22 @@ mod tests {
             let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
             click(&mut b);
             assert_eq!(
-                b.take_undo_request(),
+                crate::undo::take_undo_request(&mut b),
                 None,
                 "a disabled control must not ask the host to undo"
             );
 
-            b.set_undo_status(&mut || status(true, false));
+            crate::undo::set_undo_status(&mut b, &mut || status(true, false));
             click(&mut b);
-            assert_eq!(b.take_undo_request(), Some(UndoRequest::Undo));
-            assert_eq!(b.take_undo_request(), None, "one click, one undo");
+            assert_eq!(
+                crate::undo::take_undo_request(&mut b),
+                Some(UndoRequest::Undo)
+            );
+            assert_eq!(
+                crate::undo::take_undo_request(&mut b),
+                None,
+                "one click, one undo"
+            );
         }
 
         // Case `assistive_activation_takes_the_same_route_as_a_click`.
@@ -613,11 +614,14 @@ mod tests {
                 !b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT),
                 "an unavailable verb declines the action"
             );
-            assert_eq!(b.take_undo_request(), None);
+            assert_eq!(crate::undo::take_undo_request(&mut b), None);
 
-            b.set_undo_status(&mut || status(false, true));
+            crate::undo::set_undo_status(&mut b, &mut || status(false, true));
             assert!(b.perform_action_at(&Action::Activate, &[], &mut doc, &ROOT));
-            assert_eq!(b.take_undo_request(), Some(UndoRequest::Redo));
+            assert_eq!(
+                crate::undo::take_undo_request(&mut b),
+                Some(UndoRequest::Redo)
+            );
         }
     }
 }

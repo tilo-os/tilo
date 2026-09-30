@@ -16,7 +16,8 @@
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::length;
@@ -24,8 +25,9 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_actions::EncodedAction;
 use ui::color_compat::ColorCompat;
 use ui::icons::Icon;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::{Metrics, Spacing};
 use ui::widget::toggle_group::Segment;
@@ -278,7 +280,7 @@ impl ThemesApp {
             // Seed wide so the first frame (and the default 1280px shot) builds
             // the docked layout without a structure round-trip.
             build_width: BREAKPOINT,
-            last_tick: Instant::now(),
+            last_tick: ui::time::now(),
             gallery_toggle,
             gallery_toggle_hidden,
             toggle_shows_close: false,
@@ -441,7 +443,7 @@ impl ThemesApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the batch are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]); Ctrl+Z then reverts it.
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)); Ctrl+Z then reverts it.
     fn perform_action(&mut self, state: &mut AutoCommit, action: &crate::actions::ThemesAction) {
         self.actions.dispatch_with_context(
             state,
@@ -577,7 +579,7 @@ impl ThemesApp {
         let catalog = doc::load_catalog(state, &automerge::ROOT).unwrap_or_default();
         if let Some(src) = catalog.iter().find(|s| s.id == id).cloned() {
             match store::save(&src) {
-                Ok(_) => {
+                Ok(()) => {
                     self.perform_action(state, &crate::actions::set_active_theme_action(&src.id));
                     self.status = format!("Applied “{}” as the system theme", src.name);
                     Ok(())
@@ -614,9 +616,9 @@ impl ThemesApp {
     /// theme (so a capture shows real editing); the live install focuses the
     /// first preset.
     fn seed_document_if_needed(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        // Persisted libraries are read-only at startup, including legacy Text
-        // and a restored version with no catalog roots. Explicit edits create
-        // only their addressed native override inside the canonical action.
+        // Persisted libraries are read-only at startup, including a restored
+        // version with no catalog roots. Explicit edits touch only their
+        // addressed record inside the canonical action.
         if !self.selected.is_empty() {
             return;
         }
@@ -1333,52 +1335,19 @@ impl ThemesApp {
 
     /// Forward the event into each top-bar button (part of
     /// [`Widget::handle_event`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
-    fn handle_topbar_buttons(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_topbar_buttons(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(n) = self.topbar_toggle_node {
-            self.gallery_toggle.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.gallery_toggle
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         for (b, c) in self.topbar_buttons.iter_mut().zip(
             self.topbar_actions_node
-                .and_then(|n| taffy.children(n).ok())
+                .and_then(|n| ctx.taffy.children(n).ok())
                 .unwrap_or_default()
                 .iter(),
         ) {
-            b.handle_event(
-                event,
-                scale,
-                &m,
-                state,
-                path,
-                handled,
-                focus_target,
-                *c,
-                taffy,
-            );
-            if *handled {
+            b.handle_event(event, &mut ctx.reborrow(ctx.path, *c));
+            if *ctx.handled {
                 return;
             }
         }
@@ -1389,20 +1358,10 @@ impl ThemesApp {
     /// `true` if the caller should stop dispatching — either the gallery
     /// consumed the event, or a pointer press inside the open flap is
     /// swallowed so it can't fall through to the content beneath.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the same independently-meaningful parameters Widget::handle_event receives; a context struct would just be destructured back apart at every child dispatch"
-    )]
     fn handle_gallery_event(
         &mut self,
         event: &WindowEvent,
-        scale: f64,
-        m: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         overlay: bool,
         gallery_open: bool,
     ) -> bool {
@@ -1415,18 +1374,9 @@ impl ThemesApp {
         let Some(n) = self.gallery_node else {
             return false;
         };
-        self.gallery.handle_event(
-            event,
-            scale,
-            &m,
-            state,
-            path,
-            handled,
-            focus_target,
-            n,
-            taffy,
-        );
-        if *handled {
+        self.gallery
+            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+        if *ctx.handled {
             // Selecting a theme from the open flap dismisses it so the
             // narrow window returns to the preview + customizer (the
             // master→detail return).
@@ -1443,7 +1393,7 @@ impl ThemesApp {
             } = event
             && self.gallery_overlay_rect.contains(self.last_cursor)
         {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -1451,85 +1401,45 @@ impl ThemesApp {
 }
 
 impl Widget for ThemesApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["themes.apply", "themes.export", "themes.new"]
     }
 
-    /// Publish the open theme library + its themes so the host's Ctrl+K action
-    /// palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        if type_id == "themes.new" {
-            self.pending_new = true;
-            return Ok(true);
-        }
-        if type_id == "themes.apply" {
-            return Err("theme application requires the lifecycle-capable operation host".into());
-        }
-        if type_id != "themes.export" {
-            return Ok(false);
-        }
-        let id = serde_json::from_slice::<Option<String>>(payload)
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| self.selected.clone());
-        let Some(theme) = doc::load_catalog(doc, &automerge::ROOT)
-            .unwrap_or_default()
-            .into_iter()
-            .find(|theme| theme.id == id)
-        else {
-            return Err("Theme is no longer available".into());
-        };
-        self.last_export = Some(theme.to_json());
-        self.status = format!("Exported “{}” as JSON", theme.name);
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect || type_id != "themes.apply" {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.pending_apply.is_some() {
-            return Err("another theme is still being applied".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        let id = serde_json::from_slice::<Option<String>>(payload)
-            .map_err(|error| error.to_string())?
-            .unwrap_or_else(|| self.selected.clone());
-        let exists = doc::load_catalog(doc, &automerge::ROOT)
-            .unwrap_or_default()
-            .iter()
-            .any(|theme| theme.id == id);
-        if !exists {
-            return Err("Theme is no longer available".into());
-        }
-        self.pending_apply = Some((id, invocation));
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1561,14 +1471,8 @@ impl Widget for ThemesApp {
         None
     }
 
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Themes action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some(preview) = self.narrow_view_request.take() {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(preview);
@@ -1724,7 +1628,7 @@ impl Widget for ThemesApp {
         // Advance the reveal animation (frame-rate-independent; `needs_redraw`
         // keeps frames flowing while it settles).
         let layout = self.layout_class();
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64();
         self.last_tick = now;
         self.gallery_flap.tick(layout, dt);
@@ -1815,65 +1719,32 @@ impl Widget for ThemesApp {
             let fill = theme.tokens.colors.semantic.success;
             draw::fill_rrect(scene, t, pill, 13.0, fill);
             draw::text_center(
-                tr,
-                scene,
-                t,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 &self.status,
-                12.0,
+                &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 // Ink measured against the pill, not a literal white: a light
                 // preset's success green needs dark ink to stay legible.
                 theme.on_surface(fill).ink,
-                pill.x0,
-                pill.x1,
-                pill.y0,
-                pill.y1,
-                TextWeight::Semibold,
+                pill,
             );
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Widget event routing forwards the event, scale, modifiers, CRDT state, focus outputs and layout context"
-    )]
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one event dispatch covering every region of the app, in hit-test order"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        m: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // Pointer-capture priority: a live picker / slider drag in the
         // customizer must keep receiving events wherever the cursor goes.
         if self.customizer.wants_pointer_capture() {
             if let Some(n) = self.customizer_node {
-                self.customizer.handle_event(
-                    event,
-                    scale,
-                    m,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.customizer
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return;
         }
 
         // Track the cursor for the toggle + scrim hit tests.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale, position.y / scale);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         let overlay = self.layout_class() == SplitLayout::Overlay;
@@ -1889,82 +1760,44 @@ impl Widget for ThemesApp {
             self.narrow_view_chosen = true;
             self.set_narrow_preview(false);
             self.narrow_tabs.set_focus(true);
-            *focus_target = self.narrow_tabs_node;
-            *handled = true;
+            *ctx.focus_target = self.narrow_tabs_node;
+            *ctx.handled = true;
             return;
         }
         if overlay
             && !gallery_open
             && let Some(node) = self.narrow_tabs_node
         {
-            self.narrow_tabs.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                taffy,
-            );
-            if *handled {
+            self.narrow_tabs
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            if *ctx.handled {
                 return;
             }
         }
 
-        if self.handle_overlay_shortcuts(event, overlay, gallery_open, handled) {
+        if self.handle_overlay_shortcuts(event, overlay, gallery_open, ctx.handled) {
             return;
         }
 
-        self.handle_topbar_buttons(event, scale, *m, state, path, handled, focus_target, taffy);
-        if *handled {
+        self.handle_topbar_buttons(event, ctx);
+        if *ctx.handled {
             return;
         }
 
-        if self.handle_gallery_event(
-            event,
-            scale,
-            *m,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-            overlay,
-            gallery_open,
-        ) {
+        if self.handle_gallery_event(event, ctx, overlay, gallery_open) {
             return;
         }
 
         if let Some(n) = self.customizer_node {
-            self.customizer.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.customizer
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return;
             }
         }
         if let Some(n) = self.preview_node {
-            self.preview.handle_event(
-                event,
-                scale,
-                m,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.preview
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
 
@@ -2073,6 +1906,98 @@ impl Widget for ThemesApp {
         _permissions: &ui::permissions::PermissionContext,
     ) {
         self.draw(scene, transform, text_renderer, theme, presence);
+    }
+}
+
+impl ui::resources::PublishesResources for ThemesApp {
+    /// Publish the open theme library + its themes so the host's Ctrl+K action
+    /// palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for ThemesApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for ThemesApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Themes action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ThemesApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        if type_id == "themes.new" {
+            self.pending_new = true;
+            return Ok(true);
+        }
+        if type_id == "themes.apply" {
+            return Err("theme application requires the lifecycle-capable operation host".into());
+        }
+        if type_id != "themes.export" {
+            return Ok(false);
+        }
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
+        let Some(theme) = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .into_iter()
+            .find(|theme| theme.id == id)
+        else {
+            return Err("Theme is no longer available".into());
+        };
+        self.last_export = Some(theme.to_json());
+        self.status = format!("Exported “{}” as JSON", theme.name);
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect || type_id != "themes.apply" {
+            return Ok(None);
+        }
+        if self.pending_apply.is_some() {
+            return Err("another theme is still being applied".into());
+        }
+        let id = serde_json::from_slice::<Option<String>>(payload)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_else(|| self.selected.clone());
+        let exists = doc::load_catalog(doc, &automerge::ROOT)
+            .unwrap_or_default()
+            .iter()
+            .any(|theme| theme.id == id);
+        if !exists {
+            return Err("Theme is no longer available".into());
+        }
+        self.pending_apply = Some((id, invocation));
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2197,9 +2122,7 @@ mod tests {
     }
 
     fn route_narrow_view_invocation(app: &mut ThemesApp, state: &mut ui::State) {
-        let invocation = app
-            .narrow_tabs
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut app.narrow_tabs)
             .expect("view selection emitted its canonical invocation");
         let index = invocation.arguments["index"]
             .as_u64()
@@ -2211,17 +2134,45 @@ mod tests {
         .unwrap();
         assert!(
             app.narrow_tabs
-                .invoke_resource_operation_v2(
-                    tilo_actions::OperationKind::View,
-                    "tilo.ui.segmented.select",
-                    &payload,
-                    &state.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        "tilo.ui.segmented.select",
+                        &payload,
+                    ),
+                    &mut state.doc,
                     &state.root,
                 )
                 .unwrap()
                 .is_some()
         );
         app.sync(&mut state.doc, &state.root);
+    }
+
+    /// Deliver one event at `node` with default modifiers; returns whether it was handled.
+    fn send(
+        app: &mut ThemesApp,
+        event: &WindowEvent,
+        state: &mut ui::State,
+        (node, tree): (NodeId, &TaffyTree<()>),
+        focus: &mut Option<NodeId>,
+    ) -> bool {
+        let mut handled = false;
+        app.handle_event(
+            event,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: focus,
+                node_id: node,
+                taffy: tree,
+            },
+        );
+        handled
     }
 
     fn key_press(logical_key: Key) -> WindowEvent {
@@ -2358,19 +2309,7 @@ mod tests {
             button: MouseButton::Left,
         };
         for event in [&cursor, &click] {
-            let mut handled = false;
-            let mut focus = None;
-            app.handle_event(
-                event,
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                node,
-                &tree,
-            );
+            send(&mut app, event, &mut state, (node, &tree), &mut None);
         }
         route_narrow_view_invocation(&mut app, &mut state);
         assert!(app.narrow_preview);
@@ -2387,19 +2326,8 @@ mod tests {
         assert!(app.narrow_preview);
         (tree, node) = layout_narrow(&mut app, 480.0);
         let event = key_press(Key::Named(NamedKey::Escape));
-        let mut handled = false;
         let mut focus = None;
-        app.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
+        let handled = send(&mut app, &event, &mut state, (node, &tree), &mut focus);
         assert!(handled && !app.narrow_preview);
         assert_eq!(focus, app.narrow_tabs_node);
         assert!(app.narrow_tabs.is_focused());
@@ -2411,18 +2339,7 @@ mod tests {
         // Focus stays on the compound selector, so ArrowRight can re-open
         // Full preview without exposing or focusing the hidden customizer.
         let event = key_press(Key::Named(NamedKey::ArrowRight));
-        let mut handled = false;
-        app.handle_event(
-            &event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
-        );
+        let handled = send(&mut app, &event, &mut state, (node, &tree), &mut focus);
         assert!(handled);
         route_narrow_view_invocation(&mut app, &mut state);
         assert!(app.narrow_preview);
@@ -2587,17 +2504,21 @@ mod tests {
             let (mut app, mut state, _env) = seeded_demo();
             state.doc.commit();
             let before_heads = state.doc.get_heads();
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.export",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &state.doc,
-                    &state.root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "themes.export",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(state.doc.get_heads(), before_heads);
             assert!(
                 app.last_export
@@ -2606,7 +2527,7 @@ mod tests {
             );
             assert!(app.status.contains("Exported"));
 
-            let resources = Widget::resources(&app, &state.doc);
+            let resources = ui::resources::resources(&app, &state.doc);
             assert!(
                 resources[0]
                     .actions
@@ -2625,17 +2546,21 @@ mod tests {
         {
             let (mut app, mut state, _env) = seeded_demo();
             let before = catalog(&state).len();
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.new",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &state.doc,
-                    &state.root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        "themes.new",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             app.sync(&mut state.doc, &state.root);
             assert_eq!(catalog(&state).len(), before + 1);
             let dispatched = app.last_dispatched().expect("create action dispatched");
@@ -2646,7 +2571,7 @@ mod tests {
                 crate::actions::ThemesAction::CreateCustomTheme { .. }
             ));
             assert!(
-                Widget::resources(&app, &state.doc)[0]
+                ui::resources::resources(&app, &state.doc)[0]
                     .actions
                     .iter()
                     .any(|action| {
@@ -2661,14 +2586,16 @@ mod tests {
             run(&mut app, &mut st, "select:dracula");
             let invocation = tilo_actions::InvocationId::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.apply",
-                    &serde_json::to_vec(&()).unwrap(),
-                    &st.doc,
-                    &st.root,
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "themes.apply",
+                        &serde_json::to_vec(&()).unwrap()
+                    ),
+                    &mut st.doc,
+                    &st.root
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -2776,7 +2703,7 @@ mod tests {
                 "attributed to the local user, so their Ctrl+Z can reach it"
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "rising-edge: the boundary is consumed once"
             );
 
@@ -2801,16 +2728,18 @@ mod tests {
     fn apply_lifecycle_is_cancellable_and_the_gallery_goes_idle() {
         // Case `exported_apply_uses_cancellable_background_lifecycle`.
         {
-            let (mut app, st, _env) = seeded();
+            let (mut app, mut st, _env) = seeded();
             let theme_id = catalog(&st)[0].id.clone();
             let invocation = tilo_actions::InvocationId::new();
             let started = app
-                .start_resource_operation(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    "themes.apply",
-                    &serde_json::to_vec(&theme_id).unwrap(),
-                    &st.doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        "themes.apply",
+                        &serde_json::to_vec(&theme_id).unwrap(),
+                    ),
+                    &mut st.doc,
                     &st.root,
                 )
                 .unwrap();
@@ -2820,7 +2749,7 @@ mod tests {
                 Some(tilo_actions::InvocationUpdate::Cancelled { .. })
             ));
 
-            let apply = Widget::resources(&app, &st.doc)
+            let apply = ui::resources::resources(&app, &st.doc)
                 .into_iter()
                 .flat_map(|resource| resource.children)
                 .flat_map(|theme| theme.actions)

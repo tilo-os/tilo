@@ -16,12 +16,12 @@
 //! drive it directly without ever building a `TaffyTree`.
 
 use crate::time::{Duration, SystemTime};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use crate::widget::TaffyTreeExt;
-use automerge::{AutoCommit, ObjId};
 use collab_types::{
     Attestation, AttestationId, ChannelEvent, ChannelId, Claim, Clearance, Ed25519PublicKey, Role,
     RoleAttestation, Signature, generate_keypair, sign_event, verify_event,
@@ -39,6 +39,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -1404,19 +1405,14 @@ impl InviteEnvelope {
     }
 }
 
-/// Size of a record written before invite secrets were sealed with
-/// `tilo-seal`: expiry (8) || XChaCha20-Poly1305 nonce (24) || ciphertext
-/// and tag (48), under the capability digest and expiry as associated data.
-#[cfg(unix)]
-const LEGACY_INVITE_RECORD_LEN: usize = 80;
-/// Size of a current record: expiry (8) || `tilo-seal` envelope of the
+/// Size of a record: expiry (8) || `tilo-seal` envelope of the
 /// 32-byte secret (40-byte header, 48 bytes of ciphertext and tag).
 #[cfg(unix)]
 const INVITE_RECORD_LEN: usize = 96;
 
 #[cfg(unix)]
 fn is_invite_record_len(len: u64) -> bool {
-    len == LEGACY_INVITE_RECORD_LEN as u64 || len == INVITE_RECORD_LEN as u64
+    len == INVITE_RECORD_LEN as u64
 }
 
 /// What a record's secret is bound to: the capability digest (so a record
@@ -1429,7 +1425,7 @@ fn invite_record_context(capability: &[u8; 32], expires_unix: u64) -> Vec<u8> {
     context
 }
 
-/// Open either record layout. `record` is the whole file, expiry included.
+/// Open a record. `record` is the whole file, expiry included.
 #[cfg(unix)]
 fn open_invite_record(
     key: &tilo_seal::SymmetricKey,
@@ -1441,14 +1437,6 @@ fn open_invite_record(
     let body = record
         .get(8..)
         .ok_or(tilo_seal::Error::Malformed("invite record"))?;
-    if record.len() == LEGACY_INVITE_RECORD_LEN {
-        let (nonce, ciphertext) = body
-            .split_at_checked(tilo_seal::legacy::XCHACHA_NONCE_LEN)
-            .ok_or(tilo_seal::Error::Malformed("invite record"))?;
-        let nonce = <&[u8; tilo_seal::legacy::XCHACHA_NONCE_LEN]>::try_from(nonce)
-            .map_err(|_| tilo_seal::Error::Malformed("invite record"))?;
-        return tilo_seal::legacy::open_xchacha20poly1305(key, nonce, &context, ciphertext);
-    }
     tilo_seal::envelope::open(
         key,
         tilo_seal::Context::new(tilo_seal::Label::InviteRedemption, &context),
@@ -1461,11 +1449,24 @@ pub struct InviteRedemptionAuthority {
     root: PathBuf,
 }
 
+/// Where an invite is redeemed: the shell broker's TLS endpoint and
+/// certificate, and the private directory of its redemption authority.
 #[derive(Clone)]
-struct InviteBrokerLocator {
-    endpoint: String,
-    certificate: Vec<u8>,
-    authority_root: PathBuf,
+pub struct InviteBrokerLocator {
+    pub endpoint: String,
+    pub certificate: Vec<u8>,
+    pub authority_root: PathBuf,
+}
+
+/// What an invite offers and on whose behalf; all of it is signed into the
+/// envelope by the owner.
+pub struct InviteTerms {
+    pub channel: ChannelId,
+    pub channel_name: String,
+    pub owner_pubkey: Ed25519PublicKey,
+    pub inviter_label: String,
+    pub role: Role,
+    pub expires_at: SystemTime,
 }
 
 static INVITE_BROKER_LOCATOR: std::sync::OnceLock<InviteBrokerLocator> = std::sync::OnceLock::new();
@@ -1835,18 +1836,19 @@ pub fn mint_invite(
     role: Role,
     expires_at: SystemTime,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let channel_name = channel_name.into();
-    let inviter_label = inviter_label.into();
+    let terms = InviteTerms {
+        channel,
+        channel_name: channel_name.into(),
+        owner_pubkey,
+        inviter_label: inviter_label.into(),
+        role,
+        expires_at,
+    };
     if let Some(locator) = INVITE_BROKER_LOCATOR.get() {
         let authority = InviteRedemptionAuthority::at(&locator.authority_root)?;
         return mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             locator.endpoint.clone(),
             locator.certificate.clone(),
             &authority,
@@ -1856,13 +1858,8 @@ pub fn mint_invite(
     {
         let authority = invite_redemption_authority()?;
         mint_invite_at(
-            channel,
-            channel_name,
-            owner_pubkey,
+            terms,
             owner_signing_key,
-            inviter_label,
-            role,
-            expires_at,
             String::new(),
             Vec::new(),
             &authority,
@@ -1882,23 +1879,16 @@ pub fn mint_invite(
 ///
 /// Returns an error for an invalid endpoint/certificate, unsafe authority
 /// storage, encryption/signing failure, or an exhausted authority quota.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Broker invites bind channel identity, owner signing identity, inviter label, role and expiry, redemption endpoint/certificate, and authority storage."
-)]
 pub fn mint_invite_for_broker(
-    channel: ChannelId,
-    channel_name: impl Into<String>,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: impl Into<String>,
-    role: Role,
-    expires_at: SystemTime,
-    redemption_endpoint: impl Into<String>,
-    redemption_certificate: Vec<u8>,
-    authority_root: impl Into<PathBuf>,
+    broker: InviteBrokerLocator,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
-    let redemption_endpoint = redemption_endpoint.into();
+    let InviteBrokerLocator {
+        endpoint: redemption_endpoint,
+        certificate: redemption_certificate,
+        authority_root,
+    } = broker;
     redemption_endpoint
         .parse::<std::net::SocketAddr>()
         .map_err(|error| {
@@ -1911,35 +1901,29 @@ pub fn mint_invite_for_broker(
     }
     let authority = InviteRedemptionAuthority::at(authority_root)?;
     mint_invite_at(
-        channel,
-        channel_name.into(),
-        owner_pubkey,
+        terms,
         owner_signing_key,
-        inviter_label.into(),
-        role,
-        expires_at,
         redemption_endpoint,
         redemption_certificate,
         &authority,
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Invite signing binds channel and owner identity, recipient-visible label, role/expiry, redemption endpoint/certificate, and the issuing authority."
-)]
 fn mint_invite_at(
-    channel: ChannelId,
-    channel_name: String,
-    owner_pubkey: Ed25519PublicKey,
+    terms: InviteTerms,
     owner_signing_key: &DalekSigningKey,
-    inviter_label: String,
-    role: Role,
-    expires_at: SystemTime,
     redemption_endpoint: String,
     redemption_certificate: Vec<u8>,
     authority: &InviteRedemptionAuthority,
 ) -> Result<InviteEnvelope, IdentityFlowError> {
+    let InviteTerms {
+        channel,
+        channel_name,
+        owner_pubkey,
+        inviter_label,
+        role,
+        expires_at,
+    } = terms;
     let (delegation_secret_full, delegation_pubkey) = generate_keypair();
     let mut capability = [0u8; 32];
     UnwrapErr(SysRng).fill_bytes(&mut capability);
@@ -2219,10 +2203,7 @@ fn draw_done_card(
         name_row.y1,
     );
     sheet::paint_text_in(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         disc,
         &initial,
         Role::Code,
@@ -2237,10 +2218,7 @@ fn draw_done_card(
         name_row.y1,
     );
     paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         name_rect,
         &signed_in,
         Role::Value,
@@ -2249,10 +2227,7 @@ fn draw_done_card(
     );
     for (rect, label) in [(saved, SAVED), (next, NEXT)] {
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             rect,
             label,
             Role::Caption,
@@ -2457,7 +2432,7 @@ impl Widget for IdentityFlow {
         Some("identity_flow")
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         match self.current {
             IdentityFlowScreen::CreateIdentity => self.create_identity.sync(state, path),
             IdentityFlowScreen::RecoveryShare => self.recovery_share.sync(state, path),
@@ -2571,97 +2546,24 @@ impl Widget for IdentityFlow {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let outcome = match self.current {
-            IdentityFlowScreen::CreateIdentity => self.create_identity.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-                &*self.store,
-            ),
-            IdentityFlowScreen::RecoveryShare => self.recovery_share.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::RecoveryVerify => self.recovery_verify.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::AddDeviceHost => self.add_device_host.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
-            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            ),
+            IdentityFlowScreen::CreateIdentity => {
+                self.create_identity
+                    .handle_event_screen(event, ctx, &*self.store)
+            }
+            IdentityFlowScreen::RecoveryShare => {
+                self.recovery_share.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::RecoveryVerify => {
+                self.recovery_verify.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::AddDeviceHost => {
+                self.add_device_host.handle_event_screen(event, ctx)
+            }
+            IdentityFlowScreen::PairDevice => self.pair_device.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteMint => self.invite_mint.handle_event_screen(event, ctx),
+            IdentityFlowScreen::InviteAccept => self.invite_accept.handle_event_screen(event, ctx),
             IdentityFlowScreen::Done => ScreenOutcome::Stay,
         };
         self.advance(outcome);
@@ -3197,26 +3099,12 @@ mod tests {
         }
 
         #[cfg(unix)]
-        fn invite_record_from_an_earlier_build_redeems_and_new_records_use_tilo_seal() {
+        fn invite_records_use_tilo_seal_under_a_stable_name() {
             let dir = tempfile::tempdir().unwrap();
             let authority = InviteRedemptionAuthority::at(dir.path()).unwrap();
-            private_fs::create_atomic(
-                &dir.path().join("authority-key"),
-                &hex::decode(LEGACY_AUTHORITY_KEY).unwrap(),
-            )
-            .unwrap();
-            private_fs::create_atomic(
-                &dir.path().join(LEGACY_RECORD_NAME),
-                &hex::decode(LEGACY_RECORD).unwrap(),
-            )
-            .unwrap();
             assert_eq!(
                 authority.path(&[0x31; 32]),
-                dir.path().join(LEGACY_RECORD_NAME)
-            );
-            assert_eq!(
-                authority.redeem(&[0x31; 32], 1).unwrap().as_slice(),
-                [0x32; 32]
+                dir.path().join(RECORD_NAME_0X31)
             );
 
             authority.issue([0x41; 32], [0x42; 32], u64::MAX).unwrap();
@@ -3255,21 +3143,14 @@ mod tests {
         invite_authority_refuses_a_symlink_root_or_key();
         invite_authority_consumes_expired_secret_without_releasing_it();
         #[cfg(unix)]
-        invite_record_from_an_earlier_build_redeems_and_new_records_use_tilo_seal();
+        invite_records_use_tilo_seal_under_a_stable_name();
         #[cfg(unix)]
         invite_record_is_bound_to_its_capability_and_expiry();
     }
 
-    /// A record and key written by the XChaCha20-Poly1305 record format
-    /// before invite secrets moved to `tilo-seal` (capability `[0x31; 32]`,
-    /// secret `[0x32; 32]`, expiry 2100-01-01).
+    /// The record file name of capability `[0x31; 32]`.
     #[cfg(unix)]
-    const LEGACY_AUTHORITY_KEY: &str =
-        "2823453e56138d5c5b99be184ddee401a997e01ea7023a3c9a9b363f55ce8369";
-    #[cfg(unix)]
-    const LEGACY_RECORD_NAME: &str = "8f803fd8e5cb4cec466a0ec3e38c3c65cc893fe16adae69ae01556ade3fba864a50fab86e9a2fb9e7a7c5e101234e78f12bffe3a25b3799aa874c12929b5bdb9";
-    #[cfg(unix)]
-    const LEGACY_RECORD: &str = "00000000f48657002fe7034e7352888994806b93fa07efcdeca068dc86c77eab872bb5805468118dfd6dc7a106cc5df0865c41ab2059b09a58d1f6b9b212f67d8dfbf74577940419d0d9273d1321c5ca";
+    const RECORD_NAME_0X31: &str = "8f803fd8e5cb4cec466a0ec3e38c3c65cc893fe16adae69ae01556ade3fba864a50fab86e9a2fb9e7a7c5e101234e78f12bffe3a25b3799aa874c12929b5bdb9";
 
     #[test]
     fn identity_record_serialization_and_signing_round_trips() {

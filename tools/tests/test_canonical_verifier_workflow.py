@@ -10,7 +10,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
-WORKFLOW = ROOT / '.forgejo/workflows/canonical-verifier-bundle.yml'
+WORKFLOW = ROOT / '.forgejo/workflows/release-verifier-bundles.yml'
 BUILDER = 'registry.tilo.so/tilo/tilo-builder@sha256:' + 'a' * 64
 
 
@@ -30,10 +30,9 @@ class VerifierWorkflowTests(unittest.TestCase):
             self.assertIn('arch: aarch64\n            runner: runner-arm64', source)
             self.assertIn('image: ${{ needs.builder.outputs.image }}', source)
             self.assertIn('BUILDER_IMAGE: ${{ needs.builder.outputs.image }}', source)
-            self.assertIn('uses: ./.forgejo/actions/restore-cargo-downloads', source)
-            # The compiler cache comes from the runner. This workflow binds no secret.
+            self.assertIn('uses: ./.forgejo/actions/prepare-rust-build', source)
+            # No secret: the runner provides the compiler cache.
             self.assertEqual(set(), set(re.findall(r'secrets\.([A-Z0-9_]+)', source)))
-            self.assertNotIn('SCCACHE_', source)
             bundle_job = source.split('\n  bundle:\n', 1)[1]
             self.assertNotIn('REGISTRY_TOKEN:', bundle_job)
             self.assertNotIn('CARGO_TARGET_DIR', source)

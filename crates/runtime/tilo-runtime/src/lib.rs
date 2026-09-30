@@ -29,12 +29,19 @@ mod apps;
 pub mod cli;
 pub mod computer;
 mod daemon;
+#[cfg(target_os = "macos")]
+pub mod device_grants;
+#[cfg(target_os = "macos")]
+mod i18n;
 pub mod mcp;
 pub mod mcp_http;
 pub mod mcp_process;
+mod os_search;
 pub mod profile;
 pub mod standalone;
 pub mod unix;
+pub mod viewer;
+pub mod watch;
 
 // Room admission decodes peer bytes in automerge worker processes started
 // from this test binary; this serves them.
@@ -46,6 +53,15 @@ tilo_automerge_isolate::test_worker!();
 pub const COLLAB_SOCKET: &str = "collab.sock";
 pub const IDENTITY_SOCKET: &str = "identity.sock";
 pub const BLOB_SOCKET: &str = "blobs.sock";
+/// The runtime's own actions (the device grants), for `tilo-control
+/// --socket`.
+pub const CONSOLE_SOCKET: &str = "console.sock";
+/// The profile's workspace files, served read only (`tilo-file-provider`).
+pub const FILES_SOCKET: &str = "files.sock";
+
+/// Joins a room another host governs from an invitation, answering the
+/// joined room's id.
+pub type Joiner = std::sync::Arc<dyn Fn(&str) -> io::Result<String> + Send + Sync>;
 
 /// One running service session over a profile: the host's identity,
 /// collaboration and content services.
@@ -60,6 +76,19 @@ pub trait RuntimeServices: Sized {
     /// Rejects a profile in use, invalid persisted state or failed provisioning.
     fn start_reporting(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self>;
 
+    /// [`Self::start_reporting`] for app development: builds under
+    /// development, which are not installed, are served too. A host without
+    /// such a mode refuses it.
+    /// # Errors
+    /// As [`Self::start_reporting`], and when the host has no dev mode.
+    fn start_in_dev_mode(root: &Path, stage: &mut dyn FnMut(&str)) -> io::Result<Self> {
+        let _ = (root, stage);
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "this host has no dev mode",
+        ))
+    }
+
     /// The workspace room every app of this profile joins.
     fn room(&self) -> &str;
 
@@ -69,6 +98,12 @@ pub trait RuntimeServices: Sized {
     /// # Errors
     /// Returns an error when the action broker is unavailable.
     fn action_host(&self) -> io::Result<Self::ActionHost>;
+
+    /// How this host joins rooms other hosts govern; `None` for a host
+    /// that joins through its own surfaces.
+    fn joiner(&self) -> Option<Joiner> {
+        None
+    }
 
     /// Spawn `command` as `app_id`, connected to this session's services.
     /// # Errors

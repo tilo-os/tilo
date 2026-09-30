@@ -640,8 +640,6 @@ impl StubContent {
 }
 
 impl Widget for StubContent {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -677,20 +675,6 @@ impl Widget for StubContent {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
 
@@ -820,14 +804,16 @@ fn desktop_tour_opens_once_composes_with_the_desktop_and_routes_its_own_input() 
             let mut handled = false;
             h.host.handle_event(
                 &event,
-                1.0,
-                &Modifiers::default(),
-                &mut document,
-                &automerge::ROOT,
-                &mut handled,
-                &mut focus,
-                h.root_node,
-                &h.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut document,
+                    path: &automerge::ROOT,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: h.root_node,
+                    taffy: &h.taffy,
+                },
             );
             assert!(handled, "the visible tour must own {event:?}");
         }
@@ -1022,7 +1008,8 @@ fn overlay_accessibility_paths_follow_painted_geometry_and_coexistence_order() {
 }
 
 fn build_activity_harness() -> Harness {
-    let tree = WorkspaceTree::bootstrap_demo();
+    let mut tree = WorkspaceTree::bootstrap_demo();
+    crate::shell::test_support::collaborator_renames_active_workspace(&mut tree);
     let workspace = tree.desktop.active.raw();
     let chrome = ChromeState::new(tree);
     chrome.borrow_mut().open_room_activity(None);
@@ -1798,14 +1785,16 @@ fn pump(h: &mut Harness, event: &WindowEvent, modifiers: Modifiers) -> bool {
     let mut handled = false;
     h.host.handle_event(
         event,
-        1.0,
-        &modifiers,
-        &mut doc,
-        &root,
-        &mut handled,
-        &mut focus,
-        h.root_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut doc,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: h.root_node,
+            taffy: &h.taffy,
+        },
     );
     handled
 }

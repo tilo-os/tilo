@@ -8,8 +8,8 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use ui::ColorCompat;
 use ui::a11y::{AccessNode, AccessState, Role};
@@ -81,6 +81,7 @@ pub struct SpeedTestApp {
     last_animation: Instant,
     started: Option<Instant>,
     worker: Option<Receiver<WorkerMessage>>,
+    task: Option<ui::rt::JoinHandle<()>>,
     region: usize,
     error: Option<String>,
     history: Vec<ResultSet>,
@@ -98,9 +99,10 @@ impl SpeedTestApp {
             result: None,
             display_value: 0.0,
             ring_progress: 0.0,
-            last_animation: Instant::now(),
+            last_animation: ui::time::now(),
             started: None,
             worker: None,
+            task: None,
             region: 0,
             error: None,
             history: Vec::new(),
@@ -159,14 +161,22 @@ impl SpeedTestApp {
         self.phase = Phase::Ping;
         self.error = None;
         self.display_value = 0.0;
-        self.started = Some(Instant::now());
-        self.last_animation = Instant::now();
+        self.started = Some(ui::time::now());
+        self.last_animation = ui::time::now();
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
-        thread::spawn(move || run_measurement(&tx));
+        self.cancel_task();
+        self.task = Some(ui::rt::app().spawn(run_measurement(tx)));
+    }
+
+    fn cancel_task(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 
     fn stop(&mut self) {
+        self.cancel_task();
         self.worker = None;
         self.phase = Phase::Idle;
         self.result = None;
@@ -270,10 +280,33 @@ impl Default for SpeedTestApp {
     }
 }
 
-impl Widget for SpeedTestApp {
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {}
+impl SpeedTestApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<Option<ActionOutput>, String> {
+        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+            return Ok(None);
+        }
+        match serde_json::from_slice::<SpeedOperation>(payload)
+            .map_err(|error| error.to_string())?
+        {
+            SpeedOperation::Start => self.start(),
+            SpeedOperation::Stop => self.stop(),
+            SpeedOperation::ChangeRegion => self.cycle_region(),
+        }
+        Ok(Some(ActionOutput::default()))
+    }
+}
 
-    fn update(&mut self, _doc: &mut AutoCommit, _path: &ObjId) -> bool {
+impl Widget for SpeedTestApp {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
+    fn update(&mut self, _doc: &mut AppModel, _path: &ModelPath) -> bool {
         let mut changed = false;
         if let Some(rx) = &self.worker {
             while let Ok(message) = rx.try_recv() {
@@ -308,7 +341,7 @@ impl Widget for SpeedTestApp {
             };
             changed = true;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let delta = now
             .duration_since(self.last_animation)
             .as_secs_f64()
@@ -661,20 +694,9 @@ impl Widget for SpeedTestApp {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &ui::winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.pointer = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if matches!(
             event,
@@ -686,10 +708,10 @@ impl Widget for SpeedTestApp {
         ) {
             if self.primary_rect().contains(self.pointer) {
                 self.toggle_test();
-                *handled = true;
+                *ctx.handled = true;
             } else if self.region_rect().contains(self.pointer) {
                 self.cycle_region();
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }
@@ -719,8 +741,8 @@ impl Widget for SpeedTestApp {
         &mut self,
         action: &ui::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, ui::a11y::Action::Activate) {
             return false;
@@ -742,45 +764,21 @@ impl Widget for SpeedTestApp {
         &[OPERATION_TYPE]
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
-        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
-            root.actions.push(spec);
-        }
-        if self.is_running()
-            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
-        {
-            root.actions.push(spec);
-        }
-        if let Some(spec) = action(
-            "change-region",
-            "Change test region",
-            &SpeedOperation::ChangeRegion,
-        ) {
-            root.actions.push(spec);
-        }
-        vec![root]
-    }
-
-    fn invoke_resource_operation_v2(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<Option<ActionOutput>, String> {
-        if kind == OperationKind::Document || type_id != OPERATION_TYPE {
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
             return Ok(None);
-        }
-        match serde_json::from_slice::<SpeedOperation>(payload)
-            .map_err(|error| error.to_string())?
-        {
-            SpeedOperation::Start => self.start(),
-            SpeedOperation::Stop => self.stop(),
-            SpeedOperation::ChangeRegion => self.cycle_region(),
-        }
-        Ok(Some(ActionOutput::default()))
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -803,7 +801,29 @@ impl Widget for SpeedTestApp {
                 .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
         };
         (self.is_running() || (self.ring_progress - target).abs() > 0.001)
-            .then(|| Instant::now() + Duration::from_millis(16))
+            .then(|| ui::time::now() + Duration::from_millis(16))
+    }
+}
+
+impl ui::resources::PublishesResources for SpeedTestApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("speed-test:root", "speed-test", "Internet speed test");
+        if let Some(spec) = action("start", "Run speed test", &SpeedOperation::Start) {
+            root.actions.push(spec);
+        }
+        if self.is_running()
+            && let Some(spec) = action("stop", "Stop speed test", &SpeedOperation::Stop)
+        {
+            root.actions.push(spec);
+        }
+        if let Some(spec) = action(
+            "change-region",
+            "Change test region",
+            &SpeedOperation::ChangeRegion,
+        ) {
+            root.actions.push(spec);
+        }
+        vec![root]
     }
 }
 
@@ -1084,71 +1104,62 @@ impl SpeedTestApp {
     }
 }
 
-fn run_measurement(tx: &mpsc::Sender<WorkerMessage>) {
-    let client = match tilo_net::http::blocking_client()
+async fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
+    let message = match measure(&tx).await {
+        Ok(result) => WorkerMessage::Done(result),
+        Err(error) => WorkerMessage::Failed(error),
+    };
+    let _ = tx.send(message);
+}
+
+async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> {
+    let client = tilo_net::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(error.to_string()));
-            return;
-        }
-    };
-    let ping_start = Instant::now();
-    let ping = match client
+        .map_err(|error| error.to_string())?;
+    let ping_start = ui::time::now();
+    client
         .get("https://speed.cloudflare.com/__down?bytes=1")
         .send()
-    {
-        Ok(_) => ping_start.elapsed().as_secs_f64() * 1000.0,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(format!(
-                "Could not reach the test server: {error}"
-            )));
-            return;
-        }
-    };
+        .await
+        .and_then(tilo_net::Response::error_for_status)
+        .map_err(|error| format!("Could not reach the test server: {error}"))?;
+    let ping = ping_start.elapsed().as_secs_f64() * 1000.0;
+
     let _ = tx.send(WorkerMessage::Phase(Phase::Download));
-    let download_start = Instant::now();
-    #[expect(
-        clippy::redundant_closure_for_method_calls,
-        reason = "the response type lives in `reqwest`, which is only a transitive dependency via `tilo-net`"
-    )]
-    let bytes = match client
+    let download_start = ui::time::now();
+    let mut response = client
         .get("https://speed.cloudflare.com/__down?bytes=10000000")
         .send()
-        .and_then(|response| response.bytes())
+        .await
+        .map_err(|error| format!("Download test failed: {error}"))?;
+    let mut bytes = 0_usize;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Download test failed: {error}"))?
     {
-        Ok(body) => body.len() as f64,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(format!(
-                "Download test failed: {error}"
-            )));
-            return;
-        }
-    };
-    let download = bytes * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+        bytes += chunk.len();
+    }
+    let download = bytes as f64 * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+
     let _ = tx.send(WorkerMessage::Phase(Phase::Upload));
     let upload_body = vec![0_u8; 2_000_000];
-    let upload_start = Instant::now();
-    if let Err(error) = client
+    let upload_start = ui::time::now();
+    client
         .post("https://speed.cloudflare.com/__up")
         .body(upload_body)
         .send()
-    {
-        let _ = tx.send(WorkerMessage::Failed(format!(
-            "Upload test failed: {error}"
-        )));
-        return;
-    }
+        .await
+        .map_err(|error| format!("Upload test failed: {error}"))?;
     let upload = 16.0 / upload_start.elapsed().as_secs_f64();
-    let _ = tx.send(WorkerMessage::Done(ResultSet {
+    Ok(ResultSet {
         ping,
         jitter: ping * 0.08,
         download,
         upload,
-    }));
+    })
 }
 
 #[cfg(test)]
@@ -1160,7 +1171,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| SpeedTestApp::new().resources(doc),
+        resources: |doc| ui::resources::resources(&SpeedTestApp::new(), doc),
         palette: ["Run speed test", "Change test region"],
     }
 

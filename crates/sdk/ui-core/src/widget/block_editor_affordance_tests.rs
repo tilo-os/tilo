@@ -107,14 +107,16 @@ fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
                 event: key,
                 is_synthetic: false,
             },
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut None,
-            NodeId::new(0),
-            &TaffyTree::new(),
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: NodeId::new(0),
+                taffy: &TaffyTree::new(),
+            },
         );
         assert!(handled);
         editor.sync(doc, &ROOT);

@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::hardware::{
     DisplayConfig, DisplayConfigError, DisplayHardwareSnapshot, DisplayOutputSnapshot, DisplaySet,
-    DisplayTransaction, OutputConfig, OutputMode, OutputTransform,
+    DisplayTransaction, OutputConfig, OutputMode, logical_extent,
 };
 
 /// Where the desktop appears across the connected displays.
@@ -116,7 +116,7 @@ pub fn plan_layout(
         let config = next
             .outputs
             .entry(output.descriptor.connector.clone())
-            .or_default();
+            .or_insert_with(|| output.unconfigured());
         config.mirror_of = None;
         // A mirror pins every participant to a shared extent. Leaving the
         // mirror hands each display back to its own preferred timing.
@@ -246,15 +246,17 @@ pub fn attached_set(outputs: &[DisplayOutputSnapshot]) -> DisplaySet {
     DisplaySet::of_descriptors(&descriptors)
 }
 
-/// Logical extent of an output in the shared desktop plane: its active mode
-/// turned by its rotation.
-pub fn output_extent(mode: OutputMode, transform: OutputTransform) -> (i32, i32) {
-    let width = i32::try_from(mode.width).unwrap_or(i32::MAX);
-    let height = i32::try_from(mode.height).unwrap_or(i32::MAX);
-    match transform {
-        OutputTransform::Normal | OutputTransform::Rotate180 => (width, height),
-        OutputTransform::Rotate90 | OutputTransform::Rotate270 => (height, width),
-    }
+/// Extent of an output in the shared desktop plane, where
+/// [`OutputConfig::x`]/[`OutputConfig::y`] live: the mode it will run over
+/// its scale, turned by its rotation. Placing displays by mode size instead
+/// leaves a gap beside a `HiDPI` panel that the pointer cannot cross.
+fn desktop_extent(output: &DisplayOutputSnapshot, config: &OutputConfig) -> (i32, i32) {
+    let mode = effective_mode(output, config);
+    let (width, height) = logical_extent((mode.width, mode.height), config.scale, config.transform);
+    (
+        i32::try_from(width).unwrap_or(i32::MAX),
+        i32::try_from(height).unwrap_or(i32::MAX),
+    )
 }
 
 fn mirror_participants(outputs: &[DisplayOutputSnapshot], base: &DisplayConfig) -> Vec<String> {
@@ -350,7 +352,7 @@ fn enabled_rects(
         .filter_map(|output| {
             let entry = config.outputs.get(&output.descriptor.connector)?;
             entry.enabled.then(|| {
-                let (w, h) = output_extent(effective_mode(output, entry), entry.transform);
+                let (w, h) = desktop_extent(output, entry);
                 (
                     output.descriptor.connector.clone(),
                     (
@@ -398,7 +400,7 @@ fn arrange_if_overlapping(
         let Some(entry) = config.outputs.get_mut(&output.descriptor.connector) else {
             continue;
         };
-        let (width, _) = output_extent(effective_mode(output, entry), entry.transform);
+        let (width, _) = desktop_extent(output, entry);
         entry.x = x;
         entry.y = 0;
         x = x.saturating_add(width);
@@ -408,6 +410,9 @@ fn arrange_if_overlapping(
 /// Point every other display at `target` and pick the largest resolution
 /// they all advertise, each at its own best refresh rate: the compositor
 /// samples one viewport per sink, so timings may differ but extents may not.
+/// A resolution larger than one a display is driving now is taken only when
+/// nothing smaller is shared: sinks (virtual ones especially) advertise
+/// modes they cannot scan out, and a mirror that picks one goes black.
 fn apply_mirror(
     config: &mut DisplayConfig,
     outputs: &[DisplayOutputSnapshot],
@@ -417,7 +422,7 @@ fn apply_mirror(
         .iter()
         .find(|output| output.descriptor.connector == target)
         .ok_or(DisplayLayoutError::NoCommonMirrorMode)?;
-    let extent = target_output
+    let shared: Vec<(u32, u32)> = target_output
         .descriptor
         .modes
         .iter()
@@ -431,7 +436,19 @@ fn apply_mirror(
                     .any(|mode| mode.width == width && mode.height == height)
             })
         })
-        .max_by_key(|&(width, height)| (u64::from(width).saturating_mul(u64::from(height)), width))
+        .collect();
+    let driven = |&(width, height): &(u32, u32)| {
+        outputs.iter().all(|output| {
+            width <= output.current_mode.width && height <= output.current_mode.height
+        })
+    };
+    let largest = |extents: &mut dyn Iterator<Item = (u32, u32)>| {
+        extents.max_by_key(|&(width, height)| {
+            (u64::from(width).saturating_mul(u64::from(height)), width)
+        })
+    };
+    let extent = largest(&mut shared.iter().copied().filter(driven))
+        .or_else(|| largest(&mut shared.iter().copied()))
         .ok_or(DisplayLayoutError::NoCommonMirrorMode)?;
     for output in outputs {
         let best = output
@@ -456,7 +473,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use crate::hardware::OutputDescriptor;
+    use crate::hardware::{OutputDescriptor, OutputTransform};
 
     fn mode(width: u32, height: u32, refresh_mhz: u32) -> OutputMode {
         OutputMode {
@@ -478,6 +495,7 @@ mod tests {
                 monitor: None,
             },
             current_mode: modes[0],
+            scale: 1.0,
             builtin,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -567,6 +585,116 @@ mod tests {
         assert_eq!(plan.outputs["HDMI-A-1"].x, 1600);
     }
 
+    /// The output whose logical rectangle holds the desktop point `(x, y)`.
+    fn output_at(
+        plan: &DisplayConfig,
+        outputs: &[DisplayOutputSnapshot],
+        x: i32,
+        y: i32,
+    ) -> Option<String> {
+        enabled_rects(plan, outputs)
+            .into_iter()
+            .find(|(_, (left, top, right, bottom))| {
+                (*left..*right).contains(&x) && (*top..*bottom).contains(&y)
+            })
+            .map(|(connector, _)| connector)
+    }
+
+    #[test]
+    fn extend_places_mixed_dpi_displays_edge_to_edge_in_logical_size() {
+        // A 2x laptop panel beside a 1x monitor: the panel is 1280 logical
+        // pixels wide, so the monitor starts there, not at its 2560 pixels.
+        let outputs = vec![
+            output("eDP-1", true, &[mode(2560, 1600, 60_000)]),
+            output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
+        ];
+        let mut base = DisplayConfig::default();
+        base.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                scale: 2.0,
+                ..OutputConfig::default()
+            },
+        );
+        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+        assert_eq!((plan.outputs["eDP-1"].x, plan.outputs["eDP-1"].y), (0, 0));
+        assert_eq!(
+            (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
+            (1280, 0),
+            "no gap beside the 2x panel"
+        );
+        // The pointer crosses the shared edge: the last column is the
+        // panel's, the next one the monitor's.
+        assert_eq!(
+            output_at(&plan, &outputs, 1279, 400).as_deref(),
+            Some("eDP-1")
+        );
+        assert_eq!(
+            output_at(&plan, &outputs, 1280, 400).as_deref(),
+            Some("HDMI-A-1")
+        );
+    }
+
+    #[test]
+    fn extend_keeps_the_scale_the_compositor_chose_for_an_unconfigured_display() {
+        // Nothing saved yet: the compositor runs the HiDPI panel at the 2x
+        // it chose itself. Writing the panel's first entry must keep that
+        // scale, not drop it to 1x, and place the monitor beside it.
+        let mut panel = output("eDP-1", true, &[mode(2560, 1600, 60_000)]);
+        panel.scale = 2.0;
+        let outputs = vec![
+            panel,
+            output("HDMI-A-1", false, &[mode(1920, 1080, 60_000)]),
+        ];
+        let plan = plan_layout(
+            DisplayLayoutMode::Extend,
+            &outputs,
+            &DisplayConfig::default(),
+        )
+        .unwrap();
+        assert!((plan.outputs["eDP-1"].scale - 2.0).abs() < f64::EPSILON);
+        assert!((plan.outputs["HDMI-A-1"].scale - 1.0).abs() < f64::EPSILON);
+        assert_eq!(
+            (plan.outputs["HDMI-A-1"].x, plan.outputs["HDMI-A-1"].y),
+            (1280, 0),
+            "beside the panel's 1280 logical pixels"
+        );
+    }
+
+    #[test]
+    fn extend_keeps_an_arrangement_that_is_edge_to_edge_in_logical_size() {
+        // A 1.5x 4K monitor is 2560 logical pixels wide, so at x = -2560 it
+        // ends exactly where the 1x panel begins. Measured in mode pixels it
+        // would seem to overlap the panel and be pushed aside.
+        let outputs = vec![
+            output("eDP-1", true, &[mode(1920, 1080, 60_000)]),
+            output("DP-1", false, &[mode(3840, 2160, 60_000)]),
+        ];
+        let mut base = DisplayConfig::default();
+        base.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                ..OutputConfig::default()
+            },
+        );
+        base.outputs.insert(
+            "DP-1".into(),
+            OutputConfig {
+                x: -2560,
+                scale: 1.5,
+                ..OutputConfig::default()
+            },
+        );
+        let plan = plan_layout(DisplayLayoutMode::Extend, &outputs, &base).unwrap();
+        assert_eq!(
+            plan.outputs["DP-1"].x, -2560,
+            "logically edge to edge, kept"
+        );
+        assert_eq!(output_at(&plan, &outputs, -1, 500).as_deref(), Some("DP-1"));
+        assert_eq!(output_at(&plan, &outputs, 0, 500).as_deref(), Some("eDP-1"));
+    }
+
     #[test]
     fn mirror_targets_the_builtin_panel_at_the_largest_shared_extent() {
         let outputs = laptop_and_monitor();
@@ -586,6 +714,39 @@ mod tests {
             active_layout(&outputs, &plan),
             Some(DisplayLayoutMode::Mirror)
         );
+    }
+
+    #[test]
+    fn mirror_never_picks_a_resolution_neither_display_is_driving() {
+        // Two virtual outputs running 1024x768 that both advertise 4K.
+        let mut outputs = vec![
+            output(
+                "Virtual-1",
+                true,
+                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+            ),
+            output(
+                "Virtual-2",
+                false,
+                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+            ),
+        ];
+        for output in &mut outputs {
+            output.current_mode = mode(1024, 768, 60_000);
+        }
+        let plan = plan_layout(
+            DisplayLayoutMode::Mirror,
+            &outputs,
+            &DisplayConfig::default(),
+        )
+        .unwrap();
+        for connector in ["Virtual-1", "Virtual-2"] {
+            assert_eq!(
+                plan.outputs[connector].mode,
+                Some(mode(1024, 768, 60_000)),
+                "{connector}"
+            );
+        }
     }
 
     #[test]

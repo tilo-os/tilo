@@ -15,8 +15,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         app.online = true;
         let mut state = ui::State::new();
         app.sync(&mut state.doc, &state.root);
-        let locate = app
-            .resources(&state.doc)
+        let locate = ui::resources::resources(&app, &state.doc)
             .into_iter()
             .flat_map(|resource| resource.actions)
             .find(|action| action.id == "locate")
@@ -54,16 +53,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
             .id
             .clone();
         let payload = serde_json::to_vec(&id).unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.open-place",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.open-place",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.selected.as_deref(), Some(id.as_str()));
         assert!(
             MapsDoc::load(&state.doc).is_some_and(|model| model.selected.is_none()),
@@ -78,16 +81,20 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         app.sync(&mut state.doc, &state.root);
         let recents_before = MapsDoc::load(&state.doc).unwrap().recents;
         let payload = serde_json::to_vec("Marienplatz").unwrap();
-        assert!(
-            app.invoke_resource_operation(
-                OperationKind::View,
-                "maps.search",
-                &payload,
-                &state.doc,
-                &state.root,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    OperationKind::View,
+                    "maps.search",
+                    &payload
+                ),
+                &mut state.doc,
+                &state.root
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(app.model.query, "Marienplatz");
         assert!(!app.model.results.is_empty());
         assert_eq!(MapsDoc::load(&state.doc).unwrap().recents, recents_before);
@@ -111,7 +118,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
         let mut doc = AutoCommit::new();
         MapsDoc::save(&mut doc, &a.model);
 
-        let root = Widget::resources(&a, &doc)
+        let root = ui::resources::resources(&a, &doc)
             .into_iter()
             .next()
             .expect("maps root");
@@ -146,7 +153,7 @@ fn resource_operations_are_window_local_brokered_and_unique() {
                 .any(|action| action.id == "directions")
         );
 
-        let lazy = Widget::resource(&a, &doc, "maps.place:lazy-saved")
+        let lazy = ui::resources::resource(&a, &doc, "maps.place:lazy-saved")
             .expect("exact saved-place resolver");
         assert!(lazy.actions.iter().any(|action| action.id == "open"));
         assert!(lazy.actions.iter().any(|action| action.id == "directions"));
@@ -526,6 +533,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
         let mut a = app_at(1280.0, 800.0);
         let dir = region_test_cache("citydl");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.tiles.allow_prefetch_for_test();
 
         // Open the dialog and pick "Munich" from the (sample) geocoded results.
         a.offline_panel.open(a.tiles.cache_bytes());
@@ -589,6 +597,7 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
     // for the current viewport and surfaces a progress status.
     {
         let mut a = app_at(1280.0, 720.0);
+        a.tiles.allow_prefetch_for_test();
         a.offline_panel.open(a.tiles.cache_bytes());
         assert!(a.offline_panel.is_open(), "opening shows the overlay");
         tap_offline(&mut a, OfflineAction::Download);
@@ -602,6 +611,38 @@ fn overflow_menu_and_offline_download_dispatch_target_the_right_area() {
             a.tiles.progress().total > 0,
             "a real region of tiles was queued"
         );
+    }
+
+    // Phase `osm_tiles_refuse_offline_areas`.
+    // The OSM tile server forbids prefetching, so on its layer the Download
+    // button is inert and says why, and a Download reaching the dispatcher
+    // anyway queues nothing, records no region, and tells the user why.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        assert!(!a.tiles.allows_prefetch());
+        a.offline_panel.open(a.tiles.cache_bytes());
+        a.draw_app(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+        );
+        let mut doc = AutoCommit::new();
+        assert!(
+            !Widget::perform_semantic_action(
+                &mut a,
+                "maps.offline.download",
+                &ui::a11y::Action::Activate,
+                &mut doc,
+                &automerge::ROOT,
+            ),
+            "no actionable Download target while saving areas is refused"
+        );
+        let before = a.model.regions.len();
+        tap_offline(&mut a, OfflineAction::Download);
+        assert_eq!(a.tiles.progress().total, 0, "nothing was queued");
+        assert_eq!(a.model.regions.len(), before, "no region was recorded");
+        assert_eq!(a.model.status, OFFLINE_AREAS_REFUSED);
     }
 
     // Phase `offline_zoom_delta_clamps`.
@@ -984,14 +1025,16 @@ fn search_field_overlay_keys_and_history_dispatch() {
                 event: ev,
                 is_synthetic: false,
             },
-            1.0,
-            &ctrl,
-            &mut state,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &ctrl,
+                state: &mut state,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         assert_eq!(
@@ -1322,14 +1365,14 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
         assert!(a.poi_debounce.is_some(), "a pan arms a POI refetch");
         let gen0 = a.poi_generation;
 
-        a.tick_poi_debounce(Instant::now());
+        a.tick_poi_debounce(ui::time::now());
         assert_eq!(
             a.poi_generation, gen0,
             "no fetch before the debounce elapses"
         );
         assert!(a.poi_debounce.is_some());
 
-        let past = Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1);
+        let past = ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1);
         a.tick_poi_debounce(past);
         assert_eq!(a.poi_generation, gen0 + 1, "the debounce issues one fetch");
         assert!(
@@ -1340,7 +1383,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
 
         // Re-arm without moving the viewport → the cache is reused, no new fetch.
         a.schedule_pois();
-        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        a.tick_poi_debounce(ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
         assert_eq!(
             a.poi_generation,
             gen0 + 1,
@@ -1357,7 +1400,7 @@ fn poi_fetch_debounces_caches_versions_and_clears() {
         a.poi_fetched_bounds = Some(a.padded_viewport_bounds());
         a.model.zoom = 10.0;
         a.schedule_pois();
-        a.tick_poi_debounce(Instant::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
+        a.tick_poi_debounce(ui::time::now() + POI_DEBOUNCE + std::time::Duration::from_millis(1));
         assert!(a.pois.is_empty(), "zoom-out clears the POI markers");
         assert!(a.poi_fetched_bounds.is_none());
     }
@@ -2504,14 +2547,16 @@ fn feed(a: &mut MapsApp, ev: &WindowEvent) -> bool {
     let node = taffy.new_leaf(Style::default()).unwrap();
     a.handle_event(
         ev,
-        1.0,
-        &modifiers,
-        &mut state,
-        &root,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: &mut state,
+            path: &root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     handled
 }
@@ -2733,6 +2778,23 @@ fn live_navigation_surface_keeps_identity_modality_and_motion_rules() {
         assert!(!Widget::needs_animation_frame(&a));
     }
 
+    // Phase `pending_requests_and_a_focused_search_take_no_animation_frames`:
+    // requests that never answer (a failing Overpass, a stalled geocode) and
+    // a focused search field leave an idle map without a frame every vsync;
+    // the reply wakes the app when it lands, and a debounce is a deadline.
+    {
+        let mut a = app_at(1280.0, 720.0);
+        a.pending = 3;
+        a.search.set_focused(true);
+        assert!(!Widget::needs_animation_frame(&a));
+        assert_eq!(Widget::next_wake_deadline(&a), None);
+
+        a.schedule_pois();
+        let deadline = Widget::next_wake_deadline(&a).expect("the POI debounce wakes the app");
+        assert!(deadline > ui::time::now());
+        assert!(!Widget::needs_animation_frame(&a));
+    }
+
     // Phase `map_info_sheet_stays_modal_over_extracted_controls`.
     {
         let theme = Theme::dark();
@@ -2813,8 +2875,8 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
     // exercised against a disposable temp dir, never the user's real cache.
     {
         let mut a = app_at(1280.0, 720.0);
-        let uniq = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let uniq = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .map_or(0, |d| d.as_nanos());
         let dir =
             std::env::temp_dir().join(format!("tilo-maps-cctest-{}-{}", std::process::id(), uniq));
@@ -2847,6 +2909,7 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
         // real tile cache.
         let dir = region_test_cache("regtest");
         a.tiles = TileLayer::offline_with_cache_dir(dir.clone());
+        a.tiles.allow_prefetch_for_test();
         a.offline_panel.open(a.tiles.cache_bytes());
         let before = a.model.regions.len();
         tap_offline(&mut a, OfflineAction::Download);
@@ -3009,8 +3072,8 @@ fn offline_regions_record_delete_and_clear_without_losing_shared_tiles() {
 /// A fresh, isolated on-disk cache dir so a delete step never touches the
 /// user's real tile cache.
 fn region_test_cache(tag: &str) -> std::path::PathBuf {
-    let n = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let n = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     std::env::temp_dir().join(format!("tilo-maps-{tag}-{}-{}", std::process::id(), n))

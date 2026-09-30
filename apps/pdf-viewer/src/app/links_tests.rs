@@ -11,7 +11,7 @@ use crate::source::LinkTarget;
 
 fn links_fixture() -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../../crates/doc/pdf/tests/fixtures/links.pdf")
+        .join("../../crates/platform/tilo-pdf/tests/fixtures/links.pdf")
 }
 
 /// The reader on the four-page links fixture, sized like a desktop window,
@@ -24,7 +24,7 @@ fn open_links() -> Option<(PdfApp, ui::State)> {
         return None;
     }
     let mut state = ui::State::new();
-    let checkout = app.record_intent().expect("a markup record");
+    let checkout = ui::record::capability::record_intent(&app).expect("a markup record");
     ui::RecordSet::in_memory().checkout(&mut state, None, &checkout);
     app.sync(&mut state.doc, &state.root);
     app.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
@@ -79,14 +79,16 @@ fn click(app: &mut PdfApp, state: &mut ui::State, p: Point) {
         let mut focus = None;
         app.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 }

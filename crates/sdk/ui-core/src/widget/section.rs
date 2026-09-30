@@ -4,9 +4,9 @@
 //! of the underlying layout mode, while retaining `Column` traversal,
 //! focus, accessibility, actions, and document sync.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -54,11 +54,9 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.inner.sync(state, path);
-    }
+    crate::provides!(dyn crate::undo::UndoPoints);
 
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner.update(state, path)
     }
 
@@ -118,26 +116,9 @@ impl Widget for Section {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
-        self.inner.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.inner.handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -164,20 +145,21 @@ impl Widget for Section {
         "Section"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.inner.on_commit();
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.inner.take_structure_dirty()
     }
 
     fn wants_pointer_capture(&self) -> bool {
         self.inner.wants_pointer_capture()
+    }
+}
+
+impl crate::undo::UndoPoints for Section {
+    fn needs_commit(&self) -> bool {
+        crate::undo::needs_commit(self.inner.as_ref())
+    }
+    fn on_commit(&mut self) {
+        crate::undo::on_commit(self.inner.as_mut());
     }
 }
 

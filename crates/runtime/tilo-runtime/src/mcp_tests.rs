@@ -76,6 +76,22 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         has_children: false,
         visibility: None,
     };
+    assert_eq!(
+        browsed_row_json(&row)["descriptor"]["params"][0]["schema"],
+        row_json(&row)["descriptor"]["params"][0]["schema"],
+        "a small schema stays in a browsed page"
+    );
+    let mut large = row.clone();
+    if let Some(descriptor) = large.action.as_mut() {
+        descriptor.params[0].schema = Some(json!({"description": "x".repeat(4096)}));
+    }
+    let browsed = browsed_row_json(&large);
+    assert!(browsed["descriptor"]["params"][0].get("schema").is_none());
+    assert!(browsed["descriptor"]["params"][0]["schema_omitted"].is_string());
+    assert!(
+        row_json(&large)["descriptor"]["params"][0]["schema"].is_object(),
+        "resolve keeps the full schema"
+    );
     let schema = &row_json(&row)["descriptor"]["params"][0]["schema"];
     let operations = schema["properties"]["op"]["oneOf"].as_array().unwrap();
     let rename = operations
@@ -106,4 +122,167 @@ fn query_rows_carry_the_schema_of_the_generic_apply_argument() {
         let value = &invocation.arguments[tilo_resource::APPLY_PARAM];
         tilo_actions::validate_json_schema(value, schema).unwrap();
     }
+}
+
+fn action_row(
+    resource: &str,
+    action: &str,
+    params: Vec<tilo_actions::ActionParam>,
+) -> CatalogueRow {
+    CatalogueRow {
+        provider: "71".into(),
+        app_id: "so.tilo.writer".into(),
+        parent_resource: String::new(),
+        resource: tilo_actions::remote::CatalogueResource {
+            id: resource.into(),
+            kind: "writer.document".into(),
+            label: "Document".into(),
+            presentation: None,
+        },
+        action: Some(tilo_actions::ActionDescriptor {
+            address: tilo_actions::ActionAddress::new(resource, action),
+            resource_kind: "writer.document".into(),
+            resource_label: "Document".into(),
+            action_label: format!("Label of {action}"),
+            description: None,
+            locus: tilo_actions::ExecutionLocus::ClientLocal,
+            kind: tilo_actions::OperationKind::Document,
+            contract: tilo_actions::ActionContract::default(),
+            input: tilo_actions::InputSpec::None,
+            params,
+            view: None,
+        }),
+        has_children: false,
+        visibility: None,
+    }
+}
+
+#[test]
+fn a_compact_page_names_each_resource_once_and_each_action_by_signature() {
+    use tilo_actions::{ActionParam, ParamType};
+    let mut save_as = action_row(
+        "doc:1",
+        "save-as",
+        vec![ActionParam::optional(
+            "path",
+            ParamType::Text,
+            "Where to write",
+        )],
+    );
+    if let Some(action) = save_as.action.as_mut() {
+        action.contract.risk = tilo_actions::RiskLevel::Destructive;
+        action.description =
+            Some("Write the document to a file. Formats follow the extension.".into());
+    }
+    let mut style = action_row(
+        "doc:1",
+        "set-style",
+        vec![
+            ActionParam::required("kind", ParamType::Text, "Block kind")
+                .with_choices(["heading", "list"]),
+            ActionParam::optional("level", ParamType::Integer, "Heading level"),
+        ],
+    );
+    style.has_children = true;
+    let mut apply = action_row(
+        "doc:1",
+        "apply",
+        vec![ActionParam::required(
+            "action",
+            ParamType::Object,
+            "An edit",
+        )],
+    );
+    if let Some(action) = apply.action.as_mut() {
+        action.params[0].schema = Some(json!({"oneOf": []}));
+    }
+    let other = action_row("doc:2", "save", Vec::new());
+    let page = CataloguePage {
+        revision: "r1".into(),
+        rows: vec![save_as, style, apply, other],
+        next_cursor: b"tilo-dir-7".to_vec(),
+        ..CataloguePage::default()
+    };
+    let compact = page::compact_page(&page, Some(&mut page::Handles::default()));
+    assert_eq!(
+        compact,
+        json!({
+            "revision": "r1",
+            "exhausted": false,
+            "next_cursor": "tilo-dir-7",
+            "resources": [
+                {"resource": "doc:1", "kind": "writer.document", "label": "Document", "children": true, "actions": {
+                    "save-as": "Label of save-as — Write the document to a file (path?) [destructive]",
+                    "set-style": "Label of set-style (kind:heading|list, level?:integer)",
+                    "apply": "Label of apply (action:object (schema: tilo_resolve))",
+                }},
+                {"resource": "doc:2", "kind": "writer.document", "label": "Document", "actions": {
+                    "save": "Label of save",
+                }},
+            ],
+        })
+    );
+    assert!(
+        compact.to_string().len() * 4 < page_json(&page).to_string().len(),
+        "the compact page is a fraction of the full one"
+    );
+}
+
+#[test]
+fn cursors_travel_as_text_and_come_back_as_the_same_bytes() {
+    for cursor in [
+        b"tilo-dir-4325025d".to_vec(),
+        7u64.to_le_bytes().to_vec(),
+        b"b64:looks-encoded".to_vec(),
+        b"has space".to_vec(),
+        Vec::new(),
+    ] {
+        let text = page::cursor_text(&cursor);
+        assert_eq!(page::cursor_bytes(&text).unwrap(), cursor, "{text}");
+    }
+    assert_eq!(page::cursor_text(b"tilo-dir-1"), "tilo-dir-1");
+    assert!(page::cursor_bytes("b64:!!").is_err());
+    let args: QueryArgs =
+        parse(json!({"workspace": true, "cursor": [7, 0, 0, 0, 0, 0, 0, 0]})).unwrap();
+    assert_eq!(args.cursor.into_bytes().unwrap(), 7u64.to_le_bytes());
+    let args: QueryArgs = parse(json!({"workspace": true, "cursor": "b64:BwAAAAAAAAA"})).unwrap();
+    assert_eq!(args.cursor.into_bytes().unwrap(), 7u64.to_le_bytes());
+}
+
+#[test]
+fn every_word_of_a_needle_begins_a_word_of_the_row() {
+    let save_as = action_row("doc:1", "save-as", Vec::new());
+    let save = action_row("doc:1", "save", Vec::new());
+    let words = page::needle_words("Save  AS");
+    assert_eq!(words, ["save", "as"]);
+    assert!(page::matches_words(&save_as, &words));
+    assert!(
+        !page::matches_words(&save, &words),
+        "\"as\" is not inside \"Label\""
+    );
+    assert!(page::matches_words(
+        &save,
+        &page::needle_words("writer save")
+    ));
+    assert!(page::matches_words(
+        &save,
+        &page::needle_words("document, sav")
+    ));
+    let format = action_row(
+        "sheet:1",
+        "format-cells",
+        vec![tilo_actions::ActionParam::optional(
+            "bold",
+            tilo_actions::ParamType::Boolean,
+            "Heavier text",
+        )],
+    );
+    assert!(page::matches_words(
+        &format,
+        &page::needle_words("bold cells")
+    ));
+    assert!(page::matches_words(
+        &format,
+        &page::needle_words("heavier text")
+    ));
 }

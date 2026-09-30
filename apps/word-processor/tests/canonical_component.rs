@@ -12,7 +12,7 @@ fn existing_projection_and_repeated_sync_do_not_author_changes() {
         widget.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!widget.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&widget, &doc).is_empty());
 }
 
 #[test]
@@ -28,7 +28,9 @@ fn harness() -> (
     ui::record::RecordCheckout,
 ) {
     use std::{cell::RefCell, rc::Rc};
-    use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
     let cache = ui::portable_storage::PortableStorage::new("writer-test", "device").unwrap();
     let definition = word_processor::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
@@ -43,13 +45,15 @@ fn harness() -> (
     ));
     let context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        "device".into(),
-        1,
-        permissions,
-        ui::permissions::UserId("author".into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "device".into(),
+            instance_id: 1,
+            permissions,
+            author: ui::permissions::UserId("author".into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &LaunchTarget::New,
     )
     .unwrap();

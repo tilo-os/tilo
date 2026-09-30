@@ -9,8 +9,8 @@
 
 use std::collections::HashMap;
 use ui::clock::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, Display, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -3403,17 +3403,16 @@ impl TopBarChrome {
                 .copied()
                 .unwrap_or(colors.accent[5]);
             ui::widget::Avatar::draw_ringed_at(
-                scene,
-                transform,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 &initial.to_string(),
                 fill,
-                // Must read against the bar it's drawn on — a literal
-                // black is a hard outline on a light bar.
-                colors.surfaces.overlay,
-                1.5,
-                theme,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    // Must read against the bar it's drawn on — a literal
+                    // black is a hard outline on a light bar.
+                    color: colors.surfaces.overlay,
+                    width: 1.5,
+                },
             );
         }
 
@@ -3428,15 +3427,13 @@ impl TopBarChrome {
                 center.y + 10.0,
             );
             ui::widget::Avatar::draw_overflow_at(
-                scene,
-                transform,
+                &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 rect,
                 self.collaborator_overflow,
-                colors.surfaces.raised,
-                colors.surfaces.overlay,
-                1.5,
-                colors.text_dim,
-                text_renderer,
+                ui::widget::AvatarRing {
+                    color: colors.surfaces.overlay,
+                    width: 1.5,
+                },
             );
         }
 
@@ -4857,9 +4854,8 @@ impl Widget for TopBarChrome {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
 
-    fn update(&mut self, _state: &mut AutoCommit, _path: &ObjId) -> bool {
+    fn update(&mut self, _state: &mut AppModel, _path: &ModelPath) -> bool {
         if let Some(chrome) = self.chrome.clone() {
             let rev = chrome.snapshot().revision;
             if rev != self.synced_revision {
@@ -5006,39 +5002,28 @@ impl Widget for TopBarChrome {
         text_renderer.set_text_scale(renderer_scale);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.is_compact() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.last_cursor = Some(Point::new(
-                    position.x / scale_factor,
-                    position.y / scale_factor,
+                    position.x / ctx.scale_factor,
+                    position.y / ctx.scale_factor,
                 ));
                 return;
             }
-            if self.handle_left_release(event, handled) {
+            if self.handle_left_release(event, ctx.handled) {
                 return;
             }
-            self.handle_left_press(event, *modifiers, handled);
+            self.handle_left_press(event, *ctx.modifiers, ctx.handled);
             return;
         }
-        if self.handle_widget_or_clock_event(event, scale_factor, *modifiers, handled)
-            || self.handle_center_pointer_event(event, scale_factor, handled)
+        if self.handle_widget_or_clock_event(event, ctx.scale_factor, *ctx.modifiers, ctx.handled)
+            || self.handle_center_pointer_event(event, ctx.scale_factor, ctx.handled)
         {
             return;
         }
-        self.handle_keyboard(event, handled);
-        if *handled || self.handle_app_tray_press(event, handled) {
+        self.handle_keyboard(event, ctx.handled);
+        if *ctx.handled || self.handle_app_tray_press(event, ctx.handled) {
             return;
         }
         if let WindowEvent::MouseInput {
@@ -5052,16 +5037,16 @@ impl Widget for TopBarChrome {
         {
             self.widget_editing = true;
             self.cache_fp = CacheFingerprint::default();
-            *handled = true;
-            *focus_target = Some(node_id);
+            *ctx.handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
             return;
         }
-        if self.handle_left_release(event, handled) {
+        if self.handle_left_release(event, ctx.handled) {
             return;
         }
-        self.handle_left_press(event, *modifiers, handled);
-        if *handled {
-            *focus_target = Some(node_id);
+        self.handle_left_press(event, *ctx.modifiers, ctx.handled);
+        if *ctx.handled {
+            *ctx.focus_target = Some(ctx.node_id);
         }
     }
 
@@ -5261,8 +5246,8 @@ impl Widget for TopBarChrome {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
@@ -5457,6 +5442,7 @@ mod calendar_strip_tests {
 )]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use collab_types::caps::{CapOverride, Subject, Verb};
     use tilo_desktop_model::{
         DesktopTree, Strip, Tab, TileContent, WindowGroup, WindowWidth, Workspace, WorkspaceId,
@@ -5915,14 +5901,16 @@ mod tests {
         let mut focus = None;
         bar.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut state,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut state,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }

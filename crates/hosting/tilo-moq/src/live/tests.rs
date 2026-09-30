@@ -269,6 +269,36 @@ async fn presence_is_relayed_latest_value_and_foreign_namespaces_are_refused() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn the_presence_tap_sees_client_frames_but_not_injected_ones() {
+    let f = fixture();
+    let (tx, mut tapped) = tokio::sync::mpsc::unbounded_channel();
+    f.live.relay.set_presence_tap(Arc::new(
+        move |room: &str, publisher: &str, frame: &[u8]| {
+            let _ = tx.send((room.to_owned(), publisher.to_owned(), frame.to_vec()));
+        },
+    ));
+    let mut a = connect(&f, b"grant-a", A).await;
+    let b = connect(&f, b"grant-b", B).await;
+    let mut from_a = presence_subscriber(&b, A).await;
+    let mut seq = 0;
+    first_presence(&mut a, &mut from_a, &mut seq).await;
+    let (room, publisher, frame) = tokio::time::timeout(tilo_test_env::hang_bound(), tapped.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!((room.as_str(), publisher.as_str()), (ROOM, A));
+    assert_eq!(frame[8..], *b"hello");
+    while tapped.try_recv().is_ok() {}
+    assert!(f.live.relay.inject_presence(ROOM, C, &presence(1, b"host")));
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(
+        tapped.try_recv().is_err(),
+        "a host-injected frame must not come back through the tap"
+    );
+    drop((a, b));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn viewer_may_subscribe_but_never_publish() {
     let f = fixture();
     let mut a = connect(&f, b"grant-a", A).await;
@@ -440,6 +470,129 @@ async fn host_injection_reaches_current_subscribers_without_a_client() {
     assert_eq!(payload, b"ok-signed-change");
     assert!(!f.live.relay.inject_ops(ROOM, C, "not-hex", b"ok"));
     drop(b);
+}
+
+async fn group_frames(subscriber: &mut moq_net::track::Subscriber) -> Vec<Vec<u8>> {
+    tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        loop {
+            let mut group = subscriber.recv_group().await.unwrap().unwrap();
+            let mut frames = Vec::new();
+            while let Ok(Some(frame)) = group.read_frame().await {
+                if !frame.payload.is_empty() {
+                    frames.push(frame.payload.to_vec());
+                }
+            }
+            if !frames.is_empty() {
+                return frames;
+            }
+        }
+    })
+    .await
+    .expect("a stream group")
+}
+
+/// A host stream keeps one group open per sequence, so a subscriber that
+/// joins mid-sequence starts at its first frame (a video keyframe).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn host_streams_group_by_sequence_and_late_subscribers_start_at_its_head() {
+    let f = fixture();
+    let frames = |names: &[&'static str]| {
+        names
+            .iter()
+            .map(|name| bytes::Bytes::from_static(name.as_bytes()))
+            .collect::<Vec<_>>()
+    };
+    let b = connect(&f, b"grant-b", B).await;
+    let viewer = connect(&f, b"grant-viewer", C).await;
+    assert!(
+        !f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, true, &frames(&["unread"])),
+        "no subscriber yet"
+    );
+    let mut first = ops_subscriber(&b, A).await;
+    // The egress track and this subscriber's view attach asynchronously, and
+    // a view starts at the latest group: open sequences until one arrives.
+    let mut open = tokio::time::timeout(tilo_test_env::hang_bound(), async {
+        let mut attempt = 0u32;
+        loop {
+            attempt = attempt.wrapping_add(1);
+            let key = format!("key-1.{attempt}");
+            let started = f.live.relay.inject_stream(
+                ROOM,
+                A,
+                RECORD,
+                true,
+                &[bytes::Bytes::from(key.clone())],
+            );
+            if started
+                && let Ok(Ok(Some(mut group))) =
+                    tokio::time::timeout(Duration::from_millis(50), first.recv_group()).await
+                && group
+                    .read_frame()
+                    .await
+                    .ok()
+                    .flatten()
+                    .is_some_and(|frame| frame.payload == key.as_bytes())
+            {
+                return group;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("a stream group reaches the subscriber");
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["delta-1"]))
+    );
+    async fn next(group: &mut moq_net::group::Consumer) -> Option<Vec<u8>> {
+        tokio::time::timeout(tilo_test_env::hang_bound(), group.read_frame())
+            .await
+            .unwrap()
+            .unwrap()
+            .map(|frame| frame.payload.to_vec())
+    }
+    assert_eq!(
+        next(&mut open).await,
+        Some(b"delta-1".to_vec()),
+        "a later frame joins the open group"
+    );
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, true, &frames(&["key-2"]))
+    );
+    assert_eq!(
+        next(&mut open).await,
+        None,
+        "a new sequence finishes the group"
+    );
+    let mut late = ops_subscriber(&viewer, A).await;
+    assert!(
+        f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["delta-2"]))
+    );
+    assert!(f.live.relay.stream_open(ROOM, A, RECORD));
+    f.live.relay.end_stream(ROOM, A, RECORD);
+    assert!(!f.live.relay.stream_open(ROOM, A, RECORD));
+    let expected = vec![b"key-2".to_vec(), b"delta-2".to_vec()];
+    assert_eq!(group_frames(&mut first).await, expected);
+    assert_eq!(
+        group_frames(&mut late).await,
+        expected,
+        "a late subscriber starts at the keyframe"
+    );
+    assert!(
+        !f.live
+            .relay
+            .inject_stream(ROOM, A, RECORD, false, &frames(&["after-end"])),
+        "an ended stream takes nothing until the next sequence starts"
+    );
+    drop(b);
+    drop(viewer);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

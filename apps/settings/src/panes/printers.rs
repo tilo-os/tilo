@@ -12,7 +12,8 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, mpsc};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::printing::{
@@ -23,7 +24,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::widgets::{El, StatusTone, caption, card, card_with_action, rows, semantic_status_pill};
 
@@ -184,7 +185,7 @@ impl PrintersPane {
             scanners: Vec::new(),
             refresh_rx: None,
             discover_rx: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             loading: false,
             discovering: false,
             confirm_remove: None,
@@ -212,7 +213,7 @@ impl PrintersPane {
             scanners,
             refresh_rx: None,
             discover_rx: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             loading: false,
             discovering: false,
             confirm_remove: None,
@@ -280,7 +281,7 @@ impl PrintersPane {
         if let Some(result) = self.refresh_rx.as_ref().and_then(|rx| rx.try_recv().ok()) {
             self.refresh_rx = None;
             self.loading = false;
-            self.last_refresh = Instant::now();
+            self.last_refresh = ui::time::now();
             let mut errors = Vec::new();
             match result.printers {
                 Ok(value) => self.printers = value,
@@ -637,7 +638,8 @@ fn take_bool(state: &mut AutoCommit, root: &ObjId, key: &str) -> bool {
 }
 
 impl Widget for PrintersPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -794,33 +796,12 @@ impl Widget for PrintersPane {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(ch) = taffy.children(node_id)
+            && let Ok(ch) = ctx.taffy.children(ctx.node_id)
             && let Some(&child) = ch.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {

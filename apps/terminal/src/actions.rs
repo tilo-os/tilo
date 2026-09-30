@@ -68,7 +68,7 @@
 //! ## Consequence
 //!
 //! The terminal publishes its live session with send/interrupt/clear effects;
-//! [`take_committed_action`](ui::widget::Widget::take_committed_action) stays
+//! [`take_committed_action`](ui::undo::CommittedActions::take_committed_action) stays
 //! `None` (both toolkit defaults, so no [`ui::ActionHost`] is embedded — there is
 //! nothing for it to dispatch, and `main.rs` registers no action decoder).
 //! The bounded resource tree still exposes the live session, its transcript and
@@ -201,14 +201,16 @@ mod tests {
         let mut focus = None;
         widget.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -395,7 +397,7 @@ mod tests {
             send(&mut widget, &mut doc, &char_event("x"));
             send(&mut widget, &mut doc, &left_press());
 
-            let resources = Widget::resources(&widget, &doc);
+            let resources = ui::resources::resources(&widget, &doc);
             assert_eq!(resources.len(), 1, "one terminal-session root");
             let terminal = &resources[0];
             assert_eq!(terminal.kind, "terminal.session");
@@ -422,7 +424,7 @@ mod tests {
                     .all(|action| action.kind == ui::tilo_actions::OperationKind::Effect)
             );
             assert!(
-                widget.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut widget).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
             assert!(
@@ -477,31 +479,39 @@ mod tests {
         // Case `run_command_is_bounded_and_presses_enter_exactly_once`.
         {
             let (mut widget, writes) = build_test_widget();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec("printf resource-run").expect("serialize command");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.run",
-                    &payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.run",
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("invoke run command")
             );
             assert_eq!(drain_writes(&writes), b"printf resource-run\r".to_vec());
 
             let blank = serde_json::to_vec("  ").expect("serialize blank command");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.run",
-                    &blank,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.run",
+                        &blank
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
 
@@ -511,14 +521,18 @@ mod tests {
             for dangerous in ["printf first\nprintf second", "printf x\x1b[200~"] {
                 let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
                 assert!(
-                    Widget::invoke_resource_operation(
+                    Widget::start_operation(
                         &mut widget,
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.run",
-                        &payload,
-                        &doc,
-                        &ROOT,
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            ui::tilo_actions::OperationKind::Effect,
+                            "terminal.run",
+                            &payload
+                        ),
+                        &mut doc,
+                        &ROOT
                     )
+                    .map(|started| started.is_some())
                     .is_err(),
                     "unsafe multi-effect command must be rejected: {dangerous:?}"
                 );
@@ -532,32 +546,40 @@ mod tests {
         // Case `resource_send_refuses_empty_or_unreviewably_large_payloads`.
         {
             let (mut widget, writes) = build_test_widget();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let root = ROOT;
             let empty = serde_json::to_vec("").expect("serialize empty string");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.send",
-                    &empty,
-                    &doc,
-                    &root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.send",
+                        &empty
+                    ),
+                    &mut doc,
+                    &root
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
             let too_large =
                 serde_json::to_vec(&"x".repeat(crate::inner::MAX_RESOURCE_SEND_BYTES + 1))
                     .expect("serialize large command");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.send",
-                    &too_large,
-                    &doc,
-                    &root,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.send",
+                        &too_large
+                    ),
+                    &mut doc,
+                    &root
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
             assert!(
@@ -568,14 +590,18 @@ mod tests {
             for dangerous in ["one\ntwo", "one\rtwo", "one\x1b[31m"] {
                 let payload = serde_json::to_vec(dangerous).expect("serialize control payload");
                 assert!(
-                    Widget::invoke_resource_operation(
+                    Widget::start_operation(
                         &mut widget,
-                        ui::tilo_actions::OperationKind::Effect,
-                        "terminal.send",
-                        &payload,
-                        &doc,
-                        &root,
+                        &ui::widget::ResourceOperation::local(
+                            ui::tilo_actions::InvocationId::new(),
+                            ui::tilo_actions::OperationKind::Effect,
+                            "terminal.send",
+                            &payload
+                        ),
+                        &mut doc,
+                        &root
                     )
+                    .map(|started| started.is_some())
                     .is_err(),
                     "send text must not smuggle a terminal control sequence: {dangerous:?}"
                 );
@@ -596,7 +622,7 @@ mod tests {
             );
             widget.sync(&mut doc, &ROOT);
 
-            let transcript = Widget::resources(&widget, &doc)
+            let transcript = ui::resources::resources(&widget, &doc)
                 .into_iter()
                 .next()
                 .expect("session resource")
@@ -643,17 +669,21 @@ mod tests {
                 out_rx,
                 tilo_content::ContentStore::memory(),
             );
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec("printf should-not-run").expect("serialize command");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.send",
-                    &payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.send",
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
             assert!(widget.is_disconnected());
@@ -663,7 +693,7 @@ mod tests {
                     .is_some_and(|description| description.contains("Terminal input failed"))
             );
             assert!(
-                Widget::resources(&widget, &doc)
+                ui::resources::resources(&widget, &doc)
                     .into_iter()
                     .all(|resource| {
                         resource.actions.iter().all(|action| {
@@ -692,17 +722,21 @@ mod tests {
                 out_rx,
                 tilo_content::ContentStore::memory(),
             );
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let payload = serde_json::to_vec("interrupt").expect("serialize control");
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut widget,
-                    ui::tilo_actions::OperationKind::Effect,
-                    "terminal.control",
-                    &payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        ui::tilo_actions::OperationKind::Effect,
+                        "terminal.control",
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err()
             );
             assert!(widget.is_disconnected());
@@ -730,7 +764,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: live_session().1,
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&live_session().0, doc),
+        resources: |doc| ui::resources::resources(&live_session().0, doc),
         palette: [
             "Send text",
             "Run command",

@@ -80,12 +80,9 @@ pub fn build_launcher(dir: &Path, stem: &str, command: &str) -> std::io::Result<
 /// Per-user runtime dir for launcher scripts: `$XDG_RUNTIME_DIR/tilo-containers`
 /// or a temp fallback.
 pub fn runtime_dir() -> PathBuf {
-    if let Ok(rt) = std::env::var("XDG_RUNTIME_DIR")
-        && !rt.is_empty()
-    {
-        return PathBuf::from(rt).join("tilo-containers");
-    }
-    std::env::temp_dir().join("tilo-containers")
+    xdg_paths::xdg::runtime_dir()
+        .unwrap_or_else(std::env::temp_dir)
+        .join("tilo-containers")
 }
 
 /// Build (but do not spawn) the `Command` that launches the Tilo terminal

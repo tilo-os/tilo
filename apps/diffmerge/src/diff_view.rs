@@ -8,7 +8,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::prelude::*;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
@@ -23,7 +22,7 @@ use ui::widget::{SegmentedFace, ToggleGroup, Widget};
 
 use crate::highlight;
 use crate::model::{DiffModel, RowKind};
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::widget::code_editor::Span;
 
 /// Minimum row pitch; the measured line height of `FONT_SIZE` wins when the
@@ -311,8 +310,6 @@ impl DiffView {
 }
 
 impl Widget for DiffView {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -426,18 +423,7 @@ impl Widget for DiffView {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _p: &ObjId,
-        handled: &mut bool,
-        _focus: &mut Option<NodeId>,
-        _node: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput { event, .. }
                 if event.state == ElementState::Pressed && self.is_compact() =>
@@ -447,7 +433,7 @@ impl Widget for DiffView {
                     Key::Named(NamedKey::ArrowRight) => self.select_compact_side(true),
                     _ => return,
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
@@ -457,7 +443,7 @@ impl Widget for DiffView {
                 // Only consume when the pointer is plausibly over us — but the
                 // host routes wheel to the focused subtree, so just scroll.
                 self.scroll_by(dy);
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -471,7 +457,7 @@ impl Widget for DiffView {
                         .position(|rect| rect.contains(self.cursor))
                 {
                     self.select_compact_side(index == 1);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 // Click on the minimap jumps to that proportion of content.
@@ -481,7 +467,7 @@ impl Widget for DiffView {
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.cursor = p;
                 let minimap_x0 = self.rect.x1 - MINIMAP_W;
                 self.hovered_minimap = p.x >= minimap_x0 && p.x <= self.rect.x1;
@@ -693,12 +679,8 @@ impl DiffView {
             draw_gutter_number(scene, transform, tr, theme, r.x0, y, number, m);
             if let Some(text) = text {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    r.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(r.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(spans, number),
                     FONT_SIZE,
@@ -789,12 +771,8 @@ impl DiffView {
             // Line text, syntax-highlighted.
             if let Some(text) = &row.left {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    left_col.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(left_col.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(&self.left_spans, row.left_no),
                     FONT_SIZE,
@@ -802,12 +780,8 @@ impl DiffView {
             }
             if let Some(text) = &row.right {
                 highlight::draw_line(
-                    scene,
-                    transform,
-                    tr,
-                    theme,
-                    right_col.x0 + m.gutter_w + PAD_X,
-                    y + m.text_dy,
+                    &mut PaintCtx::new(scene, transform, tr, theme),
+                    Point::new(right_col.x0 + m.gutter_w + PAD_X, y + m.text_dy),
                     text,
                     line_spans(&self.right_spans, row.right_no),
                     FONT_SIZE,
@@ -913,10 +887,6 @@ impl DiffView {
 }
 
 /// Draw a column header bar with its label.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "column headers combine paint context with column bounds, label and measured header height"
-)]
 fn draw_header(
     scene: &mut Scene,
     transform: Affine,
@@ -957,10 +927,6 @@ fn draw_header(
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "gutter rows combine paint context and position with an optional line number and measured row/gutter dimensions"
-)]
 #[expect(
     clippy::many_single_char_names,
     reason = "c/m/y/r/h follow this file's graphics convention (colour tokens, metrics, position, rect, hunk)"

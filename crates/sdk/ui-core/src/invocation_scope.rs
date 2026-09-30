@@ -307,6 +307,11 @@ impl ResourceInvocationScope {
         self.lease.request.invocation
     }
 
+    /// The canonical record route construction verified against the owner.
+    pub(crate) fn route(&self) -> &RouteSpec {
+        &self.lease.route
+    }
+
     /// Irreversibly retire this job and all derived worker-effect custody.
     /// Cancellation grants no authority and cannot affect another job.
     pub fn cancel(&self) {
@@ -351,15 +356,8 @@ impl ResourceInvocationScope {
         })
     }
 
-    /// Verify only the original caller and exact immutable local record loan.
-    /// This does not confer a qualified committed read frame or disclosure.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "admission stays closed until a qualified committed read view exists; only the inert semantic reader (tested) checks a read loan"
-        )
-    )]
+    /// Verify the original caller and that `document` is the record store's
+    /// current loan of this scope's exact record.
     pub(crate) fn check_read_loan(&self, document: &AutoCommit) -> Result<(), String> {
         self.check()?;
         let (store, checkout) = self.owner.store_checkout();
@@ -885,6 +883,104 @@ fn record_loan_matches(
                 && loan.record == checkout.id
                 && std::ptr::eq(loan.document, document)
         })
+    })
+}
+
+/// The record a disclosed read names: its room when it is shared in one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct RecordStamp {
+    pub(crate) room: Option<uuid::Uuid>,
+    pub(crate) app_id: String,
+    pub(crate) record_id: String,
+}
+
+impl From<&RouteSpec> for RecordStamp {
+    fn from(route: &RouteSpec) -> Self {
+        Self {
+            room: Some(route.cluster_id),
+            app_id: route.app_id.clone(),
+            record_id: route.record.clone().unwrap_or_default(),
+        }
+    }
+}
+
+struct MountedDocument {
+    stamp: RecordStamp,
+    document: *const AutoCommit,
+}
+thread_local! {
+    static MOUNTED_DOCUMENTS: RefCell<Vec<MountedDocument>> = const { RefCell::new(Vec::new()) };
+}
+struct MountedLoan;
+impl Drop for MountedLoan {
+    fn drop(&mut self) {
+        MOUNTED_DOCUMENTS.with_borrow_mut(|mounted| {
+            mounted.pop();
+        });
+    }
+}
+
+/// Lend `document` to `callback`, identified as the record `stamp` names.
+/// Without a stamp the document is lent unidentified, and nothing may
+/// disclose it as a record.
+fn with_identified_document<R>(
+    stamp: Option<RecordStamp>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    let Some(stamp) = stamp else {
+        return callback(document);
+    };
+    MOUNTED_DOCUMENTS.with_borrow_mut(|mounted| {
+        mounted.push(MountedDocument { stamp, document });
+    });
+    let _loan = MountedLoan;
+    callback(document)
+}
+
+/// Lend the app's mounted primary document to `callback`, identified as the
+/// canonical record on `route`. Without a current primary route the document
+/// is lent unidentified.
+pub(crate) fn with_mounted_document<R>(
+    route: Option<RouteSpec>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    with_identified_document(route.as_ref().map(RecordStamp::from), document, callback)
+}
+
+/// Lend a component's record document to `callback`, identified only when it
+/// is the record store's current loan of exactly `checkout`'s document: on
+/// its canonical `route` when it has one, else as `app_id`'s local record.
+pub(crate) fn with_loaned_record<R>(
+    store: &RecordStore,
+    checkout: &RecordCheckout,
+    app_id: &str,
+    route: Option<RouteSpec>,
+    document: &mut AutoCommit,
+    callback: impl FnOnce(&mut AutoCommit) -> R,
+) -> R {
+    let stamp = record_loan_matches(store, checkout, document).then(|| {
+        route.as_ref().map_or_else(
+            || RecordStamp {
+                room: None,
+                app_id: app_id.to_string(),
+                record_id: checkout.id.as_str().to_string(),
+            },
+            RecordStamp::from,
+        )
+    });
+    with_identified_document(stamp, document, callback)
+}
+
+/// The record the innermost identified document names, when it is exactly
+/// `document`.
+pub(crate) fn identified_record(document: &AutoCommit) -> Option<RecordStamp> {
+    MOUNTED_DOCUMENTS.with_borrow(|mounted| {
+        mounted
+            .last()
+            .filter(|mount| std::ptr::eq(mount.document, document))
+            .map(|mount| mount.stamp.clone())
     })
 }
 

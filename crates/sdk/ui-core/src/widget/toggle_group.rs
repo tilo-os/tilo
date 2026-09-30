@@ -5,6 +5,7 @@
 //! State lives entirely on the widget (no CRDT round-trip) because the
 //! segmented control's selection is ephemeral UI sugar — callers persist
 //! the choice via the `on_change` callback into their own CRDT slot.
+use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -721,8 +722,42 @@ impl ToggleGroup {
     }
 }
 
+impl ToggleGroup {
+    /// Apply a `tilo.ui.segmented.select` addressed to this control.
+    /// `Ok(false)` when the operation is not this control's.
+    fn select_segment_operation(
+        &mut self,
+        kind: crate::tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+    ) -> Result<bool, String> {
+        if kind != crate::tilo_actions::OperationKind::View
+            || type_id != "tilo.ui.segmented.select"
+            || self.action.is_none()
+        {
+            return Ok(false);
+        }
+        let value: serde_json::Value =
+            serde_json::from_slice(payload).map_err(|error| error.to_string())?;
+        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
+            return Ok(false);
+        }
+        let index = value
+            .get("index")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|value| usize::try_from(value).ok())
+            .filter(|index| *index < self.segments.len())
+            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
+        self.apply_selection(index);
+        Ok(true)
+    }
+}
+
 impl Widget for ToggleGroup {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(
+        dyn crate::widget::controls::ActionControls,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -849,31 +884,32 @@ impl Widget for ToggleGroup {
         self.cache_rect == Rect::ZERO
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
-            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, handled),
+            WindowEvent::KeyboardInput { event, .. } => self.handle_key_event(event, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                let logical_pos = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical_pos =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor.set(logical_pos);
             }
             WindowEvent::MouseInput {
                 state: element_state,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_pointer_press(*element_state, handled, focus_target, node_id),
+            } => self.handle_pointer_press(
+                *element_state,
+                ctx.handled,
+                ctx.focus_target,
+                ctx.node_id,
+            ),
             WindowEvent::Touch(touch) => {
-                self.handle_touch_event(touch, scale_factor, handled, focus_target, node_id);
+                self.handle_touch_event(
+                    touch,
+                    ctx.scale_factor,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             _ => {}
         }
@@ -905,46 +941,11 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
-        self.native_resource.iter().cloned().collect()
-    }
-
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         self.native_resource
             .as_ref()
             .map(|_| std::iter::once("tilo.ui.segmented.select".to_owned()).collect())
             .unwrap_or_default()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let Some(action) = &self.action else {
-            return Vec::new();
-        };
-        (0..self.segments.len())
-            .map(|index| action.metadata(self.segment_id(index)))
-            .collect()
     }
 
     fn start_operation(
@@ -956,27 +957,13 @@ impl Widget for ToggleGroup {
         let Some(request) = op.unscoped() else {
             return Ok(None);
         };
-        if request.kind != crate::tilo_actions::OperationKind::View
-            || request.type_id != "tilo.ui.segmented.select"
-            || self.action.is_none()
-        {
-            return Ok(None);
-        }
-        let value: serde_json::Value =
-            serde_json::from_slice(request.payload).map_err(|error| error.to_string())?;
-        if value.get("control").and_then(serde_json::Value::as_str) != self.id.as_deref() {
-            return Ok(None);
-        }
-        let index = value
-            .get("index")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|value| usize::try_from(value).ok())
-            .filter(|index| *index < self.segments.len())
-            .ok_or_else(|| "segmented action index is out of range".to_owned())?;
-        self.apply_selection(index);
-        Ok(Some(super::ResourceOperationStart::Completed(
-            crate::tilo_actions::ActionOutput::default(),
-        )))
+        Ok(self
+            .select_segment_operation(request.kind, request.type_id, request.payload)?
+            .then(|| {
+                super::ResourceOperationStart::Completed(
+                    crate::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
@@ -1020,8 +1007,8 @@ impl Widget for ToggleGroup {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let prefix = self.segment_prefix();
         let Some(index) = target
@@ -1039,6 +1026,43 @@ impl Widget for ToggleGroup {
         }
         self.request_selection(index);
         true
+    }
+}
+
+impl crate::resources::PublishesResources for ToggleGroup {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<crate::tilo_actions::Resource> {
+        self.native_resource.iter().cloned().collect()
+    }
+}
+
+impl crate::widget::controls::ActionControls for ToggleGroup {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<crate::tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let Some(action) = &self.action else {
+            return Vec::new();
+        };
+        (0..self.segments.len())
+            .map(|index| action.metadata(self.segment_id(index)))
+            .collect()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<crate::tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 
@@ -1129,14 +1153,16 @@ mod tests {
         let root = automerge::ROOT;
         g.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }
@@ -1389,7 +1415,7 @@ mod tests {
                 Rect::new(0.0, 0.0, 200.0, 44.0),
             )
             .on_view("appearance", |_| {});
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut group,
                 &std::collections::HashSet::new(),
             );
@@ -1572,7 +1598,7 @@ mod tests {
             let mut group = ToggleGroup::new(vec![Segment::new("Light"), Segment::new("Dark")], 0)
                 .on_view("appearance", move |index| captured.borrow_mut().push(index));
 
-            let resources = Widget::resources(&group, &AutoCommit::new());
+            let resources = crate::resources::resources(&group, &AutoCommit::new());
             assert_eq!(resources.len(), 1);
             let resource = &resources[0];
             assert_eq!(resource.id.as_str(), "tilo.control:appearance");
@@ -1599,7 +1625,7 @@ mod tests {
             );
             assert!(changed.borrow().is_empty());
 
-            let invocation = Widget::take_control_invocation(&mut group).unwrap();
+            let invocation = crate::widget::controls::take_control_invocation(&mut group).unwrap();
             assert_eq!(
                 invocation.address,
                 crate::tilo_actions::ActionAddress::new("tilo.control:appearance", "select")

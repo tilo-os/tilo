@@ -27,6 +27,7 @@
 
 use std::collections::HashMap;
 use ui::doc::read_bool;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -35,7 +36,7 @@ use ui::theme::Theme;
 use ui::widget::{Button, Column, Row, Spacer, Text, TextInput, TextInputKind, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::accounts::{AccountConfig, AccountDirectory, AccountKind, AccountRoot, AccountView};
 use crate::widgets::{
@@ -84,7 +85,6 @@ fn edit_key(id: &str) -> String {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::needless_pass_by_value,
     reason = "the resource action binding mirrors the framework's distinct address, label, operation, and destructive fields"
 )]
@@ -124,10 +124,13 @@ pub enum AccountViewCommand {
     CancelReauthentication,
 }
 
-struct PendingFormSave {
+/// The account form's fields, as checked and then committed.
+struct AccountDraft {
     kind: AccountKind,
+    /// The account being edited; `None` adds a new one.
     existing_id: Option<String>,
-    assigned_id: accounts::AccountId,
+    /// The id a new account takes once its draft has been checked.
+    assigned_id: Option<accounts::AccountId>,
     name: String,
     identity: String,
     username: String,
@@ -137,7 +140,7 @@ struct PendingFormSave {
 
 struct ProbeJob {
     receiver: std::sync::mpsc::Receiver<Result<String, String>>,
-    deadline: std::time::Instant,
+    deadline: ui::time::Instant,
 }
 
 impl ProbeJob {
@@ -146,7 +149,7 @@ impl ProbeJob {
     fn new(receiver: std::sync::mpsc::Receiver<Result<String, String>>) -> Self {
         Self {
             receiver,
-            deadline: std::time::Instant::now() + Self::DEADLINE,
+            deadline: ui::time::now() + Self::DEADLINE,
         }
     }
 
@@ -154,9 +157,7 @@ impl ProbeJob {
         match self.receiver.try_recv() {
             Ok(result) => Some(result),
             Err(std::sync::mpsc::TryRecvError::Disconnected) => Some(Err(stopped.into())),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-                if std::time::Instant::now() >= self.deadline =>
-            {
+            Err(std::sync::mpsc::TryRecvError::Empty) if ui::time::now() >= self.deadline => {
                 Some(Err("connection check timed out".into()))
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => None,
@@ -194,7 +195,7 @@ pub struct AccountsPane {
     reauth_id: Option<String>,
     account_tester: std::sync::Arc<dyn crate::account_probe::AccountTester>,
     form_probe: Option<ProbeJob>,
-    form_candidate: Option<PendingFormSave>,
+    form_candidate: Option<AccountDraft>,
     reauth_probe: Option<ProbeJob>,
     reauth_candidate: Option<(accounts::AccountId, accounts::Secret)>,
     pending_remove: Option<(AccountKind, String)>,
@@ -355,8 +356,8 @@ impl AccountsPane {
         state: &mut AutoCommit,
         root: &ObjId,
     ) -> bool {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
-        while self.form_open() && std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
+        while self.form_open() && ui::time::now() < deadline {
             self.sync(state, root);
             if self.form_open() {
                 std::thread::sleep(std::time::Duration::from_millis(1));
@@ -1195,33 +1196,26 @@ impl AccountsPane {
     /// envelopes are cloned so fields contributed by another app or a newer
     /// provider survive an edit.
     #[allow(
-        clippy::too_many_arguments,
-        reason = "Account preparation validates the account kind, existing or assigned ID, display name, identity, login, server, and credential together."
-    )]
-    #[allow(
         clippy::too_many_lines,
         reason = "one canonical conversion validates the complete set of account kinds and credential fields"
     )]
     fn prepare_account(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(accounts::Account, accounts::Secret), String> {
+        let kind = draft.kind;
+        let existing_id = draft.existing_id.as_deref();
+        let name = draft.name.as_str();
+        let password = draft.password.as_str();
         if kind.is_cloud_storage() {
             return Err(format!(
                 "{} accounts are connected by signing in",
                 kind.label()
             ));
         }
-        let identity = identity.trim();
-        let username = username.trim();
-        let server = server.trim().trim_end_matches('/');
+        let identity = draft.identity.trim();
+        let username = draft.username.trim();
+        let server = draft.server.trim().trim_end_matches('/');
         if name.trim().is_empty() {
             return Err("enter a display name".into());
         }
@@ -1259,7 +1253,7 @@ impl AccountsPane {
         let shared = account_root.store();
         let id = existing_id.map_or_else(
             || {
-                assigned_id.cloned().unwrap_or_else(|| {
+                draft.assigned_id.clone().unwrap_or_else(|| {
                     accounts::AccountId::from(match kind {
                         AccountKind::Mail => identity.to_ascii_lowercase(),
                         _ => format!("{}-{}", kind.slug(), uuid::Uuid::new_v4()),
@@ -1338,33 +1332,13 @@ impl AccountsPane {
 
     /// Commit a draft after its protocol probe succeeds. The draft is rebuilt
     /// over the latest canonical envelope to preserve concurrent/newer fields.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Account persistence passes the full validated draft, including existing or assigned ID and credential, into canonical preparation."
-    )]
     fn save_account_with_id(
         account_root: &AccountRoot,
-        kind: AccountKind,
-        existing_id: Option<&str>,
-        assigned_id: Option<&accounts::AccountId>,
-        name: &str,
-        identity: &str,
-        username: &str,
-        server: &str,
-        password: &str,
+        draft: &AccountDraft,
     ) -> Result<(), String> {
-        let (stored, prepared_secret) = Self::prepare_account(
-            account_root,
-            kind,
-            existing_id,
-            assigned_id,
-            name,
-            identity,
-            username,
-            server,
-            password,
-        )?;
-        let publishes = matches!(kind, AccountKind::WebDav | AccountKind::Nextcloud);
+        let (stored, prepared_secret) = Self::prepare_account(account_root, draft)?;
+        let password = draft.password.as_str();
+        let publishes = matches!(draft.kind, AccountKind::WebDav | AccountKind::Nextcloud);
         let id = stored.id.clone();
         Self::commit_account(
             account_root,
@@ -1431,10 +1405,6 @@ impl AccountsPane {
     }
 
     #[cfg(test)]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors the validated draft fields of save_account_with_id"
-    )]
     fn save_account(
         account_root: &AccountRoot,
         kind: AccountKind,
@@ -1447,14 +1417,16 @@ impl AccountsPane {
     ) -> Result<(), String> {
         Self::save_account_with_id(
             account_root,
-            kind,
-            existing_id,
-            None,
-            name,
-            identity,
-            username,
-            server,
-            password,
+            &AccountDraft {
+                kind,
+                existing_id: existing_id.map(str::to_string),
+                assigned_id: None,
+                name: name.to_string(),
+                identity: identity.to_string(),
+                username: username.to_string(),
+                server: server.to_string(),
+                password: password.to_string(),
+            },
         )
     }
 
@@ -1632,39 +1604,29 @@ impl AccountsPane {
                 return;
             }
             let identity = if kind == AccountKind::Mail {
-                &email
+                email
             } else {
-                &user
+                user.clone()
             };
-            let prepared = Self::prepare_account(
-                &self.account_root,
+            let mut draft = AccountDraft {
                 kind,
-                self.form_account_id.as_deref(),
-                None,
-                &name,
+                existing_id: self.form_account_id.clone(),
+                assigned_id: None,
+                name,
                 identity,
-                &user,
-                &server,
-                &password,
-            );
-            match prepared {
+                username: user,
+                server,
+                password,
+            };
+            match Self::prepare_account(&self.account_root, &draft) {
                 Ok((account, secret)) => {
-                    let candidate = PendingFormSave {
-                        kind,
-                        existing_id: self.form_account_id.clone(),
-                        assigned_id: account.id.clone(),
-                        name,
-                        identity: identity.clone(),
-                        username: user,
-                        server,
-                        password,
-                    };
+                    draft.assigned_id = Some(account.id.clone());
                     let tester = std::sync::Arc::clone(&self.account_tester);
                     let (sender, receiver) = std::sync::mpsc::sync_channel(1);
                     std::thread::spawn(move || {
                         let _ = sender.send(tester.test(&account, &secret));
                     });
-                    self.form_candidate = Some(candidate);
+                    self.form_candidate = Some(draft);
                     self.form_probe = Some(ProbeJob::new(receiver));
                     self.form_error = Some("Checking the account before saving…".into());
                     self.structure_dirty = true;
@@ -1695,17 +1657,7 @@ impl AccountsPane {
                 self.structure_dirty = true;
                 return;
             };
-            match Self::save_account_with_id(
-                &self.account_root,
-                candidate.kind,
-                candidate.existing_id.as_deref(),
-                Some(&candidate.assigned_id),
-                &candidate.name,
-                &candidate.identity,
-                &candidate.username,
-                &candidate.server,
-                &candidate.password,
-            ) {
+            match Self::save_account_with_id(&self.account_root, &candidate) {
                 Ok(()) => {
                     self.form_kind = None;
                     self.form_error = None;
@@ -1901,8 +1853,8 @@ impl AccountsPane {
 }
 
 fn relative_sync_time(unix: i64) -> String {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .map_or(0, |duration| duration.as_secs() as i64);
     let age = now.saturating_sub(unix).max(0);
     match age {
@@ -1986,7 +1938,8 @@ pub fn build_with(dir: &AccountDirectory) -> Box<dyn Widget> {
 }
 
 impl Widget for AccountsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.handle_local_command();
         self.handle_add(state, root);
         self.handle_edit_triggers(state, root);
@@ -2066,33 +2019,12 @@ impl Widget for AccountsPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -2188,16 +2120,13 @@ mod tests {
     /// Drive the host's polling until the pending account probe reports,
     /// however long the probe thread takes to be scheduled.
     fn settle_probes(pane: &mut AccountsPane, doc: &mut AutoCommit) {
-        let deadline = std::time::Instant::now() + ProbeJob::DEADLINE;
+        let deadline = ui::time::now() + ProbeJob::DEADLINE;
         loop {
             pane.sync(doc, &automerge::ROOT);
             if pane.form_probe.is_none() && pane.reauth_probe.is_none() {
                 return;
             }
-            assert!(
-                std::time::Instant::now() < deadline,
-                "account probe never reported"
-            );
+            assert!(ui::time::now() < deadline, "account probe never reported");
             std::thread::sleep(std::time::Duration::from_millis(1));
         }
     }

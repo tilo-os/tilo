@@ -36,7 +36,7 @@ use tracing_subscriber::EnvFilter;
 use registry_server::{
     AppState, InspectionPolicy, ModerationService, PromotionJournal, PublisherAllowlist,
     PublisherRow, ServerIdentity, StagedArtifact, StagedPromotion, Storage, default_data_dir,
-    fetch_version_bytes, inspect_bytes, inspect_entry, run_server,
+    inspect_bytes, run_server,
 };
 use registry_types::EntryAction;
 use registry_types::{
@@ -225,6 +225,34 @@ enum Cmd {
         #[command(subcommand)]
         command: ReviewCommand,
     },
+    /// Decide on keys asking to publish under namespaces they proved.
+    Applications {
+        #[command(subcommand)]
+        command: ApplicationsCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum ApplicationsCommand {
+    /// List applications waiting for a decision.
+    List {
+        #[arg(long)]
+        json: bool,
+    },
+    /// Check the proofs again and allowlist the key for their namespaces.
+    Approve {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+    },
+    /// Turn an application down; the key's allowlist row is untouched.
+    Reject {
+        pubkey: String,
+        #[arg(long)]
+        reviewer: String,
+        #[arg(long)]
+        reason: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -380,6 +408,7 @@ async fn serve_cli() -> anyhow::Result<()> {
         } => cmd_rollback_snapshot(&storage, to_sequence, &owner_key_file, valid_for_seconds),
         // Review fetches packages with a blocking HTTP client, which must not
         // run (or be dropped) on an async worker.
+        Cmd::Applications { command } => cmd_applications(&storage, command),
         Cmd::Review { command } => tilo_rt::io::run(move || Ok(cmd_review(&storage, command)))
             .await
             .map_err(|error| anyhow::anyhow!("review: {error}"))?,
@@ -387,7 +416,6 @@ async fn serve_cli() -> anyhow::Result<()> {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "each argument is a separately audited CronJob control at the CLI boundary"
 )]
@@ -528,7 +556,7 @@ fn cmd_collect_first_party(
         ..InspectionPolicy::default()
     };
     let persisted_digests = Mutex::new(BTreeSet::new());
-    let staged = stage_collected_promotion(
+    let (staged, failures) = stage_collected_promotion(
         storage,
         publisher_hex,
         submissions,
@@ -537,10 +565,26 @@ fn cmd_collect_first_party(
             collect_submission_artifacts(storage, pending, publisher, policy, &persisted_digests)
         },
     )?;
+    let failed = failures
+        .iter()
+        .map(|(submission_id, error)| {
+            serde_json::json!({"submission": submission_id, "error": format!("{error:#}")})
+        })
+        .collect::<Vec<_>>();
     println!(
         "{}",
-        serde_json::json!({"status": "staged", "collected": staged.submissions.len()})
+        serde_json::json!({
+            "status": if failures.is_empty() { "staged" } else { "incomplete" },
+            "collected": staged.as_ref().map_or(0, |staged| staged.submissions.len()),
+            "failed": failed,
+        })
     );
+    if let Some((submission_id, error)) = failures.first() {
+        anyhow::bail!(
+            "{} submission(s) stay pending; first: {submission_id}: {error:#}",
+            failures.len()
+        );
+    }
     Ok(())
 }
 
@@ -558,14 +602,29 @@ fn collect_submission_artifacts(
     }
     let mut artifacts = Vec::with_capacity(pending.change.entry.versions.len());
     for version in &pending.change.entry.versions {
-        let (inspection, bytes) = fetch_version_bytes(&pending.change.entry, version, policy)?;
-        let digest = blake3::hash(&bytes).to_hex().to_string();
-        persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+        // Staged bytes are content-addressed by the digest the publisher
+        // signed, so an update that repeats already collected versions needs
+        // no refetch, and those versions stay collectable after their
+        // advertised URL stops serving them. They pass the same inspection.
+        let inspection =
+            if let Some(bytes) = storage.find_staged_artifact(&version.tapp_blake3_hex)? {
+                inspect_bytes(&pending.change.entry, version, &bytes)?
+            } else {
+                let (inspection, bytes) = registry_server::review_version_bytes(
+                    storage,
+                    &pending.change.entry,
+                    version,
+                    policy,
+                )?;
+                let digest = blake3::hash(&bytes).to_hex().to_string();
+                persist_distinct_artifact(storage, persisted_digests, &digest, &bytes)?;
+                inspection
+            };
         artifacts.push(StagedArtifact {
             submission_id: pending.submission_id.clone(),
             version: inspection.version,
             target: Some(version.target.clone()),
-            blake3_hex: digest,
+            blake3_hex: version.tapp_blake3_hex.to_ascii_lowercase(),
         });
     }
     Ok(artifacts)
@@ -592,13 +651,16 @@ fn persist_distinct_artifact(
     Ok(())
 }
 
+/// Submissions whose artifacts could not be collected, with the reason.
+type CollectionFailures = Vec<(String, anyhow::Error)>;
+
 fn stage_collected_promotion<F>(
     storage: &Storage,
     publisher_pubkey_hex: String,
     submissions: Vec<registry_server::PendingSubmission>,
     parallelism: NonZeroUsize,
     collect: F,
-) -> anyhow::Result<StagedPromotion>
+) -> anyhow::Result<(Option<StagedPromotion>, CollectionFailures)>
 where
     F: Fn(&registry_server::PendingSubmission) -> anyhow::Result<Vec<StagedArtifact>> + Sync,
 {
@@ -606,19 +668,38 @@ where
     // failed recollection may leave harmless content-addressed bytes behind,
     // but never a manifest the networkless signer could publish.
     let _deleted = storage.delete_staged_promotion()?;
-    let collected = bounded_parallel_map(&submissions, parallelism, collect)?;
-    let mut artifacts = collected.into_iter().flatten().collect::<Vec<_>>();
+    let collected = bounded_parallel_map(&submissions, parallelism, |pending| {
+        Ok::<_, std::convert::Infallible>(collect(pending))
+    })
+    .unwrap_or_else(|never| match never {});
+    // Every submission is verified on its own, so one whose artifacts cannot
+    // be collected stays pending while the complete ones are staged.
+    let mut staged_submissions = Vec::with_capacity(submissions.len());
+    let mut artifacts = Vec::new();
+    let mut failures = Vec::new();
+    for (pending, result) in submissions.into_iter().zip(collected) {
+        match result {
+            Ok(collected) => {
+                artifacts.extend(collected);
+                staged_submissions.push(pending);
+            }
+            Err(error) => failures.push((pending.submission_id, error)),
+        }
+    }
+    if staged_submissions.is_empty() {
+        return Ok((None, failures));
+    }
     artifacts.sort_by(|left, right| {
         staged_artifact_sort_key(left).cmp(&staged_artifact_sort_key(right))
     });
     let staged = StagedPromotion {
         publisher_pubkey_hex,
         collected_at_unix: unix_now(),
-        submissions,
+        submissions: staged_submissions,
         artifacts,
     };
     storage.save_staged_promotion(&staged)?;
-    Ok(staged)
+    Ok((Some(staged), failures))
 }
 
 fn bounded_parallel_map<T, R, E, F>(
@@ -1244,7 +1325,10 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let inspection = inspect_for_decision(&pending, allow_insecure_local)?;
+            let inspection: Vec<_> = fetch_for_decision(storage, &pending, allow_insecure_local)?
+                .into_iter()
+                .map(|(inspection, _bytes)| inspection)
+                .collect();
             if json {
                 println!(
                     "{}",
@@ -1279,13 +1363,18 @@ fn cmd_review(storage: &Storage, command: ReviewCommand) -> anyhow::Result<()> {
             allow_insecure_local,
         } => {
             let pending = require_pending(&moderation, &package_id)?;
-            let reviewed = fetch_for_decision(&pending, allow_insecure_local)?;
+            let reviewed = fetch_for_decision(storage, &pending, allow_insecure_local)?;
             let allowlist = storage.load_allowlist()?;
             let record = moderation.approve(&pending, reviewer, reason, unix_now(), &allowlist)?;
             // Serve the reviewed bytes as blobs and thin packages, so clients
             // fetch only what they lack.
+            // An approved upload becomes the artifact its version's URL names.
             for (_inspection, bytes) in &reviewed {
                 storage.save_payload_blobs(bytes)?;
+                let digest = blake3::hash(bytes).to_hex().to_string();
+                if storage.load_upload(&digest)?.is_some() {
+                    storage.import_artifact(bytes)?;
+                }
             }
             println!("{}", serde_json::to_string_pretty(&record)?);
         }
@@ -1333,21 +1422,8 @@ fn require_pending(
         .ok_or_else(|| anyhow::anyhow!("no pending submission for {package_id}"))
 }
 
-fn inspect_for_decision(
-    pending: &registry_server::PendingSubmission,
-    allow_insecure_local: bool,
-) -> anyhow::Result<Vec<registry_server::InspectedVersion>> {
-    if pending.change.action == EntryAction::Delete {
-        return Ok(Vec::new());
-    }
-    let policy = InspectionPolicy {
-        allow_insecure_local,
-        ..InspectionPolicy::default()
-    };
-    inspect_entry(&pending.change.entry, policy).map_err(Into::into)
-}
-
 fn fetch_for_decision(
+    storage: &Storage,
     pending: &registry_server::PendingSubmission,
     allow_insecure_local: bool,
 ) -> anyhow::Result<Vec<(registry_server::InspectedVersion, Vec<u8>)>> {
@@ -1358,7 +1434,7 @@ fn fetch_for_decision(
         allow_insecure_local,
         ..InspectionPolicy::default()
     };
-    registry_server::fetch_entry_bytes(&pending.change.entry, policy).map_err(Into::into)
+    registry_server::review_entry_bytes(storage, &pending.change.entry, policy).map_err(Into::into)
 }
 
 fn cmd_import_artifact(storage: &Storage, file: &std::path::Path) -> anyhow::Result<()> {
@@ -1569,6 +1645,61 @@ fn cmd_remove_publisher(storage: &Storage, pubkey: &str) -> anyhow::Result<()> {
 }
 
 /// `Cmd::ListPublishers` — print `publishers.toml` to stdout.
+fn cmd_applications(storage: &Storage, command: ApplicationsCommand) -> anyhow::Result<()> {
+    use registry_server::applications::{self, ApplicationStatus, NetworkProofs};
+    match command {
+        ApplicationsCommand::List { json } => {
+            let mut waiting: Vec<_> = storage
+                .load_publisher_applications()?
+                .into_iter()
+                .filter(|stored| stored.status == ApplicationStatus::Pending)
+                .collect();
+            waiting.sort_by_key(|stored| stored.received_at_unix);
+            if json {
+                println!("{}", serde_json::to_string_pretty(&waiting)?);
+                return Ok(());
+            }
+            for stored in &waiting {
+                println!(
+                    "{}  {}  {}",
+                    stored.application.pubkey_hex,
+                    stored.namespaces().join(","),
+                    stored.application.contact
+                );
+                for claim in &stored.verified {
+                    println!("    {} via {}", claim.namespace, claim.location);
+                }
+                if !stored.application.note.is_empty() {
+                    println!("    note: {}", stored.application.note);
+                }
+            }
+        }
+        ApplicationsCommand::Approve { pubkey, reviewer } => {
+            let (_, row) = applications::approve(
+                storage,
+                &pubkey,
+                &reviewer,
+                unix_now(),
+                &NetworkProofs::default(),
+            )?;
+            info!(
+                "allowlisted {} for {}",
+                row.pubkey_hex,
+                row.namespaces.join(", ")
+            );
+        }
+        ApplicationsCommand::Reject {
+            pubkey,
+            reviewer,
+            reason,
+        } => {
+            applications::reject(storage, &pubkey, &reviewer, &reason, unix_now())?;
+            info!("rejected the application from {pubkey}");
+        }
+    }
+    Ok(())
+}
+
 fn cmd_list_publishers(storage: &Storage) -> anyhow::Result<()> {
     let allow: PublisherAllowlist = storage
         .load_allowlist()
@@ -1639,7 +1770,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one scenario, one labelled phase per merged case"
     )]
-    fn artifact_collection_stages_only_complete_sorted_batches() {
+    fn artifact_collection_stages_complete_submissions_in_sorted_batches() {
         // phase: collected_artifacts_are_sorted_and_duplicate_bytes_are_safe
         {
             let storage_dir = tempfile::tempdir().unwrap();
@@ -1672,7 +1803,7 @@ mod tests {
                 })
                 .collect::<Vec<_>>();
             let persisted = Mutex::new(BTreeSet::new());
-            let staged = stage_collected_promotion(
+            let (staged, failures) = stage_collected_promotion(
                 &storage,
                 publisher_hex,
                 submissions,
@@ -1693,6 +1824,8 @@ mod tests {
                 },
             )
             .unwrap();
+            assert!(failures.is_empty());
+            let staged = staged.unwrap();
 
             assert_eq!(
                 staged
@@ -1710,7 +1843,7 @@ mod tests {
             );
             assert_eq!(storage.load_staged_artifact(&digest).unwrap(), shared_bytes);
         }
-        // phase: failed_collection_leaves_written_bytes_but_no_publishable_manifest
+        // phase: a_failed_submission_stays_out_of_the_staged_batch
         {
             let storage_dir = tempfile::tempdir().unwrap();
             let storage = Storage::open(storage_dir.path()).unwrap();
@@ -1745,10 +1878,10 @@ mod tests {
             let digest = blake3::hash(&bytes).to_hex().to_string();
             let persisted = Mutex::new(BTreeSet::new());
 
-            let error = stage_collected_promotion(
+            let (staged, failures) = stage_collected_promotion(
                 &storage,
                 publisher_hex,
-                submissions,
+                submissions.clone(),
                 NonZeroUsize::new(1).unwrap(),
                 |pending| {
                     if pending.submission_id.ends_with("beta") {
@@ -1763,11 +1896,17 @@ mod tests {
                     }])
                 },
             )
-            .unwrap_err();
+            .unwrap();
 
+            let [(failed_id, error)] = failures.as_slice() else {
+                panic!("expected one failed submission");
+            };
+            assert_eq!(failed_id, "so.tilo.beta");
             assert!(error.to_string().contains("second fetch failed"));
+            let staged = staged.unwrap();
+            assert_eq!(staged.submissions, submissions[..1]);
+            assert_eq!(storage.load_staged_promotion().unwrap(), Some(staged));
             assert_eq!(storage.load_staged_artifact(&digest).unwrap(), bytes);
-            assert!(storage.load_staged_promotion().unwrap().is_none());
 
             // A crash retry starts with a fresh in-memory digest set. Re-saving the
             // same content-addressed bytes verifies and reuses the durable artifact.

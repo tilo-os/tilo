@@ -1,10 +1,11 @@
 //! Layout and input routing for chrome plus a borrowed presentation slot.
 //! Live ownership/lifecycle traversal stays entirely with the runner.
 use super::{
-    Affine, AutoCommit, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, ObjId, Point,
-    PresenceCtx, PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer,
-    Theme, Widget, WindowEvent,
+    Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PresenceCtx,
+    PreviewSide, Rect, Scene, Size, Style, TaffyTree, TaffyTreeExt, TextRenderer, Theme, Widget,
+    WindowEvent,
 };
+use crate::widget::{AppModel, ModelPath};
 
 impl HistoryHost {
     pub(crate) fn build_composition(
@@ -23,7 +24,18 @@ impl HistoryHost {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.admit_composition();
         let toolbar = self.toolbar.build_layout(tree, theme, nodes);
+        // Open History lays out its own navigation rows edge to edge; only
+        // the closed strip is inset like a bar.
+        if self.has_toolbar_controls()
+            && !self.open
+            && let Ok(style) = tree.style(toolbar)
+        {
+            let mut style = style.clone();
+            style.padding = crate::chrome::bar_padding(theme);
+            let _ = tree.set_style(toolbar, style);
+        }
         self.toolbar_node = Some(toolbar);
         self.timeline_node = None;
         self.canvas_node = None;
@@ -107,6 +119,11 @@ impl HistoryHost {
         // inline child and make reverse-node lookup resolve to the wrong node.
         root
     }
+    /// A closed History with its button in the host's chrome leaves the
+    /// toolbar empty; it then takes no bar at all.
+    fn has_toolbar_controls(&self) -> bool {
+        !self.toolbar.children().is_empty()
+    }
     fn body_origin(&self, tree: &TaffyTree<()>) -> Point {
         let layout = self
             .body_node
@@ -133,41 +150,31 @@ impl HistoryHost {
     pub(crate) fn live_layout_node(&self) -> Option<NodeId> {
         self.live_node
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "History routing forwards the Widget input, CRDT, focus/handled, and layout context to chrome or the live child."
-    )]
-    #[allow(
-        clippy::trivially_copy_pass_by_ref,
-        reason = "event router forwards borrowed modifiers to the Widget event contract"
-    )]
+    /// Route `event` to the History chrome, then (when the chrome did not
+    /// take it) to the `live` app. Each is dispatched at its own layout node;
+    /// `ctx.node_id` is the node the event arrived at and is not forwarded.
     pub(crate) fn route_event(
         &mut self,
         live: &mut dyn Widget,
         event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        tree: &TaffyTree<()>,
+        ctx: &mut crate::widget::EventCtx<'_>,
     ) {
+        let scale = ctx.scale_factor;
         let chrome_event = self.controls_event(event, scale);
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = Point::new(position.x / scale, position.y / scale);
         }
         if let Some(root) = self.chrome_node {
-            self.handle_event(event, scale, mods, doc, path, handled, focus, root, tree);
+            self.handle_event(event, &mut ctx.reborrow(ctx.path, root));
         }
         if chrome_event && !matches!(event, WindowEvent::KeyboardInput { .. }) {
-            *handled = true;
+            *ctx.handled = true;
         }
         if !chrome_event
-            && !*handled
+            && !*ctx.handled
             && let Some(child) = self.live_node
         {
-            live.handle_event(event, scale, mods, doc, path, handled, focus, child, tree);
+            live.handle_event(event, &mut ctx.reborrow(ctx.path, child));
         }
     }
 }
@@ -178,7 +185,7 @@ impl Widget for HistoryHost {
     fn name(&self) -> &'static str {
         "History"
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+    fn sync(&mut self, _: &mut AppModel, _: &ModelPath) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -222,6 +229,9 @@ impl Widget for HistoryHost {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        if self.has_toolbar_controls() {
+            crate::chrome::paint_bar(scene, transform, theme, self.toolbar.get_rect());
+        }
         self.toolbar.draw(scene, transform, text, theme, presence);
         if self.show_timeline() && !self.timeline_available() {
             self.unavailable
@@ -237,28 +247,17 @@ impl Widget for HistoryHost {
             panel.dialog.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        _: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
             panel
                 .dialog
-                .handle_event(event, scale, mods, doc, path, handled, focus, node, tree);
-            *handled = true;
+                .handle_event(event, &mut ctx.reborrow(ctx.path, node));
+            *ctx.handled = true;
             return;
         }
         if let Some(toolbar) = self.toolbar_node {
             self.toolbar
-                .handle_event(event, scale, mods, doc, path, handled, focus, toolbar, tree);
+                .handle_event(event, &mut ctx.reborrow(ctx.path, toolbar));
         }
         if let Some(timeline) = self.timeline_node
             && (!matches!(
@@ -266,13 +265,12 @@ impl Widget for HistoryHost {
                 WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
             ) || self.timeline.is_focused())
         {
-            self.timeline.handle_event(
-                event, scale, mods, doc, path, handled, focus, timeline, tree,
-            );
+            self.timeline
+                .handle_event(event, &mut ctx.reborrow(ctx.path, timeline));
         }
         if let Some(canvas) = self.canvas_node {
             self.canvas_mut()
-                .handle_event(event, scale, mods, doc, path, handled, focus, canvas, tree);
+                .handle_event(event, &mut ctx.reborrow(ctx.path, canvas));
         }
     }
     fn children(&self) -> Vec<&dyn Widget> {
@@ -319,5 +317,12 @@ impl Widget for HistoryHost {
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+    fn take_structure_dirty(&mut self) -> bool {
+        let mut dirty = self.composition_changed();
+        for child in self.children_mut() {
+            dirty |= child.take_structure_dirty();
+        }
+        dirty
     }
 }

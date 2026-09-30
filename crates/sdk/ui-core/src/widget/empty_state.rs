@@ -18,6 +18,7 @@
 //! CRDT-native input model used by [`super::ContextMenu`] /
 //! [`super::TriStateControl`].
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use automerge::{AutoCommit, ObjId};
@@ -30,22 +31,12 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
 use crate::icons::Icon;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{ParagraphAlign, TextRenderer, TextStyle, TextWrapMode};
 use crate::theme::Theme;
 use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
 use crate::widget::{ActionEmitter, Scrollable, TaffyTreeExt, Widget};
-
-/// `kurbo::Affine` composition is plain f64 matrix math with no panic
-/// path; `arithmetic_side_effects` flags the `*` operator overload anyway.
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "kurbo::Affine * Affine composes two 2D transforms via f64 \
-              matrix math; it never panics or overflows, unlike integer +/-/*"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
 
 /// Diameter of the hero-icon disc.
 const DISC_D: f64 = 72.0;
@@ -81,72 +72,117 @@ struct Fit {
     total: f64,
 }
 
-fn resolved_styles(
-    text_renderer: &TextRenderer,
-    theme: &Theme,
-) -> (TextStyle, TextStyle, TextStyle) {
-    let typography = &theme.tokens.typography.scale;
-    (
-        text_renderer.renderer_input_style(
-            &TextStyle::new(typography.xl)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                .with_align(ParagraphAlign::Center),
-        ),
-        text_renderer.renderer_input_style(
-            &TextStyle::new(typography.sm)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                .with_align(ParagraphAlign::Center),
-        ),
-        text_renderer.renderer_input_style(
-            &TextStyle::new(typography.sm)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph)
-                .with_align(ParagraphAlign::Center),
-        ),
-    )
+/// What an empty state shows: optional hero icon, title, optional message
+/// and optional action-pill label.
+#[derive(Clone, Copy, Debug)]
+pub struct EmptyStateContent<'a> {
+    pub icon: Option<Icon>,
+    pub title: &'a str,
+    pub message: Option<&'a str>,
+    pub action_label: Option<&'a str>,
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the strings and their resolved styles are paired inputs to one authoritative measurement pass"
-)]
-fn measure_metrics(
-    text_renderer: &mut TextRenderer,
+impl<'a> EmptyStateContent<'a> {
+    /// Just a title, the minimal case.
+    pub fn new(title: &'a str) -> Self {
+        Self {
+            icon: None,
+            title,
+            message: None,
+            action_label: None,
+        }
+    }
+
+    fn parts(&self) -> Parts {
+        Parts {
+            icon: self.icon.is_some(),
+            message: self.message.is_some(),
+            action: self.action_label.is_some(),
+        }
+    }
+}
+
+/// The typography and spacing an empty-state stack is measured with.
+#[derive(Clone, Debug)]
+struct StackStyle {
+    title: TextStyle,
+    message: TextStyle,
+    action: TextStyle,
     gap: f64,
     pad_y: f64,
-    width: f64,
-    title: &str,
-    message: Option<&str>,
-    action_label: Option<&str>,
-    title_style: &TextStyle,
-    message_style: &TextStyle,
-    action_style: &TextStyle,
-) -> Metrics {
-    let pad_x = gap;
-    #[allow(
-        clippy::cast_possible_truncation,
-        reason = "window widths are logical pixels well within f32 range"
-    )]
-    let inner_width = (width - gap * 2.0).max(1.0) as f32;
-    let (_, title_h) = text_renderer.measure_style(title, Some(inner_width), title_style);
-    let (_, msg_h) = message.map_or((0.0, 0.0), |value| {
-        text_renderer.measure_style(value, Some(inner_width), message_style)
-    });
-    let (action_w, action_h) = action_label.map_or((0.0, 0.0), |value| {
-        text_renderer.measure_style(value, Some(inner_width), action_style)
-    });
-    Metrics {
-        title_h: f64::from(title_h),
-        msg_h: f64::from(msg_h),
-        action_w: f64::from(action_w),
-        action_h: f64::from(action_h),
-        inner_width,
-        pad_x,
-        gap,
-        btn_h: if action_label.is_some() {
-            34.0_f64.max(f64::from(action_h) + pad_y * 2.0)
-        } else {
-            0.0
-        },
+}
+
+impl StackStyle {
+    /// Theme styles before renderer scaling, as the retained widget lays out.
+    fn layout(theme: &Theme) -> Self {
+        let typography = &theme.tokens.typography.scale;
+        Self {
+            title: TextStyle::new(typography.xl).with_wrap_mode(TextWrapMode::WordOrGlyph),
+            message: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
+            action: TextStyle::new(typography.sm).with_wrap_mode(TextWrapMode::WordOrGlyph),
+            gap: f64::from(theme.tokens.spacing.s4),
+            pad_y: f64::from(theme.tokens.spacing.s2),
+        }
+    }
+
+    /// Centered, renderer-scaled styles for painting.
+    fn resolved(text_renderer: &TextRenderer, theme: &Theme) -> Self {
+        let layout = Self::layout(theme);
+        let centered = |style: TextStyle| {
+            text_renderer.renderer_input_style(&style.with_align(ParagraphAlign::Center))
+        };
+        Self {
+            title: centered(layout.title),
+            message: centered(layout.message),
+            action: centered(layout.action),
+            ..layout
+        }
+    }
+
+    fn renderer_input(&self, text_renderer: &TextRenderer) -> Self {
+        Self {
+            title: text_renderer.renderer_input_style(&self.title),
+            message: text_renderer.renderer_input_style(&self.message),
+            action: text_renderer.renderer_input_style(&self.action),
+            ..*self
+        }
+    }
+
+    fn measure(
+        &self,
+        text_renderer: &mut TextRenderer,
+        width: f64,
+        content: &EmptyStateContent<'_>,
+    ) -> Metrics {
+        let gap = self.gap;
+        let pad_x = gap;
+        #[allow(
+            clippy::cast_possible_truncation,
+            reason = "window widths are logical pixels well within f32 range"
+        )]
+        let inner_width = (width - gap * 2.0).max(1.0) as f32;
+        let (_, title_h) =
+            text_renderer.measure_style(content.title, Some(inner_width), &self.title);
+        let (_, msg_h) = content.message.map_or((0.0, 0.0), |value| {
+            text_renderer.measure_style(value, Some(inner_width), &self.message)
+        });
+        let (action_w, action_h) = content.action_label.map_or((0.0, 0.0), |value| {
+            text_renderer.measure_style(value, Some(inner_width), &self.action)
+        });
+        Metrics {
+            title_h: f64::from(title_h),
+            msg_h: f64::from(msg_h),
+            action_w: f64::from(action_w),
+            action_h: f64::from(action_h),
+            inner_width,
+            pad_x,
+            gap,
+            btn_h: if content.action_label.is_some() {
+                34.0_f64.max(f64::from(action_h) + self.pad_y * 2.0)
+            } else {
+                0.0
+            },
+        }
     }
 }
 
@@ -193,92 +229,57 @@ impl Fit {
 /// pointer position for the pill hover state (pass an off-screen point to
 /// suppress hover).
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "one immediate-mode pass must keep adaptive layout, painting, focus treatment and returned hit geometry in lockstep"
 )]
 fn paint_empty_state(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
-    icon: Option<Icon>,
-    title: &str,
-    message: Option<&str>,
-    action_label: Option<&str>,
+    content: &EmptyStateContent<'_>,
     hover: Point,
     action_focused: bool,
 ) -> Option<Rect> {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return None;
     }
-    let (mut title_style, message_style, action_style) = resolved_styles(text_renderer, theme);
-    let mut metrics = measure_metrics(
-        text_renderer,
-        f64::from(theme.tokens.spacing.s4),
-        f64::from(theme.tokens.spacing.s2),
-        rect.width(),
-        title,
-        message,
-        action_label,
-        &title_style,
-        &message_style,
-        &action_style,
-    );
+    let theme = ctx.theme;
+    let transform = ctx.transform;
+    let mut style = StackStyle::resolved(ctx.text, theme);
+    let mut metrics = style.measure(ctx.text, rect.width(), content);
     let gap = metrics.gap;
 
-    let mut fit = Fit::choose(
-        rect.height(),
-        Parts {
-            icon: icon.is_some(),
-            message: message.is_some(),
-            action: action_label.is_some(),
-        },
-        metrics,
-    );
+    let mut fit = Fit::choose(rect.height(), content.parts(), metrics);
     // On a phone at a high text scale a three-line headline can crowd out
     // the recovery explanation even after the decorative icon is shed.
     // Preserve the action *and* the explanation by compacting only the
     // display size of the heading, while keeping its heading semantics and
     // full accessible name intact. The final fallback still prefers the
     // action if a parent offers too little vertical space.
-    if message.is_some() && !fit.message {
-        let original = title_style.clone();
+    if content.message.is_some() && !fit.message {
+        let original = style.title.clone();
         for factor in [0.82_f32, 0.72, 0.60] {
-            let mut candidate_style = original.clone();
-            candidate_style.size *= factor;
-            let candidate_metrics = measure_metrics(
-                text_renderer,
-                metrics.gap,
-                f64::from(theme.tokens.spacing.s2),
-                rect.width(),
-                title,
-                message,
-                action_label,
-                &candidate_style,
-                &message_style,
-                &action_style,
-            );
+            let mut candidate = style.clone();
+            candidate.title = original.clone();
+            candidate.title.size *= factor;
+            let candidate_metrics = candidate.measure(ctx.text, rect.width(), content);
             let candidate_fit = Fit::choose(
                 rect.height(),
                 Parts {
-                    icon: icon.is_some(),
                     message: true,
-                    action: action_label.is_some(),
+                    ..content.parts()
                 },
                 candidate_metrics,
             );
             if candidate_fit.message {
-                title_style = candidate_style;
+                style = candidate;
                 metrics = candidate_metrics;
                 fit = candidate_fit;
                 break;
             }
         }
     }
-    let icon = if fit.icon { icon } else { None };
-    let message = if fit.message { message } else { None };
+    let icon = if fit.icon { content.icon } else { None };
+    let message = if fit.message { content.message } else { None };
     let total = fit.total;
 
     let cx = rect.center().x;
@@ -291,7 +292,7 @@ fn paint_empty_state(
     if let Some(icon) = icon {
         let disc_center = Point::new(cx, y + DISC_D / 2.0);
         let disc = Circle::new(disc_center, DISC_D / 2.0);
-        scene.fill(
+        ctx.scene.fill(
             Fill::NonZero,
             transform,
             theme.accent_primary.with_alpha_factor(0.14),
@@ -299,34 +300,33 @@ fn paint_empty_state(
             &disc,
         );
         let icon_rect = Rect::from_center_size(disc_center, (ICON_D, ICON_D));
-        icon.draw_with_stroke(scene, transform, icon_rect, theme.accent_primary, 1.75);
+        icon.draw_with_stroke(ctx.scene, transform, icon_rect, theme.accent_primary, 1.75);
         y += DISC_D + gap;
     }
 
-    text_renderer.draw_style(
-        scene,
-        title,
+    let text_x = cx - f64::from(metrics.inner_width) / 2.0;
+    ctx.text(
+        content.title,
+        &style.title,
         theme.text_primary,
-        translated(transform, cx - f64::from(metrics.inner_width) / 2.0, y),
+        Point::new(text_x, y),
         Some(metrics.inner_width),
-        &title_style,
     );
     y += metrics.title_h;
 
     if let Some(msg) = message {
         y += gap * 0.5;
-        text_renderer.draw_style(
-            scene,
+        ctx.text(
             msg,
+            &style.message,
             theme.text_dim,
-            translated(transform, cx - f64::from(metrics.inner_width) / 2.0, y),
+            Point::new(text_x, y),
             Some(metrics.inner_width),
-            &message_style,
         );
         y += metrics.msg_h;
     }
 
-    if let Some(label) = action_label {
+    if let Some(label) = content.action_label {
         y += gap;
         let bw = (metrics.action_w + metrics.pad_x * 2.0).min(rect.width());
         let x0 = cx - bw / 2.0;
@@ -338,12 +338,12 @@ fn paint_empty_state(
             theme.accent_primary
         };
         let pill = RoundedRect::from_rect(action_rect, f64::from(theme.tokens.radii.md));
-        scene.fill(Fill::NonZero, transform, bg, None, &pill);
+        ctx.scene.fill(Fill::NonZero, transform, bg, None, &pill);
         // An empty-state action is often the only route out of a first-use
         // screen. Keep the normal, high-visibility focus treatment even
         // though this compact state is painted as one immediate-mode widget.
         if action_focused {
-            scene.stroke(
+            ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(2.0),
                 transform,
                 theme.border_focus,
@@ -352,9 +352,9 @@ fn paint_empty_state(
             );
         }
         let ty = action_rect.y0 + (metrics.btn_h - metrics.action_h) / 2.0;
-        text_renderer.draw_style(
-            scene,
+        ctx.text(
             label,
+            &style.action,
             // Ink chosen against the accent fill (rest and hover), so the
             // label reads on a light theme's accent too.
             theme.tokens.colors.ink_on_any(
@@ -362,9 +362,8 @@ fn paint_empty_state(
                 Color::WHITE,
                 ON_FILL_MIN_CONTRAST,
             ),
-            translated(transform, cx - f64::from(metrics.inner_width) / 2.0, ty),
+            Point::new(text_x, ty),
             Some(metrics.inner_width),
-            &action_style,
         );
         (action_rect.y1 > rect.y0 && action_rect.y0 < rect.y1).then_some(action_rect)
     } else {
@@ -395,11 +394,7 @@ pub struct EmptyState {
     /// The action is immediate-mode, but still participates in the normal
     /// Tab / Enter contract through this owning widget.
     action_focused: bool,
-    layout_title_style: TextStyle,
-    layout_message_style: TextStyle,
-    layout_action_style: TextStyle,
-    layout_gap: f64,
-    layout_pad_y: f64,
+    layout_style: StackStyle,
     scroll_content: bool,
 }
 
@@ -408,7 +403,6 @@ impl EmptyState {
     /// [`with_icon`](Self::with_icon) / [`with_message`](Self::with_message) /
     /// [`with_action`](Self::with_action) for the fuller treatment.
     pub fn new(title: impl Into<String>) -> Self {
-        let theme = Theme::default();
         Self {
             icon: None,
             title: title.into(),
@@ -422,14 +416,7 @@ impl EmptyState {
             action_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             action_focused: false,
-            layout_title_style: TextStyle::new(theme.tokens.typography.scale.xl)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph),
-            layout_message_style: TextStyle::new(theme.tokens.typography.scale.sm)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph),
-            layout_action_style: TextStyle::new(theme.tokens.typography.scale.sm)
-                .with_wrap_mode(TextWrapMode::WordOrGlyph),
-            layout_gap: f64::from(theme.tokens.spacing.s4),
-            layout_pad_y: f64::from(theme.tokens.spacing.s2),
+            layout_style: StackStyle::layout(&Theme::default()),
             scroll_content: false,
         }
     }
@@ -533,19 +520,12 @@ impl EmptyState {
         title: &str,
         action_label: Option<&str>,
     ) -> f64 {
-        let (title_style, message_style, action_style) = resolved_styles(text_renderer, theme);
-        let metrics = measure_metrics(
-            text_renderer,
-            f64::from(theme.tokens.spacing.s4),
-            f64::from(theme.tokens.spacing.s2),
-            width,
-            title,
-            None,
+        let content = EmptyStateContent {
             action_label,
-            &title_style,
-            &message_style,
-            &action_style,
-        );
+            ..EmptyStateContent::new(title)
+        };
+        let metrics =
+            StackStyle::resolved(text_renderer, theme).measure(text_renderer, width, &content);
         metrics.title_h + action_label.map_or(0.0, |_| metrics.gap + metrics.btn_h)
     }
 
@@ -568,40 +548,27 @@ impl EmptyState {
     /// Call [`Self::minimum_essential_height`] first when the supplied pane can
     /// be physically shorter than the title and action; that parent must own
     /// scrolling, and a wholly offscreen action produces no false hit target.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "immediate empty-state painting combines paint context and pane bounds with icon, title, message, action label and hover"
-    )]
     pub fn paint(
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        icon: Option<Icon>,
-        title: &str,
-        message: Option<&str>,
-        action_label: Option<&str>,
+        content: &EmptyStateContent<'_>,
         hover: Point,
     ) -> Option<Rect> {
-        paint_empty_state(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect,
-            icon,
-            title,
-            message,
-            action_label,
-            hover,
-            false,
-        )
+        paint_empty_state(ctx, rect, content, hover, false)
+    }
+
+    fn content(&self) -> EmptyStateContent<'_> {
+        EmptyStateContent {
+            icon: self.icon,
+            title: &self.title,
+            message: self.message.as_deref(),
+            action_label: self.action_label.as_deref(),
+        }
     }
 }
 
 impl Widget for EmptyState {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(dyn crate::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -609,14 +576,7 @@ impl Widget for EmptyState {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.layout_title_style = TextStyle::new(theme.tokens.typography.scale.xl)
-            .with_wrap_mode(TextWrapMode::WordOrGlyph);
-        self.layout_message_style = TextStyle::new(theme.tokens.typography.scale.sm)
-            .with_wrap_mode(TextWrapMode::WordOrGlyph);
-        self.layout_action_style = TextStyle::new(theme.tokens.typography.scale.sm)
-            .with_wrap_mode(TextWrapMode::WordOrGlyph);
-        self.layout_gap = f64::from(theme.tokens.spacing.s4);
-        self.layout_pad_y = f64::from(theme.tokens.spacing.s2);
+        self.layout_style = StackStyle::layout(theme);
         // Auto height contributes wrapped content to a Scrollable's extent;
         // the percentage minimum still fills a normal definite-height pane.
         let node = taffy.leaf_node(Style {
@@ -646,20 +606,10 @@ impl Widget for EmptyState {
             taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
         });
         let measured_width = width.unwrap_or(240.0).max(1.0);
-        let title_style = text_renderer.renderer_input_style(&self.layout_title_style);
-        let message_style = text_renderer.renderer_input_style(&self.layout_message_style);
-        let action_style = text_renderer.renderer_input_style(&self.layout_action_style);
-        let metrics = measure_metrics(
+        let metrics = self.layout_style.renderer_input(text_renderer).measure(
             text_renderer,
-            self.layout_gap,
-            self.layout_pad_y,
             f64::from(measured_width),
-            &self.title,
-            self.message.as_deref(),
-            self.action_label.as_deref(),
-            &title_style,
-            &message_style,
-            &action_style,
+            &self.content(),
         );
         let essential_height = metrics.title_h
             + self
@@ -669,17 +619,9 @@ impl Widget for EmptyState {
         let intrinsic_height = if self.scroll_content {
             essential_height
         } else {
-            Fit::choose(
-                f64::INFINITY,
-                Parts {
-                    icon: self.icon.is_some(),
-                    message: self.message.is_some(),
-                    action: self.action_label.is_some(),
-                },
-                metrics,
-            )
-            .total
-            .max(220.0)
+            Fit::choose(f64::INFINITY, self.content().parts(), metrics)
+                .total
+                .max(220.0)
         };
         #[allow(
             clippy::cast_possible_truncation,
@@ -711,36 +653,20 @@ impl Widget for EmptyState {
         _presence: &PresenceCtx,
     ) {
         self.action_rect = paint_empty_state(
-            scene,
-            transform,
-            text_renderer,
-            theme,
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
             self.rect,
-            self.icon,
-            &self.title,
-            self.message.as_deref(),
-            self.action_label.as_deref(),
+            &self.content(),
             self.last_cursor,
             self.action_focused,
         )
         .unwrap_or(Rect::ZERO);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -750,8 +676,8 @@ impl Widget for EmptyState {
                 && self.action_label.is_some()
                 && self.action_rect.contains(self.last_cursor) =>
             {
-                self.fire_action(state, path);
-                *handled = true;
+                self.fire_action(ctx.state, ctx.path);
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -784,9 +710,10 @@ impl Widget for EmptyState {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, path) = crate::doc::document(state, path);
         if self.is_enabled()
             && self.action_label.is_some()
             && matches!(action, crate::a11y::Action::Activate)
@@ -802,8 +729,8 @@ impl Widget for EmptyState {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.action_id.as_deref() == Some(target) && self.perform_action(action, state, path)
     }
@@ -862,16 +789,9 @@ impl Widget for EmptyState {
             false
         }
     }
+}
 
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
+impl crate::widget::controls::ActionControls for EmptyState {
     fn install_control_custody(
         &mut self,
         domain: &crate::ControlDomain,
@@ -884,7 +804,6 @@ impl Widget for EmptyState {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.action.as_mut().and_then(ActionEmitter::take)
     }
-
     fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
         if let Some(action) = &self.action {
             return vec![
@@ -913,6 +832,14 @@ impl Widget for EmptyState {
                 }]
             },
         )
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
     }
 }
 
@@ -978,14 +905,16 @@ mod tests {
         let root = automerge::ROOT;
         w.handle_event(
             e,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -1125,21 +1054,20 @@ mod tests {
                     let mut scene = Scene::new();
                     let rect = Rect::new(20.0, 30.0, 20.0 + width, 1330.0);
                     let action = EmptyState::paint(
-                    &mut scene,
-                    Affine::IDENTITY,
-                    &mut tr,
-                    &theme,
-                    rect,
-                    Some(Icon::Inbox),
-                    "Keine synchronisierten Nachrichten in diesem Arbeitsbereich",
-                    Some(
+                        &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
+                        rect,
+                        &EmptyStateContent {
+                            icon: Some(Icon::Inbox),
+                            title: "Keine synchronisierten Nachrichten in diesem Arbeitsbereich",
+                            message: Some(
                         "Sobald eine Verbindung verfügbar ist, erscheinen neue Nachrichten automatisch.",
                     ),
-                    Some(
+                            action_label: Some(
                         "Verbindungseinstellungen jetzt vollständig überprüfen und sichere Wiederherstellung vorbereiten",
                     ),
-                    Point::new(-1.0, -1.0),
-                )
+                        },
+                        Point::new(-1.0, -1.0),
+                    )
                 .expect("action remains available");
 
                     assert!(action.x0 >= rect.x0 && action.x1 <= rect.x1, "{action:?}");
@@ -1173,15 +1101,14 @@ mod tests {
             );
             assert!(minimum > rect.height());
             let action = EmptyState::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 rect,
-                Some(Icon::Inbox),
-                "No messages are available",
-                Some("Reconnect to load messages."),
-                Some("Review connection settings"),
+                &EmptyStateContent {
+                    icon: Some(Icon::Inbox),
+                    title: "No messages are available",
+                    message: Some("Reconnect to load messages."),
+                    action_label: Some("Review connection settings"),
+                },
                 Point::new(-1.0, -1.0),
             );
 
@@ -1196,6 +1123,29 @@ mod tests {
         narrow_large_text_recovery_copy_wraps_inside_the_empty_state();
         long_localized_content_wraps_inside_a_narrow_scaled_pane();
         tiny_immediate_pane_exposes_required_height_without_offscreen_hit_geometry();
+    }
+
+    #[test]
+    fn exported_action_button_is_placed_where_activation_clicks() {
+        let mut es = EmptyState::new("No response yet").with_action("Send request");
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        es.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let update = crate::accesskit_bridge::build_tree_update(&es, &node_map, None, 1.0);
+        let (_, button) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == accesskit::Role::Button)
+            .expect("the action is exported as a button");
+        let bounds = button.bounds().expect("the action button has bounds");
+        let action = es.action_rect();
+        assert_eq!(
+            (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            (action.x0, action.y0, action.x1, action.y1)
+        );
     }
 
     #[test]
@@ -1281,14 +1231,16 @@ mod tests {
             for event in [cursor(es.action_rect().center()), press()] {
                 es.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             }
             assert!(matches!(
@@ -1328,8 +1280,8 @@ mod tests {
             let target = es.action_rect().center();
             dispatch(&mut es, &cursor(target));
             assert!(dispatch(&mut es, &press()));
-            let invocation =
-                Widget::take_control_invocation(&mut es).expect("canonical invocation");
+            let invocation = crate::widget::controls::take_control_invocation(&mut es)
+                .expect("canonical invocation");
             assert_eq!(
                 invocation.address,
                 tilo_actions::ActionAddress::new("catalog", "refresh")
@@ -1339,7 +1291,7 @@ mod tests {
                 "action-bound activation cannot also fire the legacy drain channel"
             );
             assert!(matches!(
-                Widget::control_action_bindings(&es).as_slice(),
+                crate::widget::controls::control_action_bindings(&es).as_slice(),
                 [crate::widget::ControlBindingMetadata {
                     control_id,
                     kind: crate::widget::ControlBindingKind::Action(address),
@@ -1399,30 +1351,28 @@ mod tests {
             let mut scene = Scene::new();
             let rect = Rect::new(0.0, 0.0, 500.0, 300.0);
             let action = EmptyState::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 rect,
-                Some(Icon::Inbox),
-                "No mail",
-                Some("You're all caught up"),
-                Some("Compose"),
+                &EmptyStateContent {
+                    icon: Some(Icon::Inbox),
+                    title: "No mail",
+                    message: Some("You're all caught up"),
+                    action_label: Some("Compose"),
+                },
                 Point::new(-1.0, -1.0),
             );
             let r = action.expect("action label ⇒ a returned pill rect");
             assert!(rect.contains(r.center()), "pill sits inside the paint rect");
             // No action label ⇒ no returned rect.
             let none = EmptyState::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 rect,
-                None,
-                "Empty",
-                None,
-                None,
+                &EmptyStateContent {
+                    icon: None,
+                    title: "Empty",
+                    message: None,
+                    action_label: None,
+                },
                 Point::new(-1.0, -1.0),
             );
             assert!(none.is_none());
@@ -1486,14 +1436,16 @@ mod tests {
             for event in [cursor(action.center()), press()] {
                 scroll.handle_event(
                     &event,
-                    1.0,
-                    &winit::event::Modifiers::default(),
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &winit::event::Modifiers::default(),
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             }
             assert!(
@@ -1567,15 +1519,14 @@ mod tests {
             );
             let mut scene = Scene::new();
             let action = EmptyState::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                &theme,
+                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
                 rect,
-                None,
-                "No messages",
-                None,
-                Some("Compose"),
+                &EmptyStateContent {
+                    icon: None,
+                    title: "No messages",
+                    message: None,
+                    action_label: Some("Compose"),
+                },
                 Point::new(-1.0, -1.0),
             )
             .expect("roomy pane exposes action");

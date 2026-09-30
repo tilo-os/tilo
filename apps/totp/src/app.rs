@@ -16,7 +16,8 @@
 //! from the global focus order (the modal manages its own field focus).
 
 use std::collections::HashMap;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -27,6 +28,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::a11y::{AccessNode, AccessState, Action as A11yAction, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -35,7 +37,7 @@ use ui::theme::Theme;
 use ui::tilo_actions::OperationKind;
 use ui::tokens::spacing::Spacing;
 use ui::widget::toast::{ToastAnchor, ToastCard, ToastKind, paint_transient};
-use ui::widget::{Banner, BannerKind, Button, ButtonFace, TextInput, Widget};
+use ui::widget::{Banner, BannerContent, BannerKind, Button, ButtonFace, TextInput, Widget};
 
 use crate::add_panel::{AddAccountPanel, AddPanelEvent};
 use crate::doc::AuthDoc;
@@ -313,7 +315,7 @@ impl AuthenticatorApp {
     /// replays byte-identically on peers), exactly as the palette does. The
     /// document heads captured just before the first action of the event are
     /// stashed so the host records **one** undo boundary bracketing it
-    /// ([`Widget::take_committed_action`]). Callers reload the in-memory vault
+    /// ([`CommittedActions::take_committed_action`](ui::undo::CommittedActions::take_committed_action)). Callers reload the in-memory vault
     /// from the document afterward for immediate feedback; `sync` reconciles it
     /// again each frame (so a palette dispatch shows up the same way). This app
     /// supplies only its domain: the action and its type.
@@ -416,7 +418,7 @@ impl AuthenticatorApp {
     }
 
     fn toast(&mut self, msg: impl Into<String>, kind: ToastKind) {
-        self.toast = Some((msg.into(), Instant::now(), kind));
+        self.toast = Some((msg.into(), ui::time::now(), kind));
     }
 
     fn copy_account(&mut self, id: AccountId) {
@@ -1089,12 +1091,90 @@ impl AuthenticatorApp {
     }
 }
 
+impl AuthenticatorApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let (raw, expected_kind) = match operation {
+            crate::actions::TotpOperation::OpenAddAccount => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator add screen requires a view broker route".into());
+                }
+                self.add_panel.open();
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::SetUpLocal { id } => {
+                if kind != OperationKind::View {
+                    return Err("Authenticator setup requires a view broker route".into());
+                }
+                let account_id = id
+                    .parse()
+                    .map_err(|_| "Invalid authenticator account id".to_string())?;
+                let Some(account) = self.vault.get(account_id).cloned() else {
+                    return Err("Authenticator account is no longer available".into());
+                };
+                self.selected = Some(account_id);
+                self.add_panel.open_for_provision(&account);
+                self.add_panel.layout(self.rect);
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::RetryPersist => {
+                if kind != OperationKind::Effect {
+                    return Err("Authenticator retry requires an effect broker route".into());
+                }
+                self.retry_persist();
+                return Ok(true);
+            }
+            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
+            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
+        };
+        if kind != expected_kind {
+            return Err(format!(
+                "Authenticator operation requires a {} broker route",
+                expected_kind.as_str()
+            ));
+        }
+        let id = raw
+            .parse()
+            .map_err(|_| "Invalid authenticator account id".to_string())?;
+        if self.vault.get(id).is_none() {
+            return Err("Authenticator account is no longer available".into());
+        }
+        self.selected = Some(id);
+        self.search.set_text("");
+        self.list_dirty = true;
+        if expected_kind == OperationKind::Effect {
+            self.copy_account(id);
+        }
+        Ok(true)
+    }
+}
+
 impl Widget for AuthenticatorApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::TOTP_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Pull in any QR image the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal();
@@ -1236,16 +1316,15 @@ impl Widget for AuthenticatorApp {
                     .unwrap_or("Local vault changes aren't saved — restore access, then retry.")
             };
             Banner::paint(
-                scene,
-                transform,
-                text_renderer,
-                theme,
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
                 banner,
-                BannerKind::Error,
-                BannerKind::Error.default_icon(),
-                banner_message,
-                None,
-                false,
+                &BannerContent {
+                    kind: BannerKind::Error,
+                    icon: BannerKind::Error.default_icon(),
+                    title: banner_message,
+                    message: None,
+                    dismissible: false,
+                },
                 self.last_mouse,
             );
             Button::paint(
@@ -1295,45 +1374,26 @@ impl Widget for AuthenticatorApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_mouse =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
 
         // Modal owns all input while open.
         if self.add_panel.is_open() {
-            self.add_panel.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                node_id,
-                taffy,
-            );
+            self.add_panel.handle_event(event, ctx);
             if let Some(ev) = self.add_panel.take_event() {
-                self.apply_add_panel_event(ev, state);
+                self.apply_add_panel_event(ev, ctx.state);
             }
             return;
         }
 
-        if self.handle_global_shortcut(event, modifiers.state(), handled) {
+        if self.handle_global_shortcut(event, ctx.modifiers.state(), ctx.handled) {
             return;
         }
 
-        if self.handle_add_and_search_focus_click(event, handled) {
+        if self.handle_add_and_search_focus_click(event, ctx.handled) {
             return;
         }
 
@@ -1349,14 +1409,10 @@ impl Widget for AuthenticatorApp {
         if route_to_search {
             self.search.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                &mut throwaway,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    focus_target: &mut throwaway,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if self.search.take_dirty().is_some() {
                 // A query change reshapes the visible list but not the vault,
@@ -1368,142 +1424,38 @@ impl Widget for AuthenticatorApp {
         // Route to the list (hover / click-to-copy / reorder / scroll).
         self.list.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            &mut throwaway,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                focus_target: &mut throwaway,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         let events = self.list.take_events();
         for ev in events {
-            self.apply_list_event(ev, state);
+            self.apply_list_event(ev, ctx.state);
         }
         // Keep the list's selection mirror current.
         self.list.set_selected(self.selected);
     }
 
-    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
-    /// to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`], which reads the accounts straight from the document.
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
-        if self.persistence_pending
-            && let Some(root) = resources.first_mut()
-        {
-            *root = root
-                .clone()
-                .with_action(crate::actions::retry_persist_operation());
-        }
-        resources
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        if id == "totp.vault" {
-            return self.resources(doc).pop();
-        }
-        let raw_id = id.strip_prefix("totp.account:")?;
-        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
-        let ordered = self.vault.ordered();
-        let index = ordered
-            .iter()
-            .position(|account| account.id == account_id)?;
-        ordered.get(index).map(|account| {
-            crate::actions::provide_account_resource(
-                account,
-                index,
-                ordered.len(),
-                account.secret_is_valid(),
-            )
-        })
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == OperationKind::Document {
-            return Ok(false);
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
         };
-        let (raw, expected_kind) = match operation {
-            crate::actions::TotpOperation::OpenAddAccount => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator add screen requires a view broker route".into());
-                }
-                self.add_panel.open();
-                self.add_panel.layout(self.rect);
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::SetUpLocal { id } => {
-                if kind != OperationKind::View {
-                    return Err("Authenticator setup requires a view broker route".into());
-                }
-                let account_id = id
-                    .parse()
-                    .map_err(|_| "Invalid authenticator account id".to_string())?;
-                let Some(account) = self.vault.get(account_id).cloned() else {
-                    return Err("Authenticator account is no longer available".into());
-                };
-                self.selected = Some(account_id);
-                self.add_panel.open_for_provision(&account);
-                self.add_panel.layout(self.rect);
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::RetryPersist => {
-                if kind != OperationKind::Effect {
-                    return Err("Authenticator retry requires an effect broker route".into());
-                }
-                self.retry_persist();
-                return Ok(true);
-            }
-            crate::actions::TotpOperation::OpenAccount { id } => (id, OperationKind::View),
-            crate::actions::TotpOperation::CopyCode { id } => (id, OperationKind::Effect),
-        };
-        if kind != expected_kind {
-            return Err(format!(
-                "Authenticator operation requires a {} broker route",
-                expected_kind.as_str()
-            ));
-        }
-        let id = raw
-            .parse()
-            .map_err(|_| "Invalid authenticator account id".to_string())?;
-        if self.vault.get(id).is_none() {
-            return Err("Authenticator account is no longer available".into());
-        }
-        self.selected = Some(id);
-        self.search.set_text("");
-        self.list_dirty = true;
-        if expected_kind == OperationKind::Effect {
-            self.copy_account(id);
-        }
-        Ok(true)
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its account action, so it records one undo boundary for it (see
-    /// `Self::perform_action`). Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
-    /// the retained
-    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
-    /// makes every account findable there by issuer or account name alongside
-    /// the actions the app exports.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn name(&self) -> &'static str {
@@ -1689,9 +1641,10 @@ impl Widget for AuthenticatorApp {
         &mut self,
         target: &str,
         action: &A11yAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.add_panel.is_open() {
             let handled = self.add_panel.perform_a11y_target(target, action);
             if let Some(event) = self.add_panel.take_event() {
@@ -1716,16 +1669,73 @@ impl Widget for AuthenticatorApp {
         if !self.reduce_motion {
             return None;
         }
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let now = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
             .unwrap_or_default();
         let until_next_second =
             Duration::from_nanos(1_000_000_000_u64.saturating_sub(u64::from(now.subsec_nanos())));
-        Some(Instant::now() + until_next_second)
+        Some(ui::time::now() + until_next_second)
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
         self.reduce_motion = reduced;
+    }
+}
+
+impl ui::search::capability::SearchSource for AuthenticatorApp {
+    /// Fold the vault into the unified Ctrl+K palette through an O(1) handle to
+    /// the retained
+    /// [`TotpSearchProvider`](crate::search_provider::TotpSearchProvider), which
+    /// makes every account findable there by issuer or account name alongside
+    /// the actions the app exports.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for AuthenticatorApp {
+    /// Publish the open vault + its accounts so the host's Ctrl+K palette scopes
+    /// to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`], which reads the accounts straight from the document.
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = crate::actions::provide_contextual_resources(&self.vault.accounts);
+        if self.persistence_pending
+            && let Some(root) = resources.first_mut()
+        {
+            *root = root
+                .clone()
+                .with_action(crate::actions::retry_persist_operation());
+        }
+        resources
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        if id == "totp.vault" {
+            return self.resources(doc).pop();
+        }
+        let raw_id = id.strip_prefix("totp.account:")?;
+        let account_id = uuid::Uuid::parse_str(raw_id).ok()?;
+        let ordered = self.vault.ordered();
+        let index = ordered
+            .iter()
+            .position(|account| account.id == account_id)?;
+        ordered.get(index).map(|account| {
+            crate::actions::provide_account_resource(
+                account,
+                index,
+                ordered.len(),
+                account.secret_is_valid(),
+            )
+        })
+    }
+}
+
+impl ui::undo::CommittedActions for AuthenticatorApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its account action, so it records one undo boundary for it (see
+    /// `Self::perform_action`). Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.actions.take_committed()
     }
 }
 
@@ -1758,7 +1768,7 @@ mod tests {
             let deadline = app
                 .next_wake_deadline()
                 .expect("the discrete countdown schedules its next second");
-            let delay = deadline.saturating_duration_since(Instant::now());
+            let delay = deadline.saturating_duration_since(ui::time::now());
             assert!(delay > Duration::ZERO);
             assert!(delay <= Duration::from_secs(1));
         }
@@ -1779,19 +1789,23 @@ mod tests {
     fn copy_paths_share_row_semantics_and_toast_severity() {
         // Case `resource_copy_invokes_the_same_clipboard_semantics_as_the_row`.
         {
-            let (mut app, state) = app_with_state();
+            let (mut app, mut state) = app_with_state();
             let id = app.vault.ordered()[0].id;
             let payload =
                 serde_json::to_vec(&crate::actions::TotpOperation::CopyCode { id: id.to_string() })
                     .unwrap();
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::Effect,
-                    crate::actions::TOTP_OPERATION_TYPE,
-                    &payload,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        crate::actions::TOTP_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert_eq!(app.selected, Some(id));
@@ -2247,7 +2261,7 @@ mod tests {
             );
             // And the host has one undo boundary to record for it.
             assert!(
-                Widget::take_committed_action(&mut app).is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the add action registered exactly one undo boundary for the host"
             );
         }
@@ -2269,7 +2283,7 @@ mod tests {
 
             assert!(!app.has_local_secret(id));
             let resource =
-                Widget::resource(app, &state.doc, &crate::actions::account_resource_id(id))
+                ui::resources::resource(app, &state.doc, &crate::actions::account_resource_id(id))
                     .expect("the shared account resolves locally");
             let copy = resource
                 .actions
@@ -2298,13 +2312,17 @@ mod tests {
                 "the exact-account setup route carries an id, never a secret"
             );
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::View,
-                    crate::actions::TOTP_OPERATION_TYPE,
-                    &encoded,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::View,
+                        crate::actions::TOTP_OPERATION_TYPE,
+                        &encoded
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert!(app.add_panel.is_open(), "setup opens the local form");
@@ -2355,7 +2373,7 @@ mod tests {
             let mut app = AuthenticatorApp::demo_persistence_error();
             let mut state = ui::State::new();
             app.sync(&mut state.doc, &state.root);
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             let retry = root
                 .actions
                 .iter()
@@ -2370,13 +2388,17 @@ mod tests {
                 }
             };
             assert!(
-                app.invoke_resource_operation(
-                    OperationKind::Effect,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &state.doc,
-                    &state.root,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut state.doc,
+                    &state.root
                 )
+                .map(|started| started.is_some())
                 .unwrap()
             );
             assert!(
@@ -2453,7 +2475,7 @@ mod tests {
             assert!(app.persistence_pending);
 
             let state = ui::State::new();
-            let root = Widget::resources(&app, &state.doc).remove(0);
+            let root = ui::resources::resources(&app, &state.doc).remove(0);
             assert!(root.actions.iter().any(|action| action.id == "retry-save"));
         }
     }

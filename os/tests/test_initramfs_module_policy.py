@@ -58,7 +58,7 @@ class InitramfsModulePolicyTests(unittest.TestCase):
             self.write('usr/libexec/' + name, '#!/bin/sh\nexit 0\n', executable=True)
         self.write('usr/lib/systemd/system/tilo-growfs-sysroot.service',
                    'ConditionPathIsMountPoint=/sysroot\n'
-                   'ExecStart=/usr/lib/systemd/systemd-growfs /sysroot\n')
+                   "ExecStart=/usr/bin/sh -c 'mount -o remount,rw /sysroot && exec /usr/lib/systemd/systemd-growfs /sysroot'\n")
         self.write('usr/lib/systemd/system/tilo-growfs-sysroot.timer',
                    'Unit=tilo-growfs-sysroot.service\nOnBootSec=5s\n')
         self.write('usr/lib/systemd/system/systemd-growfs-root.service.d/10-tilo-composefs.conf',
@@ -131,7 +131,7 @@ exec bash "$gate"
                     self.assertIn('initramfs has no ' + module + ' module', failures[0])
         restart_fixture(self)
         with self.subTest(phase="production_dracut_omits_dependency_consumers"):
-            source = (OS / 'Containerfile').read_text(encoding='utf-8')
+            source = (OS / 'scripts/build-initramfs.sh').read_text(encoding='utf-8')
             logical_lines = re.sub(r'\\\r?\n\s*', ' ', source)
             command = re.search(r'\bdracut\s+--force\b[^\n]*', logical_lines)
             self.assertIsNotNone(command, 'production dracut invocation is missing')

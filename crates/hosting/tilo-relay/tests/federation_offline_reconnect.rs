@@ -101,10 +101,6 @@ async fn start_relay_at(
 /// `PeerRelayHello`, then close it (rather than drop, so relay1 doesn't
 /// have to wait out the QUIC idle timeout before noticing the
 /// subscription drop — far longer than any outage this test can sit through).
-#[expect(
-    clippy::too_many_arguments,
-    reason = "test fixture passes the second relay's identity and scope explicitly"
-)]
 async fn prime_then_close_relay2(
     user: &TestUser,
     relay1: &Relay,

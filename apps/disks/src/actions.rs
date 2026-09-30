@@ -63,7 +63,7 @@
 //!
 //! ## Consequence
 //!
-//! [`Widget::resources`](ui::widget::Widget::resources) publishes a storage
+//! [`Widget::resources`](ui::resources::resources) publishes a storage
 //! root, a resource for every drive and child resources for every partition.
 //! Each meaningful operation is an `OperationKind::Effect` handled by
 //! `disks.operation`: format and benchmark for disks/partitions, eject for a
@@ -72,7 +72,7 @@
 //! and an exact typed phrase for destructive formatting. Before an operation
 //! starts, `DisksApp` revalidates the resource leaf against its latest local
 //! probe and derives the filesystem type from that probe, rejecting stale or
-//! forged remote payloads. [`take_committed_action`](ui::widget::Widget::take_committed_action)
+//! forged remote payloads. [`take_committed_action`](ui::undo::CommittedActions::take_committed_action)
 //! remains `None` because none of these effects may be replayed as a CRDT
 //! mutation; the tests below prove both halves of that boundary.
 
@@ -110,14 +110,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
     }
 
@@ -136,7 +138,7 @@ mod tests {
     fn resources_for(doc: &AutoCommit) -> Vec<ui::tilo_actions::Resource> {
         let mut app = DisksApp::new();
         app.sync(&mut doc.clone(), &ROOT);
-        Widget::resources(&app, doc)
+        ui::resources::resources(&app, doc)
     }
 
     // Disks publishes only effect operations, so the registry decodes nothing.
@@ -352,7 +354,7 @@ mod tests {
             // Real event path: move the pointer over the surface.
             send(&mut app, &mut doc, &cursor_at(200.0, 200.0));
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one storage-system root");
             let system = &resources[0];
             assert_eq!(system.kind, "disks.system");
@@ -378,7 +380,7 @@ mod tests {
                 "partition publishes the mount action appropriate to its state: {actions:?}",
             );
             assert!(
-                app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut app).is_none(),
                 "no action is dispatched, so no action-host undo boundary is recorded",
             );
         }

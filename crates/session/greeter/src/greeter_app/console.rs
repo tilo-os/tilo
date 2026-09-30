@@ -11,7 +11,6 @@
 use automerge::AutoCommit;
 use console_control::{Request, catalog, wire};
 use serde_json::{Value, json};
-use ui::widget::Widget as _;
 
 use super::{AuthPhase, GreeterApp};
 
@@ -48,13 +47,13 @@ impl GreeterApp {
             Ok(Request::StateDump) => wire::state(&self.console_state()),
             Ok(Request::Enumerate { query }) => wire::answer(&catalog::enumerate(
                 PROVIDER,
-                &self.resources(state),
+                &ui::resources::resources(self, state),
                 &query,
             )),
             Ok(Request::Invoke { provider, id, args }) => {
                 match console_control::admit(
                     PROVIDER,
-                    &self.resources(state),
+                    &ui::resources::resources(self, state),
                     &provider,
                     &id,
                     &args,

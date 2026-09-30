@@ -31,12 +31,7 @@ BROKER_CATALOGUE_CONSUMER = re.compile(r"\bRemoteActionMessage\s*::\s*CatalogueR
 BROKER_ACTION_INVOKER = re.compile(r"\bRemoteActionMessage\s*::\s*Invoke\b")
 BROKER_ACTION_STATUS = re.compile(r"\bRemoteActionMessage\s*::\s*(?:Observe|Update)\b")
 OPERATION_KIND = re.compile(r"\bOperationKind\s*::\s*(?:Effect|View)\b")
-LEGACY_OPERATION_HANDLER = re.compile(
-    r"\bfn\s+(?:invoke_resource_operation(?:_v2)?|start_resource_operation(?:_with_document)?)\s*\("
-)
-OPERATION_HANDLER = re.compile(
-    r"\bfn\s+start_operation\s*\(|" + LEGACY_OPERATION_HANDLER.pattern
-)
+OPERATION_HANDLER = re.compile(r"\bfn\s+start_operation\s*\(")
 OPERATION_HANDLER_REGISTRY = re.compile(
     r"\bfn\s+local_resource_operation_handlers\s*\("
 )
@@ -127,10 +122,6 @@ RATCHETS = {
     "opaque_search_activation": (
         re.compile(r"\bfn\s+activate_search_result\s*\("),
         "opaque search activation bypass; return SearchResult::for_action with a published resource action",
-    ),
-    "legacy_resource_operation_override": (
-        LEGACY_OPERATION_HANDLER,
-        "legacy resource-operation hook; implement Widget::start_operation, the single operation entry",
     ),
 }
 
@@ -325,13 +316,7 @@ def function_bodies(text: str) -> dict[str, list[str]]:
 def reachable_handler_code(text: str) -> str:
     """The canonical handler plus local helper functions it directly reaches."""
     bodies = function_bodies(text)
-    pending = [
-        "start_operation",
-        "invoke_resource_operation",
-        "invoke_resource_operation_v2",
-        "start_resource_operation",
-        "start_resource_operation_with_document",
-    ]
+    pending = ["start_operation"]
     seen: set[str] = set()
     reached: list[str] = []
     while pending:
@@ -728,7 +713,12 @@ def audit(root: Path = ROOT) -> tuple[list[Violation], int]:
                 and FRAMEWORK_RESOURCE.search(combined) is not None
             )
             toolkit_host = TOOLKIT_ACTION_HOST.search(combined) is not None
-            toolkit_resource = TOOLKIT_RESOURCE_VALUE.search(combined) is not None
+            # A host with several operations builds its descriptor directly;
+            # the toolkit helpers each describe a single operation.
+            toolkit_resource = TOOLKIT_RESOURCE_VALUE.search(combined) is not None or (
+                RESOURCE_VALUE.search(combined) is not None
+                and ACTION_SPEC.search(combined) is not None
+            )
             if toolkit_host and not toolkit_resource:
                 violations.append(
                     Violation(

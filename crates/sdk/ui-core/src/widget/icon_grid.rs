@@ -11,7 +11,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
@@ -272,8 +271,6 @@ fn floor_to_usize(v: f64) -> usize {
 }
 
 impl Widget for IconGrid {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -434,26 +431,15 @@ impl Widget for IconGrid {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 let new_hover = self.item_at(pt);
                 if new_hover != self.hover {
                     self.hover = new_hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -462,10 +448,11 @@ impl Widget for IconGrid {
                 ..
             } => {
                 if let Some(i) = self.item_at(self.last_cursor) {
-                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    let shift = modifiers.state().shift_key();
+                    let ctrl =
+                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+                    let shift = ctx.modifiers.state().shift_key();
                     self.selection.apply_click(i, ctrl, shift);
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     if let Some(cb) = &mut self.on_item_click {
                         cb(i, ctrl, shift);
                     }
@@ -482,14 +469,14 @@ impl Widget for IconGrid {
                     } else {
                         self.last_click = Some((i, now));
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event: ke, .. }
                 if self.is_focused && ke.state == ElementState::Pressed =>
             {
                 use winit::keyboard::{Key, NamedKey};
-                let shift = modifiers.state().shift_key();
+                let shift = ctx.modifiers.state().shift_key();
                 let len = self.items.len();
                 if len == 0 {
                     return;
@@ -511,21 +498,21 @@ impl Widget for IconGrid {
                         if let (Some(c), Some(cb)) = (cur, self.on_activate.as_mut()) {
                             cb(c);
                         }
-                        *handled = true;
+                        *ctx.handled = true;
                         None
                     }
                     Key::Character(s)
-                        if (s == "a" || s == "A") && modifiers.state().control_key() =>
+                        if (s == "a" || s == "A") && ctx.modifiers.state().control_key() =>
                     {
                         self.selection.select_all(len);
-                        *handled = true;
+                        *ctx.handled = true;
                         None
                     }
                     _ => None,
                 };
                 if let Some(t) = target {
                     self.selection.move_to(t, shift);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -584,6 +571,7 @@ impl Widget for IconGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use taffy::prelude::TaffyMaxContent;
 
     fn items(n: usize) -> Vec<IconGridItem> {
@@ -655,7 +643,17 @@ mod tests {
                 let mut h = false;
                 let mut f = None;
                 g.handle_event(
-                    &ev, 1.0, &mods, &mut doc, &root, &mut h, &mut f, node, &tree,
+                    &ev,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut h,
+                        focus_target: &mut f,
+                        node_id: node,
+                        taffy: &tree,
+                    },
                 );
             };
             feed(

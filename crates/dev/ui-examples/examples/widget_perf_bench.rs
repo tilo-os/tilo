@@ -19,7 +19,7 @@
 //! ```
 //! cargo run -p ui-examples --release --example ui-perf -- widget_perf_bench
 //! ```
-//! Iterations override: `QUICK_UI_PERF_ITERS=50`.
+//! Iterations override: `TILO_UI_PERF_ITERS=50`.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -164,79 +164,94 @@ fn build_tree() -> Box<dyn Widget> {
     )
 }
 
-// One call site: this is the whole benchmark's "run one entire frame" step,
-// and each parameter is a distinct piece of frame state (widget tree,
-// layout engine, render targets, timing out-param). Bundling would trade
-// named parameters for an equally large ad-hoc struct with no behavioural
-// change.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the benchmark keeps independent render-loop inputs explicit"
-)]
-fn full_redraw(
-    root: &mut Box<dyn Widget>,
-    taffy: &mut TaffyTree<()>,
-    node_map: &HashMap<NodeId, *mut dyn Widget>,
+/// Everything one benchmark frame touches: the widget tree and its layout,
+/// the document events mutate, and the render targets.
+struct Bench {
+    root: Box<dyn Widget>,
+    taffy: TaffyTree<()>,
+    node_map: HashMap<NodeId, *mut dyn Widget>,
     root_node: NodeId,
-    text_renderer: &mut TextRenderer,
-    presence: &PresenceCtx,
-    perms: &PermissionContext,
-    theme: &Theme,
-    scene: &mut Scene,
-    renderer: &mut OffscreenRenderer,
+    doc: AutoCommit,
+    text_renderer: TextRenderer,
+    presence: PresenceCtx,
+    perms: PermissionContext,
+    theme: Theme,
+    scene: Scene,
+    renderer: OffscreenRenderer,
     canvas_w: u32,
     canvas_h: u32,
-    times: &mut Phases,
-) {
-    let t_compute = tilo_ui::time::now();
-    // Repeat the App's lambda exactly — taffy borrows the node_map
-    // immutably while letting the measure closure mutate the text
-    // renderer.
-    let tr = &mut *text_renderer;
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "canvas_w/canvas_h are small fixed pixel dimensions, exact in f32"
-    )]
-    let viewport = Size {
-        width: AvailableSpace::Definite(canvas_w as f32),
-        height: AvailableSpace::Definite(canvas_h as f32),
-    };
-    let layout_result = taffy.compute_layout_with_measure(
-        root_node,
-        viewport,
-        |known, available, node_id, _, _| {
-            if let Some(&ptr) = node_map.get(&node_id) {
-                unsafe { (*ptr).measure(known, available, tr) }
-            } else {
-                Size::ZERO
-            }
-        },
-    );
-    if let Err(e) = layout_result {
-        eprintln!("layout failed: {e}");
-        return;
+}
+
+impl Bench {
+    /// Run one entire frame — layout, apply, draw, render — timing each phase
+    /// into `times`.
+    fn full_redraw(&mut self, times: &mut Phases) {
+        let Self {
+            root,
+            taffy,
+            node_map,
+            root_node,
+            text_renderer,
+            presence,
+            perms,
+            theme,
+            scene,
+            renderer,
+            canvas_w,
+            canvas_h,
+            ..
+        } = self;
+        let (root_node, canvas_w, canvas_h) = (*root_node, *canvas_w, *canvas_h);
+        let t_compute = tilo_ui::time::now();
+        // Repeat the App's lambda exactly — taffy borrows the node_map
+        // immutably while letting the measure closure mutate the text
+        // renderer.
+        let tr = &mut *text_renderer;
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "canvas_w/canvas_h are small fixed pixel dimensions, exact in f32"
+        )]
+        let viewport = Size {
+            width: AvailableSpace::Definite(canvas_w as f32),
+            height: AvailableSpace::Definite(canvas_h as f32),
+        };
+        let layout_result = taffy.compute_layout_with_measure(
+            root_node,
+            viewport,
+            |known, available, node_id, _, _| {
+                if let Some(&ptr) = node_map.get(&node_id) {
+                    unsafe { (*ptr).measure(known, available, tr) }
+                } else {
+                    Size::ZERO
+                }
+            },
+        );
+        if let Err(e) = layout_result {
+            eprintln!("layout failed: {e}");
+            return;
+        }
+        times.compute_us = t_compute.elapsed().as_micros();
+
+        let t_apply = tilo_ui::time::now();
+        root.apply_layout(taffy, root_node, Point::ZERO);
+        times.apply_us = t_apply.elapsed().as_micros();
+
+        let t_draw = tilo_ui::time::now();
+        scene.reset();
+        root.draw_with_presence(
+            scene,
+            Affine::IDENTITY,
+            text_renderer,
+            theme,
+            presence,
+            perms,
+        );
+        times.draw_us = t_draw.elapsed().as_micros();
+
+        let t_render = tilo_ui::time::now();
+        let _ = renderer.render(scene, theme.tokens.colors.surfaces.base);
+        times.render_us = t_render.elapsed().as_micros();
     }
-    times.compute_us = t_compute.elapsed().as_micros();
-
-    let t_apply = tilo_ui::time::now();
-    root.apply_layout(taffy, root_node, Point::ZERO);
-    times.apply_us = t_apply.elapsed().as_micros();
-
-    let t_draw = tilo_ui::time::now();
-    scene.reset();
-    root.draw_with_presence(
-        scene,
-        Affine::IDENTITY,
-        text_renderer,
-        theme,
-        presence,
-        perms,
-    );
-    times.draw_us = t_draw.elapsed().as_micros();
-
-    let t_render = tilo_ui::time::now();
-    let _ = renderer.render(scene, theme.tokens.colors.surfaces.base);
-    times.render_us = t_render.elapsed().as_micros();
 }
 
 #[derive(Default, Clone)]
@@ -271,44 +286,45 @@ pub fn run(_args: &[String]) {
         .join("\n"),
     );
 
-    let iters: usize = std::env::var("QUICK_UI_PERF_ITERS")
+    let iters: usize = tilo_ui::env::var("TILO_UI_PERF_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(20);
     let (canvas_w, canvas_h) = (1100u32, 800u32);
 
-    let mut renderer = OffscreenRenderer::new(canvas_w, canvas_h);
+    let renderer = OffscreenRenderer::new(canvas_w, canvas_h);
     let theme = Theme::dark();
-    let mut text_renderer = TextRenderer::new();
+    let text_renderer = TextRenderer::new();
     let presence = PresenceCtx::default();
     let perms = PermissionContext::permissive();
-    let mut doc = AutoCommit::new();
+    let doc = AutoCommit::new();
 
     let mut root = build_tree();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let root_node = root.build_layout(&mut taffy, &theme, &mut node_map);
-    let mut scene = Scene::new();
+    let scene = Scene::new();
+    let mut bench = Bench {
+        root,
+        taffy,
+        node_map,
+        root_node,
+        doc,
+        text_renderer,
+        presence,
+        perms,
+        theme,
+        scene,
+        renderer,
+        canvas_w,
+        canvas_h,
+    };
 
     // Warm-up frame: first compute_layout + first GPU pipeline build are
     // outliers we don't want polluting the steady-state numbers.
     let mut warm = Phases::default();
-    full_redraw(
-        &mut root,
-        &mut taffy,
-        &node_map,
-        root_node,
-        &mut text_renderer,
-        &presence,
-        &perms,
-        &theme,
-        &mut scene,
-        &mut renderer,
-        canvas_w,
-        canvas_h,
-        &mut warm,
-    );
-    root.sync(&mut doc, &automerge::ObjId::Root);
+    bench.full_redraw(&mut warm);
+    bench.root.sync(&mut bench.doc, &automerge::ObjId::Root);
     eprintln!(
         "warm-up: compute={}us apply={}us draw={}us render={}us",
         warm.compute_us, warm.apply_us, warm.draw_us, warm.render_us
@@ -328,132 +344,99 @@ pub fn run(_args: &[String]) {
 
     let mut hist: Vec<Phases> = Vec::with_capacity(iters);
     for _ in 0..iters {
-        let phases = run_one_cycle(
-            &mut root,
-            &mut taffy,
-            &node_map,
-            root_node,
-            &mut doc,
-            &mut text_renderer,
-            &presence,
-            &perms,
-            &theme,
-            &mut scene,
-            &mut renderer,
-            (click_x, click_y),
-            modifiers,
-            device_id,
-            canvas_w,
-            canvas_h,
-        );
+        let phases = bench.run_one_cycle((click_x, click_y), modifiers, device_id);
         hist.push(phases);
     }
 
     print_results(&hist, iters);
 }
 
-/// One click → redraw cycle: a cursor-moved + mouse-press + mouse-release
-/// sequence through `handle_event` (what the App calls in the live window
-/// on real input), then a full `full_redraw`. Split out of `run` to keep
-/// that under the line cap.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "each parameter is a distinct piece of frame state (widget tree, layout \
-              engine, render targets, click coordinates); bundling would trade named \
-              parameters for an equally large ad-hoc struct with no behavioural change"
-)]
-fn run_one_cycle(
-    root: &mut Box<dyn Widget>,
-    taffy: &mut TaffyTree<()>,
-    node_map: &HashMap<NodeId, *mut dyn Widget>,
-    root_node: NodeId,
-    doc: &mut AutoCommit,
-    text_renderer: &mut TextRenderer,
-    presence: &PresenceCtx,
-    perms: &PermissionContext,
-    theme: &Theme,
-    scene: &mut Scene,
-    renderer: &mut OffscreenRenderer,
-    click: (f64, f64),
-    modifiers: Modifiers,
-    device_id: DeviceId,
-    canvas_w: u32,
-    canvas_h: u32,
-) -> Phases {
-    // Drive a cursor-moved + mouse-press + mouse-release cycle so the
-    // ToggleGroup latches the click.
-    let mut phases = Phases::default();
-    let t_handle = tilo_ui::time::now();
-    let mut handled = false;
-    let mut focus_target: Option<NodeId> = None;
-    let (click_x, click_y) = click;
-    let move_evt = WindowEvent::CursorMoved {
-        device_id,
-        position: PhysicalPosition::new(click_x, click_y),
-    };
-    root.handle_event(
-        &move_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
-    );
-    handled = false;
-    let press_evt = WindowEvent::MouseInput {
-        device_id,
-        state: ElementState::Pressed,
-        button: MouseButton::Left,
-    };
-    root.handle_event(
-        &press_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
-    );
-    handled = false;
-    let release_evt = WindowEvent::MouseInput {
-        device_id,
-        state: ElementState::Released,
-        button: MouseButton::Left,
-    };
-    root.handle_event(
-        &release_evt,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ObjId::Root,
-        &mut handled,
-        &mut focus_target,
-        root_node,
-        taffy,
-    );
-    phases.handle_us = t_handle.elapsed().as_micros();
+impl Bench {
+    /// One click → redraw cycle: a cursor-moved + mouse-press + mouse-release
+    /// sequence through `handle_event` (what the App calls in the live window
+    /// on real input), then a full `full_redraw`. Split out of `run` to keep
+    /// that under the line cap.
+    fn run_one_cycle(
+        &mut self,
+        click: (f64, f64),
+        modifiers: Modifiers,
+        device_id: DeviceId,
+    ) -> Phases {
+        let Self {
+            root,
+            taffy,
+            root_node,
+            doc,
+            ..
+        } = self;
+        let root_node = *root_node;
+        // Drive a cursor-moved + mouse-press + mouse-release cycle so the
+        // ToggleGroup latches the click.
+        let mut phases = Phases::default();
+        let t_handle = tilo_ui::time::now();
+        let mut handled = false;
+        let mut focus_target: Option<NodeId> = None;
+        let (click_x, click_y) = click;
+        let move_evt = WindowEvent::CursorMoved {
+            device_id,
+            position: PhysicalPosition::new(click_x, click_y),
+        };
+        root.handle_event(
+            &move_evt,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy,
+            },
+        );
+        handled = false;
+        let press_evt = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Pressed,
+            button: MouseButton::Left,
+        };
+        root.handle_event(
+            &press_evt,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy,
+            },
+        );
+        handled = false;
+        let release_evt = WindowEvent::MouseInput {
+            device_id,
+            state: ElementState::Released,
+            button: MouseButton::Left,
+        };
+        root.handle_event(
+            &release_evt,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy,
+            },
+        );
+        phases.handle_us = t_handle.elapsed().as_micros();
 
-    full_redraw(
-        root,
-        taffy,
-        node_map,
-        root_node,
-        text_renderer,
-        presence,
-        perms,
-        theme,
-        scene,
-        renderer,
-        canvas_w,
-        canvas_h,
-        &mut phases,
-    );
-    phases
+        self.full_redraw(&mut phases);
+        phases
+    }
 }
 
 fn stats<F: Fn(&Phases) -> u128>(hist: &[Phases], f: F) -> (u128, u128, u128) {

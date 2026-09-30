@@ -50,11 +50,6 @@ impl TwoButtons {
     }
 }
 impl Widget for TwoButtons {
-    fn sync(&mut self, s: &mut automerge::AutoCommit, p: &automerge::ObjId) {
-        for c in &mut self.kids {
-            c.sync(s, p);
-        }
-    }
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -82,7 +77,6 @@ impl Widget for TwoButtons {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         self.kids.iter().map(Box::as_ref).collect()
     }
@@ -213,7 +207,6 @@ impl LiveWidget {
     }
 }
 impl Widget for LiveWidget {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -234,7 +227,6 @@ impl Widget for LiveWidget {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn children(&self) -> Vec<&dyn Widget> {
         vec![]
     }
@@ -363,7 +355,7 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("2");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "2");
         }
         app.announce_text_review(pre);
         assert_eq!(
@@ -379,7 +371,7 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            (*(*app.layout.node_map.get(&id).unwrap())).set_state("0");
+            crate::undo::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "0");
         }
         app.announce_text_review(pre);
         assert_eq!(

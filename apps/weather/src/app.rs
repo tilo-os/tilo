@@ -29,7 +29,8 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
 use taffy::{NodeId, TaffyTree};
@@ -213,7 +214,7 @@ impl WeatherApp {
             initial_fetch_done: false,
             seeded_doc: false,
             seed_sample_document: false,
-            last_activity: Instant::now(),
+            last_activity: ui::time::now(),
             resource_refresh_invocation: None,
             resource_refresh_failure: None,
             resource_refresh_tickets: std::collections::HashSet::new(),
@@ -322,7 +323,7 @@ impl WeatherApp {
         let mut disconnected = false;
         if let Some(svc) = self.service.as_ref() {
             if !reqs.is_empty() {
-                self.last_activity = Instant::now();
+                self.last_activity = ui::time::now();
             }
             for r in reqs {
                 if let Some(failed) = svc.request(r) {
@@ -431,9 +432,13 @@ impl Default for WeatherApp {
 }
 
 impl Widget for WeatherApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             crate::actions::OPEN_LOCATION_OPERATION,
@@ -442,6 +447,273 @@ impl Widget for WeatherApp {
         ]
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        _cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self.resource_refresh_invocation != Some(invocation) {
+            return None;
+        }
+        self.tick_network();
+        if !self.resource_refresh_tickets.is_empty() {
+            return None;
+        }
+        self.resource_refresh_invocation = None;
+        Some(
+            if let Some(message) = self.resource_refresh_failure.take() {
+                tilo_actions::InvocationUpdate::Failed {
+                    invocation,
+                    error: tilo_actions::ActionFailure {
+                        code: "weather.refresh_failed".into(),
+                        message,
+                        details: None,
+                        retryable: true,
+                    },
+                }
+            } else {
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                }
+            },
+        )
+    }
+
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        let (state, _) = ui::doc::document(state, path);
+        // Semantic actions reach the owning pane directly, so finish their
+        // canonical writes and navigation here as well as on pointer input.
+        let changed = self.flush_durable_actions(state);
+        let navigate = self.core.borrow_mut().take_nav_request();
+        if let Some(NavIntent::ShowDetail) = navigate {
+            self.nav.show_detail();
+        }
+        changed || navigate.is_some()
+    }
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        if !self.seeded_doc {
+            // Only the explicit shot constructor seeds examples. A live blank
+            // document is valid; its first deliberate add creates the schema.
+            if self.seed_sample_document && state.get_heads().is_empty() {
+                self.bootstrap_document(state);
+            }
+            let mut persisted = WeatherDoc::read_model(state);
+            self.core.borrow_mut().adopt_saved_places(&mut persisted);
+            self.seeded_doc = true;
+            self.doc_heads = state.get_heads();
+        }
+
+        // Direct palette/agent dispatches mutate the same document through the
+        // registered WeatherAction. This also preserves a pending local fetch
+        // result rather than letting it hide an unseen remote durable change.
+        self.adopt_document_changes(state);
+
+        self.nav.sync(state, path);
+    }
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        // The core solves its row grid without a renderer; hand it the
+        // theme's spacing and metrics here so reserve and paint agree.
+        self.core.borrow_mut().set_layout_tokens(theme);
+        self.nav.build_layout(taffy, theme, node_map)
+    }
+
+    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
+        self.nav.apply_layout(taffy, node, origin);
+    }
+
+    fn draw(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.tick_network();
+        self.sync_reserve_back();
+        self.sync_overview_collapsible();
+        self.nav
+            .draw(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn draw_with_presence(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+        permissions: &PermissionContext,
+    ) {
+        self.tick_network();
+        self.sync_reserve_back();
+        self.sync_overview_collapsible();
+        self.nav.draw_with_presence(
+            scene,
+            transform,
+            text_renderer,
+            theme,
+            presence,
+            permissions,
+        );
+    }
+
+    fn draw_overlay(
+        &mut self,
+        scene: &mut Scene,
+        transform: Affine,
+        text_renderer: &mut TextRenderer,
+        theme: &Theme,
+        presence: &PresenceCtx,
+    ) {
+        self.nav
+            .draw_overlay(scene, transform, text_renderer, theme, presence);
+    }
+
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        self.adopt_document_changes(ctx.state);
+        self.ensure_service();
+        self.nav.handle_event(event, ctx);
+        self.flush_durable_actions(ctx.state);
+
+        // The overview raises a push intent when a city is selected.
+        if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
+            self.nav.show_detail();
+        }
+
+        // The collapse / expand chip rebuilds the shell at the new width.
+        if self.core.borrow_mut().take_collapse_toggle() {
+            self.set_overview_collapsed(!self.overview_collapsed);
+        }
+
+        self.tick_network();
+    }
+
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.nav]
+    }
+
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.nav]
+    }
+
+    fn name(&self) -> &'static str {
+        "WeatherApp"
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.nav.get_rect()
+    }
+
+    fn accessibility(&self) -> Option<AccessNode> {
+        let core = self.core.borrow();
+        let mut root = AccessNode::new(Role::Window)
+            .with_name("Weather")
+            .with_bounds(self.nav.get_rect());
+        if !core.status.is_empty() {
+            root.children.push(
+                AccessNode::new(Role::StaticText)
+                    .with_name(core.status.clone())
+                    .with_live(Politeness::Polite),
+            );
+        }
+        Some(root)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        let core_busy = {
+            let core = self.core.borrow();
+            (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
+                || core.search_pending()
+        };
+        core_busy || self.nav.needs_animation_frame()
+    }
+
+    fn needs_idle_sync(&self) -> bool {
+        let core_busy = {
+            let core = self.core.borrow();
+            // Keep pumping while a geocode is armed OR in flight, so its
+            // result is drained and the dropdown updates promptly rather than
+            // parking on the loading state until the next input event.
+            core.is_fetching() || core.search_pending()
+        };
+        core_busy || self.nav.needs_idle_sync()
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        self.core
+            .borrow()
+            .search_deadline()
+            .into_iter()
+            .chain(self.nav.next_wake_deadline())
+            .min()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        let mine = std::mem::take(&mut self.structure_dirty);
+        self.nav.take_structure_dirty() || mine
+    }
+
+    fn modal_capture(&self) -> Option<Rect> {
+        self.nav.modal_capture()
+    }
+}
+
+impl ui::search::capability::SearchSource for WeatherApp {
+    /// Fold the complete saved-location catalogue into the unified Ctrl+K
+    /// palette. [`CitySearchProvider`](crate::search_provider::CitySearchProvider)
+    /// keeps every city findable by name, region, or country through bounded
+    /// pages, without touching the geocoder.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(crate::search_provider::CitySearchProvider::new(
+            &self.core.borrow().model.locations,
+        ))]
+    }
+}
+
+impl ui::resources::PublishesResources for WeatherApp {
     #[allow(
         clippy::too_many_lines,
         reason = "the root resource, its typed create form, effect contract, and child resource tree must remain visibly co-located"
@@ -623,8 +895,22 @@ impl Widget for WeatherApp {
         );
         vec![root]
     }
+}
 
-    fn invoke_resource_operation(
+impl ui::history_mode::capability::DocumentHistory for WeatherApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for WeatherApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl WeatherApp {
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
@@ -668,11 +954,11 @@ impl Widget for WeatherApp {
         } else {
             self.core.borrow_mut().refresh_all();
         }
-        self.last_activity = Instant::now();
+        self.last_activity = ui::time::now();
         Ok(true)
     }
 
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: OperationKind,
@@ -699,268 +985,13 @@ impl Widget for WeatherApp {
         // after they are enqueued, immediately before this operation's enqueue.
         self.ensure_service();
         let marker = self.core.borrow().request_marker();
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
             return Ok(None);
         }
         self.resource_refresh_invocation = Some(invocation);
         self.resource_refresh_failure = None;
         self.resource_refresh_tickets = self.core.borrow().queued_weather_tickets_after(marker);
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        _cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.resource_refresh_invocation != Some(invocation) {
-            return None;
-        }
-        self.tick_network();
-        if !self.resource_refresh_tickets.is_empty() {
-            return None;
-        }
-        self.resource_refresh_invocation = None;
-        Some(
-            if let Some(message) = self.resource_refresh_failure.take() {
-                tilo_actions::InvocationUpdate::Failed {
-                    invocation,
-                    error: tilo_actions::ActionFailure {
-                        code: "weather.refresh_failed".into(),
-                        message,
-                        details: None,
-                        retryable: true,
-                    },
-                }
-            } else {
-                tilo_actions::InvocationUpdate::Succeeded {
-                    invocation,
-                    output: tilo_actions::ActionOutput::default(),
-                }
-            },
-        )
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, _path: &ObjId) -> bool {
-        // Semantic actions reach the owning pane directly, so finish their
-        // canonical writes and navigation here as well as on pointer input.
-        let changed = self.flush_durable_actions(state);
-        let navigate = self.core.borrow_mut().take_nav_request();
-        if let Some(NavIntent::ShowDetail) = navigate {
-            self.nav.show_detail();
-        }
-        changed || navigate.is_some()
-    }
-
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if !self.seeded_doc {
-            // Only the explicit shot constructor seeds examples. A live blank
-            // document is valid; its first deliberate add creates the schema.
-            if self.seed_sample_document && state.get_heads().is_empty() {
-                self.bootstrap_document(state);
-            }
-            let mut persisted = WeatherDoc::read_model(state);
-            self.core.borrow_mut().adopt_saved_places(&mut persisted);
-            self.seeded_doc = true;
-            self.doc_heads = state.get_heads();
-        }
-
-        // Direct palette/agent dispatches mutate the same document through the
-        // registered WeatherAction. This also preserves a pending local fetch
-        // result rather than letting it hide an unseen remote durable change.
-        self.adopt_document_changes(state);
-
-        self.nav.sync(state, path);
-    }
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        // The core solves its row grid without a renderer; hand it the
-        // theme's spacing and metrics here so reserve and paint agree.
-        self.core.borrow_mut().set_layout_tokens(theme);
-        self.nav.build_layout(taffy, theme, node_map)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.nav.apply_layout(taffy, node, origin);
-    }
-
-    fn draw(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.tick_network();
-        self.sync_reserve_back();
-        self.sync_overview_collapsible();
-        self.nav
-            .draw(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn draw_with_presence(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-        permissions: &PermissionContext,
-    ) {
-        self.tick_network();
-        self.sync_reserve_back();
-        self.sync_overview_collapsible();
-        self.nav.draw_with_presence(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            presence,
-            permissions,
-        );
-    }
-
-    fn draw_overlay(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        presence: &PresenceCtx,
-    ) {
-        self.nav
-            .draw_overlay(scene, transform, text_renderer, theme, presence);
-    }
-
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        self.adopt_document_changes(state);
-        self.ensure_service();
-        self.nav.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-        self.flush_durable_actions(state);
-
-        // The overview raises a push intent when a city is selected.
-        if let Some(NavIntent::ShowDetail) = self.core.borrow_mut().take_nav_request() {
-            self.nav.show_detail();
-        }
-
-        // The collapse / expand chip rebuilds the shell at the new width.
-        if self.core.borrow_mut().take_collapse_toggle() {
-            self.set_overview_collapsed(!self.overview_collapsed);
-        }
-
-        self.tick_network();
-    }
-
-    fn children(&self) -> Vec<&dyn Widget> {
-        vec![&self.nav]
-    }
-
-    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        vec![&mut self.nav]
-    }
-
-    /// Fold the complete saved-location catalogue into the unified Ctrl+K
-    /// palette. [`CitySearchProvider`](crate::search_provider::CitySearchProvider)
-    /// keeps every city findable by name, region, or country through bounded
-    /// pages, without touching the geocoder.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(crate::search_provider::CitySearchProvider::new(
-            &self.core.borrow().model.locations,
-        ))]
-    }
-
-    fn name(&self) -> &'static str {
-        "WeatherApp"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.nav.get_rect()
-    }
-
-    fn accessibility(&self) -> Option<AccessNode> {
-        let core = self.core.borrow();
-        let mut root = AccessNode::new(Role::Window)
-            .with_name("Weather")
-            .with_bounds(self.nav.get_rect());
-        if !core.status.is_empty() {
-            root.children.push(
-                AccessNode::new(Role::StaticText)
-                    .with_name(core.status.clone())
-                    .with_live(Politeness::Polite),
-            );
-        }
-        Some(root)
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            (core.is_fetching() && self.last_activity.elapsed().as_secs() < 12)
-                || core.search_pending()
-        };
-        core_busy || self.nav.needs_animation_frame()
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn needs_idle_sync(&self) -> bool {
-        let core_busy = {
-            let core = self.core.borrow();
-            // Keep pumping while a geocode is armed OR in flight, so its
-            // result is drained and the dropdown updates promptly rather than
-            // parking on the loading state until the next input event.
-            core.is_fetching() || core.search_pending()
-        };
-        core_busy || self.nav.needs_idle_sync()
-    }
-
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        self.core
-            .borrow()
-            .search_deadline()
-            .into_iter()
-            .chain(self.nav.next_wake_deadline())
-            .min()
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        let mine = std::mem::take(&mut self.structure_dirty);
-        self.nav.take_structure_dirty() || mine
-    }
-
-    fn modal_capture(&self) -> Option<Rect> {
-        self.nav.modal_capture()
     }
 }
 
@@ -1356,7 +1387,7 @@ mod interaction_tests {
             h.redraw();
             assert_eq!(h.app.core.borrow().model.selected, 0);
             h.app.core.borrow_mut().take_outbox(); // drain startup
-            let _ = h.app.take_committed_action(); // drain first-run bootstrap
+            let _ = ui::undo::take_committed_action(&mut *h.app); // drain first-run bootstrap
 
             h.key(Key::Named(NamedKey::ArrowDown), None);
             assert_eq!(
@@ -1378,7 +1409,7 @@ mod interaction_tests {
                 "navigating this window does not move a collaborator's durable default"
             );
             assert!(
-                h.app.take_committed_action().is_none(),
+                ui::undo::take_committed_action(&mut *h.app).is_none(),
                 "transient keyboard navigation does not create shared history noise"
             );
 
@@ -2102,7 +2133,7 @@ mod interaction_tests {
         {
             let mut h = Harness::new(1280.0, 720.0);
             let (app, state) = h.parts();
-            let resources = Widget::resources(&*app, &state.doc);
+            let resources = ui::resources::resources(&*app, &state.doc);
             let handlers: std::collections::HashSet<String> = h
                 .app
                 .local_resource_operation_handlers()
@@ -2216,12 +2247,14 @@ mod history_regressions {
                 app.live = true;
                 app.initial_fetch_done = true;
                 let invocation = tilo_actions::InvocationId::new();
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    crate::actions::REFRESH_OPERATION,
-                    b"",
-                    &d,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_OPERATION,
+                        b"",
+                    ),
+                    &mut d,
                     &automerge::ROOT,
                 )
                 .unwrap();
@@ -2324,12 +2357,14 @@ mod history_regressions {
             app.live = true;
             app.initial_fetch_done = true;
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                crate::actions::REFRESH_OPERATION,
-                b"",
-                &d,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    OperationKind::Effect,
+                    crate::actions::REFRESH_OPERATION,
+                    b"",
+                ),
+                &mut d,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -2363,12 +2398,14 @@ mod history_regressions {
             app.live = true;
             app.initial_fetch_done = true;
             let invocation = tilo_actions::InvocationId::new();
-            app.start_resource_operation(
-                invocation,
-                OperationKind::Effect,
-                crate::actions::REFRESH_OPERATION,
-                b"",
-                &d,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    OperationKind::Effect,
+                    crate::actions::REFRESH_OPERATION,
+                    b"",
+                ),
+                &mut d,
                 &automerge::ROOT,
             )
             .unwrap();
@@ -2383,33 +2420,30 @@ mod history_regressions {
         }
         // Case `history_root_declares_registration`.
         {
-            assert!(WeatherApp::new().document_history_definition().is_some());
+            assert!(
+                ui::history_mode::capability::document_history_definition(&WeatherApp::new())
+                    .is_some()
+            );
         }
-        // Case `history_legacy_sync_and_blank_reopen_preserve_graph`.
+        // Case `history_blank_sync_preserves_graph`.
         {
-            for legacy in [false, true] {
-                let mut app = WeatherApp::assemble(
-                    Rc::new(RefCell::new(Core::new(
-                        crate::model::WeatherModel::default(),
-                        crate::units::Units::METRIC,
-                    ))),
-                    false,
-                );
-                let mut doc = AutoCommit::new();
-                doc.put(automerge::ROOT, "runtime_metadata", "keep")
-                    .unwrap();
-                if legacy {
-                    doc.put_object(automerge::ROOT, "locations", automerge::ObjType::List)
-                        .unwrap();
-                }
-                let heads = doc.get_heads();
-                app.sync(&mut doc, &automerge::ROOT);
-                assert_eq!(
-                    doc.get_heads(),
-                    heads,
-                    "ordinary sync preserves blank and legacy graphs"
-                );
-            }
+            let mut app = WeatherApp::assemble(
+                Rc::new(RefCell::new(Core::new(
+                    crate::model::WeatherModel::default(),
+                    crate::units::Units::METRIC,
+                ))),
+                false,
+            );
+            let mut doc = AutoCommit::new();
+            doc.put(automerge::ROOT, "runtime_metadata", "keep")
+                .unwrap();
+            let heads = doc.get_heads();
+            app.sync(&mut doc, &automerge::ROOT);
+            assert_eq!(
+                doc.get_heads(),
+                heads,
+                "ordinary sync preserves a blank graph"
+            );
         }
     }
 }
@@ -2473,12 +2507,14 @@ mod history_round1_tests {
         let (mut app, mut doc, requests, responses) = fixture();
         app.initial_fetch_done = true;
         let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            crate::actions::REFRESH_OPERATION,
-            b"",
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_OPERATION,
+                b"",
+            ),
+            &mut doc,
             &ROOT,
         )
         .unwrap();
@@ -2534,15 +2570,17 @@ mod history_round1_tests {
         // Case `buffered_real_completions_survive_terminal_channel_close`.
         {
             for complete_all in [false, true] {
-                let (mut app, doc, requests, responses) = fixture();
+                let (mut app, mut doc, requests, responses) = fixture();
                 app.initial_fetch_done = true;
                 let invocation = tilo_actions::InvocationId::new();
-                app.start_resource_operation(
-                    invocation,
-                    OperationKind::Effect,
-                    crate::actions::REFRESH_OPERATION,
-                    b"",
-                    &doc,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        OperationKind::Effect,
+                        crate::actions::REFRESH_OPERATION,
+                        b"",
+                    ),
+                    &mut doc,
                     &ROOT,
                 )
                 .unwrap();
@@ -2593,18 +2631,20 @@ mod history_round1_tests {
     }
 
     fn startup_ownership(background_failure: bool, own_failure: bool) {
-        let (mut app, doc, requests, responses) = fixture();
+        let (mut app, mut doc, requests, responses) = fixture();
         assert!(!app.initial_fetch_done);
         let target = app.core.borrow().model.locations[0].id;
         let other = app.core.borrow().model.locations[1].id;
         let payload = serde_json::to_vec(&target.to_string()).unwrap();
         let invocation = tilo_actions::InvocationId::new();
-        app.start_resource_operation(
-            invocation,
-            OperationKind::Effect,
-            crate::actions::REFRESH_LOCATION_OPERATION,
-            &payload,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                OperationKind::Effect,
+                crate::actions::REFRESH_LOCATION_OPERATION,
+                &payload,
+            ),
+            &mut doc,
             &ROOT,
         )
         .unwrap();

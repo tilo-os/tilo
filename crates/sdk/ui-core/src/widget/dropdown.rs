@@ -6,10 +6,10 @@
 //! not an inline expander that shoves siblings down.
 //!
 //! Like [`crate::widget::TextInput`], the chosen value can live in either an
-//! explicit durable or process-local model. [`Dropdown::new`] takes a CRDT
-//! `value_path` and splices selection into the Automerge `Text` object there;
-//! [`Dropdown::from_state`] binds a typed [`crate::LocalState<String>`]. In
-//! both forms `sync` mirrors model changes back without app-owned fan-out.
+//! explicit durable or process-local model. [`Dropdown::new`] binds a
+//! document key; [`Dropdown::from_state`] binds a typed
+//! [`crate::LocalState<String>`]. In both forms `sync` mirrors model changes
+//! back without app-owned fan-out.
 //!
 //! Keyboard (while focused): Enter/Space/Down open; Up/Down move the
 //! highlight; Enter selects + closes; Esc dismisses; printable characters
@@ -20,12 +20,11 @@
 //! container routes all events to it exclusively — how the out-of-layout
 //! list becomes hit-testable and click-outside dismissal works.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
 use crate::widget::TaffyTreeExt;
-use automerge::{
-    AutoCommit, ObjId, ObjType, ReadDoc, ScalarValue, Value, transaction::Transactable,
-};
+use crate::widget::binding::{BoxedBinding, Pulled};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Stroke};
@@ -34,8 +33,9 @@ use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDe
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -95,13 +95,13 @@ pub struct Dropdown {
     /// The legacy constructor uses equal value/label pairs.
     values: Vec<String>,
     options: Vec<String>,
-    value_path: String,
-    local_state: Option<crate::local_state::LocalBinding<String>>,
+    /// Where the selected value lives: a document key or process-local state.
+    binding: Option<BoxedBinding<String>>,
     on_change: Option<SelectionChangeCallback>,
     action: Option<ActionEmitter<String>>,
     placeholder: String,
 
-    /// Mirror of the CRDT value at `value_path`. Empty when unset.
+    /// Mirror of the bound value. Empty when unset.
     selected: String,
     open: bool,
     /// Position (0-based) into the *filtered* list of the highlighted row.
@@ -135,16 +135,15 @@ impl Dropdown {
     fn effectively_enabled(&self) -> bool {
         self.enabled && self.action.as_ref().is_none_or(ActionEmitter::is_available)
     }
-    /// Construct a dropdown over `options`, writing the chosen value into
-    /// the CRDT `Text` object at `value_path`.
+    /// Construct a dropdown over `options`, keeping the chosen value as text
+    /// under the document key `value_path`.
     pub fn new(options: Vec<String>, value_path: &str) -> Self {
         Self {
             id: String::new(),
             accessible_name: None,
             values: options.clone(),
             options,
-            value_path: value_path.to_string(),
-            local_state: None,
+            binding: Some(crate::doc_binding::text_key(value_path)),
             on_change: None,
             action: None,
             placeholder: String::new(),
@@ -172,10 +171,10 @@ impl Dropdown {
     /// intentionally not restricted to `options`, so asynchronously loaded
     /// choices can preserve their model value while options catch up.
     pub fn from_state(options: Vec<String>, state: &crate::LocalState<String>) -> Self {
-        let (selected, binding) = crate::local_state::LocalBinding::new(state);
+        let (selected, binding) = super::binding::local(state);
         Self {
             selected,
-            local_state: Some(binding),
+            binding: Some(binding),
             ..Self::new(options, "")
         }
     }
@@ -317,7 +316,7 @@ impl Dropdown {
     }
 
     fn publish_local_state(&mut self) {
-        if let Some(binding) = &mut self.local_state {
+        if let Some(binding) = &mut self.binding {
             binding.publish(&self.selected);
         }
     }
@@ -371,18 +370,6 @@ impl Dropdown {
             CONTROL_HEIGHT
         };
         control + LIST_GAP + Self::list_box_height(self.visible_count())
-    }
-
-    /// Read the value at `value_path` (Text object or scalar string).
-    fn read_value(state: &AutoCommit, root: &ObjId, path: &str) -> Option<String> {
-        match state.get(root, path) {
-            Ok(Some((Value::Object(ObjType::Text), obj))) => state.text(&obj).ok(),
-            Ok(Some((Value::Scalar(s), _))) => match s.as_ref() {
-                ScalarValue::Str(t) => Some(t.to_string()),
-                _ => None,
-            },
-            _ => None,
-        }
     }
 
     /// Position of the selected option within `filtered`, or 0.
@@ -487,24 +474,12 @@ impl Dropdown {
         self.scroll = 0.0;
     }
 
-    /// Commit `value` into the CRDT `Text` at `value_path` (creating the
-    /// object if needed) and mirror it locally.
-    fn commit_value(&mut self, value: &str, state: &mut AutoCommit, root: &ObjId) {
+    /// Store `value` through the binding and mirror it locally.
+    fn commit_value(&mut self, value: &str, state: &mut AppModel, root: &ModelPath) {
         if let Some(action) = &mut self.action {
             let _ = action.emit(value.to_string());
-        } else if self.local_state.is_none() {
-            let obj = match state.get(root, self.value_path.as_str()) {
-                Ok(Some((Value::Object(ObjType::Text), obj))) => Some(obj),
-                _ => state
-                    .put_object(root, self.value_path.as_str(), ObjType::Text)
-                    .ok(),
-            };
-            if let Some(obj) = obj {
-                crate::doc::splice_text_diffed(state, &obj, value);
-            } else {
-                // Last resort: store as a scalar string (still readable).
-                let _ = state.put(root, self.value_path.as_str(), value);
-            }
+        } else if let Some(binding) = &mut self.binding {
+            binding.push(state, root, &value.to_string());
         }
         self.selected = value.to_string();
         if self.action.is_none() {
@@ -518,7 +493,7 @@ impl Dropdown {
     }
 
     /// Select the highlighted option (if any) and close.
-    fn select_highlighted(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn select_highlighted(&mut self, state: &mut AppModel, root: &ModelPath) {
         let filtered = self.filtered();
         if let Some(&opt_idx) = filtered.get(self.highlight)
             && let Some(value) = self.values.get(opt_idx).cloned()
@@ -554,8 +529,8 @@ impl Dropdown {
     /// clicked row, close on a click outside the list, or open when closed.
     fn on_left_press(
         &mut self,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
         handled: &mut bool,
         focus_target: &mut Option<NodeId>,
         node_id: NodeId,
@@ -605,8 +580,8 @@ impl Dropdown {
         event: &WindowEvent,
         ke: &KeyEvent,
         modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
         handled: &mut bool,
     ) {
         let logical_key = &ke.logical_key;
@@ -668,13 +643,13 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
-        if let Some(binding) = &mut self.local_state {
-            if let Some(selected) = binding.poll() {
-                self.selected = selected;
-            }
-        } else if let Some(value) = Self::read_value(state, root, self.value_path.as_str()) {
-            self.selected = value;
+    crate::provides!(dyn crate::widget::controls::ActionControls);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        if let Some(binding) = &mut self.binding
+            && let Pulled::Value(selected) = binding.pull(state, root)
+        {
+            self.selected = selected;
         }
         if self.align_highlight_on_sync {
             self.align_highlight_on_sync = false;
@@ -789,12 +764,13 @@ impl Widget for Dropdown {
 
         if self.open {
             self.filter_composition.draw(
-                scene,
-                transform,
-                text_renderer,
-                &self.filter,
-                &self.filter_selection,
-                "Type to filter…",
+                &mut PaintCtx::new(scene, transform, text_renderer, theme),
+                QueryView {
+                    text: &self.filter,
+                    selection: &self.filter_selection,
+                    placeholder: "Type to filter…",
+                    show_caret: self.is_focused,
+                },
                 Rect::new(
                     self.rect.x0 + PAD_X,
                     self.rect.y0,
@@ -802,11 +778,7 @@ impl Widget for Dropdown {
                     self.rect.y1,
                 ),
                 &TextStyle::new(FONT),
-                theme.text_primary,
-                theme.text_dim,
-                theme.accent_primary.with_alpha_factor(0.3),
-                theme.accent_primary,
-                self.is_focused,
+                QueryInk::accented(theme.text_primary, theme.text_dim, theme.accent_primary),
             );
         } else {
             let (label, color) = if self.selected.is_empty() {
@@ -964,18 +936,7 @@ impl Widget for Dropdown {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Disabled: reject all input — won't open, no selection, no hover.
         if !self.effectively_enabled() {
             return;
@@ -995,13 +956,13 @@ impl Widget for Dropdown {
                 self.highlight = 0;
                 self.scroll = 0.0;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pos = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(pos, handled);
+                let pos = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(pos, ctx.handled);
             }
             // The pointer left the window: no `CursorMoved` follows, so the
             // resting hover veneer would otherwise stay painted.
@@ -1013,10 +974,16 @@ impl Widget for Dropdown {
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_press(state, root, handled, focus_target, node_id);
+                self.on_left_press(
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                    ctx.focus_target,
+                    ctx.node_id,
+                );
             }
             WindowEvent::MouseWheel { delta, .. } if self.open => {
-                self.on_wheel(delta, handled);
+                self.on_wheel(delta, ctx.handled);
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1026,7 +993,7 @@ impl Widget for Dropdown {
                     },
                 ..
             } if self.is_focused => {
-                self.on_key(event, ke, *modifiers, state, root, handled);
+                self.on_key(event, ke, *ctx.modifiers, ctx.state, ctx.path, ctx.handled);
             }
             _ => {}
         }
@@ -1034,50 +1001,6 @@ impl Widget for Dropdown {
 
     fn name(&self) -> &'static str {
         "Dropdown"
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        if let Some(action) = &mut self.action {
-            let _ = action.install_custody(domain, attachment);
-        }
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action.as_mut().and_then(ActionEmitter::take)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let control_id = self.test_id().unwrap_or("dropdown");
-        if let Some(action) = &self.action {
-            vec![action.metadata(control_id)]
-        } else if !self.value_path.is_empty() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::CollaborativeDocument(self.value_path.clone()),
-            }]
-        } else if self.on_change.is_some() {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::LegacyCallback,
-            }]
-        } else {
-            vec![ControlBindingMetadata {
-                control_id: control_id.to_string(),
-                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
-            }]
-        }
     }
 
     fn test_id(&self) -> Option<&str> {
@@ -1163,8 +1086,8 @@ impl Widget for Dropdown {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        root: &ObjId,
+        state: &mut AppModel,
+        root: &ModelPath,
     ) -> bool {
         use crate::a11y::Action;
         if !self.effectively_enabled() {
@@ -1208,9 +1131,54 @@ impl Widget for Dropdown {
     }
 }
 
+impl crate::widget::controls::ActionControls for Dropdown {
+    fn install_control_custody(
+        &mut self,
+        domain: &crate::ControlDomain,
+        attachment: crate::control_custody::CustodyAttachment,
+    ) {
+        if let Some(action) = &mut self.action {
+            let _ = action.install_custody(domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action.as_mut().and_then(ActionEmitter::take)
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let control_id = self.test_id().unwrap_or("dropdown");
+        if let Some(action) = &self.action {
+            vec![action.metadata(control_id)]
+        } else if let Some(key) = self.binding.as_ref().and_then(|b| b.document_key()) {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::CollaborativeDocument(key.to_owned()),
+            }]
+        } else if self.on_change.is_some() {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::LegacyCallback,
+            }]
+        } else {
+            vec![ControlBindingMetadata {
+                control_id: control_id.to_string(),
+                kind: ControlBindingKind::SemanticAction(control_id.to_string()),
+            }]
+        }
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, transaction::Transactable};
     use winit::event::Modifiers;
     use winit::keyboard::{KeyLocation, PhysicalKey, SmolStr};
 
@@ -1255,14 +1223,16 @@ mod tests {
         let mut focus_target = None;
         dd.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -1350,7 +1320,7 @@ mod tests {
             assert_eq!(dd.selected(), "America/New_York");
             // The value landed in the CRDT Text object the host reads.
             assert_eq!(
-                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("America/New_York")
             );
         }
@@ -1376,7 +1346,7 @@ mod tests {
             assert!(!dd.is_open());
             assert_eq!(dd.selected(), "UTC", "Esc must not change the value");
             assert_eq!(
-                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("UTC")
             );
         }
@@ -1771,7 +1741,7 @@ mod tests {
             let root = automerge::ROOT;
             dd.commit_value("Europe/Amsterdam", &mut doc, &root);
             assert_eq!(
-                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("Europe/Amsterdam")
             );
         }
@@ -1795,7 +1765,7 @@ mod tests {
             let grown = doc.save().len() - baseline;
 
             assert_eq!(
-                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some(long[1].as_str()),
                 "the last committed option must be what the document holds"
             );
@@ -1818,7 +1788,7 @@ mod tests {
             }
 
             assert_eq!(
-                Dropdown::read_value(&doc, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&doc, &root, "tz").as_deref(),
                 Some("Asia/Tokyo")
             );
             assert_eq!(
@@ -1899,7 +1869,7 @@ mod tests {
             ));
             assert_eq!(dropdown.selected(), "UTC");
             assert_eq!(
-                Dropdown::read_value(&document, &root, "tz").as_deref(),
+                crate::doc::read_str_or_text(&document, &root, "tz").as_deref(),
                 Some("UTC")
             );
         }
@@ -1984,12 +1954,12 @@ mod tests {
                 .on_change(|_| panic!("legacy callback must be suppressed"))
                 .on_action(crate::widget::test_string_action_binding());
             let mut doc = AutoCommit::new();
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::new(),
             );
             assert!(!Widget::is_enabled(&dropdown));
-            Widget::refresh_control_action_availability(
+            crate::widget::controls::refresh_control_action_availability(
                 &mut dropdown,
                 &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                     "test:control",
@@ -2005,7 +1975,7 @@ mod tests {
             ));
             assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
             assert_eq!(
-                Widget::take_control_invocation(&mut dropdown)
+                crate::widget::controls::take_control_invocation(&mut dropdown)
                     .unwrap()
                     .arguments["value"],
                 "Asia/Tokyo"

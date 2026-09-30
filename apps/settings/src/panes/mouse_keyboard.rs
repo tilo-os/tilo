@@ -36,10 +36,11 @@ use tracing::warn;
 use ui::doc::{read_bool, read_str_or_text};
 use ui::i18n::ArgValue;
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{Button, Dropdown, Row, Slider, Spacer, Text, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::i18n::{t, t_args};
 use crate::input_sources::{CatalogEntry, installed_catalog};
@@ -646,7 +647,7 @@ pub struct MouseKeyboardPane {
     /// Whether the sections come from a live compositor snapshot; a pane
     /// built without one (tests, headless renders) never polls for one.
     poll_devices: bool,
-    next_device_poll: Option<std::time::Instant>,
+    next_device_poll: Option<ui::time::Instant>,
     needs_seed: bool,
     structure_dirty: bool,
     commit_context_pending: bool,
@@ -810,7 +811,7 @@ impl MouseKeyboardPane {
         if !self.poll_devices {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         if self.next_device_poll.is_some_and(|next| now < next) {
             return;
         }
@@ -1815,7 +1816,10 @@ impl MouseKeyboardPane {
 }
 
 impl Widget for MouseKeyboardPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.poll_devices();
         self.seed_if_needed(state, root);
         self.sync_simple_fields(state, root);
@@ -1879,36 +1883,15 @@ impl Widget for MouseKeyboardPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1927,22 +1910,6 @@ impl Widget for MouseKeyboardPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        // The add/reorder/remove source edge keys are transient internally,
-        // but they exist only to apply a durable keyboard-source preference.
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "input",
-            "Mouse & keyboard",
-            "Change input preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "MouseKeyboardPane"
     }
@@ -1958,6 +1925,24 @@ impl Widget for MouseKeyboardPane {
             .as_mut()
             .is_some_and(|composed| composed.take_structure_dirty());
         own || child
+    }
+}
+
+impl ui::undo::UndoPoints for MouseKeyboardPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        // The add/reorder/remove source edge keys are transient internally,
+        // but they exist only to apply a durable keyboard-source preference.
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "input",
+            "Mouse & keyboard",
+            "Change input preferences",
+        )
     }
 }
 

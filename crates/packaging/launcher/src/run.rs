@@ -264,6 +264,10 @@ pub struct RunOptions {
     /// inside bwrap's mount namespace. Requires this binary bind-mounted at
     /// [`SHIM_MOUNT_PATH`]. Default on; off is a logged debug escape hatch.
     pub landlock_enforce: bool,
+    /// Accept Landlock not, or only partially, enforced by the kernel. Set
+    /// only for a system-store app on a provider-sandboxed machine
+    /// ([`crate::provider_sandbox`]).
+    pub landlock_best_effort: bool,
     /// Launch mode — GUI (default), an interactive CLI command, or a managed
     /// service. CLI and service modes pick `cli_bin()` (falling back to
     /// `bin`) and forward argv without requiring a Wayland surface.
@@ -326,6 +330,7 @@ impl Default for RunOptions {
             // convenience constructor must not accidentally remove one of the
             // kernel-enforced confinement layers.
             landlock_enforce: true,
+            landlock_best_effort: false,
             mode: LaunchMode::default(),
             allow_missing_runtime: false,
             allow_unsigned_runtime: false,
@@ -1567,6 +1572,8 @@ fn splice_sandbox_shim(
     argv.push(crate::landlock_shim::SANDBOX_EXEC_SUBCOMMAND.to_string());
     if !opts.landlock_enforce {
         argv.push("--no-landlock".to_string());
+    } else if opts.landlock_best_effort {
+        argv.push("--landlock-best-effort".to_string());
     }
     for fd in ctx.keep_fds {
         argv.push("--keep-fd".to_string());
@@ -1653,12 +1660,7 @@ fn splice_sandbox_shim(
         argv.push("--rw".to_string());
         argv.push(path.display().to_string());
     }
-    // Standard tmpfs mounts the app expects writable; --rw grants full FS
-    // access, and both vanish with the process (scratch, not hidden state).
-    for p in ["/tmp", "/dev"] {
-        argv.push("--rw".to_string());
-        argv.push(p.to_string());
-    }
+    push_scratch_and_engine_rules(argv, ctx.manifest);
     // Service sockets need no Landlock rule: they arrive as already-connected
     // descriptors dup2'd in, never mounted or opened by path.
     //
@@ -1679,15 +1681,40 @@ fn splice_sandbox_shim(
     Ok(())
 }
 
+fn push_scratch_and_engine_rules(argv: &mut Vec<String>, manifest: &MinimalManifest) {
+    // Standard tmpfs mounts the app expects writable; --rw grants full FS
+    // access, and both vanish with the process (scratch, not hidden state).
+    for p in ["/tmp", "/dev"] {
+        argv.push("--rw".to_string());
+        argv.push(p.to_string());
+    }
+    let profile = manifest.sandbox.seccomp_profile(&manifest.package_id);
+    for path in crate::profile::landlock_rw_nested_sandbox_paths(profile) {
+        argv.push("--rw".to_string());
+        argv.push(path.display().to_string());
+    }
+}
+
+/// What [`spawn_and_wait`] wires into the child in `pre_exec`: the staged
+/// seccomp filters, the resolved service sockets, the identity broker (app end,
+/// control end, serving thread) and whether to apply game scheduling hints.
+/// The launcher's copies are released at fixed points around `spawn`.
+struct ChildSetup {
+    seccomp_fds: SeccompFds,
+    services: Vec<crate::services::ResolvedService>,
+    identity_broker: (
+        Option<UnixStream>,
+        Option<UnixStream>,
+        Option<std::thread::JoinHandle<()>>,
+    ),
+    latency_sensitive: bool,
+}
+
 /// Finish building `argv` (seccomp prefix + passthrough tail), spawn `bwrap`
 /// with the seccomp fd and service sockets wired into the child via
 /// `pre_exec`, then wait for it. Logs the derived Landlock/egress plan from
 /// the parent for observability (the shim enforces Landlock; this only
 /// records intent).
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Sandbox launch combines argv/options, scheduling policy, seccomp and service descriptors, egress policy, net gate, and broker lifetime."
-)]
 #[expect(
     clippy::too_many_lines,
     reason = "one ordered spawn sequence: descriptor custody must stay visible from preparation to reaping"
@@ -1696,21 +1723,20 @@ fn spawn_and_wait(
     mut argv: Vec<String>,
     cli_passthrough: Vec<String>,
     opts: &RunOptions,
-    latency_sensitive: bool,
-    seccomp_fds: SeccompFds,
-    resolved: Vec<crate::services::ResolvedService>,
+    child_setup: ChildSetup,
     egress: &crate::netgate::EgressDecision,
     net_gate: Option<&crate::sandbox::NetGateBind>,
-    identity_broker: (
-        Option<UnixStream>,
-        Option<UnixStream>,
-        Option<std::thread::JoinHandle<()>>,
-    ),
     observer: Option<(
         &dyn crate::managed::EnrolledProcessObserver,
         Option<PathBuf>,
     )>,
 ) -> Result<ExitStatus, RunError> {
+    let ChildSetup {
+        seccomp_fds,
+        services: resolved,
+        identity_broker,
+        latency_sensitive,
+    } = child_setup;
     let (observer, debug_output) = match observer {
         Some((observer, debug_output)) => (Some(observer), debug_output),
         None => (None, None),
@@ -1929,13 +1955,6 @@ type BuiltArgv = (Vec<String>, Option<(String, String)>, Vec<String>);
 /// Pick the entrypoint bin per launch mode: GUI uses `bin`; CLI uses
 /// `cli_bin()` (falling back to `bin`) and splices `TILO_CLI_COMMAND` /
 /// forwards passthrough argv. Returns `(argv, extra_setenv, passthrough)`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "every argument is an independently-resolved piece of the sandbox \
-              (runtime, service binds, dbus plan, identity, capabilities); bundling \
-              them would only move the same list behind a struct built at the one \
-              call site"
-)]
 fn build_initial_argv(
     manifest: &MinimalManifest,
     payload_root: &Path,
@@ -2217,16 +2236,18 @@ fn run_with_context(
         argv,
         cli_passthrough,
         opts,
-        latency_sensitive,
-        seccomp_fds,
-        resolved,
+        ChildSetup {
+            seccomp_fds,
+            services: resolved,
+            identity_broker: (
+                identity_broker_app,
+                identity_broker_control,
+                identity_broker_thread,
+            ),
+            latency_sensitive,
+        },
         &egress,
         net_gate.as_ref(),
-        (
-            identity_broker_app,
-            identity_broker_control,
-            identity_broker_thread,
-        ),
         enrolled.map(|(services, observer)| (observer, debug_output_log(services.data_home()))),
     )
 }
@@ -2474,7 +2495,6 @@ mod captured_resource_tests {
 }
 
 #[allow(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "the bounded supervisor keeps pipe ownership, process-group teardown, and every terminal reason in one auditable transaction"
 )]
@@ -3311,15 +3331,17 @@ mod managed_spawn_policy_tests {
                 vec![],
                 vec![],
                 &options,
-                false,
-                SeccompFds {
-                    clone3_compat: tempfile::tempfile().unwrap().into(),
-                    baseline: tempfile::tempfile().unwrap().into(),
+                ChildSetup {
+                    seccomp_fds: SeccompFds {
+                        clone3_compat: tempfile::tempfile().unwrap().into(),
+                        baseline: tempfile::tempfile().unwrap().into(),
+                    },
+                    services: vec![],
+                    identity_broker: (None, None, None),
+                    latency_sensitive: false,
                 },
-                vec![],
                 &crate::netgate::EgressDecision::Blocked,
                 None,
-                (None, None, None),
                 Some((&policy, None)),
             );
             assert_eq!(policy.checked.load(AtomicOrdering::SeqCst), 1);

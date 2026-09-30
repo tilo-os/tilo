@@ -5,19 +5,6 @@ use collab_types::caps::{
 };
 use collab_types::role::Role as CapRole;
 use tilo_desktop_model::{UserId, Workspace, WorkspaceEffectReceipt};
-fn now_unix() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs()
-}
-fn unix_now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .and_then(|duration| i64::try_from(duration.as_secs()).ok())
-        .unwrap_or_default()
-}
 pub trait WorkspacePolicy {
     fn grant_capability(&mut self, cap: CapOverride) -> String;
     fn revoke_capability(&mut self, id: &str) -> bool;
@@ -31,6 +18,9 @@ pub trait WorkspacePolicy {
     fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole>;
     fn actor_for_person(&self, user: &UserId) -> Actor;
     fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor;
+    /// [`Self::actor_for_person_at`], held to the foreign-device cap when
+    /// `capped`.
+    fn actor_for_person_on_device_at(&self, user: &UserId, capped: bool, now: u64) -> Actor;
     fn actor_for_app(&self, app_id: &str) -> Actor;
     fn actor_for_agent(&self, agent_id: &str) -> Actor;
     fn roster(&self) -> Vec<(UserId, CapRole)>;
@@ -69,7 +59,7 @@ impl WorkspacePolicy for Workspace {
         );
     }
     fn decide(&self, actor: &Actor, resource: &ResourceRef, verb: Verb) -> CapDecision {
-        self.decide_at(actor, resource, verb, now_unix())
+        self.decide_at(actor, resource, verb, tilo_clock::unix_now())
     }
     fn decide_at(
         &self,
@@ -94,16 +84,24 @@ impl WorkspacePolicy for Workspace {
         )
     }
     fn role_of(&self, user: &UserId) -> Option<CapRole> {
-        self.role_of_at(user, now_unix())
+        self.role_of_at(user, tilo_clock::unix_now())
     }
     fn role_of_at(&self, user: &UserId, now: u64) -> Option<CapRole> {
         tilo_peer_state::room::role_of(self.owner.as_deref(), &self.capabilities, user, now)
     }
     fn actor_for_person(&self, user: &UserId) -> Actor {
-        self.actor_for_person_at(user, now_unix())
+        self.actor_for_person_at(user, tilo_clock::unix_now())
     }
     fn actor_for_person_at(&self, user: &UserId, now: u64) -> Actor {
         Actor::person(self.role_of_at(user, now), user.clone()).in_room(self.room.to_string())
+    }
+    fn actor_for_person_on_device_at(&self, user: &UserId, capped: bool, now: u64) -> Actor {
+        let actor = WorkspacePolicy::actor_for_person_at(self, user, now);
+        if capped {
+            collab_types::foreign_device::on_foreign_device(actor, &self.capabilities, now)
+        } else {
+            actor
+        }
     }
     fn actor_for_app(&self, app_id: &str) -> Actor {
         Actor::app(app_id).in_room(self.room.to_string())
@@ -112,7 +110,7 @@ impl WorkspacePolicy for Workspace {
         Actor::agent(agent_id).in_room(self.room.to_string())
     }
     fn roster(&self) -> Vec<(UserId, CapRole)> {
-        let now = Some(now_unix());
+        let now = Some(tilo_clock::unix_now());
         let mut seen: Vec<UserId> = Vec::new();
         for c in &self.capabilities {
             if !c.is_live_at(now) || c.effect != Effect::Grant {
@@ -138,7 +136,7 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
     fn role_of_agent(&self, agent: &str) -> Option<CapRole> {
-        self.role_of_agent_at(agent, now_unix())
+        self.role_of_agent_at(agent, tilo_clock::unix_now())
     }
     fn role_of_agent_at(&self, agent: &str, now: u64) -> Option<CapRole> {
         let now = Some(now);
@@ -178,7 +176,7 @@ impl WorkspacePolicy for Workspace {
         })
     }
     fn agent_members(&self) -> Vec<(String, CapRole)> {
-        let now = Some(now_unix());
+        let now = Some(tilo_clock::unix_now());
         let mut seen: Vec<String> = Vec::new();
         for c in &self.capabilities {
             if !c.is_live_at(now) || c.effect != Effect::Grant {
@@ -199,7 +197,7 @@ impl WorkspacePolicy for Workspace {
             .collect()
     }
     fn shares_of(&self, resource: &ResourceRef) -> Vec<&CapOverride> {
-        let now = Some(now_unix());
+        let now = Some(tilo_clock::unix_now());
         self.capabilities
             .iter()
             .filter(|c| {
@@ -258,7 +256,7 @@ pub fn redacted_effect_receipt(
     mut context: tilo_actions::ActionContext,
     status: tilo_actions::EffectReceiptStatus,
 ) -> WorkspaceEffectReceipt {
-    let completed_at = unix_now();
+    let completed_at = tilo_clock::unix_now_i64();
     let original_action = bounded_receipt_text(&context.action_label, 160);
     context.action_label = if original_action.is_empty() {
         status.label().to_string()

@@ -94,13 +94,27 @@ fn drain(
         let (complete, outcome) = crate::agent_documents::apply_worker_document(
             &owner,
             pending,
-            std::time::Instant::now() + crate::agent_workers::tests::HARNESS_TURN,
+            crate::agent_workers::tests::HARNESS_TURN,
         );
         outcome.unwrap();
         workers.committed().unwrap();
         complete();
     }
     while network.try_recv().is_ok() {}
+}
+
+/// The worker set and the two host channels a harness turn pumps together.
+struct Pump<'a> {
+    workers: &'a mut AgentWorkers,
+    documents: &'a mut mpsc::Receiver<PendingHostDocument>,
+    network: &'a mut mpsc::Receiver<NeighbourMsg>,
+}
+impl Pump<'_> {
+    /// One worker pump, then every queued document through the final door.
+    fn turn(&mut self) {
+        self.workers.pump().unwrap();
+        drain(self.workers, self.documents, self.network);
+    }
 }
 
 fn writer_blocks(owner: &RuntimeOwner) -> usize {
@@ -372,49 +386,35 @@ fn writer_peer(workers: &AgentWorkers) -> (u64, String) {
 
 /// Drive a step through the real worker until its child is terminal in the
 /// broker journal. `settle` false stops before any parent commit.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "explicit protocol inputs stay separate parameters"
-)]
 async fn drive(
     sender: &mut CloudSender,
-    workers: &mut AgentWorkers,
-    documents: &mut mpsc::Receiver<PendingHostDocument>,
-    network: &mut mpsc::Receiver<NeighbourMsg>,
+    mut pump: Pump<'_>,
     dispatch: &VerifiedEnrolledDispatch,
     parent: &mut dyn ParentOwner,
-    task: &Task,
-    index: u32,
+    step: ParentStep,
     settle: bool,
 ) -> Result<StepProgress, String> {
-    let broker = workers.app_broker().unwrap();
-    let (peer, resource) = writer_peer(workers);
+    let broker = pump.workers.app_broker().unwrap();
+    let (peer, resource) = writer_peer(pump.workers);
     let intent =
         CloudSender::child_intent(&broker, dispatch, peer, &resource, "insert-table", None)
             .unwrap();
-    let owner = workers
+    let owner = pump
+        .workers
         .owner
         .store()
         .unwrap()
-        .enrolled_child_owner(task.invocation)
+        .enrolled_child_owner(uuid::Uuid::from_bytes(step.parent()))
         .unwrap();
     let mut progress = sender
-        .step(
-            &broker,
-            dispatch,
-            parent,
-            step(task, index),
-            &intent,
-            &owner,
-        )
+        .step(&broker, dispatch, parent, step, &intent, &owner)
         .map_err(|e| format!("{e:?}"))?;
     let deadline = tokio::time::Instant::now() + crate::agent_workers::tests::HARNESS_WAIT;
     loop {
         if let StepProgress::Settled { .. } = progress {
             return Ok(progress);
         }
-        workers.pump().unwrap();
-        drain(workers, documents, network);
+        pump.turn();
         let StepProgress::Pending(child) = progress else {
             unreachable!()
         };
@@ -430,7 +430,7 @@ async fn drive(
             }
         } else {
             progress = sender
-                .observe(&broker, parent, step(task, index), &owner)
+                .observe(&broker, parent, step, &owner)
                 .map_err(|e| format!("{e:?}"))?;
         }
         assert!(
@@ -602,13 +602,14 @@ async fn handoff(crash_after_commit: bool, certified: bool) {
         let mut lossy = LoseCommitReply(&mut enrolled);
         let result = drive(
             &mut steps.sender,
-            &mut workers,
-            &mut documents,
-            &mut network,
+            Pump {
+                workers: &mut workers,
+                documents: &mut documents,
+                network: &mut network,
+            },
             &dispatch,
             &mut lossy,
-            &task,
-            1,
+            step(&task, 1),
             true,
         )
         .await;
@@ -624,13 +625,14 @@ async fn handoff(crash_after_commit: bool, certified: bool) {
     } else {
         let pending = drive(
             &mut steps.sender,
-            &mut workers,
-            &mut documents,
-            &mut network,
+            Pump {
+                workers: &mut workers,
+                documents: &mut documents,
+                network: &mut network,
+            },
             &dispatch,
             &mut enrolled,
-            &task,
-            1,
+            step(&task, 1),
             false,
         )
         .await

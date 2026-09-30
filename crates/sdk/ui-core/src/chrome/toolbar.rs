@@ -279,12 +279,42 @@ pub fn draw(
     draw_with_metrics(scene, transform, tr, theme, rect, &items, &metrics)
 }
 
+/// The bar role (HIG §9.1) behind a strip of controls along a window's top
+/// edge: the raised surface and one derived bottom hairline.
+pub fn paint_bar(scene: &mut Scene, transform: Affine, theme: &Theme, rect: Rect) {
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        theme.tokens.colors.surfaces.raised,
+        None,
+        &rect,
+    );
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        crate::chrome::chrome_hairline(theme),
+        None,
+        &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
+    );
+}
+
+/// The inset of a bar's controls from its edges: siblings' step across,
+/// the tightest step above and below so the bar stays one control tall
+/// (HIG §7b).
+pub fn bar_padding(theme: &Theme) -> taffy::Rect<taffy::LengthPercentage> {
+    let spacing = &theme.tokens.spacing;
+    let across = taffy::LengthPercentage::length(spacing.s3);
+    let along = taffy::LengthPercentage::length(spacing.s1);
+    taffy::Rect {
+        left: across,
+        right: across,
+        top: along,
+        bottom: along,
+    }
+}
+
 /// [`draw`] with an explicit width model — for a host that lays its rows
 /// out with the same [`ToolbarMetrics`] it hands in here.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the shared paint context plus the row, its items and its metrics"
-)]
 pub fn draw_with_metrics(
     scene: &mut Scene,
     transform: Affine,
@@ -294,21 +324,7 @@ pub fn draw_with_metrics(
     items: &[ToolbarItem],
     metrics: &ToolbarMetrics,
 ) -> Vec<Rect> {
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        theme.tokens.colors.surfaces.raised,
-        None,
-        &rect,
-    );
-    // Bar role (HIG §9.1): one derived bottom hairline.
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        crate::chrome::chrome_hairline(theme),
-        None,
-        &Rect::new(rect.x0, rect.y1 - 1.0, rect.x1, rect.y1),
-    );
+    paint_bar(scene, transform, theme, rect);
 
     // Ink on the accent fill comes from the theme (it walks out of white on
     // a bright accent), not from a literal white that the light and

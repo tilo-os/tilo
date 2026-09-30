@@ -170,7 +170,8 @@ fn workspace_settings_tabs_edit_the_name_roster_and_capabilities() {
         modal.set_tab(WsTab::Permissions);
 
         let pane = vello::kurbo::Rect::new(0.0, 0.0, 660.0, 480.0);
-        let layout = permissions_pane_layout(&ws, pane, &shell::shell::launcher::ShellApps);
+        let layout =
+            permissions_pane_layout(&ws, pane, &shell::shell::launcher::ShellApps, "viewer-user");
         assert_eq!(
             layout.rows.len(),
             1,

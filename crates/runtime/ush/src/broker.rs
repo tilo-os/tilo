@@ -602,6 +602,9 @@ pub struct Broker {
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
     connections: Arc<Mutex<Vec<std::thread::JoinHandle<()>>>>,
+    /// Anything connected. Only the guest can reach the socket, and its first
+    /// process asks for status before it becomes the shell.
+    connected: Arc<AtomicBool>,
 }
 
 impl Broker {
@@ -618,7 +621,6 @@ impl Broker {
         }
         let _ = std::fs::remove_file(&socket);
         let listener = UnixListener::bind(&socket)?;
-        listener.set_nonblocking(true)?;
         restrict_socket(&socket)?;
 
         let state = Arc::new(Mutex::new(state));
@@ -628,44 +630,51 @@ impl Broker {
         let connections = Arc::new(Mutex::new(Vec::new()));
         let thread_connections = Arc::clone(&connections);
         let host_mutation_gate = Arc::new(Mutex::new(()));
-        let thread = std::thread::spawn(move || {
-            while !thread_stop.load(Ordering::Acquire) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        let connection_state = Arc::clone(&thread_state);
-                        let connection_stop = Arc::clone(&thread_stop);
-                        let connection_mutation_gate = Arc::clone(&host_mutation_gate);
-                        let handle = std::thread::spawn(move || {
-                            serve_connection(
-                                stream,
-                                &connection_state,
-                                &connection_stop,
-                                &connection_mutation_gate,
-                            );
-                        });
-                        if let Ok(mut handles) = thread_connections.lock() {
-                            let mut index = 0;
-                            while index < handles.len() {
-                                if handles
-                                    .get(index)
-                                    .is_some_and(std::thread::JoinHandle::is_finished)
-                                {
-                                    let finished = handles.swap_remove(index);
-                                    let _ = finished.join();
-                                } else {
-                                    index = index.saturating_add(1);
-                                }
-                            }
-                            handles.push(handle);
+        let connected = Arc::new(AtomicBool::new(false));
+        let thread_connected = Arc::clone(&connected);
+        let thread = std::thread::Builder::new()
+            .name("tilo-ush-accept".into())
+            .spawn(move || {
+                while !thread_stop.load(Ordering::Acquire) {
+                    match listener.accept() {
+                        Ok((stream, _)) if thread_stop.load(Ordering::Acquire) => {
+                            drop(stream);
+                            break;
                         }
+                        Ok((stream, _)) => {
+                            thread_connected.store(true, Ordering::Release);
+                            let connection_state = Arc::clone(&thread_state);
+                            let connection_stop = Arc::clone(&thread_stop);
+                            let connection_mutation_gate = Arc::clone(&host_mutation_gate);
+                            let handle = std::thread::spawn(move || {
+                                serve_connection(
+                                    stream,
+                                    &connection_state,
+                                    &connection_stop,
+                                    &connection_mutation_gate,
+                                );
+                            });
+                            if let Ok(mut handles) = thread_connections.lock() {
+                                let mut index = 0;
+                                while index < handles.len() {
+                                    if handles
+                                        .get(index)
+                                        .is_some_and(std::thread::JoinHandle::is_finished)
+                                    {
+                                        let finished = handles.swap_remove(index);
+                                        let _ = finished.join();
+                                    } else {
+                                        index = index.saturating_add(1);
+                                    }
+                                }
+                                handles.push(handle);
+                            }
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::Interrupted => {}
+                        Err(_) => break,
                     }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        std::thread::sleep(Duration::from_millis(20));
-                    }
-                    Err(_) => break,
                 }
-            }
-        });
+            })?;
 
         Ok(Self {
             state,
@@ -673,6 +682,7 @@ impl Broker {
             stop,
             thread: Some(thread),
             connections,
+            connected,
         })
     }
 
@@ -682,6 +692,12 @@ impl Broker {
 
     pub fn state(&self) -> &Arc<Mutex<BrokerState>> {
         &self.state
+    }
+
+    /// Did the guest's first process run? `false` after the guest exits means
+    /// `bwrap` failed to build the sandbox, before anything of the guest ran.
+    pub fn guest_connected(&self) -> bool {
+        self.connected.load(Ordering::Acquire)
     }
 
     /// Did the guest ask for a restart?
@@ -706,7 +722,9 @@ impl Broker {
 impl Drop for Broker {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Release);
-        if let Some(thread) = self.thread.take() {
+        if let Some(thread) = self.thread.take()
+            && UnixStream::connect(&self.socket).is_ok()
+        {
             let _ = thread.join();
         }
         if let Ok(mut connections) = self.connections.lock() {
@@ -1668,6 +1686,7 @@ mod tests {
             std::fs::create_dir_all(&target).unwrap();
             let sock = dir.path().join("broker.sock");
             let broker = Broker::start(sock.clone(), state(dir.path())).unwrap();
+            assert!(!broker.guest_connected());
 
             let resp = ask(
                 &sock,
@@ -1677,6 +1696,7 @@ mod tests {
             )
             .unwrap();
             assert!(matches!(resp, Response::NeedsRestart { .. }), "{resp:?}");
+            assert!(broker.guest_connected());
 
             let resp = ask(&sock, &Request::ListPerms).unwrap();
             let Response::Perms { entries } = resp else {
@@ -1707,5 +1727,63 @@ mod tests {
             drop(broker);
             assert!(!sock.exists(), "the socket must not outlive the session");
         }
+    }
+
+    fn thread_ids() -> std::collections::BTreeSet<String> {
+        std::fs::read_dir("/proc/self/task")
+            .expect("/proc/self/task")
+            .map(|entry| entry.expect("task").file_name().into_string().expect("tid"))
+            .collect()
+    }
+
+    fn context_switches(tid: &str) -> u64 {
+        std::fs::read_to_string(format!("/proc/self/task/{tid}/status"))
+            .expect("thread status")
+            .lines()
+            .filter(|line| line.contains("ctxt_switches"))
+            .filter_map(|line| line.split_whitespace().nth(1)?.parse::<u64>().ok())
+            .sum()
+    }
+
+    fn spawned_thread<T>(comm: &str, start: impl FnOnce() -> T) -> (T, String) {
+        let before = thread_ids();
+        let started = start();
+        let waiting = Instant::now();
+        loop {
+            let named = thread_ids()
+                .difference(&before)
+                .find(|tid| {
+                    std::fs::read_to_string(format!("/proc/self/task/{tid}/comm"))
+                        .is_ok_and(|name| name.trim() == comm)
+                })
+                .cloned();
+            if let Some(tid) = named {
+                return (started, tid);
+            }
+            assert!(
+                waiting.elapsed() < Duration::from_secs(5),
+                "no new thread named {comm}"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+    }
+
+    fn assert_stays_asleep(tid: &str, what: &str) {
+        std::thread::sleep(Duration::from_millis(50));
+        let settled = context_switches(tid);
+        std::thread::sleep(Duration::from_millis(400));
+        let woke = context_switches(tid).saturating_sub(settled);
+        assert_eq!(woke, 0, "idle {what} woke {woke} times in 400 ms");
+    }
+
+    #[test]
+    fn idle_accept_thread_sleeps_without_clients() {
+        let dir = tempfile::tempdir().unwrap();
+        let sock = dir.path().join("broker.sock");
+        let (broker, tid) = spawned_thread("tilo-ush-accept", || {
+            Broker::start(sock.clone(), state(dir.path())).unwrap()
+        });
+        assert_stays_asleep(&tid, "ush broker accept");
+        drop(broker);
     }
 }

@@ -56,10 +56,9 @@ need "$containerfile" "CARGO_PROFILE_RELEASE_LTO=thin"
 need "$containerfile" "RUSTC_WRAPPER=/usr/local/bin/sccache"
 need "$containerfile" "SCCACHE_SHA256_X86_64=67c4a96dd237c1f518f6b36083f270f9976d516f1e57fce891755ea782e50006"
 need "$containerfile" "SCCACHE_SHA256_AARCH64=821a86343191aa1cbab74bd42f9e93c9a63bf85e4742945f40d3ae84193c1c77"
-need "$containerfile" 'SCCACHE_ENDPOINT=${SCCACHE_ENDPOINT}'
-need "$containerfile" "--mount=type=secret,id=aws_access_key_id"
-need "$containerfile" "--mount=type=secret,id=aws_secret_access_key"
-need "$containerfile" "--mount=type=secret,id=aws_session_token"
+need "$containerfile" "SCCACHE_GHA_VERSION=tilo-relay-v1"
+need "$containerfile" "--mount=type=secret,id=actions_cache_url"
+need "$containerfile" "--mount=type=secret,id=actions_runtime_token"
 need "$containerfile" "sccache --zero-stats"
 need "$containerfile" "! sccache --start-server"
 need "$containerfile" "export RUSTC_WRAPPER="
@@ -68,7 +67,7 @@ need "$containerfile" "required compiler cache configuration is unavailable"
 need "$containerfile" "probe-sccache.py"
 need "$containerfile" "test ! -e /context/.git/config"
 need "$containerfile" "test ! -e /context/.forgejo"
-need "$containerfile" "cargo build --locked --release -p tilo-relay -p fs --bins"
+need "$containerfile" "cargo build --locked --release -p tilo-relay -p tilo-fs --bins"
 if grep -Fq 'sed -i' "$containerfile"; then
   fail "Containerfile mutates the locked workspace before compiling"
 fi
@@ -84,9 +83,11 @@ need "$entrypoint" "exec /usr/bin/busybox sleep infinity"
 need "$entrypoint" "wait -n"
 need "$workflow" "persist-credentials: false"
 need "$workflow" "SOURCE_DATE_EPOCH=0"
-need "$workflow" 'SCCACHE_S3_KEY_PREFIX=${{ steps.compiler-cache.outputs.prefix }}'
-need "$workflow" "aws_access_key_id=AWS_ACCESS_KEY_ID"
-need "$workflow" "aws_session_token=AWS_SESSION_TOKEN"
+need "$workflow" "actions_cache_url=ACTIONS_CACHE_URL"
+need "$workflow" "actions_runtime_token=ACTIONS_RUNTIME_TOKEN"
+if grep -Fq 'SCCACHE_AWS' "$workflow"; then
+  fail "release-relay binds the static compiler-cache key"
+fi
 need "$workflow" "Bind the runner compiler-cache configuration"
 need "$workflow" "TILO_REQUIRE_COMPILER_CACHE="
 need "$workflow" "TILO_COMPILER_CACHE_CONFIGURED="
@@ -97,8 +98,7 @@ need "$workflow" 'assets: sccache-v0.17.0-x86_64-unknown-linux-musl.tar.gz'
 need "$workflow" "driver-opts: network=host"
 # Publications never build on a builder whose state another job left behind.
 need "$workflow" "persistent: \${{ !(startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch') }}"
-need "$workflow" "cache-from: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest' || '' }}"
-need "$workflow" "cache-to: \${{ github.event_name != 'pull_request' && 'type=registry,ref=registry.tilo.so/tilo/tilo-relay-buildcache:latest,mode=max' || '' }}"
+need "$workflow" 'cache-to: type=gha,scope=relay,mode=max,ignore-error=true'
 
 for excluded in .git .forgejo target os/output; do
   grep -qxF "$excluded" "$dockerignore" || fail "Docker build context includes $excluded"

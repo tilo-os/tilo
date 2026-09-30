@@ -194,10 +194,6 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Route one window event to the widget.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event, minus the node and tree this host supplies"
-    )]
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
@@ -236,14 +232,16 @@ impl<W: Widget + 'static> Embedded<W> {
         let mut focus = None;
         self.widget.handle_event(
             event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            &mut focus,
-            root,
-            &self.tree,
+            &mut crate::widget::EventCtx {
+                scale_factor,
+                modifiers,
+                state,
+                path,
+                handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy: &self.tree,
+            },
         );
     }
 

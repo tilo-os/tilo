@@ -17,11 +17,11 @@
               test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
-use tilo_actions::{Resource, ResourceProvider};
+use tilo_actions::{ActionAddress, Resource, ResourceProvider};
 use tilo_agent::{Config, Session};
 use tilo_content::ContentStore;
 use ui::collaboration::{CollabEvent, CollabRequest, DocumentMutation};
@@ -172,7 +172,7 @@ fn run(
     let mut done = false;
     let mut invocation_actor = None;
     let mut invocation_context = None;
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
             continue;
         };
@@ -201,12 +201,13 @@ fn run(
                     &mut replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(&mut peer, &CollabRequest::UpdateInvocation { id, update }).unwrap();
                 invocation_actor = Some(actor);
@@ -711,7 +712,7 @@ fn drive_photo_peer(
     .unwrap();
     let _ = photo_ready_tx.send(());
     let mut exported = false;
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         let Some(event) = recv(&mut photo_peer) else {
             continue;
         };
@@ -788,12 +789,13 @@ fn drive_photo_peer(
                         &mut photo_replica,
                         &resources,
                         photos::actions::register,
-                        id,
-                        resource,
-                        action,
-                        argument.as_deref(),
-                        &actor,
-                        context.as_deref(),
+                        typed_peer::DocumentInvocation {
+                            id,
+                            address: ActionAddress::new(resource, action),
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            context: context.as_deref(),
+                        },
                     )
                 };
                 send(
@@ -846,7 +848,7 @@ fn drive_word_processor_peer(
         &CollabRequest::document_snapshot(wp_replica.save()),
     )
     .unwrap();
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
@@ -883,12 +885,13 @@ fn drive_word_processor_peer(
                     &mut wp_replica,
                     &resources,
                     word_processor::actions::register,
-                    id,
-                    resource,
-                    action,
-                    argument.as_deref(),
-                    &actor,
-                    context.as_deref(),
+                    typed_peer::DocumentInvocation {
+                        id,
+                        address: ActionAddress::new(resource, action),
+                        argument: argument.as_deref(),
+                        actor: &actor,
+                        context: context.as_deref(),
+                    },
                 );
                 send(
                     &mut wp_peer,

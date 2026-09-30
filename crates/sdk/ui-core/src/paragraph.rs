@@ -131,6 +131,8 @@ struct LineMetrics {
     badness: f64,
 }
 
+/// Tolerance of the last composition pass, which must find some solution.
+const EMERGENCY_TOLERANCE: f32 = 100.0;
 const FITNESS_CLASSES: usize = 4;
 const FLAG_STATES: usize = 2;
 const STATE_SLOTS: usize = FITNESS_CLASSES * FLAG_STATES;
@@ -232,29 +234,58 @@ fn ragged_metrics(
     })
 }
 
+/// Knuth--Plass badness `100·|r|³`. Unlike TeX it is not capped at 10 000:
+/// once a paragraph needs a looser pass, a line stretched to ratio 9 must
+/// still cost more than one stretched to ratio 5, or the composer trades a
+/// barely-loose line for a gaping one to tighten its neighbour.
+///
+/// Shrinking past the glue's capacity (`r < -1`, emergency pass only) makes
+/// the line wider than the measure, so it costs more than any line the
+/// emergency pass could stretch instead.
+fn stretch_badness(ratio: f32) -> f64 {
+    let badness = 100.0 * f64::from(ratio.abs()).powi(3);
+    if ratio < -1.0 {
+        stretch_badness(EMERGENCY_TOLERANCE) + badness
+    } else {
+        badness
+    }
+}
+
 /// Metrics when neither stretch nor shrink is available at this boundary.
 /// A non-final line with no adjustable glue is only unavoidable when a
 /// single unbreakable box itself fills or overruns the measure. Treating a
 /// short one-word row as perfect would make every word its own line.
+///
+/// An underfull row is rated as if it could stretch like one ordinary
+/// interword space (`nominal_stretch`), so a lone short word costs what an
+/// equally loose two-word line does instead of undercutting every line that
+/// has real glue. Only the final emergency pass accepts it beyond tolerance.
 fn zero_capacity_metrics(
     boxes: &[ParagraphBox],
     start: usize,
     end: usize,
     natural: f32,
     options: ParagraphOptions,
+    nominal_stretch: f32,
 ) -> Option<LineMetrics> {
     if end < boxes.len()
         && boxes.get(end).is_some_and(|item| item.break_before)
         && natural <= options.line_width
     {
-        let ratio = ((options.line_width - natural) / options.line_width.max(1.0)) * 3.0;
-        if ratio <= options.tolerance.max(0.0) {
+        let slack = options.line_width - natural;
+        let ratio = if nominal_stretch > f32::EPSILON {
+            slack / nominal_stretch
+        } else {
+            (slack / options.line_width.max(1.0)) * 3.0
+        };
+        let tolerance = options.tolerance.max(0.0);
+        if ratio <= tolerance || tolerance >= EMERGENCY_TOLERANCE {
             return Some(LineMetrics {
                 natural,
-                ratio,
+                ratio: ratio.min(tolerance),
                 fitness: fitness_class(ratio),
                 glyph_scale: 1.0,
-                badness: (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0),
+                badness: stretch_badness(ratio),
             });
         }
     }
@@ -278,7 +309,7 @@ fn expansion_search(
     delta: f32,
     options: ParagraphOptions,
 ) -> Option<LineMetrics> {
-    let minimum_ratio = if options.tolerance >= 100.0 {
+    let minimum_ratio = if options.tolerance >= EMERGENCY_TOLERANCE {
         -4.0
     } else {
         -1.0
@@ -300,7 +331,7 @@ fn expansion_search(
         if ratio < minimum_ratio || ratio > options.tolerance.max(0.0) {
             continue;
         }
-        let space_badness = (100.0 * f64::from(ratio.abs()).powi(3)).min(10_000.0);
+        let space_badness = stretch_badness(ratio);
         let expansion_fraction = if max_expansion <= f32::EPSILON {
             0.0
         } else {
@@ -327,6 +358,7 @@ fn line_metrics(
     end: usize,
     options: ParagraphOptions,
     final_line: bool,
+    nominal_stretch: f32,
 ) -> Option<LineMetrics> {
     let (natural, stretch, shrink, glyph_width) = accumulate_line(boxes, start, end, options)?;
 
@@ -338,7 +370,7 @@ fn line_metrics(
     let delta = options.line_width - natural;
     let capacity = if delta >= 0.0 { stretch } else { shrink };
     if capacity <= f32::EPSILON {
-        return zero_capacity_metrics(boxes, start, end, natural, options);
+        return zero_capacity_metrics(boxes, start, end, natural, options, nominal_stretch);
     }
     expansion_search(natural, stretch, shrink, glyph_width, delta, options)
 }
@@ -347,6 +379,7 @@ fn compose_at_tolerance(
     boxes: &[ParagraphBox],
     mut options: ParagraphOptions,
     tolerance: f32,
+    nominal_stretch: f32,
 ) -> Option<Vec<ComposedLine>> {
     options.tolerance = tolerance;
     let count = boxes.len();
@@ -374,7 +407,7 @@ fn compose_at_tolerance(
         if end != count && boxes.get(end).is_some_and(|item| !item.break_before) {
             continue;
         }
-        accumulate_states_for_end(boxes, options, &mut best, count, end);
+        accumulate_states_for_end(boxes, options, nominal_stretch, &mut best, count, end);
     }
 
     backtrack_composed_lines(&best, count, options)
@@ -387,6 +420,7 @@ fn compose_at_tolerance(
 fn accumulate_states_for_end(
     boxes: &[ParagraphBox],
     options: ParagraphOptions,
+    nominal_stretch: f32,
     best: &mut [[Option<State>; STATE_SLOTS]],
     count: usize,
     end: usize,
@@ -400,7 +434,9 @@ fn accumulate_states_for_end(
                 continue;
             };
             let final_line = end == count;
-            let Some(metrics) = line_metrics(boxes, start, end, options, final_line) else {
+            let Some(metrics) =
+                line_metrics(boxes, start, end, options, final_line, nominal_stretch)
+            else {
                 continue;
             };
             let badness = metrics.badness;
@@ -499,8 +535,13 @@ pub fn compose_paragraph(boxes: &[ParagraphBox], options: ParagraphOptions) -> V
     if boxes.is_empty() {
         return Vec::new();
     }
-    for tolerance in [options.tolerance, 6.0, 12.0, 100.0] {
-        if let Some(lines) = compose_at_tolerance(boxes, options, tolerance) {
+    let nominal_stretch = boxes
+        .iter()
+        .map(|item| item.glue_before.max(0.0))
+        .fold(0.0, f32::max)
+        * options.space_stretch.max(0.0);
+    for tolerance in [options.tolerance, 6.0, 12.0, EMERGENCY_TOLERANCE] {
+        if let Some(lines) = compose_at_tolerance(boxes, options, tolerance, nominal_stretch) {
             return lines;
         }
     }
@@ -645,6 +686,52 @@ mod tests {
             ];
             let lines = compose_paragraph(&boxes, options);
             assert_eq!((lines[0].start, lines[0].end), (0, 2));
+        }
+
+        // Case `a_lone_box_is_no_cheaper_than_an_equally_loose_spaced_line`.
+        {
+            let boxes = vec![
+                ParagraphBox::word(100.0, 0.0),
+                ParagraphBox::word(20.0, 10.0),
+                ParagraphBox::word(100.0, 10.0),
+            ];
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
+            assert_eq!(
+                lines
+                    .iter()
+                    .map(|line| (line.start, line.end))
+                    .collect::<Vec<_>>(),
+                vec![(0, 2), (2, 3)],
+                "a half-empty unjustifiable line must not beat a loose justified one"
+            );
+        }
+
+        // Case `an_unavoidable_lone_box_still_composes`.
+        {
+            let boxes = vec![
+                ParagraphBox::word(20.0, 0.0),
+                ParagraphBox::word(145.0, 10.0),
+                ParagraphBox::word(60.0, 10.0),
+            ];
+            let lines = compose_paragraph(&boxes, ParagraphOptions::new(150.0));
+            assert_eq!(lines[0].end, 1, "only the emergency pass strands the word");
+            assert!(lines.iter().all(|line| line.glue_scale >= 0.2));
+        }
+
+        // Case `an_overfull_line_is_the_last_resort_of_the_emergency_pass`.
+        {
+            let mut options = ParagraphOptions::new(100.0);
+            options.tolerance = EMERGENCY_TOLERANCE;
+            options.max_glyph_expansion = 0.0;
+            let overfull = expansion_search(110.0, 10.0, 5.0, 90.0, -10.0, options)
+                .expect("the emergency pass may shrink past capacity");
+            let gaping = expansion_search(50.0, 1.0, 1.0, 45.0, 50.0, options)
+                .expect("and stretch to its tolerance");
+            assert!(overfull.ratio < -1.0 && gaping.ratio >= 49.0);
+            assert!(
+                overfull.badness > gaping.badness,
+                "a line wider than the measure loses to any loose line"
+            );
         }
 
         // Case `closing_punctuation_can_protrude_past_the_measure`.

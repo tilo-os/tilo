@@ -112,27 +112,13 @@ impl SessionStore {
     /// # Errors
     /// Returns an error for invalid session state, serialization or filesystem failures.
     pub fn save(&self, snapshot: &Snapshot) -> Result<(), String> {
-        use std::io::Write;
         snapshot.validate()?;
         let bytes = serde_json::to_vec(snapshot).map_err(|e| e.to_string())?;
         if bytes.len() > 300_000 {
             return Err("Saved browser session exceeds size limit".into());
         }
-        let next = self.root.join("session.next");
-        let mut options = std::fs::OpenOptions::new();
-        options.write(true).create_new(true);
-        private_fs::owner_only(&mut options);
-        let result = (|| {
-            let mut file = options.open(&next)?;
-            file.write_all(&bytes)?;
-            file.sync_all()?;
-            std::fs::rename(&next, self.root.join("session.json"))?;
-            std::fs::File::open(&self.root)?.sync_all()
-        })();
-        if result.is_err() {
-            let _ = std::fs::remove_file(&next);
-        }
-        result.map_err(|e: std::io::Error| e.to_string())
+        tilo_files::native::atomic::write_with_mode(&self.root.join("session.json"), &bytes, 0o600)
+            .map_err(|e| e.to_string())
     }
 }
 pub fn safe_url(value: &str) -> bool {
@@ -188,12 +174,6 @@ mod tests {
             let mut invalid = fixture();
             invalid.active = 9;
             assert!(store.save(&invalid).is_err());
-            assert_eq!(store.load().unwrap(), Some(fixture()));
-            std::fs::create_dir(root.path().join("session.next")).unwrap();
-            let mut next = fixture();
-            next.tabs.remove(0);
-            next.active = 0;
-            assert!(store.save(&next).is_err());
             assert_eq!(store.load().unwrap(), Some(fixture()));
         }
 

@@ -34,7 +34,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
@@ -45,6 +46,7 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
+use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
@@ -574,9 +576,14 @@ impl TypstApp {
     /// Queue a fresh compile of the current source. (Syntax highlighting now
     /// lives in the shared editor widget, so there is nothing to re-tokenize
     /// here.)
+    /// Compile `source` on the worker, or here when no worker could start
+    /// (the browser has no threads for it).
     fn request_compile(&mut self, source: &str) {
         if let Some(w) = self.worker.as_mut() {
             w.request(source.to_string(), PPP);
+        } else {
+            let out = compile::compile_source(&self.parts, source, PPP);
+            self.apply_output(out);
         }
         self.last_source = source.to_string();
     }
@@ -594,8 +601,8 @@ impl TypstApp {
         if let Some(dir) = std::env::var_os("TILO_TYPST_LIBRARY_DIR") {
             return Some(PathBuf::from(dir));
         }
-        xdg_paths::document_dir()
-            .or_else(xdg_paths::data_dir)
+        tilo_paths::document_dir()
+            .or_else(tilo_paths::data_dir)
             .map(|d| d.join("typst_editor"))
     }
 
@@ -618,7 +625,7 @@ impl TypstApp {
     /// and tests drive it against a real file.
     fn save_typ_to(&mut self, doc: &AutoCommit, path: &std::path::Path) -> Result<(), String> {
         let src = self.read_source(doc);
-        match std::fs::write(path, src) {
+        match save_file(path, src.as_bytes()) {
             Ok(()) => {
                 self.set_flash(format!("Saved {}", path.display()));
                 // Adopt the chosen filename for the current document so a later
@@ -674,10 +681,12 @@ impl TypstApp {
                 "could not build PDF".to_string()
             }
         })?;
-        if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        }
-        std::fs::write(path, bytes).map_err(|e| e.to_string())
+        tilo_files::file_at(path)
+            .and_then(|(dir, name)| {
+                tilo_files::blocking::create_dir_all(&dir, &tilo_files::VPath::root())?;
+                tilo_files::blocking::save_document(&dir, &name, &bytes)
+            })
+            .map_err(|e| e.to_string())
     }
 
     /// Compile the current source to a PDF and write it into `dir`, named after
@@ -716,7 +725,7 @@ impl TypstApp {
         doc: &mut AutoCommit,
         path: &std::path::Path,
     ) -> Result<(), String> {
-        let src = match std::fs::read_to_string(path) {
+        let src = match read_text(path) {
             Ok(s) => s,
             Err(e) => {
                 self.set_flash(format!("Open failed: {e}"));
@@ -818,25 +827,31 @@ impl TypstApp {
 
     /// Read every `.typ` file in `dir` into a `Document` list (name-sorted).
     fn scan_dir(dir: &std::path::Path) -> Vec<Document> {
-        let mut docs = Vec::new();
-        if let Ok(rd) = std::fs::read_dir(dir) {
-            let mut entries: Vec<_> = rd
-                .flatten()
-                .filter(|e| e.path().extension().is_some_and(|x| x == "typ"))
-                .collect();
-            entries.sort_by_key(std::fs::DirEntry::file_name);
-            for e in entries {
-                let name = e.file_name().to_string_lossy().to_string();
-                if let Ok(src) = std::fs::read_to_string(e.path()) {
-                    docs.push(Document {
-                        name,
-                        source: src,
-                        from_disk: true,
-                    });
-                }
-            }
-        }
-        docs
+        let Ok(folder) = tilo_files::Dir::open(tilo_files::Location::Native(dir.to_path_buf()))
+        else {
+            return Vec::new();
+        };
+        let entries =
+            tilo_files::blocking::list(&folder, &tilo_files::VPath::root()).unwrap_or_default();
+        // Listings are sorted by name.
+        entries
+            .into_iter()
+            .filter(|entry| {
+                entry.kind == tilo_files::Kind::File
+                    && std::path::Path::new(&entry.name)
+                        .extension()
+                        .is_some_and(|x| x == "typ")
+            })
+            .filter_map(|entry| {
+                let name = tilo_files::VPath::new(&entry.name).ok()?;
+                let bytes = tilo_files::blocking::read(&folder, &name).ok()?;
+                Some(Document {
+                    name: entry.name,
+                    source: String::from_utf8(bytes).ok()?,
+                    from_disk: true,
+                })
+            })
+            .collect()
     }
 
     fn next_doc(&mut self, doc: &mut AutoCommit) {
@@ -943,7 +958,7 @@ impl TypstApp {
     }
 
     fn set_flash(&mut self, msg: String) {
-        self.flash = Some((msg, Instant::now()));
+        self.flash = Some((msg, ui::time::now()));
     }
 
     fn flash_text(&self) -> Option<&str> {
@@ -1109,21 +1124,33 @@ impl TypstApp {
 
     // ----- drawing --------------------------------------------------------
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Toolbar pill painting combines render context, bounds, label, selected state, and the action for its hit region."
-    )]
-    fn paint_pill(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        action: TbAction,
-        active: bool,
-    ) {
+    /// Whether `action`'s toolbar control paints in its on state.
+    fn is_active(&self, action: TbAction) -> bool {
+        match action {
+            TbAction::ToggleMenu => self.menu_open,
+            TbAction::ToggleProblems => self.show_diagnostics,
+            TbAction::ShowEditor => matches!(self.compact_view, CompactPane::Editor),
+            TbAction::ShowPreview => !matches!(self.compact_view, CompactPane::Editor),
+            TbAction::PrevDoc
+            | TbAction::NextDoc
+            | TbAction::Compile
+            | TbAction::Save
+            | TbAction::Open
+            | TbAction::ExportPdf
+            | TbAction::ZoomOut
+            | TbAction::ZoomIn
+            | TbAction::Fit => false,
+        }
+    }
+
+    fn paint_pill(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, action: TbAction) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let active = self.is_active(action);
         let c = &theme.tokens.colors;
         if active {
             let shape = RoundedRect::from_rect(rect, 7.0);
@@ -1198,12 +1225,8 @@ impl TypstApp {
         let with_index = w1x >= 1000.0;
         let switcher_cap = 220.0 * self.text_k;
         let mut x = self.draw_doc_switcher(
-            scene,
-            t,
-            tr,
-            theme,
-            tb.x0 + 12.0,
-            y,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(tb.x0 + 12.0, y),
             switcher_cap,
             with_index,
         );
@@ -1220,7 +1243,7 @@ impl TypstApp {
         for (lbl, act) in [("Fit", TbAction::Fit), ("+", TbAction::ZoomIn)] {
             let pill_w = Self::pill_width(tr, lbl);
             let pill_rect = Rect::new(rx - pill_w, y, rx, y + self.pill_h);
-            self.paint_pill(scene, t, tr, theme, pill_rect, lbl, act, false);
+            self.paint_pill(&mut PaintCtx::new(scene, t, tr, theme), pill_rect, lbl, act);
             rx -= pill_w + 6.0;
         }
         // zoom percentage chip (non-interactive)
@@ -1241,7 +1264,12 @@ impl TypstApp {
         rx -= zchip_w + 6.0;
         let zow = Self::pill_width(tr, "−");
         let zor = Rect::new(rx - zow, y, rx, y + self.pill_h);
-        self.paint_pill(scene, t, tr, theme, zor, "−", TbAction::ZoomOut, false);
+        self.paint_pill(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            zor,
+            "−",
+            TbAction::ZoomOut,
+        );
         let right_edge = zor.x0 - 12.0;
 
         // --- action group ---
@@ -1278,14 +1306,10 @@ impl TypstApp {
         }
         for ((lbl, act), pill_w) in actions.iter().zip(&widths).take(shown) {
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(x, y, x + pill_w, y + self.pill_h),
                 lbl,
                 *act,
-                false,
             );
             x += pill_w + 8.0;
         }
@@ -1293,14 +1317,10 @@ impl TypstApp {
             let kr = Rect::new(x, y, x + kebab_w, y + self.pill_h);
             self.kebab_rect = kr;
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 kr,
                 "⋯",
                 TbAction::ToggleMenu,
-                self.menu_open,
             );
         } else {
             // Every action fits as a pill: there is no kebab, so an open menu
@@ -1327,14 +1347,10 @@ impl TypstApp {
         let kr = Rect::new(rx - kebab_w, y, rx, y + self.pill_h);
         self.kebab_rect = kr;
         self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             kr,
             "⋯",
             TbAction::ToggleMenu,
-            self.menu_open,
         );
         rx -= kebab_w + 8.0;
         if self.err_count > 0 || self.warn_count > 0 {
@@ -1360,7 +1376,12 @@ impl TypstApp {
         let (ell_w, _) = tr.measure_weighted("…", PILL_FONT, None, TextWeight::Semibold);
         let min_chip = f64::from(ell_w) + 24.0;
         let max_chip = (rx - gap - switch_w - gap - left_x - arrows).max(min_chip);
-        let cluster_end = self.draw_doc_switcher(scene, t, tr, theme, left_x, y, max_chip, false);
+        let cluster_end = self.draw_doc_switcher(
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(left_x, y),
+            max_chip,
+            false,
+        );
 
         // Segmented Edit / Preview switch: centred in the toolbar when that
         // fits, otherwise pushed right of the left cluster (never over it) and
@@ -1368,39 +1389,28 @@ impl TypstApp {
         let _ = self.draw_view_switch(scene, t, tr, theme, y, cluster_end + gap, rx - gap);
     }
 
-    /// Draw the `‹ [name] ›` document switcher starting at `x`. `max_chip` caps
+    /// Draw the `‹ [name] ›` document switcher starting at `origin`. `max_chip` caps
     /// the name chip width (the name is elided to fit). Returns the x just past
     /// the group.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Document switcher painting combines render context, position, available chip width, and document-index visibility."
-    )]
     fn draw_doc_switcher(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        y: f64,
+        ctx: &mut PaintCtx<'_>,
+        origin: Point,
         max_chip: f64,
         with_index: bool,
     ) -> f64 {
+        let theme = ctx.theme;
         let c = &theme.tokens.colors;
-        let mut x = x;
+        let Point { mut x, y } = origin;
         let multi = self.documents.len() > 1;
 
-        let prev_w = Self::pill_width(tr, "‹");
+        let prev_w = Self::pill_width(ctx.text, "‹");
         if multi {
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(x, y, x + prev_w, y + self.pill_h),
                 "‹",
                 TbAction::PrevDoc,
-                false,
             );
             x += prev_w + 6.0;
         }
@@ -1415,38 +1425,36 @@ impl TypstApp {
             name
         };
         // Elide to fit the cap.
-        let label = tr.elide_to_width_weighted(
+        let label = ctx.text.elide_to_width_weighted(
             &base,
             PILL_FONT,
             ui::num::f32_of_f64(max_chip - 24.0),
             TextWeight::Semibold,
         );
-        let (lw, _) = tr.measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
+        let (lw, _) = ctx
+            .text
+            .measure_weighted(&label, PILL_FONT, None, TextWeight::Semibold);
         let chip_w = (f64::from(lw) + 24.0).min(max_chip);
         let chip = Rect::new(x, y, x + chip_w, y + self.pill_h);
-        ui::surface::card(scene, t, chip, 7.0, c.surfaces.base);
-        tr.draw_text_weighted(
-            scene,
+        ui::surface::card(ctx.scene, ctx.transform, chip, 7.0, c.surfaces.base);
+        ctx.text.draw_text_weighted(
+            ctx.scene,
             &label,
             PILL_FONT,
             c.text_primary,
-            t * Affine::translate((x + 12.0, y + (self.pill_h - self.pill_line) / 2.0)),
+            ctx.transform * Affine::translate((x + 12.0, y + (self.pill_h - self.pill_line) / 2.0)),
             None,
             TextWeight::Semibold,
         );
         x += chip_w + 6.0;
 
         if multi {
-            let next_w = Self::pill_width(tr, "›");
+            let next_w = Self::pill_width(ctx.text, "›");
             self.paint_pill(
-                scene,
-                t,
-                tr,
-                theme,
+                ctx,
                 Rect::new(x, y, x + next_w, y + self.pill_h),
                 "›",
                 TbAction::NextDoc,
-                false,
             );
             x += next_w;
         }
@@ -1473,10 +1481,6 @@ impl TypstApp {
     /// A two-segment Edit / Preview toggle, centred in the toolbar when the
     /// centre lies inside `[min_x0, max_x1]`, otherwise clamped into that span
     /// so it never overlaps the clusters on either side. Returns its rect.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The view toggle needs render context, vertical position, and the free horizontal span between toolbar clusters."
-    )]
     fn draw_view_switch(
         &mut self,
         scene: &mut Scene,
@@ -1513,41 +1517,19 @@ impl TypstApp {
         let outer = Rect::new(x0, y, x0 + total, y + self.pill_h);
         ui::surface::card(scene, t, outer, 8.0, c.lift(0.35));
 
-        let edit_active = matches!(self.compact_view, CompactPane::Editor);
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
         // Edit segment.
         let er = Rect::new(x0, y, x0 + ew, y + self.pill_h);
-        self.paint_segment(
-            scene,
-            t,
-            tr,
-            theme,
-            er,
-            seg_edit,
-            TbAction::ShowEditor,
-            edit_active,
-        );
+        self.paint_segment(&mut ctx, er, seg_edit, TbAction::ShowEditor);
         // Preview segment.
         let pr = Rect::new(x0 + ew, y, x0 + ew + pw, y + self.pill_h);
-        self.paint_segment(
-            scene,
-            t,
-            tr,
-            theme,
-            pr,
-            seg_prev,
-            TbAction::ShowPreview,
-            !edit_active,
-        );
+        self.paint_segment(&mut ctx, pr, seg_prev, TbAction::ShowPreview);
         outer
     }
 
     /// A "Problems" pill placed from its right edge at `rx`. `long` uses the
     /// full "Problems (n)" label; otherwise a compact count badge. Returns the
     /// left edge just past the pill.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Problems pill painting combines render context, right-edge/top placement, and the full-label versus count-only mode."
-    )]
     fn draw_problems_pill(
         &mut self,
         scene: &mut Scene,
@@ -1577,35 +1559,24 @@ impl TypstApp {
         let w = Self::pill_width(tr, &label);
         let r = Rect::new(rx - w, y, rx, y + self.pill_h);
         self.paint_pill(
-            scene,
-            t,
-            tr,
-            theme,
+            &mut PaintCtx::new(scene, t, tr, theme),
             r,
             &label,
             TbAction::ToggleProblems,
-            self.show_diagnostics,
         );
         r.x0
     }
 
     /// Paint one segment of a segmented control (no rounded outline of its own;
     /// the container draws that).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Segment painting combines render context, bounds, label, active state, and the action registered for hit testing."
-    )]
-    fn paint_segment(
-        &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        label: &str,
-        action: TbAction,
-        active: bool,
-    ) {
+    fn paint_segment(&mut self, ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, action: TbAction) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let active = self.is_active(action);
         let c = &theme.tokens.colors;
         if active {
             let shape = RoundedRect::from_rect(rect.inflate(-2.0, -2.0), 6.0);
@@ -1784,7 +1755,9 @@ impl TypstApp {
     /// leading dot.
     fn status_right_label(&self, theme: &Theme) -> (String, Color) {
         let c = &theme.tokens.colors;
-        if self.compiling() {
+        if *self.parts.fonts() == compile::Fonts::Loading {
+            ("Loading fonts…".to_string(), c.semantic.info)
+        } else if self.compiling() {
             ("Compiling…".to_string(), c.semantic.info)
         } else if self.err_count > 0 {
             (
@@ -1833,7 +1806,7 @@ impl TypstApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let (left_zone, right_zone) = self.status_zones();
         let text_size = 12.0f32;
         let margin = 14.0;
@@ -1918,7 +1891,7 @@ impl TypstApp {
     /// frame captures the floating pills.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        let now = Instant::now();
+        let now = ui::time::now();
         self.status_bubble_left.poke(now);
         self.status_bubble_right.poke(now);
     }
@@ -1940,88 +1913,46 @@ pub(crate) fn plural(n: usize, singular: &str, plural: &str) -> String {
 }
 
 impl Widget for TypstApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::undo::UndoPoints
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        crate::actions::resources(doc)
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        self.perform_resource_operation(operation, doc);
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        use crate::actions::TypstOperation;
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        let resource = match operation {
-            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
-            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
-            TypstOperation::ExportPdf { path: Some(path) } => {
-                Some(ResourceIo::ExportPdf(path.into()))
-            }
-            TypstOperation::Open { path: None } => {
-                self.open(doc);
-                None
-            }
-            TypstOperation::Save { path: None } => {
-                self.save(doc);
-                None
-            }
-            TypstOperation::ExportPdf { path: None } => {
-                self.export_pdf(doc);
-                None
-            }
-            other => {
-                return self
-                    .invoke_resource_operation_v2(
-                        kind,
-                        type_id,
-                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
-                        doc,
-                        path,
-                    )
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
-        };
-        if let Some(resource) = resource {
-            self.pending_resource_io = Some((invocation, resource));
-        } else {
-            self.resource_invocation = Some(invocation);
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2059,7 +1990,8 @@ impl Widget for TypstApp {
             .flatten()
     }
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         self.background_poll_deadline.set(None);
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
@@ -2092,6 +2024,18 @@ impl Widget for TypstApp {
         // Bind the shared editor to the source object and pull its content.
         self.editor.bind(src_id.clone(), doc);
         let source = doc.text(&src_id).unwrap_or_default();
+
+        // In the browser the fonts arrive after the editor opens; compile
+        // once they have, with parts built from them.
+        if *self.parts.fonts() == compile::Fonts::Loading {
+            if WorldParts::fonts_loading() {
+                self.source_cache = source;
+                return;
+            }
+            self.parts = WorldParts::new();
+            self.worker = None;
+            self.initialized = false;
+        }
 
         if !self.initialized {
             // First frame: compile synchronously so the very first paint
@@ -2231,21 +2175,10 @@ impl Widget for TypstApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let src_id = match &self.source_id {
             Some(id) => id.clone(),
-            None => self.ensure_source_obj(doc),
+            None => self.ensure_source_obj(ctx.state),
         };
 
         // --- application-level keyboard shortcuts ---
@@ -2259,12 +2192,26 @@ impl Widget for TypstApp {
             ..
         } = event
         {
-            self.handle_keyboard_shortcut(logical_key, event, *modifiers, doc, &src_id, handled);
+            self.handle_keyboard_shortcut(
+                logical_key,
+                event,
+                *ctx.modifiers,
+                ctx.state,
+                &src_id,
+                ctx.handled,
+            );
             return;
         }
 
         // --- pointer ---
-        self.handle_pointer_event(event, scale_factor, *modifiers, doc, &src_id, handled);
+        self.handle_pointer_event(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            &src_id,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -2316,9 +2263,10 @@ impl Widget for TypstApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        doc: &mut AutoCommit,
-        _path: &ObjId,
+        doc: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (doc, _) = ui::doc::document(doc, path);
         if let Some((operation, _, _)) = TOOLBAR_ACTIONS.iter().find(|(_, id, _)| *id == target) {
             return match action {
                 ui::a11y::Action::Focus => true,
@@ -2353,14 +2301,51 @@ impl Widget for TypstApp {
         }
     }
 
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        ui::widget::semantic_action_bindings(self.accessibility())
+    fn get_rect(&self) -> Rect {
+        self.rect
     }
 
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
+            return None;
+        }
+        // Poll completed work independently of animation preferences. Repeated
+        // queries retain the same deadline until sync consumes it.
+        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
+            ui::time::now()
+                .checked_add(std::time::Duration::from_millis(16))
+                .unwrap_or_else(ui::time::now)
+        });
+        self.background_poll_deadline.set(Some(deadline));
+        Some(deadline)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the App pumping frames while: the editor caret is blinking,
+        // a compile is in flight (so `draw` can consume its result), a
+        // transient toast is still fading, or either floating status bubble is
+        // lingering / fading (so it hides itself without a stray pointer event).
+        let now = ui::time::now();
+        self.editor.wants_animation()
+            || self.compiling()
+            || self.flash_text().is_some()
+            || self.status_bubble_left.needs_frame(now)
+            || self.status_bubble_right.needs_frame(now)
+    }
+
+    fn needs_redraw(&self) -> bool {
+        // Pointer *moves* are only repainted when `needs_redraw` is true (the
+        // host gates them to avoid hover spam). A live drag or a hover change
+        // sets `dirty`, so divider drags, preview text-selection, and inline
+        // diagnostic tooltips all repaint smoothly.
+        self.dirty
+    }
+}
+
+impl ui::undo::UndoPoints for TypstApp {
     fn needs_commit(&self) -> bool {
         self.native_edit_pending
     }
-
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         self.native_edit_pending.then(|| {
             let document = self
@@ -2377,49 +2362,101 @@ impl Widget for TypstApp {
             .with_facet(ui::tilo_actions::ActionFacet::new("file-type", "Typst"))
         })
     }
-
     fn on_commit(&mut self) {
         self.native_edit_pending = false;
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        self.rect
+impl ui::resources::PublishesResources for TypstApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        crate::actions::resources(doc)
     }
+}
 
-    fn next_wake_deadline(&self) -> Option<Instant> {
-        if self.io.is_none() && self.pending_resource_io.is_none() && !self.compiling() {
-            return None;
+impl ui::widget::controls::ActionControls for TypstApp {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        ui::widget::semantic_action_bindings(self.accessibility())
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for TypstApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl TypstApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
         }
-        // Poll completed work independently of animation preferences. Repeated
-        // queries retain the same deadline until sync consumes it.
-        let deadline = self.background_poll_deadline.get().unwrap_or_else(|| {
-            Instant::now()
-                .checked_add(std::time::Duration::from_millis(16))
-                .unwrap_or_else(Instant::now)
-        });
-        self.background_poll_deadline.set(Some(deadline));
-        Some(deadline)
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        self.perform_resource_operation(operation, doc);
+        Ok(true)
     }
 
-    fn needs_animation_frame(&self) -> bool {
-        // Keep the App pumping frames while: the editor caret is blinking,
-        // a compile is in flight (so `draw` can consume its result), a
-        // transient toast is still fading, or either floating status bubble is
-        // lingering / fading (so it hides itself without a stray pointer event).
-        let now = Instant::now();
-        self.editor.wants_animation()
-            || self.compiling()
-            || self.flash_text().is_some()
-            || self.status_bubble_left.needs_frame(now)
-            || self.status_bubble_right.needs_frame(now)
-    }
-
-    fn needs_redraw(&self) -> bool {
-        // Pointer *moves* are only repainted when `needs_redraw` is true (the
-        // host gates them to avoid hover spam). A live drag or a hover change
-        // sets `dirty`, so divider drags, preview text-selection, and inline
-        // diagnostic tooltips all repaint smoothly.
-        self.dirty
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        use crate::actions::TypstOperation;
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        let resource = match operation {
+            TypstOperation::Open { path: Some(path) } => Some(ResourceIo::Open(path.into())),
+            TypstOperation::Save { path: Some(path) } => Some(ResourceIo::Save(path.into())),
+            TypstOperation::ExportPdf { path: Some(path) } => {
+                Some(ResourceIo::ExportPdf(path.into()))
+            }
+            TypstOperation::Open { path: None } => {
+                self.open(doc);
+                None
+            }
+            TypstOperation::Save { path: None } => {
+                self.save(doc);
+                None
+            }
+            TypstOperation::ExportPdf { path: None } => {
+                self.export_pdf(doc);
+                None
+            }
+            other => {
+                return self
+                    .answer_resource_operation(
+                        kind,
+                        type_id,
+                        &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
+                        doc,
+                        path,
+                    )
+                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
+                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
+            }
+        };
+        if let Some(resource) = resource {
+            self.pending_resource_io = Some((invocation, resource));
+        } else {
+            self.resource_invocation = Some(invocation);
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2734,6 +2771,20 @@ impl TypstApp {
     }
 }
 
+/// A text file a chooser or the command line named.
+fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    String::from_utf8(tilo_files::blocking::read(&dir, &name)?)
+        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+}
+
+/// Save `bytes` as the file a chooser named, keeping an existing file's
+/// link and permissions.
+fn save_file(path: &std::path::Path, bytes: &[u8]) -> Result<(), tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    tilo_files::blocking::save_document(&dir, &name, bytes)
+}
+
 #[cfg(test)]
 #[allow(clippy::float_cmp, reason = "tests intentionally assert exact values")]
 mod tests {
@@ -2762,13 +2813,15 @@ mod tests {
                 path: Some(destination.display().to_string()),
             })
             .unwrap();
-            let started = Widget::start_resource_operation(
+            let started = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::OPERATION_TYPE,
-                &payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &ROOT,
             )
             .unwrap()
@@ -2888,14 +2941,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &Modifiers::default(),
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -2941,9 +2996,9 @@ mod tests {
 
             assert!(send(&mut app, &mut doc, &char_press("x")));
             assert_ne!(app.read_source(&doc), before, "the source really changed");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
 
-            let context = app.take_commit_context().expect("native edit provenance");
+            let context = ui::undo::take_commit_context(&mut app).expect("native edit provenance");
             assert_eq!(context.action_label, "Edit source");
             assert_eq!(
                 context.app.as_ref().map(|app| app.id.as_str()),
@@ -2957,9 +3012,9 @@ mod tests {
                 Some("typst.document")
             );
 
-            app.on_commit();
+            ui::undo::on_commit(&mut app);
             assert!(
-                !app.needs_commit(),
+                !ui::undo::needs_commit(&app),
                 "commit acknowledgement clears the latch"
             );
         }
@@ -2992,7 +3047,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(app.read_source(&doc), "= Accessible edit");
-            assert!(app.needs_commit());
+            assert!(ui::undo::needs_commit(&app));
         }
     }
 
@@ -3066,7 +3121,7 @@ mod tests {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            let now = std::time::Instant::now();
+            let now = ui::time::now();
 
             // First draw composes both labels (differing from the empty caches) and
             // pokes each bubble → both are visible.
@@ -3094,7 +3149,7 @@ mod tests {
             app.status_bubble_right.poke(past);
             app.mouse = Point::new(5.0, 5.0);
             app.draw_status_bubbles(&mut scene, Affine::IDENTITY, &mut tr, &theme);
-            let after = std::time::Instant::now();
+            let after = ui::time::now();
             assert!(
                 !app.status_bubble_left.is_visible(after),
                 "left bubble hides after its linger"
@@ -3300,8 +3355,8 @@ mod tests {
             let dir = std::env::temp_dir().join(format!(
                 "typst_editor_lib_{}_{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
@@ -3322,8 +3377,8 @@ mod tests {
             let dir = std::env::temp_dir().join(format!(
                 "typst_editor_empty_{}_{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
@@ -3388,14 +3443,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &mods,
-            doc,
-            &ROOT,
-            &mut handled,
-            &mut focus,
-            NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: doc,
+                path: &ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: NodeId::new(0),
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -3404,8 +3461,8 @@ mod tests {
         std::env::temp_dir().join(format!(
             "typst_editor_{tag}_{}_{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ))

@@ -443,7 +443,9 @@ fn engine_thread(
 }
 
 fn filter_store_dir() -> std::path::PathBuf {
-    let base = xdg_paths::xdg::cache_home().unwrap_or_else(std::env::temp_dir);
+    let base = tilo_paths::xdg::cache_home()
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     base.join("tilo-browser").join("filter-store")
 }
 
@@ -1262,6 +1264,12 @@ fn dispatch(state: &mut EngineState, cmd: WebViewCommand) {
                         .shared
                         .push(WebViewEvent::MediaElementUnavailable { request_id });
                 }
+            }
+            WebViewCommand::Page { request_id, .. } => {
+                state.shared.push(WebViewEvent::PageResult {
+                    request_id,
+                    result: Err(super::PageFailure::unavailable()),
+                });
             }
             WebViewCommand::ClearWebsiteData => {
                 let session = ffi::webkit_web_view_get_network_session(state.view);

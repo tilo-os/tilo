@@ -35,7 +35,6 @@
 extern crate runtime_dylib;
 
 use std::collections::HashMap;
-use std::time::Instant;
 
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec, ShotFrame, ShotLayout};
@@ -169,7 +168,7 @@ fn bench_frame(
     w: u32,
     h: u32,
 ) -> Result<(TaffyTree<()>, NodeId, f64), Box<dyn std::error::Error>> {
-    let t0 = Instant::now();
+    let t0 = ui::time::now();
     app.sync(&mut state.doc, &state.root);
 
     let mut taffy: TaffyTree<()> = TaffyTree::new();
@@ -228,17 +227,19 @@ fn bench_dispatch(
 ) -> f64 {
     let mut handled = false;
     let mut focus = None;
-    let t = Instant::now();
+    let t = ui::time::now();
     app.handle_event(
         ev,
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        child,
-        taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: child,
+            taffy,
+        },
     );
     t.elapsed().as_secs_f64() * 1e6
 }

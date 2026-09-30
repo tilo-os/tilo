@@ -19,7 +19,7 @@ fn component_projection_never_seeds_or_marks_read() {
         app.sync(&mut doc, &ROOT);
     }
     assert_eq!((doc.base_heads(), doc.pending_ops()), before);
-    assert!(!app.resources(&doc).is_empty());
+    assert!(!ui::resources::resources(&app, &doc).is_empty());
 }
 #[test]
 fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
@@ -50,14 +50,16 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
             device_id,
             position: winit::dpi::PhysicalPosition::new(5.0, 5.0),
         },
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     assert!(
         !handled && !app.needs_redraw(),
@@ -82,14 +84,16 @@ fn canonical_chat_repaints_only_for_document_changes_and_consumed_input() {
             state: ElementState::Pressed,
             button: MouseButton::Left,
         },
-        1.0,
-        &winit::event::Modifiers::default(),
-        &mut doc,
-        &ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: &mut doc,
+            path: &ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
     assert!(app.needs_redraw(), "a press repaints");
 }
@@ -206,10 +210,27 @@ fn semantic_component_harness(
     ui::record::RecordStore,
     ui::record::RecordCheckout,
 ) {
-    use std::{cell::RefCell, rc::Rc};
-    use ui::application::{ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput};
-
     let cache = ui::portable_storage::PortableStorage::new(profile, "device").unwrap();
+    component_mount(&cache, "author", 1)
+}
+
+/// One mount of the room's Chat, as the browser runtime makes it: the first
+/// creates the workspace, a later one opens it.
+fn component_mount(
+    cache: &ui::portable_storage::PortableStorage,
+    author: &str,
+    instance: u64,
+) -> (
+    ui::headless::FrameHarness,
+    ui::record::RecordStore,
+    ui::record::RecordCheckout,
+) {
+    use std::{cell::RefCell, rc::Rc};
+    use ui::application::{
+        ComponentRunnerInputs, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+    };
+
+    let cache = cache.clone();
     let definition = crate::definition();
     let records = ui::record::RecordOwners::portable(cache.clone())
         .open(definition.app_id, "room")
@@ -217,20 +238,30 @@ fn semantic_component_harness(
     let views = Rc::new(ui::application_view::InstanceViewStore::portable(cache, "room").unwrap());
     let permissions = Rc::new(RefCell::new(
         ui::permissions::PermissionContext::from_capabilities(
-            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), "author"),
+            ui::permissions::Actor::person(Some(ui::permissions::Role::Owner), author),
             vec![],
         ),
     ));
-    let target = LaunchTarget::PrimaryNew;
+    let primary = ui::record::RecordCheckout::package_primary(definition.record_kind.clone());
+    let target = if records.try_open_record(&primary).is_ok() {
+        LaunchTarget::Record {
+            checkout: primary,
+            reveal: None,
+        }
+    } else {
+        LaunchTarget::PrimaryNew
+    };
     let context = HostContext::prepare(
         definition,
-        records.clone(),
-        views,
-        "device".into(),
-        1,
-        permissions,
-        ui::permissions::UserId("author".into()),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: records.clone(),
+            views,
+            device_id: "device".into(),
+            instance_id: instance,
+            permissions,
+            author: ui::permissions::UserId(author.into()),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();
@@ -409,7 +440,7 @@ fn captured_pointer_send_retry_does_not_duplicate_the_canonical_message() {
 fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
     use std::{cell::RefCell, rc::Rc};
     use ui::{
-        application::{HostContext, LaunchTarget, RestoreInput},
+        application::{HostContext, HostContextInputs, LaunchTarget, RestoreInput},
         portable_storage::{PortableStorage, StorageKey},
         record::{RecordCheckout, RecordOwners},
     };
@@ -453,13 +484,15 @@ fn two_real_components_open_the_existing_recordless_chat_without_mutation() {
         };
         let context = HostContext::prepare(
             definition,
-            records.clone(),
-            views.clone(),
-            "component-device".into(),
-            instance,
-            permissions.clone(),
-            ui::permissions::UserId("author".into()),
-            tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records: records.clone(),
+                views: views.clone(),
+                device_id: "component-device".into(),
+                instance_id: instance,
+                permissions: permissions.clone(),
+                author: ui::permissions::UserId("author".into()),
+                action_context: tilo_actions::ActionContext::default(),
+            },
             &target,
         )
         .unwrap();
@@ -686,4 +719,112 @@ fn consecutive_typed_sends_leave_an_empty_composer_each_time() {
         assert_eq!(shown, "", "send {n} leaves an empty composer");
     }
     frame.close_components();
+}
+
+/// The browser demo: a visitor and an agent mount of one room. The agent
+/// finds the visitor's message among the channel's resources, reads it, and
+/// replies and records its work through the published actions; its reply is
+/// an agent's, by name.
+#[test]
+fn an_agent_mount_reads_the_visitors_message_and_replies_as_an_agent() {
+    use tilo_actions::ParticipantId;
+    let cache = ui::portable_storage::PortableStorage::new("chat-agent-mount", "device").unwrap();
+    let (mut visitor, records, checkout) = component_mount(&cache, "Visitor", 1);
+    let channel = "chat.channel:c_general";
+    let invoke = |frame: &mut ui::headless::FrameHarness,
+                  resource: &str,
+                  action: &str,
+                  args: serde_json::Value| {
+        let address = ui::bound_dispatch::BoundActionAddress {
+            instance_id: frame.component_instance_id().unwrap(),
+            address: tilo_actions::ActionAddress::new(resource, action),
+        };
+        match frame
+            .invoke_bound_action(&address, args.as_object().unwrap())
+            .unwrap()
+        {
+            ui::widget::ResourceOperationStart::Completed(output) => output,
+            ui::widget::ResourceOperationStart::Accepted => panic!("{action} completes"),
+        }
+    };
+    invoke(
+        &mut visitor,
+        channel,
+        "post",
+        serde_json::json!({"value": "Where does Odysseus wake up?"}),
+    );
+
+    let (mut agent, _, _) = component_mount(&cache, "agent-task:reading", 2);
+    agent.join_participant(
+        &ParticipantId::new("agent-task:reading").unwrap(),
+        "Reading agent",
+    );
+    let messages = |frame: &ui::headless::FrameHarness| {
+        let mut ids = frame
+            .bound_resources(Some(channel))
+            .unwrap()
+            .iter()
+            .flat_map(|resource| resource.children.iter())
+            .filter(|child| child.kind == "chat.message")
+            .map(|child| child.id.as_str().to_owned())
+            .collect::<Vec<_>>();
+        ids.dedup();
+        ids
+    };
+    let listed = messages(&agent);
+    let question = listed.last().unwrap().clone();
+    let read = invoke(&mut agent, &question, "read", serde_json::json!({}));
+    let read = read.value.unwrap();
+    assert_eq!(read["text"], "Where does Odysseus wake up?");
+    assert_eq!(read["author"], "Visitor");
+    assert_eq!(read["agent"], false);
+    assert_eq!(read["mine"], false);
+
+    invoke(
+        &mut agent,
+        channel,
+        "post",
+        serde_json::json!({"value": "On Scheria, on the shore of the Phaeacians."}),
+    );
+    let reply = messages(&agent).last().unwrap().clone();
+    assert_ne!(reply, question);
+    invoke(
+        &mut agent,
+        &reply,
+        "set-work",
+        serde_json::json!({"state": "done", "did": "Add note", "steps": [
+            {"resource": "ebook.book:book:0123", "label": "Add note", "outcome": "applied"}
+        ]}),
+    );
+    let read = invoke(&mut agent, &reply, "read", serde_json::json!({}))
+        .value
+        .unwrap();
+    assert_eq!(read["author"], "agent-task:reading");
+    assert_eq!(read["authorName"], "Reading agent");
+    assert_eq!(read["agent"], true);
+    assert_eq!(read["work"]["state"]["state"], "done");
+    assert_eq!(read["work"]["trace"][0]["label"], "Add note");
+
+    let (author, agents) = records
+        .read(&checkout.id, |doc| {
+            let reply = ChatDoc::list_messages(doc, "c_general").pop().unwrap();
+            (reply.author, ChatDoc::agent_authors(doc))
+        })
+        .unwrap();
+    assert_eq!(author, "agent-task:reading");
+    assert_eq!(
+        agents.get("agent-task:reading").map(String::as_str),
+        Some("Reading agent")
+    );
+    // Only an agent may record work, and only on its own message.
+    let visitor_actions = visitor.bound_resources(Some(&reply)).unwrap();
+    assert!(visitor_actions[0].label.starts_with("Reading agent: "));
+    assert!(
+        visitor_actions[0]
+            .actions
+            .iter()
+            .all(|action| action.id != "set-work")
+    );
+    visitor.close_components();
+    agent.close_components();
 }

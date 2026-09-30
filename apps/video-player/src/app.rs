@@ -14,6 +14,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -27,7 +28,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use ui::collaboration::{CollabEvent, CollabRequest, CollaborationManager};
 use ui::icons::Icon;
 use ui::paint::fill_rect;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PickedContents, PortalChannel,
+    PortalOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -339,9 +343,22 @@ const OPEN_FRAME_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 /// deliberately separate from the media generation: it identifies *this
 /// chooser* rather than the media that may eventually be selected.
 struct PendingPortalOpen {
-    channel: PortalChannel,
+    channel: PickerChannel,
     generation: u64,
     invocation: Option<tilo_actions::InvocationId>,
+}
+
+/// A host with paths answers with the chosen path; a host without them (a
+/// browser page) hands over the file's bytes.
+enum PickerChannel {
+    Path(PortalChannel),
+    Contents(ContentsChannel),
+}
+
+/// What the picker chose, in the form the host could give it.
+enum Picked {
+    Path(PathBuf),
+    Contents(PickedContents),
 }
 
 /// A terminal response paired with the request identity and optional action
@@ -350,7 +367,7 @@ struct PendingPortalOpen {
 type PortalOpenOutcome = (
     u64,
     Option<tilo_actions::InvocationId>,
-    Result<PathBuf, Option<String>>,
+    Result<Picked, Option<String>>,
 );
 
 /// A canonical open invocation awaiting its decoder's first picture. This is
@@ -359,7 +376,7 @@ type PortalOpenOutcome = (
 struct PendingMediaOpen {
     invocation: tilo_actions::InvocationId,
     source_id: String,
-    deadline: std::time::Instant,
+    deadline: ui::time::Instant,
 }
 
 /// A file-backed local record. The source is deliberately kept only in this
@@ -481,10 +498,6 @@ fn library_vertical_metrics(scale: f64, description_lines: usize) -> (f64, f64, 
 /// helper offset the top by `size` as a hand-rolled baseline and discarded the
 /// weight, which is why the panel title floated 17 px below its rect and
 /// painted Regular.)
-#[allow(
-    clippy::too_many_arguments,
-    reason = "immediate-mode panel text needs its render context and explicit style"
-)]
 fn panel_text(
     scene: &mut Scene,
     text_renderer: &mut TextRenderer,
@@ -654,7 +667,22 @@ pub struct PlayerApp {
     /// Production builds carry no observer or additional settlement path.
     #[cfg(test)]
     history_test_open_error_observer: Option<std::rc::Rc<std::cell::RefCell<Option<String>>>>,
+    /// Where files have no path: the kept copy (`crate::kept`) of each
+    /// queue or recent entry opened by contents, by entry id.
+    kept: HashMap<String, String>,
+    /// Kept copies still on disk, newest first.
+    kept_retained: Vec<String>,
+    /// A kept copy being read back, and the entry it reopens.
+    kept_recall: Option<KeptRecall>,
+    kept_wake: ui::wake::WakeHandle,
     dirty: bool,
+}
+
+struct KeptRecall {
+    bytes: std::sync::mpsc::Receiver<Option<Vec<u8>>>,
+    token: String,
+    title: String,
+    queue_id: Option<String>,
 }
 
 #[derive(Clone, Default, PartialEq)]
@@ -860,7 +888,7 @@ impl PlayerApp {
         #[cfg(test)]
         ui::host::install_default(ui::host::HostServices::recording().0);
         let player = configured_player(preferences.autoplay, preferences.loop_enabled);
-        let recent = crate::preferences::load_recent_history()
+        let recent: VecDeque<LocalMediaEntry> = crate::preferences::load_recent_history()
             .into_iter()
             .map(|entry| LocalMediaEntry {
                 id: entry.id,
@@ -876,6 +904,10 @@ impl PlayerApp {
         preferences: PlaybackPreferences,
         recent: VecDeque<LocalMediaEntry>,
     ) -> Self {
+        let kept_retained = recent
+            .iter()
+            .filter_map(|entry| crate::kept::token_of(&entry.source).map(str::to_owned))
+            .collect();
         let action_ctx = crate::actions::PlayerResourceCtx {
             title: "No media",
             media: crate::actions::MediaAvailability {
@@ -952,6 +984,10 @@ impl PlayerApp {
             open_error: None,
             #[cfg(test)]
             history_test_open_error_observer: None,
+            kept: HashMap::new(),
+            kept_retained,
+            kept_recall: None,
+            kept_wake: ui::wake::WakeHandle::new(),
             dirty: true,
         }
     }
@@ -1037,7 +1073,7 @@ impl PlayerApp {
         app.history_test_open_error_observer = Some(observed_error.clone());
         app.portal_generation = 11;
         app.portal_open = Some(PendingPortalOpen {
-            channel,
+            channel: PickerChannel::Path(channel),
             generation: 11,
             invocation: None,
         });
@@ -1276,6 +1312,98 @@ impl PlayerApp {
         self.open_local_source(source, title, Some(queue_id))
     }
 
+    /// Open a video the host handed over as bytes (a browser page has no
+    /// paths to give).
+    fn open_contents(&mut self, file: &PickedContents) -> Result<(), String> {
+        let source = media::Source::from_contents(&file.name, &file.bytes)
+            .map_err(|e| format!("could not stage {}: {e}", file.name))?;
+        let title = if file.name.is_empty() {
+            "selected video".to_string()
+        } else {
+            file.name.clone()
+        };
+        let queue_id = self.ensure_queued(source.clone(), title.clone());
+        self.open_local_source(source, title, Some(queue_id.clone()))?;
+        if !crate::kept::native_paths() {
+            self.keep_contents(&queue_id, file);
+        }
+        Ok(())
+    }
+
+    /// Keep a video opened by contents for Recent, or say why it is not.
+    fn keep_contents(&mut self, queue_id: &str, file: &PickedContents) {
+        if file.bytes.len() > crate::kept::KEEP_LIMIT {
+            if let Some(entry) = self.queue.iter_mut().find(|entry| entry.id == queue_id) {
+                entry.title = format!(
+                    "{} — too large to reopen after a reload (over {} MB)",
+                    entry.title,
+                    crate::kept::KEEP_LIMIT / (1024 * 1024)
+                );
+            }
+            self.invalidate_search_cache();
+            return;
+        }
+        let token = crate::kept::token(&file.name, file.bytes.len());
+        self.kept_retained.insert(0, token.clone());
+        self.kept_retained.truncate(crate::kept::KEPT_VIDEOS);
+        self.kept.insert(queue_id.to_owned(), token.clone());
+        drop(crate::kept::keep(
+            token,
+            file.bytes.clone(),
+            self.kept_retained.clone(),
+        ));
+    }
+
+    /// Start reading a kept copy back; the entry opens once it is here.
+    fn recall_kept(&mut self, token: &str, title: String, queue_id: Option<String>) {
+        let wake = self.kept_wake.clone();
+        self.kept_recall = Some(KeptRecall {
+            bytes: crate::kept::recall(token.to_owned(), move || wake.wake()),
+            token: token.to_owned(),
+            title,
+            queue_id,
+        });
+        self.open_error = None;
+        self.dirty = true;
+    }
+
+    fn poll_kept_recall(&mut self) {
+        let Some(recall) = self.kept_recall.as_ref() else {
+            return;
+        };
+        let bytes = match recall.bytes.try_recv() {
+            Ok(bytes) => bytes,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => None,
+        };
+        let Some(recall) = self.kept_recall.take() else {
+            return;
+        };
+        let opened = bytes
+            .ok_or_else(|| {
+                format!(
+                    "the kept copy of {} is gone; open the file again",
+                    recall.title
+                )
+            })
+            .and_then(|bytes| {
+                media::Source::from_contents(&recall.title, &bytes)
+                    .map_err(|e| format!("could not stage {}: {e}", recall.title))
+            });
+        match opened {
+            Ok(source) => {
+                if let Some(queue_id) = &recall.queue_id {
+                    self.kept.insert(queue_id.clone(), recall.token);
+                }
+                let _ = self.open_local_source(source, recall.title, recall.queue_id);
+            }
+            Err(error) => {
+                self.open_error = Some(error);
+                self.dirty = true;
+            }
+        }
+    }
+
     fn ensure_queued(&mut self, source: media::Source, title: String) -> String {
         if let Some(entry) = self.queue.iter().find(|entry| {
             media::session::session_key(&entry.source) == media::session::session_key(&source)
@@ -1309,6 +1437,11 @@ impl PlayerApp {
         title: String,
         queue_id: Option<String>,
     ) -> Result<(), String> {
+        if let Some(token) = crate::kept::token_of(&source) {
+            let token = token.to_owned();
+            self.recall_kept(&token, title, queue_id);
+            return Ok(());
+        }
         if let Err(error) = self.set_current_source(&source) {
             self.open_error = Some(error.clone());
             self.dirty = true;
@@ -1370,13 +1503,23 @@ impl PlayerApp {
     }
 
     fn persist_recent_history(&self) -> std::io::Result<()> {
+        // A page's `blob:` source dies with the page: an entry is kept by its
+        // kept copy, while that copy is retained, or not at all.
         let entries: Vec<RecentMedia> = self
             .recent
             .iter()
-            .map(|entry| RecentMedia {
-                id: entry.id.clone(),
-                title: entry.title.clone(),
-                source: entry.source.clone(),
+            .filter_map(|entry| {
+                let source = match self.kept.get(&entry.id) {
+                    Some(token) => crate::kept::source(token),
+                    None => entry.source.clone(),
+                };
+                let retained = crate::kept::token_of(&source)
+                    .is_none_or(|token| self.kept_retained.iter().any(|kept| kept == token));
+                (retained && !crate::kept::page_local(&source)).then(|| RecentMedia {
+                    id: entry.id.clone(),
+                    title: entry.title.clone(),
+                    source,
+                })
             })
             .collect();
         crate::preferences::save_recent_history(&entries)
@@ -1388,6 +1531,11 @@ impl PlayerApp {
         if let Err(error) = self.persist_recent_history() {
             self.recent = previous;
             return Err(format!("could not clear local recent history: {error}"));
+        }
+        if !self.kept_retained.is_empty() {
+            self.kept.clear();
+            self.kept_retained.clear();
+            crate::kept::forget_all();
         }
         self.invalidate_search_cache();
         self.dirty = true;
@@ -1698,7 +1846,13 @@ impl PlayerApp {
         self.portal_generation = generation;
         self.open_error = None;
         self.portal_open = Some(PendingPortalOpen {
-            channel: video_open_request().send(),
+            channel: if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+                == tilo_paths::Availability::Available
+            {
+                PickerChannel::Path(video_open_request().send())
+            } else {
+                PickerChannel::Contents(video_open_request().send_contents())
+            },
             generation,
             invocation: None,
         });
@@ -1732,7 +1886,7 @@ impl PlayerApp {
         self.media_open = Some(PendingMediaOpen {
             invocation,
             source_id,
-            deadline: std::time::Instant::now() + OPEN_FRAME_TIMEOUT,
+            deadline: ui::time::now() + OPEN_FRAME_TIMEOUT,
         });
         Ok(())
     }
@@ -1765,7 +1919,7 @@ impl PlayerApp {
                 output: tilo_actions::ActionOutput::default(),
             });
         }
-        if std::time::Instant::now() >= pending.deadline {
+        if ui::time::now() >= pending.deadline {
             let pending = self.media_open.take()?;
             let message = "The decoder did not produce a first frame in time.".to_string();
             self.open_error = Some(message.clone());
@@ -1801,7 +1955,7 @@ impl PlayerApp {
         use crate::actions::PlayerOperation;
         match operation {
             PlayerOperation::Open { path: None } => {
-                // `invoke_resource_operation` starts portal opens so it can
+                // `answer_resource_operation` starts portal opens so it can
                 // report a refusal to agents; this branch is retained for the
                 // in-app path and intentionally ignores an already-reported
                 // failure rather than panicking.
@@ -2011,19 +2165,33 @@ impl PlayerApp {
     }
 
     /// Drain a pending portal outcome, opening the chosen file.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "each answer a picker can give, handled in one place"
+    )]
     fn drain_portal(&mut self) {
         let pending = self.portal_open.take();
         let mut outcome: Option<PortalOpenOutcome> = None;
         if let Some(request) = pending.as_ref() {
-            match request.channel.try_recv() {
-                Ok(PortalOutcome::Opened(p)) => {
-                    outcome = Some((request.generation, request.invocation, Ok(p)));
-                }
-                Ok(PortalOutcome::Cancelled) => {
-                    outcome = Some((request.generation, request.invocation, Err(None)));
-                }
-                Ok(PortalOutcome::Failed(error)) => {
-                    outcome = Some((request.generation, request.invocation, Err(Some(error))));
+            let received = match &request.channel {
+                PickerChannel::Path(channel) => channel.try_recv().map(|answer| match answer {
+                    PortalOutcome::Opened(p) => Ok(Picked::Path(p)),
+                    PortalOutcome::Cancelled => Err(None),
+                    PortalOutcome::Failed(error) => Err(Some(error)),
+                }),
+                PickerChannel::Contents(channel) => channel.try_recv().map(|answer| match answer {
+                    ContentsOutcome::Picked(files) => files
+                        .into_iter()
+                        .next()
+                        .map(Picked::Contents)
+                        .ok_or_else(|| Some("the picker returned no file".into())),
+                    ContentsOutcome::Cancelled => Err(None),
+                    ContentsOutcome::Failed(error) => Err(Some(error)),
+                }),
+            };
+            match received {
+                Ok(result) => {
+                    outcome = Some((request.generation, request.invocation, result));
                 }
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     outcome = Some((
@@ -2062,7 +2230,8 @@ impl PlayerApp {
                 return;
             }
             let result = match outcome {
-                Ok(path) => self.open_path(&path).map(|()| true),
+                Ok(Picked::Path(path)) => self.open_path(&path).map(|()| true),
+                Ok(Picked::Contents(file)) => self.open_contents(&file).map(|()| true),
                 Err(None) => Ok(false),
                 Err(Some(e)) => {
                     self.open_error = Some(e.clone());
@@ -2546,7 +2715,7 @@ impl PlayerApp {
             } else {
                 ("Couldn't open video", error.as_str())
             }
-        } else if self.player.has_media() {
+        } else if self.player.has_media() || self.kept_recall.is_some() {
             ("Loading video…", "Preparing the first frame")
         } else if compact_copy {
             ("Open a video\nto start", "MP4, WebM, MKV,\nMOV and AVI")
@@ -3472,209 +3641,49 @@ impl FullscreenProvider for PlayerApp {
 }
 
 impl Widget for PlayerApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
+    ui::provides!(
+        dyn ui::widget::FullscreenProvider,
+        dyn ui::widget::FloatingSurfaceProvider,
+        dyn ui::undo::CommittedActions,
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
 
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Some(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Some(self)
-    }
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::OPERATION_TYPE]
     }
 
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resources(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-        )
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
-        crate::actions::resource(
-            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
-            doc,
-            id,
-        )
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        let source_id = self.current_source_id.clone();
-        let revision = self.metadata_revision;
-        let mut cache = self.search_cache.borrow_mut();
-        let reusable = cache
-            .as_ref()
-            .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
-        if !reusable {
-            let provider = crate::search::VideoPlayerSearchProvider::new(
-                &self.action_context(
-                    &self.search_metadata.audio_tracks,
-                    &self.search_metadata.subtitle_tracks,
-                    &self.search_metadata.chapters,
-                ),
-                &self.shared_library,
-            );
-            *cache = Some(SearchCache {
-                source_id,
-                revision,
-                provider: Arc::new(provider),
-            });
-            self.search_catalog_builds
-                .set(self.search_catalog_builds.get().saturating_add(1));
-        }
-        if let Some(cached) = cache.as_ref() {
-            vec![Box::new((*cached.provider).clone())]
-        } else {
-            // The cache was initialized immediately above. Returning no stale
-            // provider is safer than panicking if that invariant ever changes.
-            Vec::new()
-        }
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode(type_id, payload)? else {
-            return Ok(false);
-        };
-        if operation.requires_media() && !self.player.has_media() {
-            return Err("open a video before using this playback control".into());
-        }
-        self.validate_dynamic_target(&operation)?;
-        if let PlayerOperation::JumpToAnnotation {
-            id,
-            media_ref,
-            time_ms,
-        } = &operation
-        {
-            let annotation_is_current =
-                crate::shared::read(doc)
-                    .annotations
-                    .iter()
-                    .any(|annotation| {
-                        annotation.id == *id
-                            && annotation.media_ref == *media_ref
-                            && annotation.time_ms == *time_ms
-                    });
-            if !annotation_is_current {
-                return Err("the review marker changed; refresh search and try again".into());
-            }
-        }
-        if self
-            .collab
-            .as_ref()
-            .is_some_and(|collab| collab.role() == Role::Follower)
-            && matches!(
-                &operation,
-                crate::actions::PlayerOperation::TogglePlayback
-                    | crate::actions::PlayerOperation::SeekSeconds(_)
-                    | crate::actions::PlayerOperation::SeekBySeconds(_)
-                    | crate::actions::PlayerOperation::Restart
-                    | crate::actions::PlayerOperation::SeekToEnd
-                    | crate::actions::PlayerOperation::SetLoop(_)
-                    | crate::actions::PlayerOperation::SetPlaybackRate(_)
-                    | crate::actions::PlayerOperation::JumpToChapter { .. }
-                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
-            )
-        {
-            return Err("this player is following the collaborative host".into());
-        }
-        if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
-            if !Path::new(path).is_file() {
-                let label = Path::new(path)
-                    .file_name()
-                    .and_then(|name| name.to_str())
-                    .filter(|name| !name.is_empty())
-                    .unwrap_or("selected video");
-                let message = format!("Video does not exist: {label}");
-                self.open_error = Some(message.clone());
-                self.dirty = true;
-                return Err(message);
-            }
-            self.open_path(Path::new(path))?;
-        } else if matches!(
-            operation,
-            crate::actions::PlayerOperation::Open { path: None }
-        ) {
-            self.trigger_open()?;
-        } else if let crate::actions::PlayerOperation::OpenQueueItem { item_id } = &operation {
-            self.open_local_entry(item_id)?;
-        } else if matches!(
-            operation,
-            crate::actions::PlayerOperation::ClearRecentHistory
-        ) {
-            self.clear_recent_history()?;
-        } else if let crate::actions::PlayerOperation::RemoveQueueItem { item_id } = &operation {
-            self.remove_queue_entry(item_id)?;
-        } else {
-            self.perform_resource_operation(operation);
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let operation = crate::actions::decode(type_id, payload)?;
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::Open { path: None })
-        ) {
-            let Some(pending) = self.portal_open.as_mut() else {
-                return Err("video picker did not start".into());
-            };
-            pending.invocation = Some(invocation);
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::Open { path: Some(_) })
-        ) {
-            // A filesystem path exists before admission, but a real decoder
-            // can still fail after `open`. Accepted therefore means only
-            // "decoding has begun"; polling waits for an actual frame.
-            self.await_open_frame(invocation)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else if matches!(
-            operation,
-            Some(crate::actions::PlayerOperation::OpenQueueItem { .. })
-        ) {
-            self.await_open_frame(invocation)?;
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -3694,7 +3703,9 @@ impl Widget for PlayerApp {
             .and_then(|index| self.resource_results.remove(index))
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
+        self.poll_kept_recall();
         let shared = crate::shared::read(state);
         if !self.shot_shared && shared != self.shared_library {
             self.shared_library = shared;
@@ -3794,53 +3805,34 @@ impl Widget for PlayerApp {
         self.paint_library_panel(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Left,
             ..
         } = event
-            && self.handle_app_pointer(state)
+            && self.handle_app_pointer(ctx.state)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if let WindowEvent::KeyboardInput { event, .. } = event
-            && self.route_key_input(&event.logical_key, event.state, *modifiers)
+            && self.route_key_input(&event.logical_key, event.state, *ctx.modifiers)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         // Forward everything else to the player (its controls + shortcuts).
-        let Ok(children) = taffy.children(node_id) else {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         if let Some(&player_node) = children.first() {
-            self.player.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                player_node,
-                taffy,
-            );
+            self.player
+                .handle_event(event, &mut ctx.reborrow(ctx.path, player_node));
         }
     }
 
@@ -3850,38 +3842,6 @@ impl Widget for PlayerApp {
 
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.player as &mut (dyn Widget + '_)]
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.open_action
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| self.library_control_invocations.pop_front())
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(action) = &mut self.open_action {
-            action.refresh_availability(allowed);
-        }
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
-        if let Some(action) = &self.open_action
-            && let Some(binding) = bindings
-                .iter_mut()
-                .find(|binding| binding.control_id == "video-player.open")
-        {
-            *binding = action.metadata("video-player.open");
-        }
-        bindings
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -4126,9 +4086,10 @@ impl Widget for PlayerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if target == "video-player.open" && matches!(action, ui::a11y::Action::Activate) {
             self.request_open_action();
             true
@@ -4317,6 +4278,234 @@ impl Widget for PlayerApp {
         // A follower must keep syncing even with no local input so it applies
         // the host's incoming transport.
         self.collab.is_some()
+    }
+}
+
+impl ui::search::capability::SearchSource for PlayerApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        let source_id = self.current_source_id.clone();
+        let revision = self.metadata_revision;
+        let mut cache = self.search_cache.borrow_mut();
+        let reusable = cache
+            .as_ref()
+            .is_some_and(|cached| cached.source_id == source_id && cached.revision == revision);
+        if !reusable {
+            let provider = crate::search::VideoPlayerSearchProvider::new(
+                &self.action_context(
+                    &self.search_metadata.audio_tracks,
+                    &self.search_metadata.subtitle_tracks,
+                    &self.search_metadata.chapters,
+                ),
+                &self.shared_library,
+            );
+            *cache = Some(SearchCache {
+                source_id,
+                revision,
+                provider: Arc::new(provider),
+            });
+            self.search_catalog_builds
+                .set(self.search_catalog_builds.get().saturating_add(1));
+        }
+        if let Some(cached) = cache.as_ref() {
+            vec![Box::new((*cached.provider).clone())]
+        } else {
+            // The cache was initialized immediately above. Returning no stale
+            // provider is safer than panicking if that invariant ever changes.
+            Vec::new()
+        }
+    }
+}
+
+impl ui::resources::PublishesResources for PlayerApp {
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resources(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+        )
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        let (audio_tracks, subtitle_tracks, chapters) = self.decoder_metadata();
+        crate::actions::resource(
+            &self.action_context(&audio_tracks, &subtitle_tracks, &chapters),
+            doc,
+            id,
+        )
+    }
+}
+
+impl ui::widget::controls::ActionControls for PlayerApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.open_action
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| self.library_control_invocations.pop_front())
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
+        if let Some(action) = &self.open_action
+            && let Some(binding) = bindings
+                .iter_mut()
+                .find(|binding| binding.control_id == "video-player.open")
+        {
+            *binding = action.metadata("video-player.open");
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(action) = &mut self.open_action {
+            action.refresh_availability(allowed);
+        }
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for PlayerApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
+    }
+}
+
+impl ui::undo::CommittedActions for PlayerApp {
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl PlayerApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode(type_id, payload)? else {
+            return Ok(false);
+        };
+        if operation.requires_media() && !self.player.has_media() {
+            return Err("open a video before using this playback control".into());
+        }
+        self.validate_dynamic_target(&operation)?;
+        if let PlayerOperation::JumpToAnnotation {
+            id,
+            media_ref,
+            time_ms,
+        } = &operation
+        {
+            let annotation_is_current =
+                crate::shared::read(doc)
+                    .annotations
+                    .iter()
+                    .any(|annotation| {
+                        annotation.id == *id
+                            && annotation.media_ref == *media_ref
+                            && annotation.time_ms == *time_ms
+                    });
+            if !annotation_is_current {
+                return Err("the review marker changed; refresh search and try again".into());
+            }
+        }
+        if self
+            .collab
+            .as_ref()
+            .is_some_and(|collab| collab.role() == Role::Follower)
+            && matches!(
+                &operation,
+                crate::actions::PlayerOperation::TogglePlayback
+                    | crate::actions::PlayerOperation::SeekSeconds(_)
+                    | crate::actions::PlayerOperation::SeekBySeconds(_)
+                    | crate::actions::PlayerOperation::Restart
+                    | crate::actions::PlayerOperation::SeekToEnd
+                    | crate::actions::PlayerOperation::SetLoop(_)
+                    | crate::actions::PlayerOperation::SetPlaybackRate(_)
+                    | crate::actions::PlayerOperation::JumpToChapter { .. }
+                    | crate::actions::PlayerOperation::JumpToAnnotation { .. }
+            )
+        {
+            return Err("this player is following the collaborative host".into());
+        }
+        if let crate::actions::PlayerOperation::Open { path: Some(path) } = &operation {
+            if !Path::new(path).is_file() {
+                let label = Path::new(path)
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("selected video");
+                let message = format!("Video does not exist: {label}");
+                self.open_error = Some(message.clone());
+                self.dirty = true;
+                return Err(message);
+            }
+            self.open_path(Path::new(path))?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::Open { path: None }
+        ) {
+            self.trigger_open()?;
+        } else if let crate::actions::PlayerOperation::OpenQueueItem { item_id } = &operation {
+            self.open_local_entry(item_id)?;
+        } else if matches!(
+            operation,
+            crate::actions::PlayerOperation::ClearRecentHistory
+        ) {
+            self.clear_recent_history()?;
+        } else if let crate::actions::PlayerOperation::RemoveQueueItem { item_id } = &operation {
+            self.remove_queue_entry(item_id)?;
+        } else {
+            self.perform_resource_operation(operation);
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let operation = crate::actions::decode(type_id, payload)?;
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: None })
+        ) {
+            let Some(pending) = self.portal_open.as_mut() else {
+                return Err("video picker did not start".into());
+            };
+            pending.invocation = Some(invocation);
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::Open { path: Some(_) })
+        ) {
+            // A filesystem path exists before admission, but a real decoder
+            // can still fail after `open`. Accepted therefore means only
+            // "decoding has begun"; polling waits for an actual frame.
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else if matches!(
+            operation,
+            Some(crate::actions::PlayerOperation::OpenQueueItem { .. })
+        ) {
+            self.await_open_frame(invocation)?;
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 
@@ -4534,7 +4723,8 @@ mod tests {
                 },
             );
             app.request_annotation_jump(&doc, "review-marker");
-            let invocation = Widget::take_control_invocation(&mut app).expect("marker jump intent");
+            let invocation = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("marker jump intent");
             assert_eq!(
                 invocation.address.resource,
                 crate::actions::annotation_resource_id("review-marker")
@@ -4566,12 +4756,15 @@ mod tests {
                 },
             )
             .expect("operation encodes");
-            let error = Widget::invoke_resource_operation(
+            let error = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut doc,
                 &root(),
             )
             .expect_err("changed timestamp must be refused");
@@ -4581,7 +4774,7 @@ mod tests {
         // Case `metadata_revision_boundary_discards_the_cache_before_resetting`.
         {
             let mut app = PlayerApp::for_shot(None, Some("metadata"));
-            let _first = app.search_providers();
+            let _first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
             assert!(app.search_cache.borrow().is_some());
 
@@ -4594,7 +4787,7 @@ mod tests {
                 "the old max-revision provider is discarded before reusing revision zero"
             );
 
-            let _second = app.search_providers();
+            let _second = ui::search::capability::search_providers(&app);
             assert_eq!(
                 app.search_catalog_builds.get(),
                 2,
@@ -4667,7 +4860,8 @@ mod tests {
         {
             let mut app = PlayerApp::new();
             app.request_open_action();
-            let invocation = Widget::take_control_invocation(&mut app).expect("open intent");
+            let invocation =
+                ui::widget::controls::take_control_invocation(&mut app).expect("open intent");
             assert_eq!(invocation.address.resource, "video-player.application");
             assert_eq!(invocation.address.action, "open");
             assert!(
@@ -4681,7 +4875,8 @@ mod tests {
             let item_id = app.queue[1].id.clone();
             let source_before = app.current_source_id.clone();
             app.request_library_play(&item_id);
-            let invocation = Widget::take_control_invocation(&mut app).expect("queue play intent");
+            let invocation =
+                ui::widget::controls::take_control_invocation(&mut app).expect("queue play intent");
             assert_eq!(
                 invocation.address.resource,
                 crate::actions::queue_item_resource_id(&item_id)
@@ -4697,14 +4892,16 @@ mod tests {
             let mut app = PlayerApp::for_shot(None, Some("library"));
             let item_id = app.queue[1].id.clone();
             app.request_library_remove(&item_id);
-            let remove = Widget::take_control_invocation(&mut app).expect("remove intent");
+            let remove =
+                ui::widget::controls::take_control_invocation(&mut app).expect("remove intent");
             assert_eq!(
                 remove.address.resource,
                 crate::actions::queue_item_resource_id(&item_id)
             );
             assert_eq!(remove.address.action, "remove");
             app.request_library_clear();
-            let clear = Widget::take_control_invocation(&mut app).expect("clear intent");
+            let clear =
+                ui::widget::controls::take_control_invocation(&mut app).expect("clear intent");
             assert_eq!(clear.address.resource, "video-player.history.local");
             assert_eq!(clear.address.action, "clear");
         }
@@ -4761,7 +4958,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let recent = Widget::take_control_invocation(&mut app).expect("recent intent");
+            let recent =
+                ui::widget::controls::take_control_invocation(&mut app).expect("recent intent");
             assert_eq!(recent.address.resource, "video-player.history.local");
             assert_eq!(recent.address.action, "show");
             assert_eq!(
@@ -4776,7 +4974,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let close = Widget::take_control_invocation(&mut app).expect("close intent");
+            let close =
+                ui::widget::controls::take_control_invocation(&mut app).expect("close intent");
             assert_eq!(close.address.resource, "video-player.application");
             assert_eq!(close.address.action, "hide-library");
             assert!(app.library_visible, "a11y did not bypass host routing");
@@ -4798,7 +4997,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let close = Widget::take_control_invocation(&mut app).expect("escape close intent");
+            let close = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("escape close intent");
             assert_eq!(close.address.resource, "video-player.application");
             assert_eq!(close.address.action, "hide-library");
             assert!(
@@ -4809,7 +5009,7 @@ mod tests {
         // Case `library_navigation_is_published_as_canonical_actions`.
         {
             let app = PlayerApp::for_shot(None, Some("library"));
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let queue =
                 find_resource(&resources, "video-player.queue.local").expect("queue resource");
             let recent =
@@ -4871,11 +5071,13 @@ mod tests {
             app.library_button_rect = Rect::new(0.0, 0.0, 100.0, 44.0);
             app.last_cursor = Point::new(20.0, 20.0);
             assert!(app.handle_app_pointer(&mut doc));
-            let hide = Widget::take_control_invocation(&mut app).expect("pointer hide intent");
+            let hide = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("pointer hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(app.handle_app_pointer(&mut doc));
-            let recent = Widget::take_control_invocation(&mut app).expect("pointer reopen intent");
+            let recent = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("pointer reopen intent");
             assert_eq!(recent.address.resource, "video-player.history.local");
             assert_eq!(recent.address.action, "show");
 
@@ -4887,7 +5089,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let hide = Widget::take_control_invocation(&mut app).expect("shortcut hide intent");
+            let hide = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("shortcut hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(app.handle_app_shortcut_input(
@@ -4895,7 +5098,8 @@ mod tests {
                 ElementState::Pressed,
                 winit::event::Modifiers::default(),
             ));
-            let shared = Widget::take_control_invocation(&mut app).expect("shortcut reopen intent");
+            let shared = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("shortcut reopen intent");
             assert_eq!(shared.address.resource, "video-player.playlists.shared");
             assert_eq!(shared.address.action, "show");
 
@@ -4910,7 +5114,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let hide = Widget::take_control_invocation(&mut app).expect("a11y hide intent");
+            let hide =
+                ui::widget::controls::take_control_invocation(&mut app).expect("a11y hide intent");
             assert_eq!(hide.address.action, "hide-library");
             app.perform_resource_operation(PlayerOperation::HideLibrary);
             assert!(Widget::perform_semantic_action(
@@ -4920,7 +5125,8 @@ mod tests {
                 &mut doc,
                 &path,
             ));
-            let queue = Widget::take_control_invocation(&mut app).expect("a11y reopen intent");
+            let queue = ui::widget::controls::take_control_invocation(&mut app)
+                .expect("a11y reopen intent");
             assert_eq!(queue.address.resource, "video-player.queue.local");
             assert_eq!(queue.address.action, "show");
         }
@@ -4957,7 +5163,7 @@ mod tests {
             let mut app = synth_app();
             app.open_path(Path::new("/tmp/Clip.mp4"))
                 .expect("source identity available");
-            let resources = Widget::resources(&app, &AutoCommit::new());
+            let resources = ui::resources::resources(&app, &AutoCommit::new());
             let app_resource = &resources[0];
             assert_eq!(app_resource.kind, "video-player.application");
             let media = &app_resource.children[0];
@@ -4992,12 +5198,15 @@ mod tests {
                 &crate::actions::PlayerOperation::TogglePlayback,
             )
             .unwrap();
-            let result = Widget::invoke_resource_operation(
+            let result = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             );
             assert!(result.is_err());
@@ -5010,12 +5219,15 @@ mod tests {
                 &crate::actions::PlayerOperation::TogglePlayback,
             )
             .unwrap();
-            let result = Widget::invoke_resource_operation(
+            let result = Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &AutoCommit::new(),
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload,
+                ),
+                &mut AutoCommit::new(),
                 &automerge::ROOT,
             );
             assert!(result.is_err());
@@ -5338,14 +5550,16 @@ mod tests {
             };
             let payload = serde_json::to_vec(&operation).expect("serialize operation");
             let invocation = tilo_actions::InvocationId::new();
-            let doc = AutoCommit::new();
-            let started = Widget::start_resource_operation(
+            let mut doc = AutoCommit::new();
+            let started = Widget::start_operation(
                 &mut app,
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::OPERATION_TYPE,
-                &payload,
-                &doc,
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::OPERATION_TYPE,
+                    &payload,
+                ),
+                &mut doc,
                 &root(),
             )
             .expect("direct open admits");
@@ -5377,14 +5591,16 @@ mod tests {
             let invocation = tilo_actions::InvocationId::new();
             let mut doc = AutoCommit::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &root(),
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &root()
                 )
                 .expect("queue item admits"),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5419,16 +5635,18 @@ mod tests {
             })
             .expect("serialize operation");
             let invocation = tilo_actions::InvocationId::new();
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             assert_eq!(
-                Widget::start_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &root(),
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &root()
                 )
                 .expect("direct open admits"),
                 Some(ui::widget::ResourceOperationStart::Accepted)
@@ -5436,7 +5654,7 @@ mod tests {
             app.media_open
                 .as_mut()
                 .expect("pending decoder open")
-                .deadline = std::time::Instant::now();
+                .deadline = ui::time::now();
             assert!(matches!(
                 Widget::poll_resource_operation(&mut app, invocation, false, &doc, &root()),
                 Some(tilo_actions::InvocationUpdate::Failed { error, .. })
@@ -5559,9 +5777,9 @@ mod tests {
         // Case `repeated_search_provider_retrieval_does_not_reindex_metadata`.
         {
             let app = PlayerApp::for_shot(None, Some("metadata"));
-            let first = app.search_providers();
+            let first = ui::search::capability::search_providers(&app);
             assert_eq!(app.search_catalog_builds.get(), 1);
-            let second = app.search_providers();
+            let second = ui::search::capability::search_providers(&app);
             assert_eq!(
                 app.search_catalog_builds.get(),
                 1,

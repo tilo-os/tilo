@@ -46,6 +46,34 @@ The Tilo build does not depend on these refs. They are review/export artifacts;
 the existing portable path overrides remain authoritative until the upstream
 changes are accepted and the vendoring can be removed.
 
+## Published forks
+
+The SDK's own crates depend on three forks under their own crates.io names,
+so the SDK can be published (`tools/sdk/publish_check.py`): `tilo-winit`
+(`vendor/winit`), `tilo-accesskit-winit` (`vendor/accesskit_winit`, the
+unchanged 0.34.0 release built on tilo-winit) and `tilo-vello`,
+`tilo-vello-encoding`, `tilo-vello-shaders` (`vendor/vello*`). Each keeps its
+upstream library name, so code still writes `winit::`/`vello::`, and each has
+a `TILO-FORK.md` naming upstream and what differs. Their manifests differ
+from the crates.io originals only in that publication identity (name,
+description, readme, packaged files, renamed dependencies);
+`tools/verify-vendor-trees.py` sets those lines aside.
+
+crates.io crates in the workspace that depend on `winit` (accesskit_winit for
+the shell, smithay) get the fork through `crates/forks/winit`, a facade named
+`winit` that re-exports tilo-winit, so every crate sees one set of winit
+types. vello had no crates.io dependents, so its `[patch]` entries are gone.
+
+The `wgpu-hal` patch stays a `[patch]`: a published SDK builds on the
+crates.io release, and only the optional `presentation-feedback` feature
+needs the patched Metal observer (now part of the `metal` feature, since a
+published crate cannot name a feature the release lacks).
+
+The `wgpu` patch is a `[patch]` too: `Device::poll` reports a lost device
+instead of panicking (vendor/wgpu/TILO-PATCH.md). The compositor needs it to
+survive a GPU reset; an SDK app built on the crates.io release still panics on
+one, as it always has, and its process is restarted.
+
 ## Git forks
 
 Some patches live in public forks on code.tilo.so rather than in this tree.
@@ -67,9 +95,10 @@ change.
 
 `vendor/vello` and `vendor/vello_encoding` are `vello` 0.9.0 and
 `vello_encoding` 0.9.0 from crates.io, verbatim, except for the ten files
-below. Everything else in both trees — including `Cargo.toml`, `Cargo.lock`,
-the licenses and every other `.rs` file — is the unmodified crates.io release;
-diff either tree against the published crate to confirm.
+below and the publication identity in `Cargo.toml` (see "Published forks").
+Everything else in both trees — including `Cargo.lock`, the licenses and
+every other `.rs` file — is the unmodified crates.io release; diff either tree
+against the published crate to confirm.
 
 The patch is one thing: size the bump-allocated scratch buffers from what a
 frame measurably uses instead of from upstream's fixed, worst-case constants.
@@ -108,6 +137,20 @@ measurement this raised it from.
 Own test module (7 tests): the two faults above and the `ptcl` floor gap each
 have a dedicated regression test, plus growth-from-measurement, ceiling and
 the headline "far less than upstream" comparison.
+
+`BumpBudget::max_binding_bytes` caps every bump buffer, floors and growth
+included, at the device's largest storage binding. `CEILING` puts lines and
+segments at 8M x 24 bytes = 192 MiB and the lines floor grows with the path
+tag count, both past WebGPU's default 128 MiB; a bind group past the limit
+fails the device, where a clamped buffer drops geometry the shaders report
+through `BumpAllocators::failed`. `BudgetTracker::set_device_limits` sets it
+from `device.limits()`, rounded down to a size class the engine's buffer pool
+allocates exactly, since the pool rounds requests up and binds whole buffers.
+
+Growth stops at `BumpBudget::ceiling_for_viewport`, not the flat `CEILING`:
+the flat `blend_spill` ceiling (4M words) sat below one spilled blend level
+per tile on a 5120x2880 desktop (14.7M), so every frame overflowed, was
+refused growth, and never converged.
 
 ## `vendor/vello/src/bump_budget.rs` (new)
 
@@ -163,3 +206,46 @@ Adds `ImageCache::atlas_size()`, the atlas's current live side length, for
 ## `vendor/vello_encoding/src/lib.rs`
 
 Re-exports `BumpBudget` from `config`.
+
+## `vendor/vello_shaders/shader/fine.wgsl`
+
+The fine interpreter terminates on any PTCL stream. Upstream loops `while
+true` until `CMD_END`, treats an unknown tag as a no-op that never advances,
+and follows `CMD_JUMP` anywhere — including offset 0, which coarse writes on
+PTCL overflow. A stream coarse did not fully write (a pooled buffer, an
+overflow the fine sentinel missed) can therefore spin forever; on Safari's
+WebGPU that hung the GPU and froze macOS's WindowServer until the watchdog
+rebooted the machine. Fine now stops a tile after `MAX_TILE_COMMANDS`
+commands, on an unknown tag, or on a jump that is not forward and inside the
+buffer, and `fill_segment_count` clamps a fill's segment count to the
+segment buffer. Valid streams render byte-identically (every GPU fixture in
+`vendor/vello/src/lib.rs` passes unchanged).
+
+## Total bump budget (`config.rs`, `bump_budget.rs`, `lib.rs`)
+
+`BumpBudget::fit_total_bytes` shrinks every reservation by one factor until
+the whole budget fits a byte limit; `BudgetTracker` applies it after each
+growth, and `Renderer::set_bump_budget_limit` sets it. The per-binding clamp
+alone still let seven buffers reach 128 MiB each; a browser's GPU process has
+a hard memory limit (Safari's is 600 MB), and Safari's was killed at 842 MB
+mid-frame, which hung the macOS window server.
+
+## `vendor/vello/src/wgpu_engine.rs`: transient images are destroyed
+
+A recording's freed images (the per-frame gradient ramp) are destroyed after
+submission instead of only dropped. On WebGPU a dropped texture lives until
+JavaScript collects it: a 60-window soak kept up to 1,100 of them alive.
+
+## Image atlas limit (`image_cache.rs`, `resolve.rs`, `lib.rs`)
+
+`Renderer::set_image_atlas_max` (through `Resolver::set_image_atlas_max` and
+`ImageCache::set_max_size`) limits how far the image atlas grows; upstream's
+maximum is 8192 px per side, a 256 MB texture. Images that do not fit after
+eviction are omitted and reported, as they already were at the maximum.
+
+## `vendor/vello/src/wgpu_engine.rs`: cleared pools and freed downloads are destroyed
+
+wgpu's WebGPU backend does not destroy a buffer when it is dropped; the GPU
+memory stays until JavaScript collects the object. `clear_pool` (run when the
+bump budget grows) and `free_download` now destroy their buffers, so a budget
+growth does not keep every old buffer resident beside its replacement.

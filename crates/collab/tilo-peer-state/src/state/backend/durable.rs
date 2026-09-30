@@ -1,5 +1,5 @@
 //! Guarded original durable DTO storage, before semantic peer restoration.
-use super::{DurableV4, DurableV5};
+use super::{DurableV4, DurableV5, DurableV6};
 use crate::admission::BoundedExactAdmissions;
 use crate::resources::{OuterLimits, PeerResourceError};
 
@@ -25,7 +25,7 @@ impl DecodedDurable {
     ) -> Result<Self, DurableDecodeError> {
         let (version, _) = postcard::take_from_bytes::<u32>(bytes)
             .map_err(|_| DurableDecodeError::Resource(PeerResourceError::Malformed))?;
-        if !matches!(version, 4 | 5) {
+        if !matches!(version, 4..=6) {
             return Err(DurableDecodeError::UnsupportedVersion);
         }
         // Every path below is one of the closed schemas.
@@ -44,6 +44,17 @@ impl DecodedDurable {
                 }
                 // The input borrow cannot escape: decode the canonical exact
                 // index now, then move the owned V4 base.
+                let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
+                    .map_err(DurableDecodeError::Resource)?;
+                (value.base, Some(exact))
+            }
+            // Bounded reads refuse encrypted records, so the sealed history
+            // is only bounded here, never kept.
+            6 => {
+                let value = decode!(DurableV6<'_>);
+                if value.version != 6 || value.base.version != 4 || value.sealed.is_empty() {
+                    return Err(DurableDecodeError::Envelope);
+                }
                 let exact = BoundedExactAdmissions::decode(value.exact, exact_limits)
                     .map_err(DurableDecodeError::Resource)?;
                 (value.base, Some(exact))

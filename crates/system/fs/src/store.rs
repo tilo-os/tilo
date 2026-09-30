@@ -18,8 +18,9 @@
 //! ([`ContentStore::blobs_protocol`]).
 
 use std::collections::HashSet;
-use std::io::ErrorKind;
+use std::future::Future;
 use std::path::Path;
+use std::pin::Pin;
 use std::sync::{
     Arc, RwLock,
     atomic::{AtomicBool, Ordering},
@@ -35,7 +36,7 @@ use iroh_blobs::api::blobs::BlobStatus;
 use iroh_blobs::provider::events::EventSender;
 use iroh_blobs::store::fs::FsStore;
 use iroh_blobs::store::mem::MemStore;
-use iroh_blobs::store::{GcConfig, ProtectOutcome};
+use iroh_blobs::store::{GcConfig, ProtectCb, ProtectOutcome};
 use iroh_blobs::{BlobFormat, BlobsProtocol, Hash};
 use moka::sync::Cache;
 
@@ -64,8 +65,6 @@ pub const MAX_BLOB_LOOKUP_MANIFEST_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_BLOB_LOOKUP_CHUNKS_PER_RECORD: usize = 100_000;
 
 const OWNED_BLOB_TAG_PREFIX: &str = "tilo/blob/v1/";
-const OWNED_TAG_MIGRATION_MARKER: &str = ".tilo-owned-blob-tags-v1";
-const OWNED_TAG_MIGRATION_MARKER_CONTENTS: &[u8] = b"tilo-owned-blob-tags-v1\n";
 
 /// Persistent stores sweep unreferenced blobs periodically. Explicit eviction
 /// does not wait for this interval; callers observe the queue to learn when a
@@ -166,7 +165,7 @@ pub struct ContentStore {
     /// Serializes publication with the legacy selective-GC API.
     mutation: tokio::sync::Mutex<()>,
     /// Exact live set supplied only for an authorized selective sweep.
-    gc_live: Arc<RwLock<Option<HashSet<Hash>>>>,
+    gc: GcGate,
     /// Open deferred-durability groups, and whether a write inside one
     /// still waits for its database sync; see [`ContentStore::defer_sync`].
     deferred: std::sync::Mutex<(usize, bool)>,
@@ -266,13 +265,10 @@ impl ContentStore {
 
     /// Open a persistent store with background garbage collection enabled.
     ///
-    /// GC starts in an aborting state so the first sweep cannot race legacy
-    /// tag migration. Only a fully successful migration enables sweeping.
-    ///
     /// # Errors
     ///
-    /// Returns an error when configuration, directory creation, store loading,
-    /// or legacy-tag migration fails.
+    /// Returns an error when configuration, directory creation or store
+    /// loading fails.
     pub async fn open_with_gc_interval(
         cache_dir: impl AsRef<Path>,
         gc_interval: Duration,
@@ -287,43 +283,23 @@ impl ContentStore {
         std::fs::create_dir_all(files_dir)?;
         let files = Arc::new(FileArea::open(files_dir, default_budget(files_dir))?);
         let gc_ready = Arc::new(AtomicBool::new(false));
-        let ready = Arc::clone(&gc_ready);
-        let gc_live = Arc::new(RwLock::new(None));
-        let live = Arc::clone(&gc_live);
+        let gc = GcGate::default();
         let mut options = iroh_blobs::store::fs::options::Options::new(dir);
-        options.gc = Some(GcConfig {
-            // Selective eviction is an explicit user action and must not wait
-            // for the ordinary maintenance cadence. Unscoped passes abort in
-            // the callback below, so a short poll is cheap and cannot collect
-            // anything until an exact authorized live set is installed.
-            interval: gc_interval.min(Duration::from_millis(50)),
-            add_protected: Some(Arc::new(move |live_set: &mut HashSet<Hash>| {
-                if !ready.load(Ordering::Acquire) {
-                    return Box::pin(async { ProtectOutcome::Abort });
-                }
-                let snapshot = live
-                    .read()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .clone();
-                match snapshot {
-                    Some(snapshot) => {
-                        live_set.extend(snapshot);
-                        Box::pin(async { ProtectOutcome::Continue })
-                    }
-                    None => Box::pin(async { ProtectOutcome::Abort }),
-                }
-            })),
-        });
+        // Selective eviction is an explicit user action and must not wait
+        // for the ordinary maintenance cadence. Unscoped passes wait in the
+        // callback, so the short interval only separates the sweeps of one
+        // authorized eviction and cannot collect anything until an exact
+        // live set is installed.
+        options.gc = Some(gc.config(
+            gc_interval.min(Duration::from_millis(50)),
+            Some(Arc::clone(&gc_ready)),
+        ));
         let runtime = StoreRuntime::new()?;
         let root = dir.to_path_buf();
         let store = runtime
             .handle()
             .ok_or_else(|| anyhow::anyhow!("content store runtime is gone"))?
-            .spawn(async move {
-                let store = FsStore::load_with_opts(root.join("blobs.db"), options).await?;
-                migrate_legacy_auto_tags(&store, &root).await?;
-                Ok::<_, anyhow::Error>(store)
-            })
+            .spawn(async move { FsStore::load_with_opts(root.join("blobs.db"), options).await })
             .await
             .map_err(|error| anyhow::anyhow!("opening the content store failed: {error}"))??;
         gc_ready.store(true, Ordering::Release);
@@ -332,7 +308,7 @@ impl ContentStore {
             cache: Cache::new(2048),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
-            gc_live,
+            gc,
             deferred: std::sync::Mutex::new((0, false)),
             files,
             _scratch: None,
@@ -360,16 +336,16 @@ impl ContentStore {
     }
 
     fn memory_with_files(files: Arc<FileArea>, scratch: Option<tempfile::TempDir>) -> Self {
-        let gc_live = Arc::new(RwLock::new(None));
+        let gc = GcGate::default();
         let options = iroh_blobs::store::mem::Options {
-            gc_config: Some(eviction_gc(gc_live.clone())),
+            gc_config: Some(gc.config(Duration::from_millis(50), None)),
         };
         Self {
             backend: Backend::Mem(MemStore::new_with_opts(options)),
             cache: Cache::new(2048),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
-            gc_live,
+            gc,
             deferred: std::sync::Mutex::new((0, false)),
             files,
             _scratch: scratch,
@@ -410,7 +386,7 @@ impl ContentStore {
             cache: Cache::new(2048),
             owned_tags: tokio::sync::Mutex::new(()),
             mutation: tokio::sync::Mutex::new(()),
-            gc_live: Arc::new(RwLock::new(None)),
+            gc: GcGate::default(),
             deferred: std::sync::Mutex::new((0, false)),
             files,
             _scratch: Some(scratch),
@@ -602,10 +578,7 @@ impl ContentStore {
         for name in selected_tags {
             self.store().tags().delete(name).await?;
         }
-        *self
-            .gc_live
-            .write()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        self.gc.authorize(live);
         let deadline = tokio::time::Instant::now()
             .checked_add(EVICTION_HANG_BOUND)
             .unwrap_or_else(tokio::time::Instant::now);
@@ -615,10 +588,7 @@ impl ContentStore {
                 let remaining_time =
                     deadline.saturating_duration_since(tokio::time::Instant::now());
                 if remaining_time.is_zero() {
-                    *self
-                        .gc_live
-                        .write()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                    self.gc.revoke();
                     anyhow::bail!("selected blobs remained after eviction deadline");
                 }
                 // Backends may stall a `has` query during a sweep. Bound the
@@ -635,18 +605,12 @@ impl ContentStore {
                 }
             }
             if !remaining {
-                *self
-                    .gc_live
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.gc.revoke();
                 let after_count = self.store().blobs().list().hashes().await?.len();
                 return Ok(before_count.saturating_sub(after_count) as u64);
             }
             if tokio::time::Instant::now() >= deadline {
-                *self
-                    .gc_live
-                    .write()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+                self.gc.revoke();
                 anyhow::bail!("selected blobs remained after eviction deadline");
             }
             tokio::time::sleep(Duration::from_millis(25)).await;
@@ -1096,82 +1060,83 @@ fn owned_blob_tag(hash: Hash, format: BlobFormat) -> String {
     format!("{OWNED_BLOB_TAG_PREFIX}{format}/{hash}")
 }
 
-/// Upgrade tags created by the prototype's default `add_bytes().await`
-/// behavior. Promotion is ordered so a crash can only leave both tags, never
-/// an unprotected blob: install the deterministic owned tag first, then remove
-/// the legacy tag. The durable marker is written only after the entire scan.
-/// Any corrupt marker or migration error aborts store startup.
-async fn migrate_legacy_auto_tags(store: &FsStore, cache_dir: &Path) -> Result<()> {
-    let marker = cache_dir.join(OWNED_TAG_MIGRATION_MARKER);
-    match std::fs::read(&marker) {
-        // A valid marker records the understood schema, but we still rescan.
-        // That makes startup self-healing if an older binary wrote another
-        // `auto-*` tag after the first migration.
-        Ok(contents) if contents == OWNED_TAG_MIGRATION_MARKER_CONTENTS => {}
-        Ok(_) => anyhow::bail!(
-            "invalid owned blob tag migration marker at {}",
-            marker.display()
-        ),
-        Err(error) if error.kind() == ErrorKind::NotFound => {}
-        Err(error) => return Err(error.into()),
-    }
-
-    // Collect before mutating so the result does not depend on whether the
-    // backend's range stream is a snapshot or a live cursor.
-    let mut stream = store.tags().list_prefix("auto-").await?;
-    let mut legacy = Vec::new();
-    while let Some(info) = stream.next().await {
-        legacy.push(info?);
-    }
-    drop(stream);
-
-    let mut protected = Vec::with_capacity(legacy.len());
-    for info in &legacy {
-        let value = iroh_blobs::HashAndFormat {
-            hash: info.hash,
-            format: info.format,
-        };
-        let temporary = store.tags().temp_tag(value).await?;
-        store
-            .tags()
-            .set(owned_blob_tag(info.hash, info.format), value)
-            .await?;
-        protected.push(temporary);
-    }
-    // Establish all owned tags durably before removing a single legacy tag.
-    store.sync_db().await?;
-    for info in legacy {
-        store.tags().delete(info.name).await?;
-    }
-    store.sync_db().await?;
-    drop(protected);
-
-    atomic_file::write(&marker, OWNED_TAG_MIGRATION_MARKER_CONTENTS)?;
-    Ok(())
-}
-
 /// How long an eviction waits for the blob store's GC to delete the selected
 /// blobs. The wait ends as soon as the next pass removes them; a pass over a
 /// large store on a loaded disk can take seconds, so this bound only catches
 /// a GC that has stopped.
 const EVICTION_HANG_BOUND: Duration = Duration::from_secs(60);
 
-fn eviction_gc(live: Arc<RwLock<Option<HashSet<Hash>>>>) -> GcConfig {
-    GcConfig {
-        interval: std::time::Duration::from_millis(50),
-        add_protected: Some(Arc::new(move |protected| {
-            let snapshot = live
-                .read()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .clone();
-            match snapshot {
-                Some(snapshot) => {
+/// The blob store's background GC runs only while an authorized selective
+/// sweep holds an exact live set.
+///
+/// iroh-blobs polls its protect callback on a fixed interval and exposes no
+/// way to trigger a pass. Answering `Abort` to every idle poll costs a wakeup
+/// and an INFO log line per interval, forever; instead the callback's future
+/// stays pending until [`Self::authorize`] wakes it, so an idle store costs
+/// nothing.
+#[derive(Clone, Default)]
+struct GcGate {
+    live: Arc<RwLock<Option<HashSet<Hash>>>>,
+    wake: Arc<tokio::sync::Notify>,
+}
+
+impl GcGate {
+    /// Let the next sweeps collect everything outside `live`.
+    fn authorize(&self, live: HashSet<Hash>) {
+        *self
+            .live
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(live);
+        self.wake.notify_one();
+    }
+
+    /// Park the GC again once the sweep this live set was installed for is over.
+    fn revoke(&self) {
+        *self
+            .live
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = None;
+    }
+
+    fn snapshot(&self) -> Option<HashSet<Hash>> {
+        self.live
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    /// A GC configuration whose passes wait for [`Self::authorize`] and, when
+    /// `ready` is given, for it to be set.
+    fn config(&self, interval: Duration, ready: Option<Arc<AtomicBool>>) -> GcConfig {
+        let gate = self.clone();
+        let protect: ProtectCb =
+            Arc::new(move |protected| gate.clone().protect(ready.clone(), protected));
+        GcConfig {
+            interval,
+            add_protected: Some(protect),
+        }
+    }
+
+    fn protect(
+        self,
+        ready: Option<Arc<AtomicBool>>,
+        protected: &mut HashSet<Hash>,
+    ) -> Pin<Box<dyn Future<Output = ProtectOutcome> + Send + Sync + '_>> {
+        Box::pin(async move {
+            loop {
+                let authorized = self.wake.notified();
+                let snapshot = ready
+                    .as_ref()
+                    .is_none_or(|ready| ready.load(Ordering::Acquire))
+                    .then(|| self.snapshot())
+                    .flatten();
+                if let Some(snapshot) = snapshot {
                     protected.extend(snapshot);
-                    Box::pin(async { ProtectOutcome::Continue })
+                    return ProtectOutcome::Continue;
                 }
-                None => Box::pin(async { ProtectOutcome::Abort }),
+                authorized.await;
             }
-        })),
+        })
     }
 }
 
@@ -1186,6 +1151,43 @@ mod tests {
             names.push(tag.unwrap().name.as_ref().to_vec());
         }
         names
+    }
+
+    #[tokio::test]
+    async fn idle_gc_waits_for_an_authorized_live_set_instead_of_polling() {
+        let gate = GcGate::default();
+        let ready = Arc::new(AtomicBool::new(false));
+        let config = gate.config(Duration::from_millis(50), Some(Arc::clone(&ready)));
+        let protect = config.add_protected.expect("a protect callback");
+        let kept = Hash::new(b"kept");
+
+        let mut protected = HashSet::new();
+        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
+        assert!(pass.is_err(), "an unauthorized pass must stay parked");
+
+        // A live set before the store is ready still does not release a pass.
+        gate.authorize(HashSet::from([kept]));
+        let pass = tokio::time::timeout(Duration::from_millis(100), protect(&mut protected)).await;
+        assert!(
+            pass.is_err(),
+            "a pass must not run before the store is ready"
+        );
+
+        ready.store(true, Ordering::Release);
+        gate.revoke();
+        let mut protected = HashSet::new();
+        let parked = protect(&mut protected);
+        let authorize = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            gate.authorize(HashSet::from([kept]));
+        };
+        let (outcome, ()) = tokio::time::timeout(Duration::from_secs(5), async {
+            tokio::join!(parked, authorize)
+        })
+        .await
+        .expect("authorizing wakes the parked pass");
+        assert!(matches!(outcome, ProtectOutcome::Continue));
+        assert_eq!(protected, HashSet::from([kept]));
     }
 
     #[tokio::test]
@@ -1288,77 +1290,6 @@ mod tests {
             assert!(reopened.local(selected).await.is_none());
             reopened.store().shutdown().await.unwrap();
         }
-        // Phase `persistent_store_migrates_auto_tags_and_survives_restart`.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            let bytes = Bytes::from_static(b"legacy persistent blob");
-            let legacy_hash = {
-                let legacy = FsStore::load(temp.path()).await.unwrap();
-                let tag = legacy.blobs().add_bytes(bytes.clone()).await.unwrap();
-                assert!(tag.name.as_ref().starts_with(b"auto-"));
-                let hash = tag.hash;
-                legacy.shutdown().await.unwrap();
-                drop(legacy);
-                hash
-            };
-
-            {
-                let store = ContentStore::open(temp.path()).await.unwrap();
-                assert_eq!(store.local(legacy_hash).await, Some(bytes.clone()));
-                assert_eq!(
-                    tag_names(store.store()).await,
-                    vec![owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes()]
-                );
-                assert_eq!(
-                    std::fs::read(temp.path().join(OWNED_TAG_MIGRATION_MARKER)).unwrap(),
-                    OWNED_TAG_MIGRATION_MARKER_CONTENTS
-                );
-                store.store().shutdown().await.unwrap();
-            }
-
-            // A valid marker is not permission to trust the tag set blindly. If an
-            // older binary writes another auto tag, the next startup rescans and
-            // converges it as well.
-            let late_bytes = Bytes::from_static(b"written by an older binary");
-            let late_hash = {
-                let legacy = FsStore::load(temp.path()).await.unwrap();
-                let tag = legacy.blobs().add_bytes(late_bytes.clone()).await.unwrap();
-                assert!(tag.name.as_ref().starts_with(b"auto-"));
-                legacy.shutdown().await.unwrap();
-                tag.hash
-            };
-
-            let reopened = ContentStore::open(temp.path()).await.unwrap();
-            assert_eq!(reopened.local(legacy_hash).await, Some(bytes));
-            assert_eq!(reopened.local(late_hash).await, Some(late_bytes));
-            let mut names = tag_names(reopened.store()).await;
-            names.sort();
-            let mut expected = vec![
-                owned_blob_tag(legacy_hash, BlobFormat::Raw).into_bytes(),
-                owned_blob_tag(late_hash, BlobFormat::Raw).into_bytes(),
-            ];
-            expected.sort();
-            assert_eq!(names, expected);
-        }
-        // Phase `corrupt_owned_tag_migration_marker_fails_closed`.
-        {
-            let temp = tempfile::tempdir().unwrap();
-            atomic_file::write(
-                &temp.path().join(OWNED_TAG_MIGRATION_MARKER),
-                b"unknown migration state\n",
-            )
-            .unwrap();
-
-            let error = ContentStore::open(temp.path())
-                .await
-                .err()
-                .expect("corrupt migration marker must reject startup");
-            assert!(
-                error
-                    .to_string()
-                    .contains("invalid owned blob tag migration marker")
-            );
-        }
     }
 
     #[tokio::test]
@@ -1402,10 +1333,13 @@ mod tests {
         {
             let store = ContentStore::memory();
             let missing = iroh_blobs::Hash::new(b"not persisted");
-            let manifest = crate::content::Manifest::legacy(vec![crate::content::ChunkRef {
-                hash: *missing.as_bytes(),
-                len: 13,
-            }]);
+            let manifest = crate::content::Manifest::new(
+                crate::content::ChunkTier::Small,
+                vec![crate::content::ChunkRef {
+                    hash: *missing.as_bytes(),
+                    len: 13,
+                }],
+            );
             let manifest_hash = store.ingest(Bytes::from(manifest.encode())).await.unwrap();
             let revision = collab_types::ContentRevisionV1 {
                 schema_version: collab_types::CONTENT_REVISION_VERSION,
@@ -1864,16 +1798,19 @@ mod tests {
             let first_only_chunk = store.ingest(Bytes::from_static(b"first")).await.unwrap();
             let second_only_chunk = store.ingest(Bytes::from_static(b"second")).await.unwrap();
             let manifest = |unique: Hash| {
-                crate::content::Manifest::legacy(vec![
-                    crate::content::ChunkRef {
-                        hash: *shared_chunk.as_bytes(),
-                        len: 6,
-                    },
-                    crate::content::ChunkRef {
-                        hash: *unique.as_bytes(),
-                        len: 6,
-                    },
-                ])
+                crate::content::Manifest::new(
+                    crate::content::ChunkTier::Small,
+                    vec![
+                        crate::content::ChunkRef {
+                            hash: *shared_chunk.as_bytes(),
+                            len: 6,
+                        },
+                        crate::content::ChunkRef {
+                            hash: *unique.as_bytes(),
+                            len: 6,
+                        },
+                    ],
+                )
             };
             let first_manifest = store
                 .ingest(Bytes::from(manifest(first_only_chunk).encode()))

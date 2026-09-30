@@ -144,6 +144,10 @@ pub struct FramePaint {
     pub revision: u64,
     pub previous_revision: Option<u64>,
     pub damage_regions: Option<Vec<FineDamageRect>>,
+    /// HDR surfaces drawn in `scene`, in scene pixels. A presenter driving an
+    /// HDR output composites them at full precision; any other rendering of
+    /// `scene` shows their tone-mapped SDR rendition.
+    pub hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
 }
 
 impl FramePaint {
@@ -154,7 +158,15 @@ impl FramePaint {
             revision: 0,
             previous_revision: None,
             damage_regions: None,
+            hdr_layers: Vec::new(),
         }
+    }
+
+    /// The same frame, with `layers` composited where HDR is shown.
+    #[must_use]
+    pub fn with_hdr_layers(mut self, layers: Vec<crate::shell::hdr_surface::HdrLayer>) -> Self {
+        self.hdr_layers = layers;
+        self
     }
 
     /// External scene mutation invalidates every retained-damage proof.
@@ -433,6 +445,8 @@ pub struct FrameBuilder {
     /// revision mismatch at the bridge and safely selects its dense path.
     last_produced_sections: Option<ProducedSections>,
     next_scene_revision: u64,
+    /// HDR layers of the latest [`Self::paint`], until taken.
+    painted_hdr_layers: Vec<crate::shell::hdr_surface::HdrLayer>,
     /// What the pointer shows right now, so captures draw the same image.
     pointer_image: crate::compositor::cursor::PointerImage,
 }
@@ -641,6 +655,7 @@ impl FrameBuilder {
             native_focus_ordinal: None,
             last_produced_sections: None,
             next_scene_revision: 1,
+            painted_hdr_layers: Vec::new(),
             pointer_image: crate::compositor::cursor::PointerImage::default(),
         };
         builder.rebuild_layout_tree();
@@ -1136,8 +1151,54 @@ impl FrameBuilder {
     /// every display draws its part of the desktop at its own scale. Caller
     /// hands it to a renderer (offscreen/live/compositor backend).
     pub fn paint(&mut self) -> Scene {
+        let recording = self
+            .hdr_layers_composited()
+            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
         let logical = self.paint_logical();
+        let layers = recording.map(crate::shell::hdr_surface::HdrLayerRecording::finish);
+        self.painted_hdr_layers = self.hdr_layers_to_scene(layers.unwrap_or_default());
         self.to_scene(logical)
+    }
+
+    /// The HDR layers the latest [`Self::paint`] drew, in scene pixels.
+    pub fn take_hdr_layers(&mut self) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+        std::mem::take(&mut self.painted_hdr_layers)
+    }
+
+    /// Whether HDR surfaces may be composited outside the scene. A
+    /// whole-desktop colour filter or magnifier transforms everything vello
+    /// draws, so while one is on HDR surfaces show their SDR rendition with
+    /// it.
+    fn hdr_layers_composited(&self) -> bool {
+        !(self.watch_configured_theme
+            && (self.night_light
+                || !matches!(
+                    self.visual_accessibility.color_filter,
+                    DesktopColorFilter::None
+                )
+                || self.visual_accessibility.magnifier.is_on()))
+    }
+
+    /// Layers recorded in logical coordinates, as [`Self::to_scene`] places
+    /// the scene they were drawn in: once per display, magnified and clipped.
+    fn hdr_layers_to_scene(
+        &self,
+        layers: Vec<crate::shell::hdr_surface::HdrLayer>,
+    ) -> Vec<crate::shell::hdr_surface::HdrLayer> {
+        match &self.outputs {
+            Some(outputs) if !output_scene::is_identity(outputs) => outputs
+                .iter()
+                .flat_map(|output| {
+                    let transform = output.to_scene();
+                    layers.iter().filter_map(move |layer| {
+                        layer
+                            .transformed(Affine::IDENTITY, output.rect())
+                            .and_then(|clipped| clipped.transformed(transform, output.scene))
+                    })
+                })
+                .collect(),
+            _ => layers,
+        }
     }
 
     /// The painted desktop in scene pixels. Passes the logical scene through
@@ -1253,6 +1314,9 @@ impl FrameBuilder {
     pub fn paint_with_damage(&mut self) -> FramePaint {
         self.refresh_configured_theme();
         self.refresh_magnifier();
+        let recording = self
+            .hdr_layers_composited()
+            .then(crate::shell::hdr_surface::HdrLayerRecording::begin);
         let mut sections = self.host.draw_scene_sections(
             Affine::IDENTITY,
             &mut self.text_renderer,
@@ -1308,6 +1372,11 @@ impl FrameBuilder {
             );
         }
 
+        let hdr_layers = self.hdr_layers_to_scene(
+            recording
+                .map(crate::shell::hdr_surface::HdrLayerRecording::finish)
+                .unwrap_or_default(),
+        );
         let revision = self.next_scene_revision;
         self.next_scene_revision = self.next_scene_revision.saturating_add(1);
         let previous_revision = self
@@ -1375,6 +1444,7 @@ impl FrameBuilder {
             revision,
             previous_revision,
             damage_regions,
+            hdr_layers,
         }
     }
 
@@ -1724,6 +1794,19 @@ impl FrameBuilder {
         self.peer_presence.as_ref()
     }
 
+    /// Tell the peer-presence relay where this session's pointer is: scene
+    /// point `at`, anchored to the tile under it so collaborators can place
+    /// it on their own desks (see [`crate::shell::peer_presence::PointerAnchor`]).
+    /// `None` — a pointer that has never moved — stays silent.
+    pub fn note_local_pointer(&self, at: Option<(f64, f64)>) {
+        let Some(relay) = self.peer_presence.as_ref() else {
+            return;
+        };
+        let tiles = self.host.tab_tiles();
+        relay
+            .set_pointer(at.and_then(|at| crate::shell::peer_presence::anchor_pointer(&tiles, at)));
+    }
+
     /// Fold everything peers sent since the last frame into the presence the
     /// next paint reads, then restate who is in the room. Returns whether
     /// either changed. The roster refresh runs regardless of whether the
@@ -1733,7 +1816,8 @@ impl FrameBuilder {
         let Some(relay) = self.peer_presence.as_ref() else {
             return false;
         };
-        let moved = relay.pump(&mut self.presence);
+        let tiles = self.host.tab_tiles();
+        let moved = relay.pump(&mut self.presence, &tiles);
         let roster_changed = relay.refresh_roster(&self.presence);
         moved || roster_changed
     }
@@ -1826,6 +1910,77 @@ impl FrameBuilder {
         self.animation_demand().any()
     }
 
+    pub(crate) fn content_animating_leaves(&self) -> Vec<String> {
+        self.host.content_animating_leaves()
+    }
+
+    /// Who holds [`Self::next_wake_deadline`]: chrome sources by name, and
+    /// widgets by path. Empty when nothing will wake the loop. Allocates, so
+    /// only diagnostics and tests call it.
+    pub fn wake_deadline_owners(&self) -> Vec<String> {
+        let Some(due) = self.next_wake_deadline() else {
+            return Vec::new();
+        };
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
+        let mut owners = self.host.wake_deadline_owners(due);
+        for (_, surface) in &self.floating_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if holds(
+            self.osk_overlay
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
+        ) {
+            owners.push("osk".to_string());
+        }
+        if holds(self.chrome.borrow().window_transfers.next_poll()) {
+            owners.push("window-transfers".to_string());
+        }
+        owners
+    }
+
+    /// Paths to the deepest widgets asking for animation frames, host
+    /// sources by label; empty when the loop may idle. For tests and
+    /// diagnostics.
+    pub fn animation_owners(&self) -> Vec<String> {
+        let demand = self.animation_demand();
+        let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
+            .filter(|label| *label != "content")
+            .map(str::to_string)
+            .collect();
+        if demand.host & (1 << 10) != 0 {
+            owners.extend(
+                self.content_animating_leaves()
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+            );
+        }
+        for (_, surface) in &self.floating_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if demand.osk {
+            owners.push("osk".to_string());
+        }
+        owners
+    }
+
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
         AnimationDemand {
             host: self.host.animation_demand_bits(Instant::now()),
@@ -1861,10 +2016,22 @@ impl FrameBuilder {
                 .as_ref()
                 .and_then(Widget::next_wake_deadline),
             self.chrome.borrow().window_transfers.next_poll(),
+            self.peer_windows_poll(),
         ]
         .into_iter()
         .flatten()
         .min()
+    }
+
+    /// A round soon while a peer's window waits to be opened here: its room's
+    /// update may land after this round's decision, with nothing left to wake
+    /// an idle session for it (a window waiting on its record, too).
+    fn peer_windows_poll(&self) -> Option<Instant> {
+        let chrome = self.chrome.borrow();
+        let tree = chrome.tree();
+        crate::shell::peer_windows::any_pending(&tree)
+            .then(|| Instant::now().checked_add(std::time::Duration::from_millis(250)))
+            .flatten()
     }
 
     /// Whether any tab is still holding a place for an app that hasn't drawn
@@ -2017,13 +2184,17 @@ impl FrameBuilder {
         // their placeholder wherever they are, on screen or not.
         let _capture = crate::shell::capture_protection::CapturePaint::begin();
         let rects = self.host.draw_capture_targets(
-            target_ids,
-            extent,
-            complete_semantic_content,
-            &mut scene,
-            Affine::IDENTITY,
-            &mut self.text_renderer,
-            &self.theme,
+            &ui::widget::LiveCapture {
+                target_ids,
+                extent,
+                complete_semantic_content,
+            },
+            &mut ui::paint::PaintCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut self.text_renderer,
+                &self.theme,
+            ),
             &self.presence,
         );
         (scene, rects)
@@ -2683,14 +2854,16 @@ impl FrameBuilder {
             let (host, taffy) = self.host_and_taffy_mut();
             host.handle_event(
                 event,
-                1.0,
-                modifiers,
-                state,
-                root_obj,
-                &mut handled,
-                &mut focus_target,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers,
+                    state,
+                    path: root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         // Apply the requested focus change: drop old widget's focus, raise
@@ -3093,6 +3266,9 @@ mod tests {
         fn startup_keeps_unread_activity_passive() {
             let mut frame =
                 crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+            crate::shell::test_support::collaborator_renames_active_workspace(
+                &mut frame.chrome().tree_mut(),
+            );
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,
@@ -3457,10 +3633,49 @@ mod tests {
             crate::shell::foreign::store().forget(SURFACE);
         }
 
+        fn hdr_surfaces_are_recorded_as_frame_layers() {
+            const SURFACE: u64 = 9_900_702;
+            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+                crate::collab::colorimetry::Colorimetry::hdr10(),
+                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+            )
+            .expect("PQ");
+            let plane =
+                crate::shell::hdr_surface::HdrPlane::from_signal_rgb(2, 2, [[0.6; 3]; 4], signal)
+                    .expect("plane");
+            let plane_id = plane.id();
+            crate::shell::foreign::store().publish_hdr_frame(SURFACE, &[40; 16], plane);
+            let mut fb = FrameBuilder::new((1600, 900));
+            fb.set_osk_surface(Some(SURFACE), None, true);
+
+            let frame = fb.paint_with_damage();
+            let [layer] = frame.hdr_layers.as_slice() else {
+                panic!("one HDR layer, got {}", frame.hdr_layers.len());
+            };
+            assert_eq!(layer.plane.id(), plane_id);
+            assert_eq!(layer.channel, 0);
+            assert!(
+                layer.bounds.width() > 2.0 && layer.bounds.y1 <= 900.0,
+                "the keyboard's surface is scaled into its bottom panel: {:?}",
+                layer.bounds
+            );
+            let _ = fb.paint();
+            assert_eq!(fb.take_hdr_layers().len(), 1, "the dense paint records too");
+            assert!(fb.take_hdr_layers().is_empty(), "taken once");
+
+            crate::shell::foreign::store().publish_rgba(SURFACE, &[40; 16], 2, 2);
+            assert!(
+                fb.paint_with_damage().hdr_layers.is_empty(),
+                "an SDR frame has none"
+            );
+            crate::shell::foreign::store().forget(SURFACE);
+        }
+
         native_damage_covers_clip_tiles_and_clamps_the_viewport();
         transfer_proxy_covers_both_ownership_edges_until_destination_pixels_exist();
         night_light_is_neutral_at_daylight_and_warmer_at_lower_kelvin();
         osk_overlay_is_bottom_anchored_and_active_only();
+        hdr_surfaces_are_recorded_as_frame_layers();
     }
 
     fn key_press(key: Key) -> WindowEvent {
@@ -4264,9 +4479,35 @@ mod tests {
             );
         }
 
+        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
+        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        fn super_f_on_a_tilo_group_covers_the_wheel() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+            let during = fb.widget_registry();
+            let row = rect_named(&during, "GroupRow");
+            assert!(
+                row.width() >= fb.viewport().0 - 1.0,
+                "Super+F must cover the wheel; row width {} vs output {}",
+                row.width(),
+                fb.viewport().0,
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() <= 0.5,
+                "Super+F hides the top bar"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
+        super_f_on_a_tilo_group_covers_the_wheel();
     }
 
     /// Look up a widget's rect by its *last* path segment

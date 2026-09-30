@@ -540,6 +540,107 @@ async fn slow_body_and_unanswered_control_expire_and_release_admission() {
     assert_eq!(receiver.available_bytes(), receiver.initial_bytes);
 }
 
+#[test]
+fn public_dns_origin_keeps_exact_host_and_origin_checks() {
+    let origin = Origin::parse("https://c1.viewer.example").unwrap();
+    assert!(!origin.loopback);
+    assert_eq!(origin.port, 443);
+    let request = |host: &str, from: &str| {
+        Request::builder()
+            .method("GET")
+            .uri("/peer/v3/descriptor")
+            .header("host", host)
+            .header("origin", from)
+            .header("sec-fetch-site", "same-origin")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    let same = request("c1.viewer.example", "https://c1.viewer.example");
+    check_origin(&same, &origin).unwrap();
+    for (host, from) in [
+        ("c2.viewer.example", "https://c1.viewer.example"),
+        ("c1.viewer.example", "https://c2.viewer.example"),
+        ("c1.viewer.example:7392", "https://c1.viewer.example"),
+        ("localhost:9443", "https://c1.viewer.example"),
+    ] {
+        assert_eq!(
+            check_origin(&request(host, from), &origin)
+                .unwrap_err()
+                .status,
+            StatusCode::FORBIDDEN,
+            "{host} {from}"
+        );
+    }
+    for bad in [
+        "https://C1.viewer.example",
+        "https://203.0.113.9",
+        "https://c1.viewer.example:0",
+        "https://user@c1.viewer.example",
+        "http://c1.viewer.example",
+    ] {
+        assert!(Origin::parse(bad).is_err(), "{bad}");
+    }
+    assert!(Origin::parse("https://[::1]:9443").unwrap().loopback);
+}
+
+#[test]
+fn only_an_embeddable_origin_accepts_a_dashboard_iframe_and_only_for_pages() {
+    let request = |path: &str, dest: &str, site: &str| {
+        Request::builder()
+            .method("GET")
+            .uri(path)
+            .header("host", "c1.viewer.example")
+            .header("sec-fetch-site", site)
+            .header("sec-fetch-mode", "navigate")
+            .header("sec-fetch-dest", dest)
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0
+    };
+    let closed = Origin::parse("https://c1.viewer.example").unwrap();
+    let mut open = Origin::parse("https://c1.viewer.example").unwrap();
+    open.frame_ancestors = Some(
+        frame_ancestors_policy(&[
+            "https://dash.partner.example".into(),
+            "http://127.0.0.1:9981".into(),
+        ])
+        .unwrap(),
+    );
+    assert_eq!(
+        open.frame_ancestors.as_ref().unwrap(),
+        "frame-ancestors https://dash.partner.example http://127.0.0.1:9981"
+    );
+    let framed = request("/", "iframe", "cross-site");
+    assert_eq!(
+        check_origin(&framed, &closed).unwrap_err().status,
+        StatusCode::FORBIDDEN
+    );
+    check_origin(&framed, &open).unwrap();
+    check_origin(&request("/assets/app.js", "iframe", "same-site"), &open).unwrap();
+    for refused in [
+        request("/peer/v3/descriptor", "iframe", "cross-site"),
+        request("/tilo-peer/enrollment/challenge", "iframe", "cross-site"),
+        request("/", "document", "cross-site"),
+        request("/", "script", "cross-site"),
+    ] {
+        assert_eq!(
+            check_origin(&refused, &open).unwrap_err().status,
+            StatusCode::FORBIDDEN
+        );
+    }
+    for bad in [
+        vec![],
+        vec!["http://dash.partner.example".to_string()],
+        vec!["https://dash.partner.example/app".to_string()],
+        vec!["*".to_string()],
+    ] {
+        assert!(frame_ancestors_policy(&bad).is_err(), "{bad:?}");
+    }
+}
+
 // Removing exact origin, proof, target or body validation must change these outcomes.
 #[test]
 fn rejects_ambient_credentials_and_noncanonical_delivery_requests() {
@@ -1060,6 +1161,7 @@ pub(crate) fn held_poll_test_request_with_deadline(
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         HeldPollTestClient {
             _response: response_rx,
@@ -1506,6 +1608,7 @@ fn descriptor_discovery_reply_rejects_capacity_over_24_kib() {
         cancelled,
         response,
         lease: ingress.reserve(0, Lane::Control).unwrap(),
+        admission: Admission::unwatched(),
     };
     let mut body =
         Vec::with_capacity(tilo_delivery_protocol::delivery_v3::descriptor::MAX_HINT_BYTES + 1);
@@ -1566,6 +1669,7 @@ pub(crate) fn data_test_request(
             cancelled,
             response,
             lease,
+            admission: Admission::unwatched(),
         },
         HeldPollTestClient {
             _response: response_rx,
@@ -1660,4 +1764,87 @@ async fn accepted_https_sockets_disable_nagle() {
     prepare_accepted(&socket);
     assert!(socket.nodelay().unwrap());
     drop(client.await.unwrap().unwrap());
+}
+
+/// A request the front waits on, as `buffered` builds it.
+fn watched_request(
+    ingress: &Ingress,
+    route: Route,
+) -> (
+    BufferedRequest,
+    AdmissionFront,
+    oneshot::Receiver<Reply>,
+    watch::Sender<bool>,
+) {
+    let (response, response_rx) = oneshot::channel();
+    let (cancel, cancelled) = watch::channel(false);
+    let (admission, front) = Admission::new();
+    (
+        BufferedRequest {
+            method: Method::POST,
+            target: "/peer/v3/snapshot".into(),
+            body: Bytes::new(),
+            proof: None,
+            route,
+            deadline: Instant::now() + DEADLINE,
+            cancelled,
+            response,
+            lease: ingress.reserve(0, Lane::Data).unwrap(),
+            admission,
+        },
+        front,
+        response_rx,
+        cancel,
+    )
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_started_request_slower_than_the_deadline_gets_its_answer() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::Snapshot);
+    let deadline = request.deadline();
+    let waiting = tokio::spawn(front.reply(deadline, response));
+    assert!(request.start());
+    // The service works on it for several deadlines (a snapshot's turns on a
+    // slow disk); the front neither answers 503 nor cancels the request.
+    tokio::time::sleep(DEADLINE * 3).await;
+    assert!(!waiting.is_finished());
+    assert!(!request.is_cancelled());
+    request.respond(StatusCode::OK, b"pinned".to_vec()).unwrap();
+    let reply = waiting.await.unwrap().expect("the service's own answer");
+    assert_eq!(reply.status, StatusCode::OK);
+    assert_eq!(&reply.body[..], b"pinned");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_still_queued_at_its_deadline_is_refused_without_effect() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::State);
+    let reply = front.reply(request.deadline(), response).await;
+    assert!(reply.is_none(), "the retryable 503");
+    // The service dequeues it late: it must not start, so it has no effect.
+    assert!(request.is_cancelled());
+    assert!(!request.start());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_started_request_that_stops_progressing_is_still_bounded() {
+    let (ingress, _receiver) = ingress_channel();
+    let (request, front, response, _cancel) = watched_request(&ingress, Route::Acks);
+    let waiting = tokio::spawn(front.reply(request.deadline(), response));
+    assert!(request.start());
+    let budget = tilo_action_broker::owner_turn::STALL_BUDGET;
+    // Progress renews the bound past one whole budget.
+    tokio::time::sleep(budget - Duration::from_secs(1)).await;
+    request.advance();
+    tokio::time::sleep(budget - Duration::from_secs(1)).await;
+    assert!(
+        !waiting.is_finished(),
+        "a progressing request is not stalled"
+    );
+    // Then it hangs: the front gives up after a budget without progress.
+    let began = Instant::now();
+    assert!(waiting.await.unwrap().is_none());
+    assert!(began.elapsed() <= budget);
+    drop(request);
 }

@@ -14,7 +14,9 @@ use crate::headless::{self, FrameHarness};
 use crate::widget::Widget;
 use crate::{State, Theme};
 
+mod component_adapter;
 mod shot_frame;
+pub use component_adapter::{ComponentActions, ComponentLocales, RecordLaunch, record_launch};
 pub use shot_frame::{ShotFrame, ShotLayout};
 // Writing a PNG needs the offscreen renderer's blocking GPU readback, which
 // the browser has not got; laying out and drawing a frame is portable.
@@ -32,15 +34,19 @@ mod android_env;
 /// executable, so there is no process `main`. Invoked once at the top level
 /// of an app's `main.rs`, this defines the `android_main` the activity calls,
 /// which prepares the process and runs that same `main`. On every other
-/// target it expands to nothing. `crates/sdk/ui-core/android` builds the file
-/// as a `cdylib` example.
+/// target it expands to nothing. `tilo-app build --platform android` builds
+/// the file as a `cdylib` example. `android_main!(entry)` runs `entry`
+/// instead of `main`, as `dev_reload_entry!` does for an app library.
 #[macro_export]
 macro_rules! android_main {
     () => {
+        $crate::android_main!(main);
+    };
+    ($entry:expr) => {
         #[cfg(target_os = "android")]
         #[unsafe(no_mangle)]
         fn android_main(app: $crate::launch::android::AndroidApp) {
-            $crate::launch::android::run_main(app, main);
+            $crate::launch::android::run_main(app, $entry);
         }
     };
 }
@@ -175,6 +181,24 @@ pub struct LaunchArgs {
 }
 
 impl LaunchArgs {
+    /// The arguments of a component mounted by an in-process host: no
+    /// screenshot, headless or audit mode and no app-specific arguments.
+    pub fn component() -> Self {
+        Self {
+            shots: None,
+            responsive_matrix: None,
+            viewport: None,
+            scenario: None,
+            headless: None,
+            native_audit: false,
+            pseudo_locale: false,
+            text_scale: None,
+            extras: Vec::new(),
+            values: Vec::new(),
+            positionals: Vec::new(),
+        }
+    }
+
     pub fn has(&self, flag: &str) -> bool {
         self.extras.iter().any(|arg| arg == flag)
     }
@@ -325,6 +349,8 @@ pub struct LaunchSpec {
     allowed_live_options: &'static [&'static str],
     max_positionals: usize,
     scenarios: &'static [&'static str],
+    component_actions: Option<ComponentActions>,
+    component_locales: ComponentLocales,
 }
 
 impl LaunchSpec {
@@ -546,6 +572,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -581,6 +609,8 @@ impl LaunchSpec {
             allowed_live_options: &[],
             max_positionals: 0,
             scenarios: &[],
+            component_actions: None,
+            component_locales: &[],
         }
     }
 
@@ -673,10 +703,8 @@ impl LaunchSpec {
         self
     }
 
-    /// Override how the live app opens its persisted state. This is primarily
-    /// for apps importing an older on-disk document through
-    /// [`crate::persist::open_migrating`]; the runner still owns autosave and
-    /// the live event loop.
+    /// Override how the live app opens its persisted state; the runner still
+    /// owns autosave and the live event loop.
     #[must_use]
     pub fn open_state(mut self, open: OpenState) -> Self {
         self.history_app_global_storage = false;
@@ -831,7 +859,6 @@ pub enum LaunchError {
     BindingMismatch,
     MissingComponentHost,
     IncompatibleComponentSetup,
-    RecoveryRequired,
     /// Setup failed after the record became Ready: `recovery` holds its
     /// store (and any close reports) so the caller can reopen or flush it.
     ComponentSetup {
@@ -872,7 +899,6 @@ impl fmt::Display for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("application binding does not match"),
-            Self::RecoveryRequired => f.write_str("legacy state requires explicit recovery"),
             Self::ComponentSetup { source, .. } => write!(f, "application setup failed: {source}"),
             Self::ComponentCapture { source, .. } => write!(f, "{source}"),
             Self::MissingValue(flag) => write!(f, "{flag} requires a value"),
@@ -954,7 +980,6 @@ impl fmt::Debug for LaunchError {
                 f.write_str("application definition cannot use legacy setup overrides")
             }
             Self::BindingMismatch => f.write_str("BindingMismatch"),
-            Self::RecoveryRequired => f.write_str("RecoveryRequired"),
         }
     }
 }
@@ -986,7 +1011,6 @@ impl LaunchError {
                 | Self::BindingMismatch
                 | Self::MissingComponentHost
                 | Self::IncompatibleComponentSetup
-                | Self::RecoveryRequired
         ) {
             1
         } else {
@@ -1315,6 +1339,14 @@ fn run_with_args_with_attachment(
             .transpose()?;
 
     if let Some(out) = &args.shots {
+        if out.is_dir() {
+            return Err(LaunchError::Operation(format!(
+                "--shots writes one PNG file, but {} is a directory; name a file \
+                 (e.g. {}) or use --responsive-matrix DIR for a set of shots",
+                out.display(),
+                out.join(format!("{}.png", spec.app_id)).display()
+            )));
+        }
         if let Some(handler) = spec.shot_handler {
             handler(&args)?;
             return Ok(());
@@ -1588,8 +1620,7 @@ fn build_history_capture(
     root: Box<dyn Widget>,
     viewport: (u32, u32),
 ) -> Result<FrameHarness, LaunchError> {
-    let registration = root
-        .history_registration()
+    let registration = crate::history_mode::capability::history_registration(root.as_ref())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     let mut harness = FrameHarness::new_with_theme(State::new(), root, viewport, shot_theme(args));
     if let Some(registration) = registration {
@@ -1709,10 +1740,9 @@ fn legacy_history_registration(
     spec: &LaunchSpec,
     inputs: &LegacyLaunchInputs,
 ) -> Result<Option<crate::history_mode::HistoryRegistration>, LaunchError> {
-    if let Some(registration) = inputs
-        .root
-        .history_registration()
-        .map_err(|error| LaunchError::Operation(error.to_string()))?
+    if let Some(registration) =
+        crate::history_mode::capability::history_registration(inputs.root.as_ref())
+            .map_err(|error| LaunchError::Operation(error.to_string()))?
     {
         if registration.definition.app_id != spec.app_id {
             return Err(LaunchError::Operation(
@@ -1854,8 +1884,7 @@ fn finalize_native_app_with_constructor(
         registry,
         persistence,
     } = inputs;
-    let root_history = root
-        .history_registration()
+    let root_history = crate::history_mode::capability::history_registration(root.as_ref())
         .map_err(|error| LaunchError::Operation(error.to_string()))?;
     // A second root may only be built where the spec builds it and the host,
     // not the root, owns persistence: a preview must never open a store.
@@ -1962,6 +1991,18 @@ pub fn shot_theme(args: &LaunchArgs) -> Theme {
         .ok()
         .and_then(|name| Theme::named(&name))
         .unwrap_or_else(Theme::dark);
+    // `TILO_SHOTS_ACCENT=#RRGGBB` stands in for the host accent a standalone
+    // app follows.
+    let theme = match std::env::var("TILO_SHOTS_ACCENT")
+        .ok()
+        .and_then(|hex| crate::color::parse_hex(&hex))
+    {
+        Some(accent) => {
+            use crate::color_compat::ColorCompat;
+            theme.with_accent([accent.r(), accent.g(), accent.b()])
+        }
+        None => theme,
+    };
     let environment_scale = std::env::var("TILO_SHOTS_TEXT_SCALE")
         .or_else(|_| std::env::var("TILO_SHOTS_TEXT_SCALE"))
         .ok();
@@ -2135,6 +2176,14 @@ fn parse_args_extended(
                     return Err(LaunchError::Duplicate(flag.to_owned()));
                 }
                 parsed.native_audit = true;
+            }
+            // A Jump List task: run this host command once the window exists.
+            #[cfg(all(windows, feature = "native"))]
+            crate::host_chrome::windows_items::LAUNCH_OPTION => {
+                let value = take_value(args, &mut index, flag, inline)?;
+                let invocation = crate::host_chrome::windows_items::decode(value)
+                    .ok_or_else(|| LaunchError::UnknownArgument(arg.clone()))?;
+                crate::host_chrome::windows::request_startup_command(invocation);
             }
             extra
                 if (allowed_flags.contains(&extra) || allowed_live_flags.contains(&extra))
@@ -3547,6 +3596,8 @@ mod tests {
     }
 
     impl Widget for RegistrationRoot {
+        crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+
         crate::testing::delegate_widget_methods!(
             inner: sync,
             build_layout,
@@ -3558,7 +3609,9 @@ mod tests {
         fn name(&self) -> &str {
             "Registration root"
         }
+    }
 
+    impl crate::history_mode::capability::DocumentHistory for RegistrationRoot {
         fn history_registration(
             &self,
         ) -> Result<
@@ -3583,7 +3636,6 @@ mod tests {
                 }
             }
         }
-
         fn document_history_definition(
             &self,
         ) -> Option<&'static crate::history_mode::HistoryDefinition> {
@@ -4209,7 +4261,7 @@ mod tests {
     #[serial_test::serial]
     fn native_initial_launch_component_host_reads_before_factory_on_same_worker() {
         use crate::application::{
-            HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+            HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
         };
         use crate::application_test_support as probe;
         static RECHECK: std::sync::Mutex<Option<tokio::sync::oneshot::Sender<()>>> =
@@ -4238,13 +4290,15 @@ mod tests {
             };
             let context = HostContext::prepare(
                 definition,
-                records,
-                views,
-                probe::DEVICE.into(),
-                11,
-                probe::runner_permissions(),
-                probe::author(),
-                probe::provenance(),
+                HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 11,
+                    permissions: probe::runner_permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 &target,
             )?;
             context
@@ -4383,13 +4437,15 @@ mod tests {
             // the component factory writes its genesis after admission.
             let context = HostContext::prepare_new_record(
                 definition,
-                records,
-                views,
-                probe::DEVICE.into(),
-                11,
-                probe::runner_permissions(),
-                probe::author(),
-                probe::provenance(),
+                crate::application::HostContextInputs {
+                    records,
+                    views,
+                    device_id: probe::DEVICE.into(),
+                    instance_id: 11,
+                    permissions: probe::runner_permissions(),
+                    author: probe::author(),
+                    action_context: probe::provenance(),
+                },
                 id,
             )?;
             Ok(PreparedComponentInputs {
@@ -4560,8 +4616,16 @@ mod tests {
         for head in heads {
             assert!(installed.get_change_by_hash(&head).is_some());
         }
-        let local_cache = app_state::DocStore::legacy_record_document_path(
+        let package_document =
+            app_state::DocStore::legacy_package_document_path("so.tilo.launch-fixture").unwrap();
+        let data_home = package_document
+            .parent()
+            .and_then(std::path::Path::parent)
+            .unwrap();
+        let local_cache = app_state::DocStore::room_record_dir_at(
+            data_home,
             "so.tilo.launch-fixture",
+            &room.to_string(),
             &want.id.storage_key(),
         )
         .unwrap();
@@ -4910,7 +4974,9 @@ mod tests {
 #[cfg(test)]
 mod prepared_launch_tests {
     use super::*;
-    use crate::application::{HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput};
+    use crate::application::{
+        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
+    };
     use crate::application_test_support::*;
     use std::cell::Cell;
     use std::rc::Rc;
@@ -4953,13 +5019,15 @@ mod prepared_launch_tests {
         );
         let context = HostContext::prepare(
             definition,
-            records,
-            views,
-            DEVICE.into(),
-            11,
-            authority,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority,
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )?;
         Ok(PreparedComponentInputs {

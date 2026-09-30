@@ -9,7 +9,6 @@
 
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
 use taffy::{NodeId, Style, TaffyTree};
 use ui::permissions::{PermissionContext, PermissionScope};
@@ -23,7 +22,7 @@ use vello::peniko::{
     Blob, Brush, Color, ColorStop, Extend, Fill, Gradient, ImageAlphaType, ImageBrush,
     ImageBrush as Image, ImageData, ImageFormat as Format,
 };
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 /// Size (in logical pixels) of one grid cell.
 const GRID_STEP: f64 = 24.0;
@@ -264,7 +263,7 @@ impl DesktopBackdrop {
     }
 
     /// Re-encoding the gradient + ~80 grid strokes + noise every frame
-    /// dominated the at-rest `draw=` budget under `QUICK_UI_PERF=1`, so
+    /// dominated the at-rest `draw=` budget under `TILO_UI_PERF=1`, so
     /// this bakes once and replays via translate.
     fn paint_backdrop(&mut self, out_scene: &mut Scene, out_transform: Affine, theme: &Theme) {
         let stops = ground_stops(theme);
@@ -438,11 +437,11 @@ impl Default for DesktopBackdrop {
 }
 
 impl Widget for DesktopBackdrop {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        if let Some(child) = &mut self.child {
-            child.sync(state, path);
-        }
-    }
+    ui::provides!(
+        dyn ui::permissions::capability::PermissionGated,
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::undo::UndoPoints
+    );
 
     fn build_layout(
         &mut self,
@@ -546,36 +545,15 @@ impl Widget for DesktopBackdrop {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(child) = &mut self.child {
-            let Ok(children) = taffy.children(node_id) else {
+            let Ok(children) = ctx.taffy.children(ctx.node_id) else {
                 return;
             };
             let Some(&child_node) = children.first() else {
                 return;
             };
-            child.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                child_node,
-                taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
         }
     }
 
@@ -607,16 +585,6 @@ impl Widget for DesktopBackdrop {
         false
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         self.child
             .as_mut()
@@ -644,11 +612,26 @@ impl Widget for DesktopBackdrop {
             child.mark_drawn();
         }
     }
+}
 
+impl ui::undo::UndoPoints for DesktopBackdrop {
+    fn needs_commit(&self) -> bool {
+        self.children().iter().any(|c| ui::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            ui::undo::on_commit(child);
+        }
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for DesktopBackdrop {
     fn presence_key(&self) -> Option<PresenceKey> {
         None
     }
+}
 
+impl ui::permissions::capability::PermissionGated for DesktopBackdrop {
     fn permission_scope(&self) -> Option<PermissionScope> {
         None
     }

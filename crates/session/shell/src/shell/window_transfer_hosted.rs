@@ -281,10 +281,6 @@ pub(super) fn proposing(
 
 /// The owner accepted and the record is here: give the instance its
 /// presentation in the destination and start it there.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one phase of the transfer state machine, passed through unchanged"
-)]
 fn accepted(
     st: &mut ChromeState,
     transfers: &mut WindowTransfers,

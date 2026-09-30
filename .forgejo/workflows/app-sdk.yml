@@ -1,0 +1,302 @@
+name: CI / app SDK
+
+# One app source, three targets. These lanes prove that the SDK builds Tilo
+# apps for Linux, macOS and the web through `tilo-app`, that a generated app
+# builds outside this repository, that every web-capable app runs in headless
+# Chromium, and that web bundles only shrink.
+on:
+  pull_request:
+    branches: ["main"]
+    paths:
+      - ".cargo/config.toml"
+      - ".forgejo/workflows/app-sdk.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "apps/**"
+      - "crates/**"
+      - "rust-toolchain.toml"
+      - "tools/policy/app_capability*"
+      - "tools/policy/app_portability*"
+      - "tools/policy/check_app_*"
+      - "tools/sdk/**"
+      - "tools/web/**"
+      - "vendor/**"
+  push:
+    branches: ["main"]
+    paths:
+      - ".cargo/config.toml"
+      - ".forgejo/workflows/app-sdk.yml"
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "apps/**"
+      - "crates/**"
+      - "rust-toolchain.toml"
+      - "tools/policy/app_capability*"
+      - "tools/policy/app_portability*"
+      - "tools/policy/check_app_*"
+      - "tools/sdk/**"
+      - "tools/web/**"
+      - "vendor/**"
+  workflow_dispatch:
+
+concurrency:
+  group: app-sdk-${{ github.event_name }}-${{ github.sha }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: "0"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: never
+  SCCACHE_IGNORE_SERVER_IO_ERROR: "1"
+  # The browser runtime pins wasm-bindgen; the CLI must match it exactly.
+  WASM_BINDGEN_VERSION: "0.2.108"
+
+jobs:
+  # Compile-free gates: portability rules and their shrink-only baseline, the
+  # capabilities each app's code uses against its manifest, the
+  # manifest-generated desktop registry, the SDK patch list outside apps
+  # carry, the publishable crate set, and the web size budgets.
+  policy:
+    runs-on: runner-quality
+    timeout-minutes: 20
+    container:
+      image: registry.tilo.so/tilo/ci-fast@sha256:fd2d462eaa130052fded4fbb05c2e9c7e44b6d6fa70b3bc6eae484447920551a
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 0
+          filter: blob:none
+      - name: Apps and portable SDK crates hold no platform code
+        run: python3 tools/policy/check_app_portability.py
+      - name: Apps declare the capabilities their code uses
+        run: python3 tools/policy/check_app_capabilities.py
+      - name: Browser desktop registry matches app manifests
+        run: python3 tools/web/generate_web_desktop.py --check
+      - name: Web size budgets only decrease
+        shell: bash
+        run: |
+          base='${{ github.event.pull_request.base.sha }}'
+          if [ -z "$base" ] || [ "$base" = null ]; then base='${{ github.event.before }}'; fi
+          if [ -z "$base" ] || [ "$base" = 0000000000000000000000000000000000000000 ]; then base=HEAD~1; fi
+          python3 tools/web/wasm_size_ratchet.py check-budget --base "$base"
+      # Report only: main's workspace-hack lines, the vendored automerge patch
+      # and some unversioned path dependencies block a real publish until the
+      # SDK crate set is made publishable again.
+      - name: What stands between the SDK crates and crates.io
+        run: python3 tools/sdk/publish_check.py --report-only
+
+  builder:
+    runs-on: runner-quality
+    timeout-minutes: 5
+    container:
+      image: registry.tilo.so/tilo/ci-control@sha256:cc33624d156302fa0c62c065b9babf1d18c6d3103116ff9b0ecf4e0f316d9ce5
+    outputs:
+      image: ${{ steps.resolve.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+      - name: Resolve the CI builder
+        id: resolve
+        run: python3 tools/ci/resolve_builder.py
+
+  # Linux: the CLI's own tests, the Linux artifact and .tapp of a
+  # representative app, and a generated app built outside the repository.
+  linux:
+    needs: [builder]
+    runs-on: runner-quality
+    timeout-minutes: 180
+    # Several full debug graphs (tilo-app-cli's tests, Calculator, a generated
+    # app for two targets) share one target directory on the runner's disk.
+    # The runner has two CPUs and 5 GiB; each step reports its peak memory.
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CARGO_INCREMENTAL: "0"
+      CARGO_PROFILE_DEV_DEBUG: "0"
+      CARGO_PROFILE_TEST_DEBUG: "0"
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: tilo-caps and the tilo-app target commands
+        run: |
+          bash tools/ci/measure.sh "tilo-caps tests" -- cargo test --locked -p tilo-caps
+          bash tools/ci/measure.sh "tilo-app target tests" -- cargo test --locked -p tilo-app-cli --lib targets::
+      - name: Build tilo-app and tilo-app-package
+        # One `--bin` filter applies to every selected package, so each
+        # binary is named.
+        run: >-
+          bash tools/ci/measure.sh "tilo-app build" --
+          cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
+      - name: Calculator for Linux
+        run: bash tools/ci/measure.sh "Calculator for Linux" -- target/debug/tilo-app build --target linux apps/calculator
+      # The generated app compiles its whole graph into a temporary target
+      # directory that the test removes. Run before the .tapp step, the two
+      # builds never occupy the runner's disk at the same time.
+      - name: A generated app builds outside the repository (native and wasm32)
+        run: |
+          rustup target add wasm32-unknown-unknown
+          bash tools/ci/measure.sh "generated app outside the repository" -- \
+            cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
+      - name: Calculator .tapp
+        # A Tilo OS .tapp links the toolkit from runtime-dylib, so this step
+        # compiles the whole runtime: about 1,050 crates in a profile nothing
+        # else here builds. At thin-app's opt-level 3 with one codegen unit
+        # those compiles exceed the runner's 5 GiB. This package is signed with an ephemeral
+        # key and never shipped, so it is optimized lightly; release-apps.yml
+        # builds the shipped runtime at the full profile.
+        env:
+          TILO_PKG: ${{ github.workspace }}/target/debug/tilo-app-package
+          CARGO_PROFILE_THIN_APP_OPT_LEVEL: "1"
+          CARGO_PROFILE_THIN_APP_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_THIN_APP_DEBUG: "0"
+        run: |
+          bash tools/ci/measure.sh "Calculator .tapp" -- \
+            target/debug/tilo-app package --target linux apps/calculator \
+            --output "$RUNNER_TEMP/calculator.tapp" --force
+          test -s "$RUNNER_TEMP/calculator.tapp"
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true
+
+  # macOS: the generated template outside the repository, Calculator and
+  # Notes as ad-hoc-signed .app bundles rendered offscreen, and a packaged
+  # .app zip (Developer ID signing and notarization need release secrets;
+  # without them `package` signs ad hoc) that becomes a signed registry
+  # entry for the macOS artifact format.
+  macos:
+    runs-on: imager-macos-aarch64
+    timeout-minutes: 180
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+      - name: Build tilo-app and tilo-app-package
+        run: cargo build --locked -p tilo-app-cli -p tilo-app-package-cli --bin tilo-app --bin tilo-app-package
+      - name: Template outside the repository, as a git dependency
+        env:
+          TILO_SDK_SOURCE: git
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo test --locked -p tilo-app-cli --test it outside_repo -- --ignored --nocapture
+      - name: Calculator and Notes as .app bundles
+        run: |
+          set -euo pipefail
+          shots="$RUNNER_TEMP/macos-shots"
+          mkdir -p "$shots"
+          for app in calculator notes; do
+            bundle="$(target/debug/tilo-app build --target macos "apps/$app" | tail -n 1)"
+            plutil -lint "$bundle/Contents/Info.plist"
+            codesign --verify --deep --strict "$bundle"
+            "$bundle/Contents/MacOS/$app" --shots "$shots/$app.png"
+            test -s "$shots/$app.png"
+          done
+      - name: Package Calculator for macOS
+        run: |
+          target/debug/tilo-app package --target macos apps/calculator \
+            --output "$RUNNER_TEMP/Calculator-macos.zip" --force
+          test -s "$RUNNER_TEMP/Calculator-macos.zip"
+          test -s "$RUNNER_TEMP/Calculator-macos.zip.json"
+      - name: The .app zip becomes a signed macOS registry entry
+        run: |
+          set -euo pipefail
+          target/debug/tilo-app-package keygen --out "$RUNNER_TEMP/publisher.json"
+          target/debug/tilo-app-package entry --platform macos \
+            --url https://apps.tilo.so/artifacts/calculator/Calculator-macos.zip \
+            --identity "$RUNNER_TEMP/publisher.json" "$RUNNER_TEMP/Calculator-macos.zip" \
+            > "$RUNNER_TEMP/calculator-macos-entry.json"
+          python3 -c 'import json,sys; v=json.load(open(sys.argv[1]))["versions"][0]; assert v["target"]["platform"]=="macos" and v["artifact"]["format"]=="macos-app-zip", v' \
+            "$RUNNER_TEMP/calculator-macos-entry.json"
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: app-sdk-macos-shots
+          path: ${{ runner.temp }}/macos-shots
+          if-no-files-found: ignore
+
+  # Web: the desktop bundle built from the app manifests, every registered
+  # app mounted in headless Chromium on WebGPU, and the release bundle held
+  # to its size budget.
+  web:
+    needs: [builder]
+    runs-on: runner-quality
+    timeout-minutes: 150
+    container:
+      image: ${{ needs.builder.outputs.image }}
+    env:
+      CDP_PORT: "9333"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          token: ${{ secrets.REGISTRY_TOKEN }}
+          fetch-depth: 1
+      - name: Prepare Rust build caches
+        uses: ./.forgejo/actions/prepare-rust-build
+      - name: Web toolchain
+        run: |
+          rustup target add wasm32-unknown-unknown
+          if [ "$(wasm-bindgen --version 2>/dev/null)" != "wasm-bindgen $WASM_BINDGEN_VERSION" ]; then
+            cargo install --locked wasm-bindgen-cli --version "$WASM_BINDGEN_VERSION"
+          fi
+          command -v node || dnf install -y nodejs
+      - name: Platform crates' browser modules (node --test)
+        run: node --test crates/platform/*/web/*.test.mjs
+      - name: Build tilo-app
+        run: cargo build --locked -p tilo-app-cli --bin tilo-app
+      - name: Desktop bundle (dev profile)
+        run: |
+          target/debug/tilo-app build --target web --bundle desktop apps/calculator
+      - name: Headless Chromium for Testing
+        run: |
+          # Chrome's shared-library dependencies; present on current builders.
+          dnf install -y nss atk at-spi2-atk cups-libs libdrm libXcomposite libXdamage \
+            libXrandr mesa-libgbm pango alsa-lib libxkbcommon || true
+          npx --yes @puppeteer/browsers@2 install chrome@stable --path "$RUNNER_TEMP/chrome" \
+            | tee "$RUNNER_TEMP/chrome.txt"
+          echo "CHROME=$(awk '{print $2}' "$RUNNER_TEMP/chrome.txt" | tail -n 1)" >> "$GITHUB_ENV"
+      - name: Mount every registered app
+        shell: bash
+        run: |
+          set -euo pipefail
+          bundle=target/tilo-app/web/calculator/bundle
+          (cd "$bundle" && python3 -m http.server 7878 --bind 127.0.0.1) &
+          server=$!
+          "$CHROME" --headless=new --no-sandbox --enable-unsafe-webgpu \
+            --enable-features=Vulkan --use-vulkan=swiftshader --use-angle=swiftshader \
+            --remote-debugging-port="$CDP_PORT" --user-data-dir="$RUNNER_TEMP/chrome-profile" \
+            about:blank &
+          chrome=$!
+          trap 'kill $server $chrome 2>/dev/null || true' EXIT
+          for _ in $(seq 1 30); do
+            curl -sf "http://127.0.0.1:$CDP_PORT/json/version" >/dev/null && break
+            sleep 1
+          done
+          mapfile -t apps < <(python3 -c 'import json,sys; print("\n".join(a["id"] for a in json.load(open(sys.argv[1]))["applications"]))' "$bundle/apps.json")
+          mkdir -p "$RUNNER_TEMP/web-shots"
+          SHOTS_DIR="$RUNNER_TEMP/web-shots" node crates/browser/tilo-web-desktop/scripts/smoke.mjs \
+            http://127.0.0.1:7878 "${apps[@]}" desktop
+      - name: Release desktop bundle within its size budget
+        run: |
+          target/debug/tilo-app build --target web --bundle desktop --release apps/calculator
+          python3 tools/web/wasm_size_ratchet.py measure desktop target/tilo-app/web/calculator/bundle
+      - uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
+        if: always()
+        with:
+          name: app-sdk-web-shots
+          path: ${{ runner.temp }}/web-shots
+          if-no-files-found: ignore
+      - name: Report compiler cache
+        if: always()
+        run: bash tools/ci/sccache.sh report || true

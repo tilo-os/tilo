@@ -74,12 +74,6 @@ pub trait HostedRooms {
     ) -> Pending<Result<(), String>>;
 }
 
-fn now_unix() -> u64 {
-    SystemTime::now()
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .map_or(0, |elapsed| elapsed.as_secs())
-}
-
 fn fresh_id() -> [u8; 32] {
     let mut id = [0; 32];
     id[..16].copy_from_slice(uuid::Uuid::new_v4().as_bytes());
@@ -106,7 +100,7 @@ impl HostedRooms for NativeHostedRooms {
     }
 
     fn read(&self, room: RoomId, app: &str, record: &RecordId) -> Result<Vec<u8>, String> {
-        use crate::shell::native_workspace_owner::document_read::DocumentRead;
+        use crate::shell::native_workspace_owner::DocumentRead;
         let owner = self.0.native_owner()?;
         self.0.check_native_custody(&owner, room)?;
         let limit =
@@ -135,7 +129,7 @@ impl HostedRooms for NativeHostedRooms {
         document: &[u8],
     ) -> Pending<Result<[u8; 32], String>> {
         let signed = self.0.native_signing_key(room).and_then(|key| {
-            let issued = now_unix();
+            let issued = tilo_clock::unix_now();
             DocumentImportProposalV1::new(
                 &DocumentImportTerms {
                     room: room.to_string(),
@@ -166,7 +160,7 @@ impl HostedRooms for NativeHostedRooms {
                 import::APP_ID,
                 import::RESOURCE,
                 import::PROPOSE,
-                argument,
+                Some(argument),
             )
             .map(move |answer| answer.map(|_| id))
     }
@@ -180,7 +174,7 @@ impl HostedRooms for NativeHostedRooms {
                     .remove(&import::key(id))
                     .ok_or("no such proposal")?;
                 Ok(ProposalStatus {
-                    state: entry.state(now_unix()),
+                    state: entry.state(tilo_clock::unix_now()),
                     record_present: view
                         .peer()
                         .document_heads(&entry.proposal.app, &entry.proposal.record)
@@ -203,7 +197,7 @@ impl HostedRooms for NativeHostedRooms {
                 }
                 let doc = view.peer().admitted_room().ok_or("no room")?;
                 let certificates = view.peer().certificates();
-                let now = now_unix();
+                let now = tilo_clock::unix_now();
                 Ok(Some(
                     import::entries(doc)
                         .into_values()
@@ -239,7 +233,7 @@ impl HostedRooms for NativeHostedRooms {
         accepted: bool,
     ) -> Pending<Result<(), String>> {
         let decision = self.0.native_signing_key(room).and_then(|key| {
-            DocumentImportDecisionV1::new(proposal, accepted, now_unix(), &key)
+            DocumentImportDecisionV1::new(proposal, accepted, tilo_clock::unix_now(), &key)
                 .map_err(|error| error.to_string())
         });
         let argument = decision.and_then(|decision| {
@@ -259,7 +253,13 @@ impl HostedRooms for NativeHostedRooms {
             import::DECLINE
         };
         self.0
-            .invoke_governor(room, import::APP_ID, import::RESOURCE, action, argument)
+            .invoke_governor(
+                room,
+                import::APP_ID,
+                import::RESOURCE,
+                action,
+                Some(argument),
+            )
             .map(|answer| answer.map(drop))
     }
 }

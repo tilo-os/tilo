@@ -11,10 +11,6 @@
 //!         └── "body"   (Map)    # qdoc rich text, edited in the SDK editor
 //! ```
 //!
-//! Pages written before bodies were rich text keep a `blocks` List instead
-//! of `body` ([`crate::first_format`]); [`NotesDoc::upgrade`] brings them
-//! across in place.
-//!
 //! Everything here operates on a borrowed `&mut AutoCommit` — the app's
 //! shared `State::doc`. "Which page I'm viewing" is deliberately NOT in
 //! this document: it is per-peer presence (see `NotesApp`), so two peers
@@ -262,14 +258,8 @@ impl NotesDoc {
 
         // A page owns its body from its very first action, so a later editor
         // bind never creates collaborative structure outside the canonical
-        // action path. A page still in the first format keeps its blocks
-        // until it is upgraded.
-        let first_format = matches!(
-            doc.get(&page, LEGACY_BLOCKS),
-            Ok(Some((Value::Object(ObjType::List), _)))
-        );
-        if !first_format
-            && Self::page_body(doc, meta.id).is_none()
+        // action path.
+        if Self::page_body(doc, meta.id).is_none()
             && let Ok(body) = doc.put_object(&page, BODY, ObjType::Map)
         {
             let _ = RichText::initialize_under(doc, &body);
@@ -419,71 +409,10 @@ impl NotesDoc {
         let body = Self::page_body(doc, page).ok_or("page no longer exists")?;
         tilo_rich_text::fill_under(doc, &body, blocks).map_err(|error| error.to_string())
     }
-
-    /// Bring every page stored in the first format (a `blocks` List) to rich
-    /// text in place, and stamp the notebook with the current schema. Each
-    /// page is rehearsed on a scratch document before its list is replaced,
-    /// so a page that cannot come across whole stays as it was.
-    ///
-    /// # Errors
-    /// Returns the first page that could not be brought across; pages before
-    /// it stay migrated.
-    pub fn upgrade(doc: &mut AutoCommit) -> Result<bool, String> {
-        let mut changed = false;
-        for meta in Self::list_pages(doc) {
-            let Some(page) = page_map(doc, meta.id) else {
-                continue;
-            };
-            let Ok(Some((Value::Object(ObjType::List), list))) = doc.get(&page, LEGACY_BLOCKS)
-            else {
-                continue;
-            };
-            if Self::page_body(doc, meta.id).is_some() {
-                continue;
-            }
-            let blocks = crate::first_format::blocks(doc, &list);
-            fill_body(&mut AutoCommit::new(), &ROOT, &blocks)
-                .map_err(|error| format!("page {}: {error}", meta.id))?;
-            let body = doc
-                .put_object(&page, BODY, ObjType::Map)
-                .map_err(|error| error.to_string())?;
-            fill_body(doc, &body, &blocks).map_err(|error| format!("page {}: {error}", meta.id))?;
-            doc.delete(&page, LEGACY_BLOCKS)
-                .map_err(|error| error.to_string())?;
-            changed = true;
-        }
-        let version = u64::from(crate::notebook::NOTES_SCHEMA_VERSION);
-        let stamped = doc
-            .get(ROOT, "notes_schema_version")
-            .ok()
-            .flatten()
-            .and_then(|(value, _)| value.as_u64())
-            == Some(version);
-        if !stamped && doc.get(ROOT, "pages").ok().flatten().is_some() {
-            doc.put(ROOT, "notes_schema_version", version)
-                .map_err(|error| error.to_string())?;
-            changed = true;
-        }
-        Ok(changed)
-    }
-
-    /// Whether any page is still stored in the first format, without writing.
-    pub fn needs_upgrade(doc: &AutoCommit) -> bool {
-        Self::list_pages(doc).into_iter().any(|meta| {
-            page_map(doc, meta.id).is_some_and(|page| {
-                matches!(
-                    doc.get(&page, LEGACY_BLOCKS),
-                    Ok(Some((Value::Object(ObjType::List), _)))
-                )
-            })
-        })
-    }
 }
 
 /// The page map's key holding its rich-text body.
 const BODY: &str = "body";
-/// The page map's key a first-format page keeps its block list under.
-const LEGACY_BLOCKS: &str = "blocks";
 
 fn page_map(doc: &AutoCommit, id: PageId) -> Option<ObjId> {
     let Ok(Some((Value::Object(ObjType::Map), pages))) = doc.get(&ROOT, "pages") else {
@@ -493,12 +422,6 @@ fn page_map(doc: &AutoCommit, id: PageId) -> Option<ObjId> {
         Ok(Some((Value::Object(ObjType::Map), page))) => Some(page),
         _ => None,
     }
-}
-
-/// Start rich text under `root` holding `blocks`.
-fn fill_body(doc: &mut AutoCommit, root: &ObjId, blocks: &[BlockContent]) -> Result<(), String> {
-    RichText::initialize_under(doc, root).map_err(|error| error.to_string())?;
-    tilo_rich_text::fill_under(doc, root, blocks).map_err(|error| error.to_string())
 }
 
 fn inline_mark_rank(mark: &InlineMark) -> u8 {
@@ -899,192 +822,6 @@ mod tests {
             },
         );
         assert_eq!(NotesDoc::page_block_snapshots(&doc, id)[0].1, "cafe bold");
-    }
-
-    /// Writes one page exactly as the first format stored it: a `blocks`
-    /// List of block maps with fractional ranks and `notes.inline.*` marks.
-    fn first_format_page(doc: &mut AutoCommit, target: PageId) -> PageId {
-        let id = Uuid::new_v4();
-        let pages = NotesDoc::pages_map(doc);
-        let page = doc
-            .put_object(&pages, id.to_string().as_str(), ObjType::Map)
-            .unwrap();
-        let title = doc.put_object(&page, "title", ObjType::Text).unwrap();
-        doc.splice_text(&title, 0, 0, "Old").unwrap();
-        doc.put(&page, "parent", "").unwrap();
-        doc.put(&page, "order", 1_i64).unwrap();
-        let list = doc.put_object(&page, "blocks", ObjType::List).unwrap();
-        // Storage order is not display order: the ranks put "second" last.
-        let blocks: [(&str, &str, u8); 5] = [
-            ("heading2", "Plan — ✓", 0),
-            ("paragraph", "see Target and http://old.example", 1),
-            ("checklist:0:1", "done", 0),
-            ("code:rust", "fn main() {}", 0),
-            ("table:1", "| a |", 0),
-        ];
-        let ranks = [0_usize, 1, 3, 4, 5];
-        for (index, ((kind, text, nesting), rank)) in blocks.iter().zip(ranks).enumerate() {
-            let block = doc.insert_object(&list, index, ObjType::Map).unwrap();
-            let block_id = Uuid::new_v4();
-            doc.put(&block, "id", block_id.to_string()).unwrap();
-            doc.put(&block, "kind", *kind).unwrap();
-            doc.put(
-                &block,
-                crate::block_order::BASE_FIELD,
-                crate::block_order::initial(rank, block_id),
-            )
-            .unwrap();
-            if *nesting > 0 {
-                doc.put(&block, "nesting", u64::from(*nesting)).unwrap();
-            }
-            if kind.starts_with("code:") {
-                doc.put(&block, "code_group", Uuid::new_v4().to_string())
-                    .unwrap();
-            }
-            let body = doc.put_object(&block, "text", ObjType::Text).unwrap();
-            doc.splice_text(&body, 0, 0, text).unwrap();
-            doc.put(&block, "notes_marks_version", 1_i64).unwrap();
-            if index == 1 {
-                let marks = [
-                    (
-                        format!("notes.inline.link:{target}"),
-                        automerge::ScalarValue::Str(target.to_string().into()),
-                        4,
-                        10,
-                    ),
-                    (
-                        "notes.inline.external-link".to_owned(),
-                        automerge::ScalarValue::Str("http://old.example".into()),
-                        15,
-                        33,
-                    ),
-                    (
-                        "author".to_owned(),
-                        automerge::ScalarValue::Str("someone".into()),
-                        0,
-                        3,
-                    ),
-                ];
-                for (name, value, start, end) in marks {
-                    doc.mark(
-                        &body,
-                        automerge::marks::Mark::new(name, value, start, end),
-                        automerge::marks::ExpandMark::After,
-                    )
-                    .unwrap();
-                }
-            }
-            if index == 0 {
-                doc.mark(
-                    &body,
-                    automerge::marks::Mark::new(
-                        "notes.inline.bold".to_owned(),
-                        automerge::ScalarValue::Boolean(true),
-                        0,
-                        4,
-                    ),
-                    automerge::marks::ExpandMark::After,
-                )
-                .unwrap();
-            }
-        }
-        // A later insert between the first two, as the first format ranked it.
-        let block = doc.insert_object(&list, 5, ObjType::Map).unwrap();
-        let block_id = Uuid::new_v4();
-        doc.put(&block, "id", block_id.to_string()).unwrap();
-        doc.put(&block, "kind", "bullet:1").unwrap();
-        doc.put(&block, "notes_marks_version", 1_i64).unwrap();
-        doc.put(
-            &block,
-            crate::block_order::BASE_FIELD,
-            crate::block_order::initial(2, block_id),
-        )
-        .unwrap();
-        let body = doc.put_object(&block, "text", ObjType::Text).unwrap();
-        doc.splice_text(&body, 0, 0, "inserted").unwrap();
-        id
-    }
-
-    #[test]
-    fn first_format_pages_come_across_whole_and_once() {
-        use ui::widget::BlockKind;
-        let mut doc = AutoCommit::new();
-        crate::notebook::initialize_empty(&mut doc).unwrap();
-        doc.put(ROOT, "notes_schema_version", 2_u64).unwrap();
-        let target = page(&mut doc, "Target");
-        let old = first_format_page(&mut doc, target);
-        // A notebook saved in the first format still validates, then upgrades.
-        let saved = AutoCommit::load(&doc.save()).unwrap();
-        crate::notebook::validate(&saved).unwrap();
-        let mut doc = saved;
-        assert!(NotesDoc::needs_upgrade(&doc));
-        assert!(NotesDoc::upgrade(&mut doc).unwrap());
-        assert!(!NotesDoc::needs_upgrade(&doc));
-        crate::notebook::validate(&doc).unwrap();
-
-        let blocks = NotesDoc::page_blocks(&doc, old);
-        let shown: Vec<(BlockKind, &str, u8)> = blocks
-            .iter()
-            .map(|block| (block.kind.clone(), block.text.as_str(), block.nesting))
-            .collect();
-        assert_eq!(
-            shown,
-            [
-                (BlockKind::Heading(2), "Plan — ✓", 0),
-                (BlockKind::Paragraph, "see Target and http://old.example", 1),
-                (BlockKind::Bullet { indent: 1 }, "inserted", 0),
-                (
-                    BlockKind::Checklist {
-                        indent: 0,
-                        done: true
-                    },
-                    "done",
-                    0
-                ),
-                (
-                    BlockKind::CodeBlock {
-                        lang: Some("rust".into())
-                    },
-                    "fn main() {}",
-                    0
-                ),
-                (BlockKind::Table { visual: true }, "| a |", 0),
-            ]
-        );
-        assert!(
-            blocks[4].code_group.is_some(),
-            "a code line keeps its fence"
-        );
-        assert_eq!(
-            blocks[0].marks,
-            [ui::widget::MarkSpan::new(0..4, Mark::Bold)]
-        );
-        assert_eq!(
-            blocks[1].marks,
-            [
-                ui::widget::MarkSpan::new(4..10, Mark::Link(target)),
-                ui::widget::MarkSpan::new(15..33, Mark::ExternalLink("http://old.example".into())),
-            ],
-            "Notes' marks come across"
-        );
-        assert_eq!(
-            blocks[1].authors,
-            [(0..3, "someone".to_owned())],
-            "and so does who wrote what"
-        );
-
-        // Once is enough: a second pass writes nothing.
-        let heads = doc.get_heads();
-        assert!(!NotesDoc::upgrade(&mut doc).unwrap());
-        assert_eq!(doc.get_heads(), heads);
-        assert_eq!(
-            doc.get(ROOT, "notes_schema_version")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_u64(),
-            Some(u64::from(crate::notebook::NOTES_SCHEMA_VERSION))
-        );
     }
 
     #[test]

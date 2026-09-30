@@ -22,6 +22,7 @@
 use settings_store::magnifier;
 use std::collections::HashMap;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -30,7 +31,7 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::panes::appearance::{TEXT_SIZES, text_size_label, text_size_scale};
 use crate::prefs::{
@@ -781,7 +782,10 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for AccessibilityPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.seed_if_needed(state, root);
 
         let mut changed = self.fold_vision(state, root);
@@ -851,36 +855,15 @@ impl Widget for AccessibilityPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -899,26 +882,28 @@ impl Widget for AccessibilityPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "accessibility",
-            "Accessibility",
-            "Change accessibility preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "AccessibilityPane"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for AccessibilityPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "accessibility",
+            "Accessibility",
+            "Change accessibility preferences",
+        )
     }
 }
 
@@ -975,7 +960,7 @@ mod tests {
             pane.sync(&mut doc, &root);
 
             assert!(
-                pane.take_commit_context().is_none(),
+                ui::undo::take_commit_context(&mut pane).is_none(),
                 "hydration is not undoable user intent"
             );
             for key in [

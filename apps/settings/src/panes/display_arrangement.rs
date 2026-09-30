@@ -13,7 +13,6 @@ pub mod placement;
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
@@ -22,7 +21,7 @@ use ui::widget::{ActionEmitter, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use placement::Placement;
@@ -379,7 +378,7 @@ impl DisplayArrangement {
 }
 
 impl Widget for DisplayArrangement {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -469,24 +468,14 @@ impl Widget for DisplayArrangement {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.cursor = Some(point);
                 if self.drag_to(point) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -498,7 +487,7 @@ impl Widget for DisplayArrangement {
                     && self.rect.contains(point)
                     && self.press(point)
                 {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -507,7 +496,7 @@ impl Widget for DisplayArrangement {
                 ..
             } => {
                 if self.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -516,24 +505,9 @@ impl Widget for DisplayArrangement {
                     && self.drag.with(Option::is_some) =>
             {
                 self.drag.set(None);
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
-        }
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.moves
-            .iter_mut()
-            .find_map(|(_, emitter)| emitter.take())
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        for (_, emitter) in &mut self.moves {
-            emitter.refresh_availability(allowed);
         }
     }
 
@@ -602,6 +576,22 @@ impl Widget for DisplayArrangement {
     }
 }
 
+impl ui::widget::controls::ActionControls for DisplayArrangement {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.moves
+            .iter_mut()
+            .find_map(|(_, emitter)| emitter.take())
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for (_, emitter) in &mut self.moves {
+            emitter.refresh_availability(allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -655,14 +645,13 @@ mod tests {
         assert!(canvas.drag_to(target));
         assert!(canvas.release());
 
-        let invocation = canvas
-            .take_control_invocation()
+        let invocation = ui::widget::controls::take_control_invocation(&mut canvas)
             .expect("the drop is sent as the display's move action");
         assert_eq!(invocation.address.action, "move");
         let x = invocation.arguments["x"].as_i64().unwrap();
         let y = invocation.arguments["y"].as_i64().unwrap();
         assert_eq!((x, y), (0, 1080), "snapped flush under the panel");
-        assert!(canvas.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
     #[test]
@@ -672,7 +661,7 @@ mod tests {
         assert!(canvas.press(monitor.center()));
         assert!(canvas.drag_to(monitor.center() + (1.0, 1.0)));
         assert!(canvas.release());
-        assert!(canvas.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
     }
 
     #[test]

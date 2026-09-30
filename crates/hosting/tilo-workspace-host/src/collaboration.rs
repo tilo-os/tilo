@@ -395,10 +395,6 @@ impl CollaborationService {
         self.issue_with_digest(owner, administrator, request, request_digest, now_ns)
     }
 
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each argument is a distinct piece of custody or context the caller already holds"
-    )]
     pub(crate) fn issue_from_action(
         &self,
         owner: &mut SessionOwner,
@@ -615,24 +611,29 @@ impl CollaborationService {
             .invitations
             .iter()
             .map(|record| {
-                let redeemed = owner
+                let redeemed_by = owner
                     .collaboration_state()
                     .join_completions
                     .iter()
-                    .any(|completion| completion.bootstrap.invite_id == record.issued.invite_id);
-                let status = if redeemed {
+                    .find(|completion| completion.bootstrap.invite_id == record.issued.invite_id)
+                    .map(|completion| completion.bootstrap.device_cert.user_public_key);
+                let status = if redeemed_by.is_some() {
                     "redeemed"
                 } else if record.cancellation.is_some() || record.grant.expires_at_ns <= now_ns {
                     "revoked"
                 } else {
                     "pending"
                 };
-                serde_json::json!({
+                let mut entry = serde_json::json!({
                     "id": hex::encode(record.issued.invite_id),
                     "role": role_name(record.grant.role),
                     "expires_at_ms": record.grant.expires_at_ns / 1_000_000,
                     "status": status,
-                })
+                });
+                if let Some(participant) = redeemed_by {
+                    entry["participant_id"] = serde_json::json!(hex::encode(participant));
+                }
+                entry
             })
             .collect::<Vec<_>>();
         Ok(serde_json::json!({
@@ -834,13 +835,10 @@ impl CollaborationService {
         let bootstrap = owner
             .commit_join_redemption(
                 candidate,
-                owner.collaboration_state().clone(),
+                &redemption,
                 remote_endpoint,
                 request_id,
                 proof_digest,
-                redemption.join().invite_id(),
-                redemption.certificate().clone(),
-                redemption.join().grant().role,
             )
             .map_err(|error| CollaborationError::new(error.to_string()))?;
         tracing::info!(
@@ -997,6 +995,31 @@ impl CollaborationService {
             request_digest(&request)?,
             owner
                 .prepare_member_role(request.user_public_key, request.role, system_time(now_ns))
+                .map_err(|error| CollaborationError::new(error.to_string()))?,
+            now_ns,
+        )
+    }
+
+    pub fn set_member_administrator(
+        &self,
+        owner: &mut SessionOwner,
+        administrator: [u8; 32],
+        request: RemoveMemberRequest,
+        now_ns: u64,
+    ) -> Result<GovernanceCompletion, CollaborationError> {
+        authorize_administrator(
+            owner,
+            administrator,
+            now_ns,
+            request.request_id,
+            "member.administrator.set",
+        )?;
+        self.commit_administration(
+            owner,
+            request.request_id,
+            request_digest(&("member.administrator.set", &request))?,
+            owner
+                .prepare_member_administrator(request.user_public_key, system_time(now_ns))
                 .map_err(|error| CollaborationError::new(error.to_string()))?,
             now_ns,
         )
@@ -1206,11 +1229,7 @@ fn owner_enrolled_device(
 }
 
 fn current_time_ns() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_or(0, |duration| {
-            u64::try_from(duration.as_nanos()).unwrap_or(u64::MAX)
-        })
+    tilo_clock::unix_now_ns()
 }
 
 fn request_digest(value: &impl Serialize) -> Result<[u8; 32], CollaborationError> {

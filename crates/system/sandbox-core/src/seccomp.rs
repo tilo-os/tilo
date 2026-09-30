@@ -228,6 +228,12 @@ pub enum SeccompProfile {
     /// one class of program that genuinely compiles code at run time: a
     /// web engine's JavaScript tier. Everything else still applies.
     TiloJit,
+    /// `tilo-web-engine` — `tilo-jit` for a web engine that confines its own
+    /// renderers, as Chromium does: it may create the user, PID and network
+    /// namespaces and `chroot` that its per-renderer sandbox is built from.
+    /// Every other namespace flag, `setns`, `mount` and `pivot_root` are still
+    /// refused, so the nested namespaces can only narrow what the app has.
+    TiloWebEngine,
 }
 
 impl SeccompProfile {
@@ -238,6 +244,7 @@ impl SeccompProfile {
     pub fn parse(name: &str) -> Self {
         match name {
             "tilo-jit" => Self::TiloJit,
+            "tilo-web-engine" => Self::TiloWebEngine,
             _ => Self::TiloDefault,
         }
     }
@@ -247,15 +254,31 @@ impl SeccompProfile {
         match self {
             Self::TiloDefault => "tilo-default",
             Self::TiloJit => "tilo-jit",
+            Self::TiloWebEngine => "tilo-web-engine",
         }
     }
 
     /// Whether this profile lets the app map memory writable and executable
     /// at once.
     pub fn allows_dynamic_code(self) -> bool {
-        matches!(self, Self::TiloJit)
+        matches!(self, Self::TiloJit | Self::TiloWebEngine)
+    }
+
+    /// Whether this profile lets the app build a nested sandbox from
+    /// [`WEB_ENGINE_SANDBOX_NAMESPACES`] and `chroot`.
+    pub fn allows_nested_sandbox(self) -> bool {
+        matches!(self, Self::TiloWebEngine)
     }
 }
+
+/// The namespaces Chromium's renderer sandbox creates (`clone` or `unshare`
+/// with these flags), which [`SeccompProfile::TiloWebEngine`] permits.
+#[cfg(target_os = "linux")]
+pub const WEB_ENGINE_SANDBOX_NAMESPACES: &[u64] = &[
+    libc::CLONE_NEWUSER as u64,
+    libc::CLONE_NEWPID as u64,
+    libc::CLONE_NEWNET as u64,
+];
 
 /// Syscalls that take a page-protection bitmask in argument 2 and can
 /// therefore produce a writable, executable mapping.
@@ -284,10 +307,12 @@ fn baseline_rules(
     // pthreads still need clone(), but an app may not use it to manufacture
     // another namespace boundary inside the one Tilo constructed. One rule per
     // bit expresses "any forbidden flag" because rules for a syscall are ORed.
-    rules.insert(
-        libc::SYS_clone,
-        CLONE_NAMESPACE_FLAGS
+    let forbidden_namespaces = |flags: &[u64]| {
+        flags
             .iter()
+            .filter(|flag| {
+                !(profile.allows_nested_sandbox() && WEB_ENGINE_SANDBOX_NAMESPACES.contains(flag))
+            })
             .map(|flag| {
                 SeccompRule::new(vec![SeccompCondition::new(
                     0,
@@ -296,8 +321,25 @@ fn baseline_rules(
                     *flag,
                 )?])
             })
-            .collect::<Result<Vec<_>, BackendError>>()?,
+            .collect::<Result<Vec<_>, BackendError>>()
+    };
+    rules.insert(
+        libc::SYS_clone,
+        forbidden_namespaces(CLONE_NAMESPACE_FLAGS)?,
     );
+
+    // A web engine's renderer sandbox is a user namespace holding a PID and a
+    // network namespace, entered by `clone` or `unshare`, with the filesystem
+    // dropped by `chroot` into an empty directory. Inside it the engine holds
+    // capabilities over those namespaces only: mounting, pivoting, joining
+    // another namespace and every other namespace kind stay refused.
+    if profile.allows_nested_sandbox() {
+        rules.insert(
+            libc::SYS_unshare,
+            forbidden_namespaces(CLONE_NAMESPACE_FLAGS)?,
+        );
+        rules.remove(&libc::SYS_chroot);
+    }
 
     // Write-xor-execute. A page that is writable and executable at the
     // same time is what turns a heap or stack write into code execution:
@@ -562,6 +604,79 @@ pub mod testing {
             bail(0);
         }
 
+        wait_for(pid)
+    }
+
+    /// Install the baseline for `profile` in a forked child and ask for the
+    /// namespaces and `chroot` of a nested sandbox.
+    ///
+    /// Every request is one the kernel itself refuses without side effects
+    /// (`CLONE_UNTRACED` is not an `unshare` flag, and the empty path does not
+    /// exist), so the errno tells the filter's `EPERM` from the kernel's
+    /// answer on any host, whatever its user-namespace policy.
+    ///
+    /// Exit codes:
+    ///   0  = behaved exactly as the profile says it should
+    ///   20 = a nested-sandbox namespace got the wrong answer
+    ///   21 = another namespace kind reached the kernel
+    ///   22 = `chroot` got the wrong answer
+    ///   12 = the filter itself would not install
+    ///
+    /// # Panics
+    ///
+    /// Panics if the filter does not compile, `fork` fails, or the child
+    /// does not exit normally.
+    #[allow(
+        clippy::expect_used,
+        reason = "a test probe: a failure to set the experiment up is the test failing"
+    )]
+    pub fn probe_namespaces_under(profile: SeccompProfile) -> i32 {
+        let program = baseline_program(profile).expect("compile filter");
+        let nested = profile.allows_nested_sandbox();
+
+        // SAFETY: the child performs only async-signal-safe work (seccomp
+        // install via prctl, unshare, chroot, _exit) and never returns into
+        // the test harness.
+        let pid = unsafe { libc::fork() };
+        assert!(pid >= 0, "fork failed");
+        if pid == 0 {
+            let bail = |code: i32| -> ! {
+                // SAFETY: _exit is async-signal-safe and does not unwind.
+                unsafe { libc::_exit(code) }
+            };
+            let filtered = |result: libc::c_int| {
+                // SAFETY: reads this thread's errno right after the call.
+                result != 0 && unsafe { *libc::__errno_location() } == libc::EPERM
+            };
+            if seccompiler::apply_filter(&program).is_err() {
+                bail(12);
+            }
+            for flag in super::WEB_ENGINE_SANDBOX_NAMESPACES {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_possible_wrap,
+                    reason = "namespace flags are 32-bit clone flags"
+                )]
+                let flags = (*flag | libc::CLONE_UNTRACED as u64) as libc::c_int;
+                // SAFETY: an invalid flag set; the kernel changes nothing.
+                if filtered(unsafe { libc::unshare(flags) }) == nested {
+                    bail(20);
+                }
+            }
+            // SAFETY: as above.
+            if !filtered(unsafe { libc::unshare(libc::CLONE_NEWNS | libc::CLONE_UNTRACED) }) {
+                bail(21);
+            }
+            // SAFETY: the empty path never names a directory.
+            if filtered(unsafe { libc::chroot(c"".as_ptr()) }) == nested {
+                bail(22);
+            }
+            bail(0);
+        }
+        wait_for(pid)
+    }
+
+    fn wait_for(pid: libc::pid_t) -> i32 {
         let mut status = 0i32;
         // SAFETY: `pid` is our own child from the fork above.
         unsafe { libc::waitpid(pid, &raw mut status, 0) };
@@ -639,6 +754,27 @@ mod tests {
         assert_eq!(SeccompProfile::parse("tilo-jit"), SeccompProfile::TiloJit);
     }
 
+    /// The web engine gets the user, PID and network namespaces and chroot of
+    /// Chromium's renderer sandbox; every profile refuses the rest.
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn only_the_web_engine_profile_builds_a_nested_sandbox() {
+        for profile in [
+            SeccompProfile::TiloDefault,
+            SeccompProfile::TiloJit,
+            SeccompProfile::TiloWebEngine,
+        ] {
+            assert_eq!(
+                testing::probe_namespaces_under(profile),
+                0,
+                "{}: 20 = a sandbox namespace got the wrong answer, 21 = another \
+                 namespace kind was allowed, 22 = chroot got the wrong answer, \
+                 12 = the filter would not install",
+                profile.as_str()
+            );
+        }
+    }
+
     #[test]
     #[cfg(target_os = "linux")]
     fn seccomp_filters_are_enforced_by_the_kernel() {
@@ -670,12 +806,15 @@ mod tests {
         }
         // Phase `jit_profile_still_permits_writable_executable_memory`.
         {
-            assert_eq!(
-                testing::probe_mappings_under(SeccompProfile::TiloJit),
-                0,
-                "10 = W+X was allowed, 11 = an ordinary mapping was refused, \
-                 12 = the filter would not install"
-            );
+            for profile in [SeccompProfile::TiloJit, SeccompProfile::TiloWebEngine] {
+                assert_eq!(
+                    testing::probe_mappings_under(profile),
+                    0,
+                    "{}: 10 = W+X was allowed, 11 = an ordinary mapping was refused, \
+                     12 = the filter would not install",
+                    profile.as_str()
+                );
+            }
         }
         // Phase `baseline_refuses_kernel_introspection_and_fault_injection_syscalls`.
         {

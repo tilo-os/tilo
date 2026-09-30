@@ -27,16 +27,59 @@
 pub use ui_core::*;
 
 pub mod framework;
+mod runner;
 
-/// Export the symbols `tilo-app dev` loads into the process that already
-/// owns the windows.
+/// The toolkit's launch vocabulary, with `run` resolved to the runner this
+/// build targets: the native event loop on Linux and macOS, registration with
+/// the page runtime in the browser.
+pub mod launch {
+    pub use crate::runner::{run, run_or_exit};
+    pub use ui_core::launch::*;
+}
+
+/// The binary entry point of an app, identical on every target.
+///
+/// ```ignore
+/// ui::main!(hello::App);                           // a `ResourceApp`
+/// ui::main!(definition = hello::definition);       // fn() -> &'static ApplicationDefinition
+/// ```
+///
+/// On Linux and macOS it runs the native runner with the standard launch
+/// modes (`--shots`, `--headless`, …). In the browser it registers the app
+/// for the page runtime to mount.
+#[macro_export]
+macro_rules! main {
+    (definition = $definition:expr) => {
+        fn main() {
+            // A browser page mounts the definition itself; its binary is empty.
+            #[cfg(not(target_arch = "wasm32"))]
+            $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec($definition()));
+        }
+    };
+    ($app:ty) => {
+        fn main() {
+            #[cfg(not(target_arch = "wasm32"))]
+            $crate::framework::run::<$app>();
+        }
+    };
+}
+
+/// Export the entry points every platform's host enters the app library by.
 ///
 /// Invoke it once at the root of the app library, naming the [`framework::ResourceApp`]
-/// type. It compiles only for a `thin` build, the build that links one shared
-/// `ui` so the new view is the same type as the windows already on screen.
+/// type. The reload symbols `tilo-app dev` loads into the process that already
+/// owns the windows compile only for a `thin` build, the build that links one
+/// shared `ui` so the new view is the same type as the windows already on
+/// screen. On every target it also defines the library's `definition()`, the
+/// entry a web build registers with the browser's toolkit core, as component
+/// apps define theirs. On Android it defines `android_main`, which the
+/// `NativeActivity` of `tilo-app build --platform android` enters: the library
+/// built as a `cdylib` is the whole app there, run as [`framework::run`] runs it.
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {
+        $crate::android_main!($crate::framework::run::<$app>);
+
         #[cfg(feature = "thin")]
         extern crate runtime_dylib;
 
@@ -67,6 +110,12 @@ macro_rules! dev_reload_entry {
         pub extern "C" fn tilo_dev_publish_root() -> i32 {
             $crate::framework::dev_reload::publish_root::<$app>()
         }
+
+        /// The app's toolkit definition, which the web build registers.
+        #[must_use]
+        pub fn definition() -> &'static $crate::prelude::ApplicationDefinition {
+            $crate::framework::definition::<$app>()
+        }
     };
 }
 
@@ -77,10 +126,14 @@ pub use tilo_resource;
 /// JSON values for action arguments, component props and native-input
 /// snapshots, re-exported so an app needs no dependency of its own.
 pub use serde_json;
+/// Files on every target: capability-scoped directories on Linux and macOS,
+/// the origin-private file system in the browser. Use it where `std::fs`
+/// would fail on the web.
+pub use tilo_files as files;
 
 /// The usual imports for application code.
 pub mod prelude {
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::framework::run;
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
@@ -95,7 +148,7 @@ pub mod prelude {
 
     pub use ui_core::application::{
         AppComponent, ApplicationCatalog, ApplicationDefinition, ComponentRunnerInputs,
-        HostContext, LaunchTarget, PreparedComponentInputs, RestoreInput,
+        HostContext, HostContextInputs, LaunchTarget, PreparedComponentInputs, RestoreInput,
     };
     pub use ui_core::application_view::{InstanceViewStore, SavedInstanceView};
     pub use ui_core::launch::ComponentHostPreparer;
@@ -136,7 +189,6 @@ mod tests {
     use super::prelude::*;
     // Implementing the toolkit's raw Widget contract is an escape hatch; the
     // document types it names are imported explicitly, not from the prelude.
-    use ui_core::automerge::{AutoCommit, ObjId};
 
     fn custom_event_handler(_event: &ui_core::winit::event::WindowEvent, ctx: &mut EventCtx<'_>) {
         // App-defined widgets receive the same event and CRDT context as
@@ -163,8 +215,8 @@ mod tests {
 
         fn native_input_snapshot(
             &self,
-            _doc: &AutoCommit,
-            _path: &ObjId,
+            _doc: &ui_core::widget::AppModel,
+            _path: &ui_core::widget::ModelPath,
         ) -> Option<serde_json::Value> {
             Some(serde_json::json!({ "width": self.inner.get_rect().width() }))
         }
@@ -185,5 +237,60 @@ mod tests {
         assert_eq!(widget.get_rect(), custom.inner.get_rect());
         std::hint::black_box(SearchRegistry::new());
         std::hint::black_box(ActionForm::new("note", "Note", "save", "Save"));
+    }
+
+    fn adapted_root() -> Box<dyn Widget> {
+        Box::new(Text::new("adapted root"))
+    }
+
+    /// A hand-built launch spec mounts in a component host, once per app id.
+    #[test]
+    fn launch_spec_mounts_as_a_component() {
+        use crate::launch::LaunchSpec;
+        let definition = LaunchSpec::new("test.adapted", adapted_root).as_definition("Adapted");
+        let again = LaunchSpec::new("test.adapted", adapted_root).as_definition("Other");
+        assert!(std::ptr::eq(definition, again));
+        assert_eq!(definition.title, "Adapted");
+        assert_eq!(definition.record_kind.as_str(), "test.adapted.app");
+
+        let profile = tempfile::tempdir().unwrap();
+        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(Some(crate::permissions::Role::Owner), "author"),
+                vec![],
+            ),
+        ));
+        let mut host = crate::application::ApplicationHost::new(
+            profile.path().join("state"),
+            "device".into(),
+            "workspace",
+            crate::permissions::UserId("author".into()),
+            permissions,
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+        let checkout = RecordCheckout::new(
+            RecordId::derived("default", &RecordId::for_tab(0)),
+            definition.record_kind.clone(),
+        );
+        let prepared = host
+            .prepare_default(
+                definition,
+                1,
+                checkout,
+                None,
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(prepared.context, prepared.target, prepared.restore)
+            .unwrap();
+        let mut harness = crate::headless::FrameHarness::from_component(
+            component,
+            (320, 200),
+            prepared.runner_inputs,
+        )
+        .unwrap();
+        harness.poll_frame().unwrap();
     }
 }

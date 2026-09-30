@@ -142,6 +142,7 @@ pub(in crate::state) fn restore(
                 covered_snapshot: document
                     .covered_snapshot
                     .map(|original| NativeCheckpoint { original }),
+                sealed: Vec::new(),
             },
         );
     }
@@ -157,7 +158,7 @@ pub(in crate::state) fn restore(
         pending_bytes,
         checkpoint_times: BTreeMap::new(),
         exact_admissions: exact,
-        admission_v5: version == 5,
+        admission_v5: version >= 5,
         native_cut_publisher: None,
         _retention: (),
     };

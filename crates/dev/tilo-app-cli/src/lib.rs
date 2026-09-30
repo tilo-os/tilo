@@ -22,78 +22,96 @@ use std::time::{Duration, Instant, SystemTime};
 use anyhow::{Context, Result, bail};
 use notify::{Event, EventKind, RecommendedWatcher, RecursiveMode, Watcher as _};
 
+pub mod android;
+pub mod capability_usage;
+pub mod ci;
+mod dev_reload;
+pub mod examples;
 mod json;
+pub mod native_libs;
 mod pack;
 pub mod portability;
 mod resource_kinds;
 pub mod size;
 pub mod standalone;
+pub mod targets;
+pub mod web;
 
 const STARTER_APP_TEMPLATE: &str = include_str!("../templates/starter.rs");
-const DATA_APP_TEMPLATE: &str = include_str!("../templates/data.rs");
-const LIST_APP_TEMPLATE: &str = include_str!("../templates/list.rs");
-const TREE_APP_TEMPLATE: &str = include_str!("../templates/tree.rs");
-const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
-const ASYNC_APP_TEMPLATE: &str = include_str!("../templates/async.rs");
 const DOCUMENT_APP_TEMPLATE: &str = include_str!("../templates/document.rs");
-const QR_APP_TEMPLATE: &str = include_str!("../templates/qr.rs");
-const WORKSPACE_APP_TEMPLATE: &str = include_str!("../templates/workspace.rs");
-/// The graph template as generated before apps started on the framework.
-/// Kept only to recognise, and migrate, apps generated from it.
-const LEGACY_GRAPH_APP_TEMPLATE: &str = include_str!("../templates/legacy/graph.rs");
+const COLLECTION_APP_TEMPLATE: &str = include_str!("../templates/collection.rs");
+const GRAPH_APP_TEMPLATE: &str = include_str!("../templates/graph.rs");
+const STARTER_APP_CATALOG: &str = include_str!("../templates/starter.ftl");
+const DOCUMENT_APP_CATALOG: &str = include_str!("../templates/document.ftl");
+const COLLECTION_APP_CATALOG: &str = include_str!("../templates/collection.ftl");
+const GRAPH_APP_CATALOG: &str = include_str!("../templates/graph.ftl");
 const STARTER_APP_TESTS: &str = include_str!("../templates/tests/starter.rs");
-const DATA_APP_TESTS: &str = include_str!("../templates/tests/data.rs");
-const LIST_APP_TESTS: &str = include_str!("../templates/tests/list.rs");
-const TREE_APP_TESTS: &str = include_str!("../templates/tests/tree.rs");
+const DOCUMENT_APP_TESTS: &str = include_str!("../templates/tests/document.rs");
+const COLLECTION_APP_TESTS: &str = include_str!("../templates/tests/collection.rs");
 const GRAPH_APP_TESTS: &str = include_str!("../templates/tests/graph.rs");
 const GRAPH_SCREEN_TESTS: &str = include_str!("../templates/tests/graph_screen.rs");
-const ASYNC_APP_TESTS: &str = include_str!("../templates/tests/async.rs");
-const DOCUMENT_APP_TESTS: &str = include_str!("../templates/tests/document.rs");
-const QR_APP_TESTS: &str = include_str!("../templates/tests/qr.rs");
-const WORKSPACE_APP_TESTS: &str = include_str!("../templates/tests/workspace.rs");
 const NATIVE_APP_TESTS: &str = include_str!("../templates/tests/native.rs");
 
+/// A starting point `tilo-app new` scaffolds and the author then owns.
+///
+/// Templates are few and small: each is the least code that is a correct Tilo
+/// app of one shape. Programs that teach one concept are examples
+/// (`tilo-app examples`), not templates.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Template {
     Starter,
-    Data,
-    List,
-    Tree,
-    Graph,
-    Async,
     Document,
-    Qr,
-    Workspace,
+    Collection,
+    Graph,
 }
 
 impl Template {
-    fn name(self) -> &'static str {
+    /// Every template, in the order `--list-templates` and the prompt show.
+    pub const ALL: [Self; 4] = [Self::Starter, Self::Document, Self::Collection, Self::Graph];
+
+    #[must_use]
+    pub fn name(self) -> &'static str {
         match self {
             Self::Starter => "starter",
-            Self::Data => "data",
-            Self::List => "list",
-            Self::Tree => "tree",
-            Self::Graph => "graph",
-            Self::Async => "async",
             Self::Document => "document",
-            Self::Qr => "qr",
-            Self::Workspace => "workspace",
+            Self::Collection => "collection",
+            Self::Graph => "graph",
         }
     }
 
-    fn description(self) -> &'static str {
+    #[must_use]
+    pub fn description(self) -> &'static str {
         match self {
-            Self::Starter => "Profile resource edited through bound form controls",
-            Self::Data => "Sparse table with retained cell controls",
-            Self::List => "Sparse variable-height retained list",
-            Self::Tree => "Professional hierarchy browser",
-            Self::Graph => "Serialized UI graph and router",
-            Self::Async => "Restartable background task with cancellation",
-            Self::Document => "Durable synchronized editor with undo",
-            Self::Qr => "IME input to accessible generated QR output",
-            Self::Workspace => "Responsive master-detail workspace with durable item editing",
+            Self::Starter => "One resource, one action, one bound field: the smallest correct app",
+            Self::Document => "One collaborative document with a live preview",
+            Self::Collection => "A list of items the user adds, edits, checks off and removes",
+            Self::Graph => "Serialized, live-editable screens above controls bound to the resource",
         }
     }
+
+    fn catalog(self) -> &'static str {
+        match self {
+            Self::Starter => STARTER_APP_CATALOG,
+            Self::Document => DOCUMENT_APP_CATALOG,
+            Self::Collection => COLLECTION_APP_CATALOG,
+            Self::Graph => GRAPH_APP_CATALOG,
+        }
+    }
+}
+
+/// The templates, as `tilo-app new --list-templates --json` reports them.
+#[must_use]
+pub fn templates_json() -> serde_json::Value {
+    Template::ALL
+        .iter()
+        .map(|template| {
+            serde_json::json!({
+                "name": template.name(),
+                "description": template.description(),
+                "default": *template == Template::Starter,
+            })
+        })
+        .collect()
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -125,7 +143,6 @@ pub enum ComponentTemplate {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum GraphPropsContract {
     DisplayV1,
-    FormV1,
     FormV2,
 }
 
@@ -147,18 +164,6 @@ impl GraphPropsContract {
                 (!props.get(field).is_some_and(serde_json::Value::is_string))
                     .then(|| format!("requires string prop {field:?}"))
             }),
-            Self::FormV1 => {
-                if !props.get("value").is_some_and(serde_json::Value::is_string) {
-                    Some("requires string prop \"value\"".to_owned())
-                } else if !props
-                    .get("enabled")
-                    .is_some_and(serde_json::Value::is_boolean)
-                {
-                    Some("requires boolean prop \"enabled\"".to_owned())
-                } else {
-                    None
-                }
-            }
             Self::FormV2 => ["value_path", "enabled_path"]
                 .into_iter()
                 .find_map(|field| {
@@ -180,6 +185,8 @@ pub struct NewAppRequest {
     /// `None` prompts in an interactive terminal and defaults to `Starter`
     /// for deterministic non-interactive use.
     pub template: Option<Template>,
+    /// Copy this example instead of rendering a template.
+    pub example: Option<&'static examples::Example>,
     pub directory: Option<PathBuf>,
     /// Explicit toolkit crate. `None` discovers `TILO_UI_PATH`, a surrounding
     /// checkout, the running executable's checkout, or the build checkout.
@@ -190,6 +197,10 @@ pub struct NewAppRequest {
     /// Commit of the SDK repository. `None` pins the commit this CLI was
     /// built from.
     pub sdk_rev: Option<String>,
+    /// Build a standalone app on the published SDK: `tilo-app` at this
+    /// version requirement from the registry, with no `[patch]`. An empty
+    /// string means the version this CLI was built with.
+    pub sdk_version: Option<String>,
     pub dry_run: bool,
 }
 
@@ -200,10 +211,17 @@ enum SdkRequest {
         url: Option<String>,
         rev: Option<String>,
     },
+    Registry(Option<String>),
 }
 
 impl NewAppRequest {
     fn sdk_request(&self) -> SdkRequest {
+        if self.ui_path.is_none()
+            && let Some(version) = &self.sdk_version
+        {
+            let version = version.trim();
+            return SdkRequest::Registry((!version.is_empty()).then(|| version.to_owned()));
+        }
         match (&self.ui_path, &self.sdk_git, &self.sdk_rev) {
             (Some(ui), _, _) => SdkRequest::Checkout(ui.clone()),
             (None, None, None) => SdkRequest::Discover,
@@ -455,6 +473,12 @@ pub struct ScenarioRunRequest {
 #[derive(Debug)]
 pub struct ScenarioSuitePlan {
     pub app_dir: PathBuf,
+    /// Builds the app once, in the caller's environment: a Cargo wrapper such
+    /// as a remote builder reads its own configuration from the XDG
+    /// directories each case replaces.
+    build: CargoPlan,
+    /// The binary `build` reports, else the only one it builds.
+    bin: Option<String>,
     cases: Vec<ScenarioCasePlan>,
     artifact_dir: Option<PathBuf>,
 }
@@ -463,7 +487,7 @@ pub struct ScenarioSuitePlan {
 struct ScenarioCasePlan {
     name: String,
     source: PathBuf,
-    cargo: CargoPlan,
+    args: Vec<OsString>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -484,7 +508,14 @@ pub struct DevRequest {
     pub forwarded: Vec<OsString>,
     pub watch_ui: bool,
     pub debounce: Duration,
+    /// Report where each reload spent its time.
+    pub timings: bool,
 }
+
+/// Quiet period `tilo-app dev` waits after a save before it builds.
+pub const DEV_DEBOUNCE_MS: u64 = 30;
+
+pub use dev_reload::run_as_build_tool_if_requested;
 
 #[derive(Debug)]
 pub struct PackageRequest {
@@ -495,10 +526,171 @@ pub struct PackageRequest {
     /// Link everything into the binary instead of against the toolkit and
     /// `libstd` the OS ships. Static binaries are several times the size limit.
     pub static_link: bool,
+    /// Rust target triple; overrides the one `platform` and `arch` pick.
     pub target: Option<String>,
+    pub platform: PackagePlatform,
+    /// `None` builds for the host architecture.
+    pub arch: Option<PackageArch>,
     pub features: Vec<String>,
     pub no_default_features: bool,
     pub force: bool,
+}
+
+/// The system a package is built for.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum PackagePlatform {
+    /// A thin Tilo OS app, linked against the toolkit the OS ships.
+    #[default]
+    Tilo,
+    /// One self-contained executable with the toolkit linked in, for Linux
+    /// desktops other than Tilo OS.
+    Linux,
+    /// One self-contained Windows executable with the toolkit linked in.
+    Windows,
+    /// One self-contained macOS executable with the toolkit linked in.
+    Macos,
+    /// A WebAssembly side module of the browser's toolkit core.
+    Web,
+    /// The app's library in an APK whose `NativeActivity` enters it.
+    Android,
+}
+
+impl PackagePlatform {
+    /// Every platform, in the order `check --platform all` visits them.
+    pub const ALL: [Self; 6] = [
+        Self::Tilo,
+        Self::Linux,
+        Self::Windows,
+        Self::Macos,
+        Self::Web,
+        Self::Android,
+    ];
+
+    /// The platform's name on the command line.
+    #[must_use]
+    pub const fn cli_name(self) -> &'static str {
+        match self {
+            Self::Tilo => "tilo",
+            Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+            Self::Web => "web",
+            Self::Android => "android",
+        }
+    }
+
+    /// Refuse a build this machine cannot execute: one for another operating
+    /// system, or for an architecture other than the host's. A web build runs
+    /// in a browser anywhere.
+    ///
+    /// # Errors
+    ///
+    /// Names what to run instead.
+    pub fn ensure_runs_here(self, arch: Option<PackageArch>) -> Result<()> {
+        let os = match self {
+            Self::Web => return Ok(()),
+            Self::Android => bail!(
+                "an android build runs on a device or an emulator, not here; \
+                 `tilo-app run --platform android` installs it on one"
+            ),
+            Self::Tilo | Self::Linux => "linux",
+            Self::Windows => "windows",
+            Self::Macos => "macos",
+        };
+        let name = self.cli_name();
+        if std::env::consts::OS != os {
+            bail!(
+                "a {name} build does not run on {}; build it with \
+                 `tilo-app build --platform {name}` and run it on {os}",
+                std::env::consts::OS
+            );
+        }
+        if let Some(arch) = arch
+            && Some(arch) != PackageArch::host()
+        {
+            bail!(
+                "this machine is {}, so it cannot run an {} build; build it with \
+                 `tilo-app build --platform {name} --arch {}` and run it there",
+                std::env::consts::ARCH,
+                arch.as_str(),
+                arch.as_str()
+            );
+        }
+        Ok(())
+    }
+
+    /// The registry's name for the platform family.
+    #[must_use]
+    pub const fn registry_name(self) -> &'static str {
+        match self {
+            Self::Tilo => registry_types::TILO_OS_PLATFORM,
+            Self::Linux => registry_types::LINUX_PLATFORM,
+            Self::Windows => registry_types::WINDOWS_PLATFORM,
+            Self::Macos => registry_types::MACOS_PLATFORM,
+            Self::Web => registry_types::WEB_PLATFORM,
+            Self::Android => registry_types::ANDROID_PLATFORM,
+        }
+    }
+
+    /// The Rust target triple for `arch`.
+    #[must_use]
+    pub fn triple(self, arch: PackageArch) -> String {
+        let arch = arch.as_str();
+        match self {
+            Self::Tilo | Self::Linux => format!("{arch}-unknown-linux-gnu"),
+            Self::Windows => format!("{arch}-pc-windows-msvc"),
+            Self::Macos => format!("{arch}-apple-darwin"),
+            Self::Web => "wasm32-unknown-unknown".to_owned(),
+            Self::Android => format!("{arch}-linux-android"),
+        }
+    }
+
+    const fn executable_suffix(self) -> &'static str {
+        match self {
+            Self::Windows => ".exe",
+            Self::Tilo | Self::Linux | Self::Macos | Self::Web | Self::Android => "",
+        }
+    }
+}
+
+/// A CPU architecture a package can target.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PackageArch {
+    X86_64,
+    Aarch64,
+}
+
+impl PackageArch {
+    pub const ALL: [Self; 2] = [Self::Aarch64, Self::X86_64];
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::X86_64 => "x86_64",
+            Self::Aarch64 => "aarch64",
+        }
+    }
+
+    /// The architecture `tilo-app` itself runs on, when it is one of these.
+    #[must_use]
+    pub fn host() -> Option<Self> {
+        match std::env::consts::ARCH {
+            "x86_64" => Some(Self::X86_64),
+            "aarch64" => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
+
+    /// The architecture a target triple such as `aarch64-unknown-linux-gnu`
+    /// builds for.
+    #[must_use]
+    pub fn of_triple(triple: &str) -> Option<Self> {
+        match triple.split('-').next()? {
+            "x86_64" => Some(Self::X86_64),
+            "aarch64" => Some(Self::Aarch64),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -576,7 +768,6 @@ const SCREEN_ENTRY_PREFIX: &str = "// tilo-app:screen=";
 const COMPONENT_REGISTRY_HEADER: &str = "// @generated by tilo-app; Rust component registry.\n";
 const COMPONENT_ENTRY_PREFIX: &str = "// tilo-app:component=";
 const GRAPH_COMPONENT_ENTRY_PREFIX: &str = "// tilo-app:graph-component=";
-const LEGACY_GRAPH_ROUTER_CALL: &str = "crate::screens::router(\"main\", &Theme::default())";
 const GENERATED_GRAPH_ROUTER_CALL: &str = "crate::screens::router_with(\n        \"main\",\n        &Theme::default(),\n        crate::components::ui_graph_context(),\n    )";
 
 struct PendingWrite {
@@ -937,17 +1128,6 @@ const LOCALE_REGISTRY_HEADER: &str = "// @generated by tilo-app; locale registry
 const LOCALE_ENTRY_PREFIX: &str = "// tilo-app:locale=";
 const GENERATED_LOCALE_SETUP: &str =
     "pub mod locales;\n\nfn install_catalog() {\n    locales::install();\n}";
-const LEGACY_GENERATED_LOCALE_SETUP: &str = r#"const SOURCE_CATALOG: &str = include_str!("../locales/en-US.ftl");
-
-fn install_catalog() {
-    if let Err(error) = ui::i18n::I18nManager::install_system(
-        "en-US",
-        &[("en-US", SOURCE_CATALOG)],
-    ) {
-        eprintln!("localization catalog: {error}");
-    }
-}"#;
-
 fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<Vec<PendingWrite>> {
     validate_locale(locale)?;
     if locale.eq_ignore_ascii_case("en-US") {
@@ -958,24 +1138,22 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
     protect_destination(&path, force)?;
 
     let registry_path = app_dir.join("src/locales.rs");
-    let (registry, mut locales, migrated_library) = match std::fs::read_to_string(&registry_path) {
-        Ok(registry) => {
-            let locales = parse_locale_registry(&registry).with_context(|| {
-                format!(
-                    "{} is app-owned; register {locale:?} in that localization setup explicitly",
-                    registry_path.display()
-                )
-            })?;
-            (registry, locales, None)
-        }
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            let library = migrate_legacy_locale_setup(app_dir, locale)?;
-            (String::new(), vec!["en-US".to_owned()], Some(library))
-        }
+    let registry = match std::fs::read_to_string(&registry_path) {
+        Ok(registry) => registry,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => bail!(
+            "{} is missing, so localization setup is app-owned; register {locale:?} there explicitly",
+            registry_path.display()
+        ),
         Err(error) => {
             return Err(error).with_context(|| format!("reading {}", registry_path.display()));
         }
     };
+    let mut locales = parse_locale_registry(&registry).with_context(|| {
+        format!(
+            "{} is app-owned; register {locale:?} in that localization setup explicitly",
+            registry_path.display()
+        )
+    })?;
     if let Some(existing) = locales
         .iter()
         .find(|existing| existing.eq_ignore_ascii_case(locale))
@@ -1009,9 +1187,6 @@ fn locale_artifact_writes(app_dir: &Path, locale: &str, force: bool) -> Result<V
             source: registry_source,
             description: "locale registry",
         });
-    }
-    if let Some(library) = migrated_library {
-        writes.push(library);
     }
     Ok(writes)
 }
@@ -1293,26 +1468,6 @@ fn synchronize_fluent_attributes(
         changed |= translation.len() != before;
     }
     changed
-}
-
-fn migrate_legacy_locale_setup(app_dir: &Path, locale: &str) -> Result<PendingWrite> {
-    let path = app_dir.join("src/lib.rs");
-    let source = std::fs::read_to_string(&path)
-        .with_context(|| format!("reading localization entrypoint {}", path.display()))?;
-    if source.matches(LEGACY_GENERATED_LOCALE_SETUP).count() != 1 {
-        bail!(
-            "{} has app-owned localization setup; register {locale:?} explicitly or add a tilo-app generated src/locales.rs registry",
-            path.display()
-        );
-    }
-    let updated = source.replacen(LEGACY_GENERATED_LOCALE_SETUP, GENERATED_LOCALE_SETUP, 1);
-    syn::parse_file(&updated)
-        .with_context(|| format!("validating migrated locale setup in {}", path.display()))?;
-    Ok(PendingWrite {
-        path,
-        source: updated,
-        description: "locale module wiring",
-    })
 }
 
 fn parse_locale_registry(source: &str) -> Result<Vec<String>> {
@@ -2180,7 +2335,7 @@ fn component_artifact_writes(
             _ => None,
         })
         .collect();
-    let mut updated_library = match component_modules.as_slice() {
+    let updated_library = match component_modules.as_slice() {
         [] => {
             let separator = if library_source.ends_with('\n') {
                 "\n"
@@ -2205,9 +2360,6 @@ fn component_artifact_writes(
             library_path.display()
         ),
     };
-    if is_generated_graph_app(app_dir)? {
-        updated_library = migrate_generated_graph_context(&updated_library);
-    }
     syn::parse_file(&updated_library)
         .with_context(|| format!("validating component wiring for {}", library_path.display()))?;
 
@@ -2464,22 +2616,6 @@ fn is_generated_graph_app(app_dir: &Path) -> Result<bool> {
     Ok(source.starts_with(SCREEN_REGISTRY_HEADER))
 }
 
-fn migrate_generated_graph_context(source: &str) -> String {
-    let legacy_template = legacy_graph_app_template();
-    if source.contains(&legacy_template) {
-        source.replacen(&legacy_template, LEGACY_GRAPH_APP_TEMPLATE, 1)
-    } else {
-        source.to_owned()
-    }
-}
-
-/// The widget-root graph template from before `screens::router_with`: apps
-/// generated from it get the component context wired on their next
-/// component, in the widget-root form they already use.
-fn legacy_graph_app_template() -> String {
-    LEGACY_GRAPH_APP_TEMPLATE.replace(GENERATED_GRAPH_ROUTER_CALL, LEGACY_GRAPH_ROUTER_CALL)
-}
-
 fn generated_graph_context_ready(app_dir: &Path) -> Result<bool> {
     if !is_generated_graph_app(app_dir)? {
         return Ok(false);
@@ -2487,8 +2623,7 @@ fn generated_graph_context_ready(app_dir: &Path) -> Result<bool> {
     let path = app_dir.join("src/lib.rs");
     let source =
         std::fs::read_to_string(&path).with_context(|| format!("reading {}", path.display()))?;
-    Ok(source.contains(GENERATED_GRAPH_ROUTER_CALL)
-        || source.contains(&legacy_graph_app_template()))
+    Ok(source.contains(GENERATED_GRAPH_ROUTER_CALL))
 }
 
 fn component_source(
@@ -3993,7 +4128,7 @@ fn doctor_resolved_app(app_dir: PathBuf) -> DoctorReport {
         &app_dir,
         "src/main.rs",
         "launch lifecycle",
-        &["framework::run::<", "LaunchSpec::new"],
+        &["ui::main!", "framework::run::<", "LaunchSpec::new"],
         &mut checks,
     );
     let draws_nothing = manifest
@@ -4059,9 +4194,7 @@ fn check_resource_action_surface(app_dir: &Path, checks: &mut Vec<DoctorCheck>) 
         || code.contains("ActionForm::new(")
         || code.contains("ui::widget::resource_actions::ActionForm::new(");
     let custom_catalogue = code.contains("fn resources(") && code.contains("ActionSpec::");
-    let custom_invocation = code.contains("fn start_operation(")
-        || code.contains("invoke_resource_operation")
-        || code.contains("start_resource_operation");
+    let custom_invocation = code.contains("fn start_operation(");
     let custom_operation =
         code.contains("OperationKind::Effect") || code.contains("OperationKind::View");
     let toolkit_surface = toolkit_host && toolkit_descriptor;
@@ -4215,6 +4348,57 @@ pub fn plan_app_task(start: &Path, task: AppTask, forwarded: &[OsString]) -> Res
         program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
         args,
     })
+}
+
+/// The Clippy run `check --platform` adds for a native platform: the app's
+/// code compiled for that platform's target triple, warnings denied. `None`
+/// when that is the host build the rest of `check` already lints.
+///
+/// # Errors
+///
+/// Returns an error for the web platform, which `check` proves with a web
+/// build instead, when the architecture cannot be told, or when the app
+/// cannot be resolved.
+pub fn plan_platform_clippy(
+    start: &Path,
+    platform: PackagePlatform,
+    arch: Option<PackageArch>,
+) -> Result<Option<CargoPlan>> {
+    if platform == PackagePlatform::Web {
+        bail!("the web platform is checked by building it");
+    }
+    if platform == PackagePlatform::Android {
+        bail!("the android platform is checked by `android::clippy`");
+    }
+    let Some(arch) = arch.or_else(PackageArch::host) else {
+        bail!(
+            "cannot tell which architecture to check on {}; pass --arch",
+            std::env::consts::ARCH
+        );
+    };
+    if platform.ensure_runs_here(Some(arch)).is_ok() {
+        return Ok(None);
+    }
+    let app_dir = resolve_app_dir(start)?;
+    let manifest = app_dir.join("Cargo.toml");
+    let package = cargo_package_name(&manifest)?;
+    Ok(Some(CargoPlan {
+        app_dir,
+        program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+        args: vec![
+            OsString::from("clippy"),
+            OsString::from("--manifest-path"),
+            manifest.into_os_string(),
+            OsString::from("--package"),
+            OsString::from(package),
+            OsString::from("--target"),
+            OsString::from(platform.triple(arch)),
+            OsString::from("--no-deps"),
+            OsString::from("--"),
+            OsString::from("-D"),
+            OsString::from("warnings"),
+        ],
+    }))
 }
 
 /// Resolve an app and construct its package-scoped format, lint, and test
@@ -4433,17 +4617,39 @@ pub fn plan_scenario_suite(request: &ScenarioRunRequest) -> Result<ScenarioSuite
                 );
             }
         }
-        let app_args = [
-            OsString::from("--headless-drive"),
-            OsString::from(serde_json::Value::Object(payload).to_string()),
-        ];
         cases.push(ScenarioCasePlan {
             name,
             source,
-            cargo: plan_app_task(&app_dir, AppTask::Run, &app_args)?,
+            args: vec![
+                OsString::from("--headless-drive"),
+                OsString::from(serde_json::Value::Object(payload).to_string()),
+            ],
         });
     }
+    let report = doctor_resolved_app(app_dir.clone());
+    if !report.is_ready() {
+        bail!("app preflight failed\n\n{}", report.summary());
+    }
+    let bin = load_app_package_spec(app_dir.clone())
+        .ok()
+        .and_then(|spec| spec.gui_bin);
+    let mut build_args = vec![
+        OsString::from("build"),
+        OsString::from("--manifest-path"),
+        app_dir.join("Cargo.toml").into_os_string(),
+        OsString::from("--message-format=json-render-diagnostics"),
+    ];
+    match &bin {
+        Some(bin) => build_args.extend([OsString::from("--bin"), OsString::from(bin)]),
+        None => build_args.push(OsString::from("--bins")),
+    }
     Ok(ScenarioSuitePlan {
+        build: CargoPlan {
+            app_dir: app_dir.clone(),
+            program: std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo")),
+            args: build_args,
+        },
+        bin,
         app_dir,
         cases,
         artifact_dir,
@@ -4510,15 +4716,61 @@ impl ScenarioSuitePlan {
         self.artifact_dir.as_deref()
     }
 
-    /// Run every prevalidated case in deterministic order. Each case receives
-    /// private XDG directories and cannot read or overwrite normal app state.
-    /// Failures are accumulated so one run reports the complete suite.
+    /// Build the app, then run every prevalidated case against the binary in
+    /// deterministic order. Each case receives private XDG directories and
+    /// cannot read or overwrite normal app state. Failures are accumulated so
+    /// one run reports the complete suite.
     ///
     /// # Errors
     ///
-    /// Returns an error only when an isolated state directory or child process
-    /// cannot be created. Non-zero scenario exits are returned in `failed`.
+    /// Returns an error when the build fails or reports no app binary, or an
+    /// isolated state directory or child process cannot be created. Non-zero
+    /// scenario exits are returned in `failed`.
     pub fn execute(&self) -> Result<ScenarioSuiteOutcome> {
+        let program = self.build_app()?;
+        self.run_cases(&program)
+    }
+
+    fn build_app(&self) -> Result<PathBuf> {
+        let mut child = ProcessCommand::new(&self.build.program)
+            .args(&self.build.args)
+            .current_dir(&self.build.app_dir)
+            .stdout(Stdio::piped())
+            .spawn()
+            .with_context(|| format!("starting {} build", self.build.program.to_string_lossy()))?;
+        let stdout = child
+            .stdout
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("Cargo build has no artifact stream"))?;
+        let manifest = self.app_dir.join("Cargo.toml");
+        let manifest = manifest.canonicalize().unwrap_or(manifest);
+        let mut artifacts = HashMap::new();
+        for line in BufReader::new(stdout).lines() {
+            let line = line.context("reading Cargo artifact stream")?;
+            collect_cargo_message(&line, &manifest, &mut artifacts);
+        }
+        let status = child.wait().context("waiting for Cargo build")?;
+        if !status.success() {
+            bail!("building the app for its scenarios failed with {status}");
+        }
+        if let Some(bin) = &self.bin {
+            return artifacts.remove(bin).ok_or_else(|| {
+                anyhow::anyhow!("Cargo build completed without reporting binary {bin}")
+            });
+        }
+        let mut executables = artifacts
+            .into_values()
+            .filter(|path| path.extension().is_none_or(|extension| extension != "so"));
+        match (executables.next(), executables.next()) {
+            (Some(executable), None) => Ok(executable),
+            (None, _) => bail!("Cargo build reported no app binary"),
+            (Some(_), Some(_)) => bail!(
+                "the app builds several binaries; name the GUI one in tilo-app.toml's entrypoint"
+            ),
+        }
+    }
+
+    fn run_cases(&self, program: &Path) -> Result<ScenarioSuiteOutcome> {
         if let Some(directory) = &self.artifact_dir {
             std::fs::create_dir_all(directory).with_context(|| {
                 format!(
@@ -4535,9 +4787,9 @@ impl ScenarioSuitePlan {
                 .prefix("tilo-scenario-")
                 .tempdir()
                 .with_context(|| format!("creating isolated state for scenario {:?}", case.name))?;
-            let status = ProcessCommand::new(&case.cargo.program)
-                .args(&case.cargo.args)
-                .current_dir(&case.cargo.app_dir)
+            let status = ProcessCommand::new(program)
+                .args(&case.args)
+                .current_dir(&self.app_dir)
                 .env("XDG_DATA_HOME", state.path().join("data"))
                 .env("XDG_STATE_HOME", state.path().join("state"))
                 .env("XDG_CONFIG_HOME", state.path().join("config"))
@@ -4567,6 +4819,8 @@ struct AppPackageSpec {
     cargo_package: String,
     manifest_path: PathBuf,
     entrypoints: Vec<(String, PathBuf)>,
+    /// The Cargo binary of the GUI entrypoint, the one a desktop build ships.
+    gui_bin: Option<String>,
     thin_feature: bool,
 }
 
@@ -4582,49 +4836,49 @@ struct AppPackageSpec {
 /// Returns an error when preflight, compilation, staging, packing, or
 /// verification fails, or when the destination exists without `force`.
 pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutcome> {
-    let app_dir = resolve_app_dir(start)?;
-    let report = doctor_resolved_app(app_dir.clone());
-    if !report.is_ready() {
-        bail!("app preflight failed\n\n{}", report.summary());
+    if request.platform == PackagePlatform::Web {
+        return web::package_web(start, request);
     }
-    let spec = load_app_package_spec(app_dir)?;
-    if !request.static_link && !spec.thin_feature {
-        bail!(
-            "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
-             add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
-            spec.app_dir.join("Cargo.toml").display()
-        );
+    if request.platform == PackagePlatform::Android {
+        if request.arch.is_none() {
+            bail!("an Android package is one architecture here; pass --arch aarch64 or x86_64");
+        }
+        return android::package(start, request, &android::PackageOptions::default())?
+            .pop()
+            .ok_or_else(|| anyhow::anyhow!("no Android package was built"));
     }
-    let profile = package_profile(request)?;
-    let budget = std::fs::read_to_string(&spec.manifest_path)
-        .map_err(anyhow::Error::from)
-        .and_then(|source| size::Budget::from_manifest(&source))
-        .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?;
-    let output = request.output.as_ref().map_or_else(
-        || {
-            spec.app_dir
-                .join("dist")
-                .join(format!("{}.tapp", spec.cargo_package))
-        },
-        |path| absolute_from(&spec.app_dir, path),
-    );
-    if output.exists() && !request.force {
-        bail!(
-            "package output {} already exists; pass --force to replace it",
-            output.display()
-        );
-    }
+    let NativeTarget {
+        spec,
+        desktop,
+        desktop_arch,
+        profile,
+        shipped,
+        triple,
+    } = NativeTarget::resolve(start, request)?;
+    let manifest_source = std::fs::read_to_string(&spec.manifest_path)
+        .with_context(|| format!("reading {}", spec.manifest_path.display()))?;
+    // `[budget]` bounds the thin Tilo OS build; a desktop build carries the
+    // whole toolkit and answers to the registry's desktop limit instead.
+    let budget = if desktop {
+        size::Budget::default()
+    } else {
+        size::Budget::from_manifest(&manifest_source)
+            .with_context(|| format!("reading [budget] from {}", spec.manifest_path.display()))?
+    };
+    let output = package_output(&spec, request, desktop_arch)?;
     let output_parent = output
         .parent()
         .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
-    std::fs::create_dir_all(output_parent).with_context(|| {
-        format!(
-            "creating package output directory {}",
-            output_parent.display()
-        )
-    })?;
-
-    let built = build_entrypoints(&spec, request, &profile)?;
+    let built = build_entrypoints(
+        &spec,
+        &BuildPlan {
+            bins: &shipped,
+            triple: triple.as_deref(),
+            thin: !desktop && !request.static_link,
+            profile: &profile,
+        },
+        request,
+    )?;
     let staging = tempfile::Builder::new()
         .prefix(".tilo-app-package-")
         .tempdir_in(output_parent)
@@ -4635,42 +4889,34 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
             )
         })?;
     let payload = staging.path().join("payload");
-    std::fs::create_dir(&payload).context("creating staged payload")?;
-    let app_payload = spec.app_dir.join("payload");
-    if app_payload.is_dir() {
-        copy_payload_tree(&app_payload, &payload)?;
-    }
-    for (cargo_bin, payload_path) in &spec.entrypoints {
-        let source = built
-            .get(cargo_bin)
-            .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {cargo_bin}"))?;
-        let destination = payload.join(payload_path);
-        if let Some(parent) = destination.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("creating payload directory {}", parent.display()))?;
-        }
-        std::fs::copy(source, &destination).with_context(|| {
-            format!("copying {} to {}", source.display(), destination.display())
-        })?;
-        let permissions = std::fs::metadata(source)?.permissions();
-        std::fs::set_permissions(&destination, permissions)?;
-    }
+    stage_payload(&spec, &shipped, &built, &payload)?;
 
     let staged_package = staging.path().join("package.tapp");
     let identity = signing_identity(&spec.app_dir, request.identity.as_deref())?;
-    let packed = pack::pack_payload(
-        &spec.manifest_path,
-        resource_kinds::declared_in(&spec.app_dir)?,
+    let resource_kinds = resource_kinds::declared_by_app(&spec.app_dir)?;
+    let manifest = signed_manifest(
+        &spec,
+        request,
+        &manifest_source,
+        desktop_arch,
+        triple.as_deref(),
+        &shipped,
+    )?;
+    let packed = pack::pack_manifest(
+        manifest,
+        resource_kinds,
         &payload,
         &staged_package,
         &identity,
     )?;
-    let entrypoints: Vec<PathBuf> = spec
-        .entrypoints
-        .iter()
-        .map(|(_, path)| path.clone())
-        .collect();
-    let size = within_budget(&payload, &entrypoints, packed.bytes, budget, &output)?;
+    let entrypoints: Vec<PathBuf> = shipped.iter().map(|(_, path)| path.clone()).collect();
+    let size = within_budget(
+        &payload,
+        &entrypoints,
+        packed.bytes,
+        (budget, request.platform),
+        &output,
+    )?;
     std::fs::rename(&staged_package, &output)
         .with_context(|| format!("publishing package to {}", output.display()))?;
     eprintln!(
@@ -4686,9 +4932,320 @@ pub fn package_app(start: &Path, request: &PackageRequest) -> Result<PackageOutc
     })
 }
 
+/// What a native `package` or `build` compiles, for which triple, and how.
+struct NativeTarget {
+    spec: AppPackageSpec,
+    /// A self-contained executable for a system other than Tilo OS.
+    desktop: bool,
+    /// The architecture a desktop build is for; `None` for Tilo OS.
+    desktop_arch: Option<PackageArch>,
+    profile: String,
+    /// The Cargo binaries to build and their payload paths.
+    shipped: Vec<(String, PathBuf)>,
+    /// `None` builds for the host.
+    triple: Option<String>,
+}
+
+impl NativeTarget {
+    fn resolve(start: &Path, request: &PackageRequest) -> Result<Self> {
+        let app_dir = resolve_app_dir(start)?;
+        let report = doctor_resolved_app(app_dir.clone());
+        if !report.is_ready() {
+            bail!("app preflight failed\n\n{}", report.summary());
+        }
+        let spec = load_app_package_spec(app_dir)?;
+        let desktop = request.platform != PackagePlatform::Tilo;
+        if !desktop && !request.static_link && !spec.thin_feature {
+            bail!(
+                "{} has no `thin` feature, so it cannot link against the toolkit the OS ships; \
+                 add `thin = [\"dep:runtime-dylib\"]` to [features] (as `tilo-app new` does) or pass --static",
+                spec.app_dir.join("Cargo.toml").display()
+            );
+        }
+        let profile = package_profile(request)?;
+        let desktop_arch = match (desktop, request.arch.or_else(PackageArch::host)) {
+            (false, _) => None,
+            (true, Some(arch)) => Some(arch),
+            (true, None) => bail!(
+                "cannot tell which architecture to build for on {}; pass --arch",
+                std::env::consts::ARCH
+            ),
+        };
+        let shipped = shipped_binaries(&spec, request, desktop)?;
+        let triple = request.target.clone().or_else(|| {
+            desktop_arch
+                .or(request.arch)
+                .map(|arch| request.platform.triple(arch))
+        });
+        Ok(Self {
+            spec,
+            desktop,
+            desktop_arch,
+            profile,
+            shipped,
+            triple,
+        })
+    }
+}
+
+/// A native build `tilo-app build` left in Cargo's target directory.
+#[derive(Debug)]
+pub struct NativeBuild {
+    pub app_dir: PathBuf,
+    pub platform: PackagePlatform,
+    /// `None` built for the host.
+    pub triple: Option<String>,
+    pub profile: String,
+    /// Each Cargo binary built and where Cargo left it.
+    pub executables: Vec<(String, PathBuf)>,
+    pub elapsed: Duration,
+}
+
+impl NativeBuild {
+    #[must_use]
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "app_dir": self.app_dir,
+            "platform": self.platform.cli_name(),
+            "target": self.triple,
+            "profile": self.profile,
+            "executables": self
+                .executables
+                .iter()
+                .map(|(bin, path)| serde_json::json!({"bin": bin, "path": path}))
+                .collect::<Vec<_>>(),
+            "elapsed_ms": u64::try_from(self.elapsed.as_millis()).unwrap_or(u64::MAX),
+        })
+    }
+}
+
+/// Compile an app's entrypoints for a native platform exactly as
+/// [`package_app`] does, without assembling or signing a package: thin for
+/// Tilo OS unless `static_link`, one self-contained executable otherwise.
+///
+/// # Errors
+///
+/// Returns an error for the web platform (see [`web::build_web`]), when
+/// preflight fails, or when Cargo does.
+pub fn build_native(start: &Path, request: &PackageRequest) -> Result<NativeBuild> {
+    if request.platform == PackagePlatform::Web {
+        bail!("a web build is `tilo-app build --platform web`, not a native build");
+    }
+    if request.platform == PackagePlatform::Android {
+        bail!("an Android build is `android::build`: an APK, not executables");
+    }
+    let started = Instant::now();
+    let target = NativeTarget::resolve(start, request)?;
+    let built = build_entrypoints(
+        &target.spec,
+        &BuildPlan {
+            bins: &target.shipped,
+            triple: target.triple.as_deref(),
+            thin: !target.desktop && !request.static_link,
+            profile: &target.profile,
+        },
+        request,
+    )?;
+    let executables = target
+        .shipped
+        .iter()
+        .map(|(bin, _)| {
+            built
+                .get(bin)
+                .map(|path| (bin.clone(), path.clone()))
+                .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {bin}"))
+        })
+        .collect::<Result<Vec<_>>>()?;
+    Ok(NativeBuild {
+        app_dir: target.spec.app_dir,
+        platform: request.platform,
+        triple: target.triple,
+        profile: target.profile,
+        executables,
+        elapsed: started.elapsed(),
+    })
+}
+
+/// Where the package goes: `--output`, or `dist/<package>.tapp` (with the
+/// platform and architecture for a desktop build). Refuses to replace an
+/// existing file without `force`, and creates the directory.
+fn package_output(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    desktop_arch: Option<PackageArch>,
+) -> Result<PathBuf> {
+    let output = request.output.as_ref().map_or_else(
+        || {
+            let name = match desktop_arch {
+                Some(arch) => format!(
+                    "{}-{}-{}.tapp",
+                    spec.cargo_package,
+                    request.platform.registry_name(),
+                    arch.as_str()
+                ),
+                None => format!("{}.tapp", spec.cargo_package),
+            };
+            spec.app_dir.join("dist").join(name)
+        },
+        |path| absolute_from(&spec.app_dir, path),
+    );
+    if output.exists() && !request.force {
+        bail!(
+            "package output {} already exists; pass --force to replace it",
+            output.display()
+        );
+    }
+    let parent = output
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("package output has no parent: {}", output.display()))?;
+    std::fs::create_dir_all(parent)
+        .with_context(|| format!("creating package output directory {}", parent.display()))?;
+    Ok(output)
+}
+
+/// The Cargo binaries a package ships and their payload paths: every declared
+/// entrypoint for Tilo OS, the GUI executable alone for a desktop build.
+fn shipped_binaries(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    desktop: bool,
+) -> Result<Vec<(String, PathBuf)>> {
+    if !desktop {
+        return Ok(spec.entrypoints.clone());
+    }
+    let bin = spec.gui_bin.clone().ok_or_else(|| {
+        anyhow::anyhow!(
+            "{} has no GUI entrypoint; a {} build ships one executable",
+            spec.manifest_path.display(),
+            request.platform.registry_name()
+        )
+    })?;
+    let path = PathBuf::from(format!("bin/{bin}{}", request.platform.executable_suffix()));
+    Ok(vec![(bin, path)])
+}
+
+/// Fill `payload` with the app's `payload/` tree and the built binaries.
+fn stage_payload(
+    spec: &AppPackageSpec,
+    shipped: &[(String, PathBuf)],
+    built: &HashMap<String, PathBuf>,
+    payload: &Path,
+) -> Result<()> {
+    std::fs::create_dir(payload).context("creating staged payload")?;
+    let app_payload = spec.app_dir.join("payload");
+    if app_payload.is_dir() {
+        copy_payload_tree(&app_payload, payload)?;
+    }
+    for (cargo_bin, payload_path) in shipped {
+        let source = built
+            .get(cargo_bin)
+            .ok_or_else(|| anyhow::anyhow!("Cargo did not report binary {cargo_bin}"))?;
+        let destination = payload.join(payload_path);
+        if let Some(parent) = destination.parent() {
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("creating payload directory {}", parent.display()))?;
+        }
+        std::fs::copy(source, &destination).with_context(|| {
+            format!("copying {} to {}", source.display(), destination.display())
+        })?;
+        let permissions = std::fs::metadata(source)?.permissions();
+        std::fs::set_permissions(&destination, permissions)?;
+    }
+    Ok(())
+}
+
+/// The authored manifest around a desktop build's executable at `module`.
+fn desktop_manifest(
+    spec: &AppPackageSpec,
+    platform: PackagePlatform,
+    arch: PackageArch,
+    manifest_source: &str,
+    module: &Path,
+) -> Result<tilo_app_package::Manifest> {
+    let authored = tilo_app_package::Manifest::from_toml_str(manifest_source)
+        .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
+    tilo_app_package::desktop::desktop_manifest(
+        &authored,
+        platform.registry_name(),
+        arch.as_str(),
+        arch.as_str(),
+        &module.to_string_lossy(),
+    )
+    .map_err(|error| {
+        anyhow::anyhow!(
+            "{}: {error}; a {} build declares the toolkit release it links as [package].runtime",
+            spec.manifest_path.display(),
+            platform.registry_name()
+        )
+    })
+}
+
+/// The manifest `tilo-app package` signs for this build.
+fn signed_manifest(
+    spec: &AppPackageSpec,
+    request: &PackageRequest,
+    manifest_source: &str,
+    desktop_arch: Option<PackageArch>,
+    triple: Option<&str>,
+    shipped: &[(String, PathBuf)],
+) -> Result<tilo_app_package::Manifest> {
+    if let (Some(arch), Some((_, module))) = (desktop_arch, shipped.first()) {
+        return desktop_manifest(spec, request.platform, arch, manifest_source, module);
+    }
+    let arch = request
+        .arch
+        .or_else(|| triple.and_then(PackageArch::of_triple))
+        .or_else(PackageArch::host)
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "cannot tell which architecture to build for on {}; pass --arch",
+                std::env::consts::ARCH
+            )
+        })?;
+    tilo_manifest(spec, manifest_source, arch)
+}
+
+/// The authored manifest, declaring exactly the architecture this build is
+/// for: the level it names for that architecture, else the floor the
+/// scaffolded `.cargo/config.toml` builds at (`x86-64-v3`, generic ARMv8-A).
+/// A package never claims a build it does not carry.
+fn tilo_manifest(
+    spec: &AppPackageSpec,
+    manifest_source: &str,
+    arch: PackageArch,
+) -> Result<tilo_app_package::Manifest> {
+    use tilo_app_package::manifest::{AArch64Level, IsaRequirements, X86_64Level};
+    let mut manifest = tilo_app_package::Manifest::from_toml_str(manifest_source)
+        .with_context(|| format!("parsing {}", spec.manifest_path.display()))?;
+    let declared = manifest.package.isa;
+    let undeclared = declared.x86_64.is_none() && declared.aarch64.is_none();
+    manifest.package.isa = match arch {
+        PackageArch::X86_64 => IsaRequirements {
+            x86_64: declared
+                .x86_64
+                .or_else(|| undeclared.then_some(X86_64Level::V3)),
+            aarch64: None,
+        },
+        PackageArch::Aarch64 => IsaRequirements {
+            x86_64: None,
+            aarch64: declared
+                .aarch64
+                .or_else(|| undeclared.then_some(AArch64Level::Armv8A)),
+        },
+    };
+    if manifest.package.isa.x86_64.is_none() && manifest.package.isa.aarch64.is_none() {
+        bail!(
+            "{}: [package.isa] names other architectures, not {}, which this build is for",
+            spec.manifest_path.display(),
+            arch.as_str()
+        );
+    }
+    Ok(manifest)
+}
+
 fn package_profile(request: &PackageRequest) -> Result<String> {
     let profile = request.profile.clone().unwrap_or_else(|| {
-        if request.static_link {
+        if request.static_link || request.platform != PackagePlatform::Tilo {
             "release"
         } else {
             "thin-app"
@@ -4705,10 +5262,11 @@ fn within_budget(
     payload: &Path,
     entrypoints: &[PathBuf],
     archive: u64,
-    budget: size::Budget,
+    (budget, platform): (size::Budget, PackagePlatform),
     output: &Path,
 ) -> Result<size::SizeReport> {
-    let size = size::SizeReport::measure(payload, entrypoints, archive, budget)?;
+    let limit = tilo_app_package::platform_size_limit(platform.registry_name());
+    let size = size::SizeReport::measure(payload, entrypoints, archive, budget, limit)?;
     eprintln!("{}", size.render());
     let overruns = size.overruns();
     if !overruns.is_empty() {
@@ -4733,7 +5291,18 @@ fn signing_identity(
     path: Option<&Path>,
 ) -> Result<tilo_app_package::SigningIdentity> {
     let Some(path) = path else {
-        eprintln!("[tilo-app] no --identity supplied; signing with an ephemeral key");
+        if let Some(key) = registry_client::key::discover()? {
+            eprintln!(
+                "[tilo-app] signing with publisher key {}",
+                registry_client::key::public_hex(&key)
+            );
+            return Ok(tilo_app_package::SigningIdentity::from_seed(
+                &key.to_bytes(),
+            ));
+        }
+        eprintln!(
+            "[tilo-app] no --identity or publisher key; signing with an ephemeral key the registry will not accept"
+        );
         return Ok(tilo_app_package::SigningIdentity::generate());
     };
     pack::load_identity(&absolute_from(app_dir, path))
@@ -4766,6 +5335,11 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         .entrypoint
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("tilo-app.toml declares no package entrypoint"))?;
+    let gui_bin = entrypoint
+        .gui_bin_path()
+        .and_then(|path| path.file_name())
+        .and_then(|name| name.to_str())
+        .map(str::to_owned);
     let mut payload_paths = Vec::new();
     if let Some(path) = entrypoint.gui_bin_path() {
         payload_paths.push(path.clone());
@@ -4800,14 +5374,24 @@ fn load_app_package_spec(app_dir: PathBuf) -> Result<AppPackageSpec> {
         cargo_package,
         manifest_path,
         entrypoints,
+        gui_bin,
         thin_feature,
     })
 }
 
+/// What [`build_entrypoints`] compiles: `bins` for `triple` (the host when
+/// `None`), linked against the OS toolkit when `thin`.
+struct BuildPlan<'a> {
+    bins: &'a [(String, PathBuf)],
+    triple: Option<&'a str>,
+    thin: bool,
+    profile: &'a str,
+}
+
 fn build_entrypoints(
     spec: &AppPackageSpec,
+    plan: &BuildPlan<'_>,
     request: &PackageRequest,
-    profile: &str,
 ) -> Result<HashMap<String, PathBuf>> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let mut command = ProcessCommand::new(&cargo);
@@ -4816,28 +5400,28 @@ fn build_entrypoints(
         .arg("--manifest-path")
         .arg(spec.app_dir.join("Cargo.toml"))
         .arg("--profile")
-        .arg(profile)
+        .arg(plan.profile)
         .arg("--message-format=json-render-diagnostics")
         .current_dir(&spec.app_dir)
         .stdout(Stdio::piped());
-    for (cargo_bin, _) in &spec.entrypoints {
+    for (cargo_bin, _) in plan.bins {
         command.arg("--bin").arg(cargo_bin);
     }
     let mut features = request.features.clone();
-    if request.static_link {
-        if let Some(target) = &request.target {
-            command.arg("--target").arg(target);
-        }
-    } else {
-        let triple = match &request.target {
-            Some(target) => target.clone(),
-            None => host_triple(&spec.app_dir)?,
+    if plan.thin {
+        let triple = if let Some(target) = plan.triple {
+            target.to_owned()
+        } else {
+            native_libs::require_thin_runtime()?;
+            host_triple(&spec.app_dir)?
         };
         let (key, flags) = prefer_dynamic_rustflags(&triple);
         command.arg("--target").arg(&triple).env(key, flags);
         if !features.iter().any(|feature| feature == "thin") {
             features.push("thin".to_owned());
         }
+    } else if let Some(target) = plan.triple {
+        command.arg("--target").arg(target);
     }
     if request.no_default_features {
         command.arg("--no-default-features");
@@ -4866,7 +5450,7 @@ fn build_entrypoints(
     if !status.success() {
         bail!("Cargo package build failed with {status}");
     }
-    for (cargo_bin, _) in &spec.entrypoints {
+    for (cargo_bin, _) in plan.bins {
         if !artifacts.contains_key(cargo_bin) {
             bail!("Cargo build completed without reporting binary {cargo_bin}");
         }
@@ -4994,8 +5578,9 @@ static DEV_STOP_REQUESTED: AtomicBool = AtomicBool::new(false);
 ///
 /// Returns an error when the app cannot be resolved, its initial preflight
 /// fails, signal handlers cannot be installed, or filesystem watching cannot
-/// be started.
-pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
+/// be started. On success, returns one timing record per reload when
+/// `request.timings` is set.
+pub fn dev_app(start: &Path, request: &DevRequest) -> Result<Vec<serde_json::Value>> {
     let app_dir = resolve_app_dir(start)?;
     let initial = plan_app_task(&app_dir, AppTask::Run, &request.forwarded)?;
     let roots = dev_watch_roots(&app_dir, request.watch_ui)?;
@@ -5033,16 +5618,21 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
     // event channel from ever going idle. Stamp polls run on a timer either way.
     let mut sources = snapshot_restart_sources(&roots).unwrap_or_default();
     let mut next_source_poll = Instant::now();
+    let mut dev = dev_reload::DevLoop::new(
+        dev_session_dir(&app_dir),
+        request.timings,
+        Arc::clone(&source_revision),
+    );
     // The first process has to be the prefer-dynamic host. A static binary
     // links its own `ui`, so the library built on the next save cannot run
     // inside those windows.
-    let mut child = if app_supports_in_place_reload(&app_dir) {
+    let mut child = if reloads_in_place(&app_dir) {
         None
     } else {
         spawn_dev_child_reported(&initial)
     };
     if child.is_none()
-        && app_supports_in_place_reload(&app_dir)
+        && reloads_in_place(&app_dir)
         && rebuild_running_dev_app(
             &initial,
             request,
@@ -5050,13 +5640,13 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
             &event_rx,
             &roots,
             &mut watcher,
-            &source_revision,
             &mut sources,
+            &mut dev,
         )
     {
         stop_dev_child(&mut child);
         eprintln!("[tilo-app] stopped");
-        return Ok(());
+        return Ok(Vec::new());
     }
     'watching: while !DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
         match watch_tick(
@@ -5068,6 +5658,7 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
         ) {
             WatchTick::Stop => bail!("app file watcher stopped"),
             WatchTick::Rebuild { bump_revision } => {
+                dev.changed_at = Some(SystemTime::now());
                 if bump_revision {
                     source_revision.fetch_add(1, Ordering::Release);
                 }
@@ -5078,27 +5669,25 @@ pub fn dev_app(start: &Path, request: &DevRequest) -> Result<()> {
                     &event_rx,
                     &roots,
                     &mut watcher,
-                    &source_revision,
                     &mut sources,
+                    &mut dev,
                 ) {
                     break 'watching;
                 }
             }
             WatchTick::Idle => {}
         }
+        dev.poll();
         report_child_exit(&mut child);
     }
+    dev.finish(Duration::from_secs(2));
     stop_dev_child(&mut child);
     eprintln!("[tilo-app] stopped");
-    Ok(())
+    Ok(std::mem::take(&mut dev.reports))
 }
 
 /// Rebuild until the candidate matches the newest source, or the user stops.
 /// Returns whether the watcher itself should stop.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the rebuild shares the watch loop's child, events, roots, watcher, revision and source stamps"
-)]
 fn rebuild_running_dev_app(
     plan: &CargoPlan,
     request: &DevRequest,
@@ -5106,30 +5695,41 @@ fn rebuild_running_dev_app(
     events: &mpsc::Receiver<notify::Result<Event>>,
     roots: &[PathBuf],
     watcher: &mut DevWatcher,
-    source_revision: &AtomicU64,
     sources: &mut HashMap<PathBuf, (SystemTime, u64)>,
+    dev: &mut dev_reload::DevLoop,
 ) -> bool {
     drain_until_quiet(events, roots, request.debounce, watcher);
     if reload_catalogs_without_build(plan, child.as_ref(), roots, sources) {
+        dev.changed_at = None;
         return false;
     }
     loop {
         if let Some(next) = snapshot_restart_sources(roots) {
             *sources = next;
         }
+        let mut timings = dev.start();
+        if let Some(timings) = timings.as_mut() {
+            let waited = SystemTime::now()
+                .duration_since(timings.changed)
+                .unwrap_or_default();
+            timings.set("debounce", waited.as_secs_f64() * 1000.0);
+        }
         report_child_exit(child);
         eprintln!("[tilo-app] change detected; rebuilding");
-        let building_revision = source_revision.load(Ordering::Acquire);
+        let building_revision = dev.source_revision.load(Ordering::Acquire);
         // The startup plan already passed preflight. A newer edit cancels this
         // compile instead of waiting for a binary that will not be launched.
-        let in_place = app_supports_in_place_reload(&plan.app_dir);
+        let in_place = reloads_in_place(&plan.app_dir);
         let candidate = if in_place {
-            build_in_place_dev_app(
+            build_in_place_dev_app_for_loop(
                 plan,
-                Some(events),
+                events,
                 roots,
-                |event| watcher.observe(event),
+                watcher,
                 child.is_none(),
+                sources,
+                dev,
+                &mut timings,
             )
         } else {
             build_dev_candidate_interruptible(plan, Some(events), roots, |event| {
@@ -5140,7 +5740,7 @@ fn rebuild_running_dev_app(
             watcher.observe(event);
         });
         let superseded =
-            queued_restart || source_revision.load(Ordering::Acquire) != building_revision;
+            queued_restart || dev.source_revision.load(Ordering::Acquire) != building_revision;
         if DEV_STOP_REQUESTED.load(Ordering::Relaxed) {
             return true;
         }
@@ -5148,6 +5748,7 @@ fn rebuild_running_dev_app(
             eprintln!(
                 "[tilo-app] newer change arrived during the build; skipping the stale candidate"
             );
+            dev.changed_at = Some(SystemTime::now());
             drain_until_quiet(events, roots, request.debounce, watcher);
             continue;
         }
@@ -5157,6 +5758,9 @@ fn rebuild_running_dev_app(
                     && reload_running_dev_app(running)
                 {
                     eprintln!("[tilo-app] build succeeded; reloading the open windows");
+                    if let Some(timings) = timings {
+                        dev.signalled(timings);
+                    }
                 } else if in_place {
                     eprintln!("[tilo-app] build succeeded; opening the app");
                     *child = spawn_thin_dev_binary_reported(
@@ -5174,6 +5778,7 @@ fn rebuild_running_dev_app(
                 eprintln!(
                     "[tilo-app] newer change arrived during the build; skipping the stale candidate"
                 );
+                dev.changed_at = Some(SystemTime::now());
                 drain_until_quiet(events, roots, request.debounce, watcher);
                 continue;
             }
@@ -5202,7 +5807,7 @@ fn reload_catalogs_without_build(
     let Some(running) = child else {
         return false;
     };
-    if !app_supports_in_place_reload(&plan.app_dir) {
+    if !reloads_in_place(&plan.app_dir) {
         return false;
     }
     let Some(next) = snapshot_restart_sources(roots) else {
@@ -5296,7 +5901,6 @@ struct DevCargo {
 enum DevPick {
     Executable(String),
     DynamicLibrary,
-    ExitStatus,
 }
 
 #[cfg(test)]
@@ -5335,6 +5939,7 @@ fn build_dev_candidate_interruptible(
             env: Vec::new(),
             pick: DevPick::Executable(expected_binary),
         },
+        None,
     )
 }
 
@@ -5344,6 +5949,7 @@ fn run_dev_cargo(
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
     cargo: &DevCargo,
+    mut span: Option<&mut RustcSpan>,
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let expected_manifest = manifest.canonicalize().unwrap_or_else(|_| manifest.clone());
@@ -5398,7 +6004,6 @@ fn run_dev_cargo(
                     bail!("Cargo development build failed with {status}");
                 }
                 let artifact = match &cargo.pick {
-                    DevPick::ExitStatus => PathBuf::new(),
                     DevPick::Executable(name) => artifacts.remove(name).with_context(|| {
                         format!(
                             "Cargo build completed without reporting executable {name:?}; set package.default-run when the app has multiple binaries"
@@ -5415,7 +6020,11 @@ fn run_dev_cargo(
             Ok(None) => {}
             Err(error) => return Err(error).context("waiting for Cargo development build"),
         }
-        std::thread::sleep(Duration::from_millis(20));
+        #[cfg(unix)]
+        if let Some(span) = span.as_mut() {
+            span.observe(build.id());
+        }
+        std::thread::sleep(Duration::from_millis(if span.is_some() { 5 } else { 20 }));
     }
 }
 
@@ -5576,11 +6185,17 @@ fn local_dependency(app_dir: &Path, dependency_name: &str) -> Result<Option<Path
     let manifest = source
         .parse::<toml::Table>()
         .with_context(|| format!("parsing {}", manifest_path.display()))?;
+    let targets = manifest
+        .get("target")
+        .and_then(toml::Value::as_table)
+        .into_iter()
+        .flat_map(toml::Table::values);
     let Some(path) = manifest
         .get("dependencies")
-        .and_then(|dependencies| dependencies.get(dependency_name))
-        .and_then(|dependency| dependency.get("path"))
-        .and_then(toml::Value::as_str)
+        .into_iter()
+        .chain(targets.filter_map(|target| target.get("dependencies")))
+        .filter_map(|dependencies| dependencies.get(dependency_name))
+        .find_map(|dependency| dependency.get("path").and_then(toml::Value::as_str))
     else {
         return Ok(None);
     };
@@ -6041,7 +6656,8 @@ fn provide_runtime_host(app_dir: &Path) {
     let _ = DEV_RUNTIME.set(runtime);
 }
 
-fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+/// `cargo metadata` for the app at `app_dir`, with its dependencies resolved.
+fn cargo_metadata(app_dir: &Path) -> Result<serde_json::Value> {
     let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = ProcessCommand::new(&cargo)
         .args(["metadata", "--format-version", "1", "--manifest-path"])
@@ -6053,8 +6669,12 @@ fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
     if !output.status.success() {
         bail!("cargo metadata failed with {}", output.status);
     }
-    let metadata: serde_json::Value =
-        serde_json::from_slice(&output.stdout).context("parsing cargo metadata")?;
+    serde_json::from_slice(&output.stdout).context("parsing cargo metadata")
+}
+
+fn build_runtime_host(app_dir: &Path) -> Result<PathBuf> {
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let metadata = cargo_metadata(app_dir)?;
     let root = sdk_root_from_metadata(&metadata).ok_or_else(|| {
         anyhow::anyhow!("the app's tilo-app dependency is not in a Tilo checkout")
     })?;
@@ -6170,6 +6790,12 @@ fn report_child_exit(child: &mut Option<Child>) {
     }
 }
 
+/// Whether `dev` reloads the app inside its windows: it supports that, and
+/// this machine can build the shared toolkit it links.
+fn reloads_in_place(app_dir: &Path) -> bool {
+    app_supports_in_place_reload(app_dir) && native_libs::thin_runtime_available()
+}
+
 /// An app can reload Rust inside the windows it already has when it links the
 /// shared toolkit (`thin`) and calls `ui::dev_reload_entry!` from its library.
 fn app_supports_in_place_reload(app_dir: &Path) -> bool {
@@ -6188,15 +6814,95 @@ fn app_supports_in_place_reload(app_dir: &Path) -> bool {
         .contains("dev_reload_entry!")
 }
 
-/// Build the shared toolkit, the prefer-dynamic host, and the app library
+/// Build the prefer-dynamic host and the app library
 /// that the host will `dlopen`. Stages the library before returning the host
 /// executable. `need_host` is false when that executable is already running.
+#[cfg(test)]
 fn build_in_place_dev_app(
+    plan: &CargoPlan,
+    events: Option<&mpsc::Receiver<notify::Result<Event>>>,
+    roots: &[PathBuf],
+    observe: impl FnMut(&Event),
+    need_host: bool,
+) -> Result<DevCandidate> {
+    build_in_place_dev_app_with_cargo(plan, events, roots, observe, need_host, &mut None)
+}
+
+/// The watch loop's in-place build. Once the app is running and every edit
+/// since Cargo last compiled the reload library is a file that library's
+/// rustc read, rustc alone rebuilds it; anything else goes through Cargo.
+fn build_in_place_dev_app_for_loop(
+    plan: &CargoPlan,
+    events: &mpsc::Receiver<notify::Result<Event>>,
+    roots: &[PathBuf],
+    watcher: &mut DevWatcher,
+    need_host: bool,
+    sources: &HashMap<PathBuf, (SystemTime, u64)>,
+    dev: &mut dev_reload::DevLoop,
+    timings: &mut Option<dev_reload::ReloadTimings>,
+) -> Result<DevCandidate> {
+    let fast = (!need_host)
+        .then(|| dev_reload::FastRebuild::load(dev.session()))
+        .flatten()
+        .filter(|fast| fast.covers(&changed_sources(&dev.baseline, sources)));
+    if let Some(fast) = fast {
+        eprintln!("[tilo-app] building the reload library with rustc");
+        match dev_reload::rebuild_with_rustc(
+            &fast,
+            events,
+            roots,
+            |event| watcher.observe(event),
+            timings,
+        ) {
+            dev_reload::FastOutcome::Done(DevCandidate::Built(library)) => {
+                let staging = SystemTime::now();
+                let staged = stage_dev_reload_library(&plan.app_dir, &library)?;
+                if let Some(timings) = timings.as_mut() {
+                    timings.set("stage", elapsed_ms(staging));
+                    timings.staged(staged.clone());
+                }
+                eprintln!("[tilo-app] reload library {}", staged.display());
+                return Ok(DevCandidate::Built(PathBuf::new()));
+            }
+            dev_reload::FastOutcome::Done(DevCandidate::Superseded) => {
+                return Ok(DevCandidate::Superseded);
+            }
+            dev_reload::FastOutcome::Failed(error) => return Err(error),
+            dev_reload::FastOutcome::Fallback(reason) => {
+                eprintln!("[tilo-app] {reason}; rebuilding with Cargo");
+            }
+        }
+    }
+    // What Cargo is about to compile. Later edits are compared against it.
+    dev.baseline.clone_from(sources);
+    let session = dev.session().to_path_buf();
+    build_in_place_dev_app_with_cargo(
+        plan,
+        Some(events),
+        roots,
+        |event| watcher.observe(event),
+        need_host,
+        &mut Some((session.as_path(), timings)),
+    )
+}
+
+fn elapsed_ms(since: SystemTime) -> f64 {
+    SystemTime::now()
+        .duration_since(since)
+        .unwrap_or_default()
+        .as_secs_f64()
+        * 1000.0
+}
+
+/// Build the steps with Cargo. With a session, the reload library's rustc
+/// command is recorded there for the next edit, and each step is timed.
+fn build_in_place_dev_app_with_cargo(
     plan: &CargoPlan,
     events: Option<&mpsc::Receiver<notify::Result<Event>>>,
     roots: &[PathBuf],
     mut observe: impl FnMut(&Event),
     need_host: bool,
+    loop_state: &mut Option<(&Path, &mut Option<dev_reload::ReloadTimings>)>,
 ) -> Result<DevCandidate> {
     let manifest = plan.app_dir.join("Cargo.toml");
     let binary = dev_binary_name(&manifest)?;
@@ -6205,29 +6911,139 @@ fn build_in_place_dev_app(
     } else {
         ThinDevLinkage::Target(host_triple(&plan.app_dir)?)
     };
+    let library_crate = cargo_library_name(&manifest);
     let mut executable = PathBuf::new();
-    for step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
+    for mut step in thin_dev_steps(&manifest, &binary, &linkage, need_host) {
         eprintln!("[tilo-app] building {}", step.label);
-        match run_dev_cargo(plan, events, roots, &mut observe, &step.cargo)? {
+        if let (DevPick::DynamicLibrary, Some((session, _)), Some(name)) = (
+            &step.cargo.pick,
+            loop_state.as_ref(),
+            library_crate.as_deref(),
+        ) {
+            step.cargo
+                .env
+                .extend(dev_reload::capture_env(session, name));
+        }
+        let timing = loop_state
+            .as_mut()
+            .and_then(|(_, timings)| timings.as_mut());
+        let mut span = timing.is_some().then(RustcSpan::default);
+        let started = SystemTime::now();
+        let built = run_dev_cargo(
+            plan,
+            events,
+            roots,
+            &mut observe,
+            &step.cargo,
+            span.as_mut(),
+        )?;
+        if let Some(timings) = loop_state
+            .as_mut()
+            .and_then(|(_, timings)| timings.as_mut())
+        {
+            let wall = elapsed_ms(started);
+            let compiled = span.as_ref().map_or(0.0, |span| span.record(timings));
+            timings.add("cargo", (wall - compiled).max(0.0));
+        }
+        match built {
             DevCandidate::Superseded => return Ok(DevCandidate::Superseded),
             DevCandidate::Built(artifact) => match step.cargo.pick {
                 DevPick::Executable(_) => executable = artifact,
                 DevPick::DynamicLibrary => {
+                    let staging = SystemTime::now();
                     let staged = stage_dev_reload_library(&plan.app_dir, &artifact)?;
+                    if let Some(timings) = loop_state
+                        .as_mut()
+                        .and_then(|(_, timings)| timings.as_mut())
+                    {
+                        timings.set("stage", elapsed_ms(staging));
+                        timings.staged(staged.clone());
+                    }
                     eprintln!("[tilo-app] reload library {}", staged.display());
                 }
-                DevPick::ExitStatus => {}
             },
         }
     }
     Ok(DevCandidate::Built(executable))
 }
 
+/// The library target's crate name: `[lib] name`, else the package name with
+/// dashes as underscores.
+fn cargo_library_name(manifest: &Path) -> Option<String> {
+    let value = std::fs::read_to_string(manifest)
+        .ok()?
+        .parse::<toml::Table>()
+        .ok()?;
+    let explicit = value
+        .get("lib")
+        .and_then(|lib| lib.get("name"))
+        .and_then(toml::Value::as_str);
+    let package = value
+        .get("package")
+        .and_then(|package| package.get("name"))
+        .and_then(toml::Value::as_str);
+    explicit.or(package).map(|name| name.replace('-', "_"))
+}
+
+/// When rustc ran inside a Cargo step, seen by polling Cargo's descendants.
+#[derive(Debug, Default)]
+struct RustcSpan {
+    first: Option<SystemTime>,
+    linking: Option<SystemTime>,
+    last: Option<SystemTime>,
+}
+
+impl RustcSpan {
+    #[cfg(unix)]
+    fn observe(&mut self, cargo: u32) {
+        let now = SystemTime::now();
+        let descendants = descendant_pids(cargo);
+        let rustc = descendants
+            .iter()
+            .copied()
+            .filter(|pid| process_name(*pid).is_some_and(|name| name == "rustc"))
+            .collect::<Vec<_>>();
+        if rustc.is_empty() {
+            return;
+        }
+        self.first.get_or_insert(now);
+        self.last = Some(now);
+        let linking = descendants
+            .iter()
+            .any(|pid| parent_pid(*pid).is_some_and(|parent| rustc.contains(&parent)));
+        if linking {
+            self.linking.get_or_insert(now);
+        }
+    }
+
+    /// Add compile and link time; returns the milliseconds rustc ran.
+    fn record(&self, timings: &mut dev_reload::ReloadTimings) -> f64 {
+        let (Some(first), Some(last)) = (self.first, self.last) else {
+            return 0.0;
+        };
+        let linking = self.linking.unwrap_or(last);
+        let ms = |from: SystemTime, to: SystemTime| {
+            to.duration_since(from).unwrap_or_default().as_secs_f64() * 1000.0
+        };
+        timings.add("compile", ms(first, linking));
+        timings.add("link", ms(linking, last));
+        ms(first, last)
+    }
+}
+
+#[cfg(unix)]
+fn process_name(pid: u32) -> Option<String> {
+    std::fs::read_to_string(format!("/proc/{pid}/comm"))
+        .ok()
+        .map(|name| name.trim().to_owned())
+}
+
 /// How a thin development build links the toolkit and `libstd` dynamically.
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ThinDevLinkage {
-    /// `runtime-dylib` is a member of the app's workspace and is built on its
-    /// own with `-C prefer-dynamic`.
+    /// `runtime-dylib` is a member of the app's workspace. It comes in as a
+    /// dependency of the host and the library, with the flags both share: a
+    /// step of its own with other flags made each of them rebuild it.
     WorkspaceToolkit,
     /// Outside the Tilo workspace Cargo cannot select `runtime-dylib` or set
     /// its features. Every artifact for this target triple is built with
@@ -6283,26 +7099,6 @@ fn thin_dev_steps(
         }
     };
     let mut steps = Vec::new();
-    if *linkage == ThinDevLinkage::WorkspaceToolkit {
-        steps.push(ThinDevStep {
-            label: "the shared toolkit",
-            cargo: DevCargo {
-                args: [
-                    "rustc",
-                    "-p",
-                    "runtime-dylib",
-                    "--message-format=json-render-diagnostics",
-                    "--",
-                    "-C",
-                    "prefer-dynamic",
-                ]
-                .map(OsString::from)
-                .to_vec(),
-                env: Vec::new(),
-                pick: DevPick::ExitStatus,
-            },
-        });
-    }
     if need_host {
         steps.push(app_step(
             "the reload host",
@@ -6396,7 +7192,12 @@ fn remove_superseded_reload_libraries(dir: &Path, current: u64) {
         let name = entry.file_name();
         let superseded = name
             .to_str()
-            .and_then(|name| name.strip_prefix("reload-")?.strip_suffix(".so"))
+            .and_then(|name| {
+                let name = name.strip_prefix("reload-")?;
+                name.strip_suffix(dev_reload::APP_TIMINGS_SUFFIX)
+                    .unwrap_or(name)
+                    .strip_suffix(".so")
+            })
             .and_then(|seq| seq.parse::<u64>().ok())
             .is_some_and(|seq| seq.saturating_add(1) < current);
         if superseded {
@@ -6753,10 +7554,13 @@ fn check_ui_dependency(app_dir: &Path, manifest: &toml::Table, checks: &mut Vec<
                         format!("{url}{}", pin.as_deref().unwrap_or(" (default branch)")),
                     )
                 }
-                None => (
-                    DoctorStatus::Warning,
-                    "non-path tilo-app dependency; SDK source could not be verified".to_string(),
-                ),
+                None => match ui.get("version").and_then(toml::Value::as_str) {
+                    Some(version) => (DoctorStatus::Pass, format!("tilo-app {version} from the registry")),
+                    None => (
+                        DoctorStatus::Warning,
+                        "non-path tilo-app dependency; SDK source could not be verified".into(),
+                    ),
+                },
             },
             (Some(package), _) => (
                 DoctorStatus::Fail,
@@ -6907,9 +7711,7 @@ fn check_graph_component_contract(
     checks: &mut Vec<DoctorCheck>,
 ) {
     let source = std::fs::read_to_string(app_dir.join("src/lib.rs")).unwrap_or_default();
-    let legacy_context = source.contains(&legacy_graph_app_template());
-    let generated_context = source.contains("components::ui_graph_context()");
-    let app_owned_context = !legacy_context && !generated_context;
+    let app_owned_context = !source.contains("components::ui_graph_context()");
     let registry = match inspect_component_registry(app_dir) {
         Ok(Some(inspection)) => {
             checks.push(DoctorCheck {
@@ -6943,15 +7745,6 @@ fn check_graph_component_contract(
         }
     };
     if uses.is_empty() {
-        return;
-    }
-    if legacy_context {
-        checks.push(DoctorCheck {
-            status: DoctorStatus::Fail,
-            label: "UI components",
-            detail: "src/lib.rs uses the legacy default router context; run `tilo-app add component <name> --mount <screen>` to migrate it"
-                .to_owned(),
-        });
         return;
     }
     if app_owned_context {
@@ -7016,7 +7809,6 @@ fn graph_props_contract(name: &str, source: &str) -> Result<GraphPropsContract> 
         .collect();
     match markers.as_slice() {
         [] | ["display-v1"] => Ok(GraphPropsContract::DisplayV1),
-        ["form-v1"] => Ok(GraphPropsContract::FormV1),
         ["form-v2"] => Ok(GraphPropsContract::FormV2),
         [unknown] => bail!("graph component {name:?} has unknown props contract {unknown:?}"),
         _ => bail!("graph component {name:?} declares more than one props contract"),
@@ -7553,6 +8345,16 @@ struct AppSpec {
     template: Template,
 }
 
+impl AppSpec {
+    /// Whether the app offers the `thin` build against the toolkit dylib.
+    fn links_toolkit_dylib(&self) -> bool {
+        match &self.sdk {
+            AppSdk::Workspace { .. } => true,
+            AppSdk::Standalone(standalone) => !standalone.source.is_registry(),
+        }
+    }
+}
+
 #[derive(Debug)]
 enum AppSdk {
     /// A member of the Tilo workspace, with the path from the app to `ui-core`.
@@ -7662,7 +8464,7 @@ fn create_app_interactive_from(
             validate_app_id,
         )?);
     }
-    if request.template.is_none() {
+    if request.template.is_none() && request.example.is_none() {
         request.template = Some(if interactive {
             prompt_template(input, output)?
         } else {
@@ -7672,14 +8474,25 @@ fn create_app_interactive_from(
     let choose_sdk = request.ui_path.is_none()
         && request.sdk_git.is_none()
         && request.sdk_rev.is_none()
+        && request.sdk_version.is_none()
         && repo.is_none();
     if choose_sdk && interactive {
         prompt_sdk(current_dir, &mut request, input, output)?;
     }
     let toolkit = match request.sdk_request() {
-        SdkRequest::Git { url, rev } => standalone::SdkSource::Git {
-            url: url.unwrap_or_else(|| standalone::DEFAULT_SDK_GIT.to_owned()),
-            rev: rev.or_else(|| standalone::BUILT_FROM_REV.map(str::to_owned)),
+        SdkRequest::Git { url, rev } => git_sdk_source(url, rev).describe(),
+        SdkRequest::Discover if discover_ui_dir(current_dir, repo.as_deref()).is_none() => {
+            git_sdk_source(None, None).describe()
+        }
+        SdkRequest::Registry(version) => standalone::SdkSource::Registry {
+            version: version
+                .or_else(|| {
+                    standalone::Baseline::embedded()
+                        .ok()?
+                        .sdk_version()
+                        .map(str::to_owned)
+                })
+                .unwrap_or_default(),
         }
         .describe(),
         SdkRequest::Discover | SdkRequest::Checkout(_) => {
@@ -7785,7 +8598,16 @@ fn create_app_from(current_dir: &Path, request: NewAppRequest) -> Result<CreateO
         sdk,
         template: request.template.unwrap_or(Template::Starter),
     };
-    let rendered = render(&spec)?;
+    let mut rendered = render(&spec)?;
+    if let Some(example) = request.example {
+        examples::overlay(
+            &mut rendered,
+            example,
+            &spec.crate_name,
+            &spec.app_id,
+            &spec.title,
+        )?;
+    }
     let files = rendered.iter().map(|(path, _)| path.clone()).collect();
 
     if !request.dry_run {
@@ -7870,7 +8692,7 @@ fn resolve_standalone_sdk(
             .map(|_| resolve_ui_dir(current_dir, repo, None))
             .transpose()?,
         SdkRequest::Checkout(ui) => Some(resolve_ui_dir(current_dir, repo, Some(ui))?),
-        SdkRequest::Git { .. } => None,
+        SdkRequest::Git { .. } | SdkRequest::Registry(_) => None,
     };
     if let Some(ui_dir) = checkout_ui {
         let root = checkout_root_for_ui(&ui_dir).to_path_buf();
@@ -7882,17 +8704,36 @@ fn resolve_standalone_sdk(
             baseline: standalone::Baseline::from_checkout(&root)?,
         });
     }
+    if let SdkRequest::Registry(version) = request {
+        let baseline = standalone::Baseline::embedded()?;
+        let version = match version {
+            Some(version) => version.clone(),
+            None => baseline
+                .sdk_version()
+                .context("this tilo-app does not know its SDK version; pass --sdk-version")?
+                .to_owned(),
+        };
+        return Ok(standalone::Standalone {
+            source: standalone::SdkSource::Registry { version },
+            baseline,
+        });
+    }
     let (url, rev) = match request {
         SdkRequest::Git { url, rev } => (url.clone(), rev.clone()),
-        SdkRequest::Discover | SdkRequest::Checkout(_) => (None, None),
+        SdkRequest::Discover | SdkRequest::Checkout(_) | SdkRequest::Registry(_) => (None, None),
     };
     Ok(standalone::Standalone {
-        source: standalone::SdkSource::Git {
-            url: url.unwrap_or_else(|| standalone::DEFAULT_SDK_GIT.to_owned()),
-            rev: rev.or_else(|| standalone::BUILT_FROM_REV.map(str::to_owned)),
-        },
+        source: git_sdk_source(url, rev),
         baseline: standalone::Baseline::embedded()?,
     })
+}
+
+/// The Tilo repository, at the commit this CLI came from unless named.
+fn git_sdk_source(url: Option<String>, rev: Option<String>) -> standalone::SdkSource {
+    standalone::SdkSource::Git {
+        url: url.unwrap_or_else(|| standalone::DEFAULT_SDK_GIT.to_owned()),
+        rev: rev.or_else(|| standalone::BUILT_FROM_REV.map(str::to_owned)),
+    }
 }
 
 fn new_app_destination(
@@ -8245,11 +9086,19 @@ fn prompt_component_template(
 }
 
 fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) -> Result<Template> {
-    writeln!(
-        output,
-        "\nStarter template:\n  1) starter    Profile resource edited through bound form controls\n  2) data       Sparse table with retained cell controls\n  3) list       Sparse variable-height retained list\n  4) tree       Professional hierarchy browser\n  5) graph      Serialized UI graph and router\n  6) async      Restartable background task with cancellation\n  7) document   Durable synchronized editor with undo\n  8) qr         IME input to accessible generated QR output\n  9) workspace  Responsive master-detail app with durable item editing"
-    )
-    .context("showing template choices")?;
+    let mut choices = String::from("\nTemplate:");
+    for (number, template) in (1..).zip(Template::ALL) {
+        let _ = write!(
+            choices,
+            "\n  {number}) {:<11}{}",
+            template.name(),
+            template.description()
+        );
+    }
+    choices.push_str(
+        "\n\nTo start from a complete example instead, run `tilo-app examples` and then\n`tilo-app new NAME --from-example EXAMPLE`.",
+    );
+    writeln!(output, "{choices}").context("showing template choices")?;
     loop {
         let value = prompt(input, output, "Template", Some("1"))?;
         match parse_template(&value) {
@@ -8259,21 +9108,44 @@ fn prompt_template(input: &mut impl io::BufRead, output: &mut impl io::Write) ->
     }
 }
 
-fn parse_template(value: &str) -> Result<Template> {
-    match value.trim().to_ascii_lowercase().as_str() {
-        "1" | "starter" | "s" => Ok(Template::Starter),
-        "2" | "data" | "d" => Ok(Template::Data),
-        "3" | "list" | "l" => Ok(Template::List),
-        "4" | "tree" | "t" => Ok(Template::Tree),
-        "5" | "graph" | "g" | "builder" => Ok(Template::Graph),
-        "6" | "async" | "a" | "task" => Ok(Template::Async),
-        "7" | "document" | "doc" | "editor" => Ok(Template::Document),
-        "8" | "qr" | "qrcode" | "showcase" => Ok(Template::Qr),
-        "9" | "workspace" | "master-detail" | "professional" => Ok(Template::Workspace),
-        _ => bail!(
-            "unknown template {value:?}; choose 1-9 or `starter`, `data`, `list`, `tree`, `graph`, `async`, `document`, `qr`, or `workspace`"
-        ),
+/// The example that replaced a template earlier versions of `tilo-app` had.
+#[must_use]
+pub fn retired_template_example(name: &str) -> Option<&'static str> {
+    match name {
+        "data" => Some("data-table"),
+        "list" => Some("virtual-list"),
+        "tree" | "workspace" => Some("tree-browser"),
+        "async" => Some("background-task"),
+        "qr" => Some("qr-code"),
+        _ => None,
     }
+}
+
+fn parse_template(value: &str) -> Result<Template> {
+    let value = value.trim().to_ascii_lowercase();
+    if let Ok(index) = value.parse::<usize>()
+        && let Some(template) = index
+            .checked_sub(1)
+            .and_then(|index| Template::ALL.get(index))
+    {
+        return Ok(*template);
+    }
+    if let Some(template) = Template::ALL
+        .into_iter()
+        .find(|template| template.name() == value)
+    {
+        return Ok(template);
+    }
+    if let Some(example) = retired_template_example(&value) {
+        bail!(
+            "the {value} template is now the `{example}` example; run `tilo-app new NAME --from-example {example}`"
+        );
+    }
+    bail!(
+        "unknown template {value:?}; choose 1-{} or one of: {}",
+        Template::ALL.len(),
+        Template::ALL.map(Template::name).join(", ")
+    )
 }
 
 fn validate_package_name(name: &str) -> Result<()> {
@@ -8400,6 +9272,14 @@ fn resolve_ui_dir(
             "could not locate the Tilo UI toolkit; run inside a Tilo checkout, set TILO_UI_PATH, or pass `--ui-path /path/to/tilo/crates/sdk/ui-core`"
         );
     };
+    // A checkout root also has a Cargo.toml; name its toolkit so the paths
+    // derived from it do not treat the root as a crate inside the checkout.
+    let toolkit = candidate.join("crates/sdk/ui-core");
+    let candidate = if !is_sdk_crate_path(&candidate) && toolkit.join("Cargo.toml").is_file() {
+        toolkit
+    } else {
+        candidate
+    };
     if !candidate.join("Cargo.toml").is_file() {
         bail!(
             "UI path {} does not contain Cargo.toml",
@@ -8454,10 +9334,10 @@ fn render(spec: &AppSpec) -> Result<Vec<(PathBuf, String)>> {
         ),
         (PathBuf::from("tilo-app.toml"), app_manifest(spec)),
         (PathBuf::from("README.md"), app_readme(spec)),
-        (PathBuf::from("locales/en-US.ftl"), source_catalog()),
+        (PathBuf::from("locales/en-US.ftl"), app_catalog(spec)),
     ];
     if spec.template == Template::Graph {
-        files.push((PathBuf::from("ui/main.json"), graph_document(spec)?));
+        files.push((PathBuf::from("ui/main.json"), graph_document()?));
         files.push((
             PathBuf::from("src/screens.rs"),
             screen_registry_source(&["main".into()]),
@@ -8483,8 +9363,15 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
         AppSdk::Workspace { .. } => "license.workspace = true\n",
         AppSdk::Standalone(_) => "license = \"AGPL-3.0-only\"\n",
     };
+    // The shared toolkit dylib ships with the OS and is built from a Tilo
+    // tree, so an app on the published SDK always links statically.
+    let features = if spec.links_toolkit_dylib() {
+        "[features]\nthin = [\"dep:runtime-dylib\"]\n\n"
+    } else {
+        ""
+    };
     let mut manifest = format!(
-        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n[features]\nthin = [\"dep:runtime-dylib\"]\n\n[dependencies]\n",
+        "[package]\nname = {name:?}\nversion = \"0.1.0\"\nedition = \"2024\"\npublish = false\n{license}\n[lib]\nname = {crate_name:?}\npath = \"src/lib.rs\"\n\n[[bin]]\nname = {name:?}\npath = \"src/main.rs\"\n\n{features}[dependencies]\n",
         name = spec.package_name,
         crate_name = spec.crate_name,
     );
@@ -8495,16 +9382,29 @@ fn cargo_toml(spec: &AppSpec) -> Result<String> {
                 || PathBuf::from("../../crates/runtime/runtime-dylib"),
                 |crates| crates.join("runtime/runtime-dylib"),
             );
-            // CI rejects a workspace member that cargo-hakari has not been told about.
+            // CI rejects a workspace member that cargo-hakari has not been
+            // told about. The hack's feature set is native, so it stays off
+            // the web build (`build --platform web`); the SDK's default
+            // features select nothing there.
             let _ = write!(
                 manifest,
-                "ui = {{ package = \"tilo-app\", path = {:?} }}\nruntime-dylib = {{ path = {:?}, optional = true }}\nworkspace-hack = {{ version = \"0.1\" }}\n\n[lints]\nworkspace = true\n",
-                sdk_path.to_string_lossy(),
-                runtime_path.to_string_lossy(),
+                "runtime-dylib = {{ path = {runtime:?}, optional = true }}\n\
+                 ui = {{ package = \"tilo-app\", path = {sdk:?} }}\n\n\
+                 [target.'cfg(not(target_arch = \"wasm32\"))'.dependencies]\n\
+                 # The workspace-hack's native feature set does not build for wasm32.\n\
+                 workspace-hack = {{ version = \"0.1\" }}\n\n\
+                 [lints]\nworkspace = true\n",
+                runtime = runtime_path.to_string_lossy(),
+                sdk = sdk_path.to_string_lossy(),
             );
         }
         AppSdk::Standalone(standalone) => {
             manifest.push_str(&standalone.dependencies());
+            if !spec.links_toolkit_dylib() {
+                manifest.push_str(
+                    "\n# `ui::dev_reload_entry!` expands code for a `thin` build, which this app has not.\n[lints.rust]\nunexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(feature, values(\"thin\"))'] }\n",
+                );
+            }
             manifest.push_str(&standalone.manifest_tail()?);
         }
     }
@@ -8540,16 +9440,11 @@ fn sdk_path_for_ui(ui_path: &Path) -> PathBuf {
 fn app_lib(spec: &AppSpec) -> String {
     let application = match spec.template {
         Template::Starter => STARTER_APP_TEMPLATE.to_owned(),
-        Template::Data => DATA_APP_TEMPLATE.to_owned(),
-        Template::List => LIST_APP_TEMPLATE.to_owned(),
-        Template::Tree => TREE_APP_TEMPLATE.to_owned(),
+        Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
+        Template::Collection => COLLECTION_APP_TEMPLATE.to_owned(),
         Template::Graph => {
             format!("pub mod components;\npub mod screens;\n\n{GRAPH_APP_TEMPLATE}")
         }
-        Template::Async => ASYNC_APP_TEMPLATE.to_owned(),
-        Template::Document => DOCUMENT_APP_TEMPLATE.to_owned(),
-        Template::Qr => QR_APP_TEMPLATE.to_owned(),
-        Template::Workspace => WORKSPACE_APP_TEMPLATE.to_owned(),
     };
     format!(
         "//! {title} application.\n\n/// The application id.\npub const APP_ID: &str = {app_id:?};\n/// The window and launcher title.\npub const APP_TITLE: &str = {title:?};\n\n{GENERATED_LOCALE_SETUP}\n\n{application}\nui::dev_reload_entry!(App);\n",
@@ -8558,75 +9453,14 @@ fn app_lib(spec: &AppSpec) -> String {
     )
 }
 
-fn source_catalog() -> String {
-    String::from(
-        "starter-title = Your first Tilo app\n\
-starter-profile-title = Profile\n\
-starter-name-label = Your name\n\
-starter-name-placeholder = Type your name\n\
-starter-updates-label = Receive updates\n\
-starter-refresh-label = Refresh interval\n\
-starter-volume-label = Volume\n\
-starter-region-label = Region\n\
-starter-greeting = Hello, { $name }!\n\
-starter-reset = Reset profile\n\
-data-name-column = Name\n\
-data-actions-column = Actions\n\
-data-accessible-name = Results\n\
-data-open = Open\n\
-data-recent = Recently opened: { $rows }\n\
-data-none-opened = No rows opened yet\n\
-list-accessible-name = Activity\n\
-list-open = Open\n\
-list-loading = Loading activity…\n\
-list-last-opened = Last opened: { $activity }\n\
-list-none-opened = Nothing opened yet\n\
-tree-accessible-name = Workspace items\n\
-tree-row-action = Pin\n\
-tree-pinned = Pinned: { $count }\n\
-graph-project-name = Project name\n\
-graph-create = Create\n\
-graph-create-tooltip = Create the project\n\
-task-title = Background work\n\
-task-run = Run task\n\
-task-cancel = Cancel\n\
-task-idle = Start a background task without polling\n\
-task-loading = Loading…\n\
-task-ready = Found { $count } entries\n\
-task-folder-label = Folder\n\
-document-heading = Durable document\n\
-document-title-label = Title\n\
-document-title-placeholder = Untitled\n\
-document-body-label = Body\n\
-document-body-placeholder = Start writing…\n\
-document-preview-heading = Live preview\n\
-qr-title = QR code generator\n\
-qr-input-label = Content\n\
-qr-input-placeholder = Type text or a link\n\
-qr-output-alt = QR code for { $payload }\n\
-qr-reset = Reset QR code\n\
-workspace-root = Workspace\n\
-workspace-projects = Projects\n\
-workspace-archive = Archive\n\
-workspace-desktop-app = Desktop app\n\
-workspace-design-system = Design system\n\
-workspace-first-prototype = First prototype\n\
-workspace-unknown-item = Selected item\n\
-workspace-tree-name = Workspace items\n\
-workspace-navigation-heading = Projects\n\
-workspace-title-label = Title\n\
-workspace-title-placeholder = Untitled item\n\
-workspace-notes-label = Notes\n\
-workspace-notes-placeholder = Add project notes…\n\
-workspace-preview-heading = Live preview\n\
-workspace-back = Back\n\
-workspace-share = Share\n",
-    )
-}
-
 fn app_main(spec: &AppSpec) -> String {
+    let thin = if spec.links_toolkit_dylib() {
+        "#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\n"
+    } else {
+        ""
+    };
     format!(
-        "//! The app's entry point: the live window, and the standard `--shots`,\n//! `--headless-drive` and `--native-audit` modes, from one declaration.\n\n#[cfg(feature = \"thin\")]\nextern crate runtime_dylib;\n\nfn main() {{\n    ui::framework::run::<{crate_name}::App>();\n}}\n",
+        "//! The app's entry point on every target: the live window and the standard\n//! `--shots`, `--headless-drive` and `--native-audit` modes on Linux and macOS,\n//! registration with the page runtime on the web.\n\n{thin}ui::main!({crate_name}::App);\n",
         crate_name = spec.crate_name,
     )
 }
@@ -8634,14 +9468,9 @@ fn app_main(spec: &AppSpec) -> String {
 fn app_test(spec: &AppSpec) -> String {
     let tests = match spec.template {
         Template::Starter => STARTER_APP_TESTS.to_owned(),
-        Template::Data => DATA_APP_TESTS.to_owned(),
-        Template::List => LIST_APP_TESTS.to_owned(),
-        Template::Tree => TREE_APP_TESTS.to_owned(),
-        Template::Graph => format!("{GRAPH_APP_TESTS}\n{GRAPH_SCREEN_TESTS}"),
-        Template::Async => ASYNC_APP_TESTS.to_owned(),
         Template::Document => DOCUMENT_APP_TESTS.to_owned(),
-        Template::Qr => QR_APP_TESTS.to_owned(),
-        Template::Workspace => WORKSPACE_APP_TESTS.to_owned(),
+        Template::Collection => COLLECTION_APP_TESTS.to_owned(),
+        Template::Graph => format!("{GRAPH_APP_TESTS}\n{GRAPH_SCREEN_TESTS}"),
     };
     // The test sources name the app crate `generated_app`: the template smoke
     // crate runs these same tests against each template under that name.
@@ -8650,7 +9479,7 @@ fn app_test(spec: &AppSpec) -> String {
 
 fn app_manifest(spec: &AppSpec) -> String {
     format!(
-        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@1\"\ntilo-fs = \"optional@1\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
+        "[package]\nid = {app_id:?}\nname = {title:?}\ncategory = \"Utility\"\nversion = \"0.1.0\"\nkind = \"app\"\nruntime = \"tilo-runtime/2026.07\"\n\n[package.isa]\nx86_64 = \"v3\"\naarch64 = \"aarch64\"\n\n[publisher]\nidentity = \"ed25519:0000000000000000000000000000000000000000000000000000000000000000\"\nsignature = \"\"\n\n[sandbox]\nnamespaces = [\"user\", \"pid\", \"uts\", \"ipc\", \"mount\"]\nseccomp = \"tilo-default\"\nlandlock = \"strict\"\n\n[sandbox.net]\nmode = \"off\"\n\n[sandbox.portals]\n\n[sandbox.services]\ncollab = \"optional@1\"\ntilo-fs = \"optional@1\"\n\n[entrypoint]\nbin = \"bin/{package}\"\ntype = \"gui\"\nsplash-budget = 250\n\n[providers]\nmime = []\next = []\n",
         app_id = spec.app_id,
         title = spec.title,
         package = spec.package_name,
@@ -8662,41 +9491,39 @@ fn headless_actions(spec: &AppSpec) -> String {
         Template::Starter => String::from(
             "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Ada\"}},\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"focus\"}},\n  {\"expect\": {\"target\": \"name-input\", \"role\": \"text_input\", \"value\": \"Ada\", \"focused\": true}},\n  {\"expect\": {\"target\": \"greeting\", \"role\": \"static_text\", \"name_contains\": \"Ada\"}}\n]\n",
         ),
-        Template::Data => String::from(
-            "[\n  {\"perform\": {\"target\": \"rows-table\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"rows-table\", \"semantic_target\": \"row:3:0\", \"role\": \"row\", \"selected\": true}}\n]\n",
+        Template::Document => String::from(
+            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"heading\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
         ),
-        Template::List => String::from(
-            "[\n  {\"perform\": {\"target\": \"activity-list\", \"action\": \"focus\"}},\n  {\"wait_for_named\": {\"target\": \"open-0\", \"timeout_ms\": 1000}},\n  {\"perform\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"activity-list\", \"semantic_target\": \"key:3\", \"role\": \"list_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"open-0\", \"action\": \"activate\"}}\n]\n",
-        ),
-        Template::Tree => String::from(
-            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"action\": \"focus\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"collapse\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:2\", \"action\": \"expand\"}},\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:3\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"perform\": {\"target\": \"more-4\", \"action\": \"activate\"}}\n]\n",
+        Template::Collection => String::from(
+            "[\n  {\"perform\": {\"target\": \"draft-input\", \"action\": \"set_value\", \"value\": \"Buy milk\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"Buy milk\"}},\n  {\"perform\": {\"target\": \"add\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"draft-input\", \"role\": \"text_input\", \"value\": \"\"}}\n]\n",
         ),
         Template::Graph => String::from(
             "[\n  {\"perform\": {\"target\": \"name-input\", \"action\": \"set_value\", \"value\": \"Atlas\"}},\n  {\"expect\": {\"target\": \"name-preview\", \"role\": \"static_text\", \"name\": \"Atlas\"}},\n  {\"perform\": {\"target\": \"create\", \"action\": \"activate\"}}\n]\n",
         ),
-        Template::Async => String::from(
-            "[\n  {\"perform\": {\"target\": \"run-task\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"task-result\", \"role\": \"static_text\", \"name_contains\": \"Found\", \"timeout_ms\": 1000}}\n]\n",
-        ),
-        Template::Document => String::from(
-            "[\n  {\"perform\": {\"target\": \"document-title-input\", \"action\": \"set_value\", \"value\": \"Project Atlas\"}},\n  {\"perform\": {\"target\": \"document-body-input\", \"action\": \"set_value\", \"value\": \"A durable first draft.\"}},\n  {\"expect\": {\"target\": \"document-title-preview\", \"role\": \"heading\", \"name\": \"Project Atlas\"}},\n  {\"expect\": {\"target\": \"document-body-preview\", \"name\": \"A durable first draft.\"}}\n]\n",
-        ),
-        Template::Qr => String::from(
-            "[\n  {\"perform\": {\"target\": \"qr-input\", \"action\": \"set_value\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-input\", \"role\": \"text_input\", \"value\": \"你好 Rust GUI\"}},\n  {\"expect\": {\"target\": \"qr-output\", \"role\": \"image\", \"name_contains\": \"你好 Rust GUI\"}}\n]\n",
-        ),
-        Template::Workspace => String::from(
-            "[\n  {\"perform\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"action\": \"activate\"}},\n  {\"expect\": {\"target\": \"workspace-tree\", \"semantic_target\": \"node:4\", \"role\": \"tree_item\", \"selected\": true}},\n  {\"expect\": {\"target\": \"workspace-selected-item\", \"role\": \"heading\", \"name\": \"Design system\"}},\n  {\"perform\": {\"target\": \"workspace-title-input\", \"action\": \"set_value\", \"value\": \"Design tokens\"}},\n  {\"expect\": {\"target\": \"workspace-title-preview\", \"role\": \"heading\", \"name\": \"Design tokens\"}}\n]\n",
-        ),
     }
 }
 
-fn graph_document(spec: &AppSpec) -> Result<String> {
+/// The app's source catalog. A graph screen's static text is a message id
+/// too, so the graph template's catalog also names the screen it generates.
+fn app_catalog(spec: &AppSpec) -> String {
+    let catalog = spec.template.catalog();
+    if spec.template != Template::Graph {
+        return catalog.to_owned();
+    }
+    format!(
+        "graph-title = {{ \"{}\" }}\ngraph-introduction = This screen is a serialized graph under ui/. Edit it while the app runs with tilo-app ui edit ui/main.json.\n{catalog}",
+        escape_fluent_string(&spec.title)
+    )
+}
+
+fn graph_document() -> Result<String> {
     let document = tilo_ui_graph::UiDocument::new(tilo_ui_graph::UiNode::Column {
         id: "root".into(),
         children: vec![
             tilo_ui_graph::UiNode::Text {
                 id: "title".into(),
                 text: tilo_ui_graph::UiTextSource::Static {
-                    value: spec.title.clone(),
+                    value: "graph-title".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Title,
                 size: None,
@@ -8704,8 +9531,7 @@ fn graph_document(spec: &AppSpec) -> Result<String> {
             tilo_ui_graph::UiNode::Text {
                 id: "graph-introduction".into(),
                 text: tilo_ui_graph::UiTextSource::Static {
-                    value: "This read-only screen remains live-editable; native controls below publish actions."
-                        .into(),
+                    value: "graph-introduction".into(),
                 },
                 role: tilo_ui_graph::UiTextRole::Body,
                 size: None,
@@ -8733,24 +9559,17 @@ fn app_readme(spec: &AppSpec) -> String {
     let _ = writeln!(out, "\nGenerated by `tilo-app new`.\n");
     let _ = writeln!(
         out,
+        "The commands below are the `tilo-app` CLI. It needs rustup and no system packages:\n\n```bash\n{}\n```\n",
+        standalone::INSTALL_COMMAND
+    );
+    let _ = writeln!(
+        out,
         "The app is written on the Tilo app framework: its state is a `#[derive(Model)]` resource, every edit is an `#[action]` method, and the view binds controls to those actions (`cx.input`, `cx.checkbox`, `cx.button`, `cx.control`, `cx.each`). Storage, sync, collaboration, history, per-author undo, permissions, the action palette, agents, scripts and search come from the framework; `Replica` tests the resource and `TestApp` tests the running app. `tilo-app doctor` rejects apps that remove this surface.\n"
     );
-    let _ = writeln!(
-        out,
-        "From the parent directory, scaffold and launch this template in one command:"
-    );
-    let _ = writeln!(out, "\n```bash");
-    let _ = writeln!(
-        out,
-        "tilo-app new {} --template {} --dev",
-        spec.package_name,
-        spec.template.name()
-    );
-    let _ = writeln!(out, "```");
     let (resource, action, arguments) = readme_action_example(spec.template);
     let _ = writeln!(
         out,
-        "\nAgents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
+        "Agents, scripts, and search invoke the same address as the visible control. Discover the live catalogue, then submit an invocation shaped like:\n"
     );
     let _ = writeln!(out, "```json");
     let _ = writeln!(
@@ -8758,7 +9577,7 @@ fn app_readme(spec: &AppSpec) -> String {
         "{{\"resource\":{resource:?},\"action\":{action:?},\"arguments\":{arguments}}}"
     );
     let _ = writeln!(out, "```");
-    let sections: [(&str, &[&str]); 4] = [
+    let sections: [(&str, &[&str]); 5] = [
         (
             "Develop: run the app, rebuilding and reloading it as you edit",
             &["tilo-app dev", "tilo-app run", "tilo-app test"],
@@ -8790,8 +9609,21 @@ fn app_readme(spec: &AppSpec) -> String {
             ],
         ),
         (
-            "Ship: build, sign and verify an installable package",
-            &["tilo-app package"],
+            "Ship: build, sign and verify a package for each platform (`--platform tilo|linux|windows|macos|web`, `--arch x86_64|aarch64`; `build`, `run`, `dev` and `check` take the same flags)",
+            &[
+                "tilo-app package",
+                "tilo-app package --platform web",
+                "tilo-app check --platform all",
+            ],
+        ),
+        (
+            "Publish: create a publisher key, prove a namespace, and upload what `dist/` holds",
+            &[
+                "tilo-app keys new",
+                "tilo-app apply --domain example.com",
+                "tilo-app publish",
+                "tilo-app add ci --forge github",
+            ],
         ),
     ];
     for (heading, commands) in sections {
@@ -8807,6 +9639,19 @@ fn app_readme(spec: &AppSpec) -> String {
     );
     let _ = writeln!(
         out,
+        "\nThe same source runs on Linux, macOS and the web; `--target` picks the platform (each builds on its own host OS, the web on any):\n"
+    );
+    let _ = writeln!(out, "```bash");
+    let _ = writeln!(out, "tilo-app run --target linux");
+    let _ = writeln!(out, "tilo-app run --target macos");
+    let _ = writeln!(out, "tilo-app run --target web");
+    let _ = writeln!(out, "tilo-app build --target macos");
+    let _ = writeln!(out, "tilo-app package --target linux");
+    let _ = writeln!(out, "tilo-app package --target macos");
+    let _ = writeln!(out, "tilo-app package --target web");
+    let _ = writeln!(out, "```");
+    let _ = writeln!(
+        out,
         "\nCargo remains available directly with `cargo test` and `cargo run`."
     );
     let _ = writeln!(
@@ -8819,28 +9664,16 @@ fn app_readme(spec: &AppSpec) -> String {
             "\nOpen the serialized screen with `tilo-app ui edit ui/main.json`. Script or review it with `tilo-app ui tree`, `tilo-app ui set`, `tilo-app ui apply`, `tilo-app ui insert`, `tilo-app ui move`, and `tilo-app ui validate`. Generate, register, and place an app-owned retained component atomically with `tilo-app add component profile-card --mount main --props '{{\"title\":\"Ada\",\"detail\":\"Owner\"}}'`, or mount a document-bound form with `tilo-app add component profile-form --template form --mount main --props '{{\"value_path\":\"profile-name\",\"enabled_path\":\"profile-enabled\"}}'`. The generated component registry makes graph-compatible components available to every generated screen automatically."
         );
     }
-    if spec.template == Template::Async {
-        let _ = writeln!(
-            out,
-            "\nThe folder to scan is resource state: durable, synced and undoable. The task itself is an effect action, so the palette, agents and scripts can start and cancel it too. The `run-task` button creates a `LatestTask` completion capability for its worker, which reads its input from the resource when it starts. Starting again or using `cancel-task` makes older completions stale, so late work cannot overwrite newer UI state. An accepted completion wakes the app automatically, and `ModelView::from_state_by` swaps the loading/result/error subtree by a small structural key."
-        );
-    }
     if spec.template == Template::Document {
         let _ = writeln!(
             out,
-            "\nThe title and body inputs invoke the document's actions; their preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
+            "\nThe title and body inputs invoke the document's actions; the preview reads the same fields and follows every edit (local, a collaborator's, an undo) with no notification code. Text fields are collaborative text, so concurrent typing merges character by character. `clear` is declared destructive, so it asks for confirmation wherever it is invoked."
         );
     }
-    if spec.template == Template::Qr {
+    if spec.template == Template::Collection {
         let _ = writeln!(
             out,
-            "\nThe input invokes `set-payload` on the resource. `cx.value` follows the payload into a `LocalState<String>`, `ModelView::from_state` rebuilds only the generated QR output when it changes, and the replacement image carries payload-specific alternative text for inspection, tests, and screen readers."
-        );
-    }
-    if spec.template == Template::Workspace {
-        let _ = writeln!(
-            out,
-            "\nThe workspace starter composes a responsive master-detail shell from ordinary retained widgets. Wide windows show navigation and detail together; compact windows expose an accessible Back action and switch between full-width panes through typed `LocalState<NarrowScreen>`. The selection is view state (`cx.local`); `cx.switch` rebuilds only the detail pane when it changes, and the pane's inputs bind to the selected project's fields in the resource. Switching projects therefore needs no synchronization callbacks and preserves independent persisted, collaborative, undoable edits."
+            "\nItems live in a `Collection`, so each has a stable id. Actions that take an item's `&Id` are item actions: the palette and agents see every item as a resource of its own, and a row's context menu offers them. `cx.each` builds one retained row per item, so focus and the caret survive other items changing."
         );
     }
     let _ = writeln!(
@@ -8848,32 +9681,29 @@ fn app_readme(spec: &AppSpec) -> String {
         "\nUser-facing strings start in `locales/en-US.ftl`. `tilo-app add locale de-DE` creates and registers a complete editable copy of that message contract. After changing the source, `tilo-app locale sync` adds missing units without replacing translations; `tilo-app doctor` reports differences deliberately left for a translator while the toolkit falls back to the source catalog."
     );
     let _ = writeln!(out, "\nApp id: `{}`", spec.app_id);
+    if spec.app_id.starts_with("local.dev.") {
+        let _ = writeln!(
+            out,
+            "\nThis id is for local development. Before publishing, change it in `tilo-app.toml` and `src/lib.rs` to one inside a namespace you prove with `tilo-app apply`: `example.com` proves `com.example`."
+        );
+    }
     out
 }
 
 fn readme_action_example(template: Template) -> (&'static str, &'static str, &'static str) {
     match template {
-        Template::Starter => ("generated.profile", "set-name", r#"{"name":"Ada"}"#),
-        Template::Data => ("generated.table", "open", r#"{"id":42}"#),
-        Template::List => ("generated.activity-list", "open", r#"{"id":42}"#),
-        Template::Tree => ("generated.tree", "toggle-pin", r#"{"id":4}"#),
-        Template::Graph => (
-            "generated.graph-project",
-            "set-draft",
-            r#"{"draft":"Launch plan"}"#,
-        ),
-        Template::Async => ("generated.background-task:root", "run", "{}"),
+        Template::Starter => ("generated.greeting", "set-name", r#"{"name":"Ada"}"#),
         Template::Document => (
             "generated.document",
             "set-content",
             r#"{"title":"Plan","body":"Ship it"}"#,
         ),
-        Template::Qr => (
-            "generated.qr-code",
-            "set-payload",
-            r#"{"payload":"https://example.com"}"#,
+        Template::Collection => ("generated.items", "set-draft", r#"{"draft":"Buy milk"}"#),
+        Template::Graph => (
+            "generated.graph-project",
+            "set-draft",
+            r#"{"draft":"Launch plan"}"#,
         ),
-        Template::Workspace => ("generated.workspace-item", "share", r#"{"id":4}"#),
     }
 }
 

@@ -35,7 +35,6 @@
 
 #[cfg(target_os = "linux")]
 use std::os::fd::AsRawFd;
-#[cfg(target_os = "linux")]
 use std::sync::Arc;
 
 use std::collections::HashMap;
@@ -65,12 +64,10 @@ use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Blob, Extend, Fill, ImageAlphaType, ImageBrush, ImageData, ImageFormat};
-use winit::event::{Modifiers, WindowEvent};
 
 #[cfg(target_os = "linux")]
 use crate::compositor::surface_readback::{
@@ -244,23 +241,104 @@ impl CpuLayout {
     }
 }
 
-/// IEEE 754 half → `f32`, for half-float client buffers.
 #[cfg(any(test, target_os = "linux"))]
-fn half_to_f32(bits: u16) -> f32 {
-    let sign = if bits & 0x8000 == 0 { 1.0 } else { -1.0 };
-    let exponent = i32::from((bits >> 10) & 0x1F);
-    let mantissa = f32::from(bits & 0x3FF);
-    match exponent {
-        0 => sign * mantissa * 2.0_f32.powi(-24),
-        31 => {
-            if mantissa == 0.0 {
-                sign * f32::INFINITY
-            } else {
-                f32::NAN
+use crate::shell::hdr_surface::half_to_f32;
+
+/// Append one row of a 10-bit or half-float buffer to `texels` as the
+/// matching [`crate::shell::hdr_surface::HdrTexelFormat`]: 10-bit words with
+/// red in the low bits, half floats red first, padding alpha made opaque.
+/// Other layouts carry no HDR plane and append nothing.
+#[cfg(any(test, target_os = "linux"))]
+fn append_hdr_texels(layout: CpuLayout, src: &[u8], texels: &mut Vec<u8>) {
+    match layout {
+        CpuLayout::Rgb10 { red_low, opaque } => {
+            for px in src.chunks_exact(4) {
+                let mut word = px.try_into().map(u32::from_le_bytes).unwrap_or_default();
+                if !red_low {
+                    let red = word.wrapping_shr(20) & 0x3FF;
+                    let blue = word & 0x3FF;
+                    word = (word & !0x3FF0_03FF) | red | blue.wrapping_shl(20);
+                }
+                if opaque {
+                    word |= 0xC000_0000;
+                }
+                texels.extend_from_slice(&word.to_le_bytes());
             }
         }
-        _ => sign * (1.0 + mantissa / 1024.0) * 2.0_f32.powi(exponent.saturating_sub(15)),
+        CpuLayout::Half { opaque } => {
+            for px in src.chunks_exact(8) {
+                texels.extend_from_slice(px.get(..6).unwrap_or_default());
+                if opaque {
+                    texels.extend_from_slice(&0x3C00_u16.to_le_bytes());
+                } else {
+                    texels.extend_from_slice(px.get(6..8).unwrap_or_default());
+                }
+            }
+        }
+        CpuLayout::Rgba8(_) | CpuLayout::P010 => {}
     }
+}
+
+/// The texel format [`append_hdr_texels`] writes for `layout`, when it
+/// writes any.
+#[cfg(any(test, target_os = "linux"))]
+fn hdr_texel_format(layout: CpuLayout) -> Option<crate::shell::hdr_surface::HdrTexelFormat> {
+    match layout {
+        CpuLayout::Rgb10 { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgb10a2),
+        CpuLayout::Half { .. } => Some(crate::shell::hdr_surface::HdrTexelFormat::Rgba16Float),
+        CpuLayout::Rgba8(_) | CpuLayout::P010 => None,
+    }
+}
+
+/// The HDR signal a buffer in `layout` described by `colorimetry` carries,
+/// when it carries one worth compositing at full precision.
+#[cfg(any(test, target_os = "linux"))]
+fn hdr_signal(
+    layout: CpuLayout,
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+) -> Option<crate::shell::hdr_surface::SurfaceSignal> {
+    if matches!(layout, CpuLayout::Rgba8(_)) {
+        return None;
+    }
+    crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+        colorimetry,
+        crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+    )
+}
+
+/// Convert tight rows of a 10-bit or half-float buffer: RGBA8 for the SDR
+/// desktop into `out`, and the HDR plane when the description is HDR.
+#[cfg(any(test, target_os = "linux"))]
+fn convert_rows<'a>(
+    layout: CpuLayout,
+    rows: impl Iterator<Item = &'a [u8]>,
+    (width, height): (u32, u32),
+    colorimetry: crate::collab::colorimetry::Colorimetry,
+    out: &mut Vec<u8>,
+) -> Option<crate::shell::hdr_surface::HdrPlane> {
+    let signal = hdr_signal(layout, colorimetry);
+    let format = hdr_texel_format(layout).filter(|_| signal.is_some());
+    let mut texels = Vec::new();
+    if let Some(format) = format {
+        texels.reserve(
+            (width as usize)
+                .saturating_mul(height as usize)
+                .saturating_mul(format.bytes_per_pixel()),
+        );
+    }
+    out.clear();
+    out.reserve(
+        (width as usize)
+            .saturating_mul(height as usize)
+            .saturating_mul(4),
+    );
+    for row in rows {
+        convert_row(layout, row, colorimetry, out);
+        if format.is_some() {
+            append_hdr_texels(layout, row, &mut texels);
+        }
+    }
+    crate::shell::hdr_surface::HdrPlane::new(width, height, format?, texels, signal?)
 }
 
 /// Convert one row of a 10-bit or half-float buffer to RGBA8: SDR signals
@@ -412,6 +490,7 @@ pub fn import_dmabuf_rgba(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     validate_importable(dmabuf)?;
     let format = dmabuf.format();
@@ -419,8 +498,9 @@ pub fn import_dmabuf_rgba(
         .ok_or(DmabufImportError::UnsupportedFormat(format.code))?;
     let colorimetry =
         colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+    *hdr = None;
     if layout == CpuLayout::P010 {
-        return import_p010(dmabuf, out, colorimetry);
+        return import_p010(dmabuf, out, colorimetry, hdr);
     }
 
     let width = dmabuf.width();
@@ -471,27 +551,18 @@ pub fn import_dmabuf_rgba(
     // Bracket the CPU read with DMA_BUF_IOCTL_SYNC; a driver without the ioctl returns an error we ignore (mapping stays readable, no cache hint).
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_START | DMA_BUF_SYNC_READ);
 
-    out.clear();
-    out.reserve(
-        (width as usize)
-            .saturating_mul(height as usize)
-            .saturating_mul(4),
-    );
     // SAFETY: the mapping covers `[0, map_len)`; every row slice below is
     // inside `[offset, offset + stride*height) ⊆ [0, map_len)`, checked
     // above. The slice is dropped before `munmap`.
     let mapped: &[u8] = unsafe { std::slice::from_raw_parts(ptr as *const u8, map_len) };
-    for row in 0..height as usize {
+    // Proven in range by the `stride >= width*4` and `offset +
+    // stride*height == map_len` checks above; `.get()` and a skip keep this
+    // panic-free if that invariant is ever broken instead.
+    let rows = (0..height as usize).filter_map(|row| {
         let start = (offset as usize).saturating_add(row.saturating_mul(stride as usize));
-        let end = start.saturating_add(row_bytes);
-        // Proven in range by the `stride >= width*4` and `offset +
-        // stride*height == map_len` checks above; `.get()` and a skip
-        // keep this panic-free if that invariant is ever broken instead.
-        let Some(row_slice) = mapped.get(start..end) else {
-            continue;
-        };
-        convert_row(layout, row_slice, colorimetry, out);
-    }
+        mapped.get(start..start.saturating_add(row_bytes))
+    });
+    *hdr = convert_rows(layout, rows, (width, height), colorimetry, out);
 
     sync_dmabuf(raw_fd, DMA_BUF_SYNC_END | DMA_BUF_SYNC_READ);
     // SAFETY: `ptr`/`map_len` are exactly what `mmap` returned above and
@@ -510,6 +581,7 @@ fn import_p010(
     dmabuf: &Dmabuf,
     out: &mut Vec<u8>,
     colorimetry: crate::collab::colorimetry::Colorimetry,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32), DmabufImportError> {
     let width = dmabuf.width();
     let height = dmabuf.height();
@@ -588,6 +660,15 @@ fn import_p010(
     );
     out.clear();
     out.extend_from_slice(&rgba);
+    *hdr = hdr_signal(CpuLayout::P010, colorimetry).and_then(|signal| {
+        crate::shell::hdr_surface::HdrPlane::p010(
+            &luma,
+            &chroma,
+            (y_stride / 2, uv_stride / 2),
+            (width, height),
+            signal,
+        )
+    });
     Ok((width, height))
 }
 
@@ -657,6 +738,9 @@ struct ForeignEntry {
     /// The image description the client attached (`wp_color_management`),
     /// read when a 10-bit or YUV buffer is converted for display.
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    /// The current frame at full precision when it carries an HDR signal;
+    /// `rgba` is then its tone-mapped SDR rendition.
+    hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
 impl ForeignEntry {
@@ -678,6 +762,7 @@ impl ForeignEntry {
             mapped: false,
             presented: false,
             colorimetry: None,
+            hdr: None,
             #[cfg(any(test, target_os = "linux"))]
             capture_tokens: VecDeque::new(),
             #[cfg(any(test, target_os = "linux"))]
@@ -799,6 +884,9 @@ pub struct FrameSnapshot {
     pub width: u32,
     pub height: u32,
     pub seq: u64,
+    /// The frame at full precision, the same size as `rgba`, when it
+    /// carries an HDR signal and nothing is composited over it.
+    pub hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
 }
 
 fn composite_child_rgba(root: &mut FrameSnapshot, child: &ForeignEntry, x: i32, y: i32) {
@@ -962,6 +1050,8 @@ struct ShmJob {
 #[cfg(any(test, target_os = "linux"))]
 struct ReadyCapture {
     rgba: Vec<u8>,
+    /// The frame at full precision, when it carries an HDR signal.
+    hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     result: Result<(u32, u32, CaptureRoute), String>,
 }
 
@@ -1080,11 +1170,12 @@ impl AsyncDmabufCapture {
                             *rgba = previous;
                         }
                         let colorimetry = store().colorimetry(job.surface);
-                        let result = decode_dmabuf(&job.payload, rgba, colorimetry).map(
+                        let mut hdr = None;
+                        let result = decode_dmabuf(&job.payload, rgba, colorimetry, &mut hdr).map(
                             |(width, height, route)| (width, height, CaptureRoute::Dmabuf(route)),
                         );
                         let accepted =
-                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba);
+                            store().stage_dmabuf_capture(job.surface, job.token, result, rgba, hdr);
                         if !accepted {
                             // The toplevel was destroyed while this import was
                             // in flight. Do not retain a full framebuffer in
@@ -1286,23 +1377,73 @@ fn recycle_dmabuf_pixels(surface: SurfaceId, rgba: Vec<u8>) {
 /// Read one dmabuf outside Wayland dispatch and outside the frame-store lock.
 /// GPU import is required for device-local Vulkan buffers; CPU mmap remains
 /// the fallback for linear system-memory buffers and machines without EGL.
+///
+/// A 10-bit or half-float buffer is read back at its own precision and
+/// converted like the CPU import, so an HDR description yields its
+/// [`crate::shell::hdr_surface::HdrPlane`] on either route. P010 cannot be
+/// read back through GL, so it goes to the CPU first.
 #[cfg(target_os = "linux")]
 fn decode_dmabuf(
     dmabuf: &Dmabuf,
     rgba: &mut Vec<u8>,
     colorimetry: Option<crate::collab::colorimetry::Colorimetry>,
+    hdr: &mut Option<crate::shell::hdr_surface::HdrPlane>,
 ) -> Result<(u32, u32, DmabufRoute), String> {
+    *hdr = None;
+    let layout = CpuLayout::for_fourcc(dmabuf.format().code);
+    let description =
+        colorimetry.unwrap_or_else(crate::collab::colorimetry::Colorimetry::sdr_bt709);
+    if layout == Some(CpuLayout::P010)
+        && let Ok((width, height)) = import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr)
+    {
+        return Ok((width, height, DmabufRoute::CpuMmap));
+    }
+    // What the GPU reads back, and how those bytes are laid out.
+    let precise = match layout {
+        Some(CpuLayout::Rgb10 { opaque, .. }) => Some((
+            Fourcc::Abgr2101010,
+            CpuLayout::Rgb10 {
+                red_low: true,
+                opaque,
+            },
+        )),
+        Some(CpuLayout::Half { opaque }) => {
+            Some((Fourcc::Abgr16161616f, CpuLayout::Half { opaque }))
+        }
+        _ => None,
+    };
     let gpu_error = match crate::compositor::render_node::advertised() {
-        Some(node) => match crate::compositor::gpu_import::with_importer(node, |importer| {
-            importer.import(dmabuf, rgba)
-        }) {
-            Ok(Ok((width, height))) => return Ok((width, height, DmabufRoute::Gpu)),
-            Ok(Err(error)) | Err(error) => Some(error.to_string()),
-        },
+        Some(node) => {
+            match crate::compositor::gpu_import::with_importer(node, |importer| match precise {
+                Some((readback, _)) => {
+                    let mut raw = Vec::new();
+                    importer
+                        .import_as(dmabuf, &mut raw, readback)
+                        .map(|size| (size, Some(raw)))
+                }
+                None => importer.import(dmabuf, rgba).map(|size| (size, None)),
+            }) {
+                Ok(Ok(((width, height), raw))) => {
+                    if let (Some(raw), Some((_, read_layout))) = (raw, precise) {
+                        let row_bytes =
+                            (width as usize).saturating_mul(read_layout.bytes_per_pixel() as usize);
+                        *hdr = convert_rows(
+                            read_layout,
+                            raw.chunks_exact(row_bytes.max(1)),
+                            (width, height),
+                            description,
+                            rgba,
+                        );
+                    }
+                    return Ok((width, height, DmabufRoute::Gpu));
+                }
+                Ok(Err(error)) | Err(error) => Some(error.to_string()),
+            }
+        }
         None => Some("no dmabuf main device was advertised".to_string()),
     };
 
-    match import_dmabuf_rgba(dmabuf, rgba, colorimetry) {
+    match import_dmabuf_rgba(dmabuf, rgba, colorimetry, hdr) {
         Ok((width, height)) => Ok((width, height, DmabufRoute::CpuMmap)),
         Err(cpu_error) => Err(match gpu_error {
             Some(gpu_error) => format!("{cpu_error}; GPU import also failed: {gpu_error}"),
@@ -1372,6 +1513,7 @@ impl ForeignFrameStore {
             let r = buffer_to_rgba(buffer, &mut e.rgba);
             match r {
                 Ok((w, h)) => {
+                    e.hdr = None;
                     e.width = w;
                     e.height = h;
                     e.seq = e.seq.wrapping_add(1);
@@ -1481,6 +1623,7 @@ impl ForeignFrameStore {
         token: u64,
         result: Result<(u32, u32, CaptureRoute), String>,
         rgba: &mut Vec<u8>,
+        hdr: Option<crate::shell::hdr_surface::HdrPlane>,
     ) -> bool {
         let mut guard = self
             .entries
@@ -1498,6 +1641,7 @@ impl ForeignFrameStore {
             token,
             ReadyCapture {
                 rgba: captured,
+                hdr,
                 result,
             },
         );
@@ -1525,6 +1669,7 @@ impl ForeignFrameStore {
         let (outcome, imported, recycled) = match ready.result {
             Ok((width, height, route)) => {
                 let previous = std::mem::replace(&mut entry.rgba, ready.rgba);
+                entry.hdr = ready.hdr.map(Arc::new);
                 entry.width = width;
                 entry.height = height;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1540,6 +1685,7 @@ impl ForeignFrameStore {
             }
             Err(reason) => {
                 entry.rgba.clear();
+                entry.hdr = None;
                 entry.width = 0;
                 entry.height = 0;
                 entry.seq = entry.seq.wrapping_add(1);
@@ -1563,8 +1709,32 @@ impl ForeignFrameStore {
 
     /// Publish an RGBA frame directly — used by callers that already hold decoded pixels (tests, future non-`wl_buffer` capture routes).
     pub fn publish_rgba(&self, id: SurfaceId, rgba: &[u8], width: u32, height: u32) {
+        self.publish_frame(id, rgba, width, height, None);
+    }
+
+    /// Publish a frame with its full-precision HDR plane: `rgba` is the
+    /// tone-mapped rendition of `hdr`, at the same size.
+    pub fn publish_hdr_frame(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        hdr: crate::shell::hdr_surface::HdrPlane,
+    ) {
+        let (width, height) = (hdr.width(), hdr.height());
+        self.publish_frame(id, rgba, width, height, Some(Arc::new(hdr)));
+    }
+
+    fn publish_frame(
+        &self,
+        id: SurfaceId,
+        rgba: &[u8],
+        width: u32,
+        height: u32,
+        hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
+    ) {
         self.with_entry(id, |e| {
             e.mapped = true;
+            e.hdr = hdr;
             e.rgba.clear();
             e.rgba.extend_from_slice(rgba);
             e.width = width;
@@ -1582,6 +1752,7 @@ impl ForeignFrameStore {
         self.with_entry(id, |e| {
             e.rgba.clear();
             e.rgba.shrink_to_fit();
+            e.hdr = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1597,6 +1768,7 @@ impl ForeignFrameStore {
             e.mapped = false;
             e.rgba.clear();
             e.rgba.shrink_to_fit();
+            e.hdr = None;
             e.width = 0;
             e.height = 0;
             e.seq = e.seq.wrapping_add(1);
@@ -1735,6 +1907,7 @@ impl ForeignFrameStore {
                 width: e.width,
                 height: e.height,
                 seq: e.seq,
+                hdr: e.hdr.clone(),
             })
         };
         drop(guard);
@@ -1756,12 +1929,21 @@ impl ForeignFrameStore {
             };
             composite_child_rgba(&mut snapshot, frame, child.x, child.y);
             snapshot.seq = snapshot.seq.wrapping_add(frame.seq);
+            // Subsurfaces live only in the SDR rendition; a window with any
+            // is shown through it.
+            if !frame.rgba.is_empty() {
+                snapshot.hdr = None;
+            }
         }
         drop(guard);
         // Subsurfaces are positioned against the whole buffer, so the window
         // is cut out only after they are composited onto it.
         if content != (0, 0, snapshot.width, snapshot.height) {
             snapshot.rgba = crop_rgba(&snapshot.rgba, snapshot.width, content);
+            snapshot.hdr = snapshot
+                .hdr
+                .and_then(|plane| plane.crop(content))
+                .map(Arc::new);
             snapshot.width = content.2;
             snapshot.height = content.3;
         }
@@ -2011,6 +2193,13 @@ impl ForeignFrameStore {
         })
     }
 
+    /// Forget the size last sent, so the next [`Self::take_pending_configure`]
+    /// sends the tab size again even though the layout did not change: the
+    /// client was configured to something else in between.
+    pub fn resend_configure(&self, id: SurfaceId) {
+        self.with_entry(id, |e| e.configured = None);
+    }
+
     /// Whether this surface has something worth putting on screen, and
     /// latch the answer once it does. Read by
     /// [`ForeignSurfaceWidget::presented`], the predicate deciding when a launched window turns up.
@@ -2133,6 +2322,8 @@ pub struct ForeignSurfaceWidget {
     rect: Rect,
     /// GPU-uploadable copy of the last frame we drew, plus the store sequence it came from.
     cached: Option<ImageData>,
+    /// The cached frame at full precision, when it carries an HDR signal.
+    cached_hdr: Option<Arc<crate::shell::hdr_surface::HdrPlane>>,
     cached_seq: u64,
     /// Drawn transient sheets on this tile, bottom to top, refreshed with `cached`.
     sheet_images: Vec<(SheetLink, ImageData)>,
@@ -2148,6 +2339,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl ForeignSurfaceWidget {
@@ -2157,12 +2349,14 @@ impl ForeignSurfaceWidget {
             app_id,
             rect: Rect::ZERO,
             cached: None,
+            cached_hdr: None,
             cached_seq: 0,
             sheet_images: Vec::new(),
             placement_dirty: true,
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            last_draw: None,
         }
     }
 
@@ -2247,6 +2441,18 @@ impl ForeignSurfaceWidget {
         store().frame_size(self.surface_id).is_some()
     }
 
+    /// Why this tile is asking for frames, for the paint-stats diagnostic.
+    pub(crate) fn animation_detail(&self) -> String {
+        format!(
+            "seq={} cached_seq={} cached={} presented={} drawn_ms_ago={:?}",
+            store().frame_seq(self.surface_id),
+            self.cached_seq,
+            self.cached.is_some(),
+            store().is_presented(self.surface_id),
+            self.last_draw.map(|at| at.elapsed().as_millis()),
+        )
+    }
+
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
     fn refresh_cache(&mut self) -> bool {
         let seq = store().frame_seq(self.surface_id);
@@ -2259,7 +2465,9 @@ impl ForeignSurfaceWidget {
             return false;
         }
         self.cached_seq = seq;
-        self.cached = store().snapshot(self.surface_id).map(frame_image);
+        let snapshot = store().snapshot(self.surface_id);
+        self.cached_hdr = snapshot.as_ref().and_then(|frame| frame.hdr.clone());
+        self.cached = snapshot.map(frame_image);
         self.sheet_images = store()
             .sheets_over(self.surface_id)
             .into_iter()
@@ -2309,6 +2517,31 @@ impl ForeignSurfaceWidget {
                 &Rect::new(0.0, 0.0, f64::from(sheet.width), f64::from(sheet.height)),
             );
         }
+    }
+
+    /// Register the frame's full-precision plane, when it has one, for the
+    /// image about to be drawn at `brush_transform` into `dst`.
+    fn record_hdr_layer(
+        &self,
+        image: &ImageData,
+        brush_transform: Affine,
+        transform: Affine,
+        dst: Rect,
+    ) {
+        let Some(plane) = &self.cached_hdr else {
+            return;
+        };
+        let visible = if self.preserve_transparency {
+            dst
+        } else {
+            dst.intersect(self.rect)
+        };
+        crate::shell::hdr_surface::record(
+            plane,
+            image,
+            brush_transform,
+            transform.transform_rect_bbox(visible),
+        );
     }
 
     /// Whether this surface's window is still being held back, and so the
@@ -2434,8 +2667,6 @@ pub fn paint_output_presentation_surface(
 }
 
 impl Widget for ForeignSurfaceWidget {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -2488,6 +2719,7 @@ impl Widget for ForeignSurfaceWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.last_draw = Some(std::time::Instant::now());
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -2510,6 +2742,7 @@ impl Widget for ForeignSurfaceWidget {
             let sy = dst.height() / f64::from(image.height);
             let brush_transform = translated_and_scaled(transform, dst.x0, dst.y0, sx, sy);
             let brush = ImageBrush::new(image.clone()).with_extend(Extend::Pad);
+            self.record_hdr_layer(&image, brush_transform, transform, dst);
             if self.preserve_transparency {
                 // The app buffer already carries the shared floating chrome's
                 // soft silhouette. Drawing it directly preserves transparent
@@ -2589,21 +2822,6 @@ impl Widget for ForeignSurfaceWidget {
         self.draw_collaboration_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        // Input routing to client surfaces goes through the seat, not the widget tree.
-    }
-
     fn name(&self) -> &'static str {
         "ForeignSurfaceWidget"
     }
@@ -2621,6 +2839,10 @@ impl Widget for ForeignSurfaceWidget {
 
     fn test_id(&self) -> Option<&str> {
         Some(&self.test_id)
+    }
+
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
     }
 
     fn get_rect(&self) -> Rect {
@@ -2880,6 +3102,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    // A fullscreen client is sized to its output by the fullscreen overlay;
+    // its promoted tile still lays out underneath and must not resize it.
+    let fullscreen = state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .map(|target| target.surface_id);
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
@@ -2906,6 +3135,9 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
@@ -2995,12 +3227,12 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Wayland clients that draw on demand wait for `wl_surface.frame` before
 /// their next buffer; without this pass a client renders one frame and
-/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen.
+/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
+/// and for a window the compositor asked to close, whose tab is already gone.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
     for toplevel in toplevels {
@@ -3010,20 +3242,14 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
             let tree = state.workspace_tree.read();
             is_visible_tab(&tree, store().sheet_root(id))
         };
-        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
+        if !visible_tab
+            && state.osk_surface != Some(id)
+            && !state.is_floating_toplevel(id)
+            && !state.is_closing_toplevel(id)
+        {
             continue;
         }
-        let mut fired = false;
-        smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<smithay::wayland::compositor::SurfaceAttributes>();
-            for callback in attrs.current().frame_callbacks.drain(..) {
-                callback.done(time_ms);
-                fired = true;
-            }
-        });
-        if fired {
+        if state.release_frame_callbacks(surface) {
             signalled = signalled.saturating_add(1);
         }
     }
@@ -3085,6 +3311,7 @@ mod tests {
                 1,
                 Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
                 &mut stale,
+                None,
             );
             assert!(frames.snapshot(id).is_none());
 
@@ -3094,6 +3321,7 @@ mod tests {
                 2,
                 Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
                 &mut latest,
+                None,
             );
             assert!(
                 frames.snapshot(id).is_none(),
@@ -3126,6 +3354,7 @@ mod tests {
                 4,
                 Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
                 &mut newest,
+                None,
             );
 
             assert!(
@@ -3152,6 +3381,7 @@ mod tests {
                 42,
                 Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
                 &mut pixels,
+                None,
             ));
 
             assert!(
@@ -3178,6 +3408,7 @@ mod tests {
                 7,
                 Ok((1, 1, CaptureRoute::Dmabuf(DmabufRoute::Gpu))),
                 &mut pixels,
+                None,
             );
             assert!(frames.snapshot(id).is_none());
             assert_eq!(frames.frame_seq(id), 0);
@@ -3335,6 +3566,124 @@ mod tests {
             (1..148).contains(&red),
             "tone-mapped below the raw 148, got {out:?}"
         );
+    }
+
+    #[test]
+    fn hdr_frames_keep_a_full_precision_plane() {
+        use crate::shell::hdr_surface::{HdrTexelFormat, SignalTransfer};
+        let pq = crate::collab::colorimetry::Colorimetry::hdr10();
+        let sdr = crate::collab::colorimetry::Colorimetry::sdr_bt709();
+
+        // Phase `ten_bit_pq_rows_keep_their_codes_red_low`.
+        {
+            // XR30: blue in the low bits; blue 100, green 512, red 900.
+            let word: u32 = 0x064 | (0x200 << 10) | (0x384 << 20);
+            let row = [word.to_le_bytes(), word.to_le_bytes()].concat();
+            let layout = CpuLayout::Rgb10 {
+                red_low: false,
+                opaque: true,
+            };
+            let mut rgba = Vec::new();
+            let plane = convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), pq, &mut rgba)
+                .expect("a PQ description keeps its plane");
+            assert_eq!(rgba.len(), 8, "the SDR rendition is still produced");
+            assert_eq!(plane.format(), HdrTexelFormat::Rgb10a2);
+            assert_eq!(plane.signal().transfer, SignalTransfer::Pq);
+            let [r, g, b] = plane.signal_at(1, 0);
+            assert!((r - 900.0 / 1023.0).abs() < 1e-6, "red {r}");
+            assert!((g - 512.0 / 1023.0).abs() < 1e-6, "green {g}");
+            assert!((b - 100.0 / 1023.0).abs() < 1e-6, "blue {b}");
+            let first = u32::from_le_bytes(plane.bytes()[..4].try_into().expect("a word"));
+            assert_eq!(first >> 30, 3, "padding reads as opaque alpha");
+            let mut rgba = Vec::new();
+            assert!(
+                convert_rows(layout, [row.as_slice()].into_iter(), (2, 1), sdr, &mut rgba)
+                    .is_none(),
+                "an SDR description needs no plane"
+            );
+        }
+
+        // Phase `half_float_rows_keep_their_values`.
+        {
+            let px: Vec<u8> = [0x4400_u16, 0x3C00, 0x3800, 0x0000]
+                .iter()
+                .flat_map(|h| h.to_le_bytes())
+                .collect();
+            let scrgb = scrgb();
+            let mut rgba = Vec::new();
+            let plane = convert_rows(
+                CpuLayout::Half { opaque: true },
+                [px.as_slice()].into_iter(),
+                (1, 1),
+                scrgb,
+                &mut rgba,
+            )
+            .expect("scRGB keeps its plane");
+            assert_eq!(plane.format(), HdrTexelFormat::Rgba16Float);
+            assert_eq!(plane.signal_at(0, 0), [4.0, 1.0, 0.5]);
+            assert_eq!(&plane.bytes()[6..8], &0x3C00_u16.to_le_bytes());
+            assert_eq!(
+                &rgba[..3],
+                &[255, 255, 188],
+                "linear light clips at SDR white"
+            );
+        }
+
+        // Phase `snapshots_carry_the_plane_cropped_and_drop_it_under_subsurfaces`.
+        {
+            let frames = ForeignFrameStore::default();
+            let root = sid(80);
+            let signal = crate::shell::hdr_surface::SurfaceSignal::for_colorimetry(
+                pq,
+                crate::shell::hdr_tonemap::HdrTonemapConfig::default(),
+            )
+            .expect("PQ");
+            let plane = crate::shell::hdr_surface::HdrPlane::from_signal_rgb(
+                4,
+                4,
+                (0..16_u8).map(|i| [f32::from(i) / 16.0; 3]),
+                signal,
+            )
+            .expect("plane");
+            frames.publish_hdr_frame(root, &[9; 64], plane);
+            let snapshot = frames.snapshot(root).expect("frame");
+            let hdr = snapshot.hdr.expect("the plane travels with the frame");
+            assert_eq!((hdr.width(), hdr.height()), (4, 4));
+
+            frames.note_window_geometry(root, Some(geometry(1, 1, 2, 2)));
+            let snapshot = frames.snapshot(root).expect("frame");
+            let hdr = snapshot.hdr.expect("a cropped window keeps its plane");
+            assert_eq!((hdr.width(), hdr.height()), (2, 2));
+            assert_eq!((snapshot.width, snapshot.height), (2, 2));
+            assert_eq!(hdr.signal_at(0, 0)[0], 5.0 / 16.0, "cut at the window");
+
+            let child = sid(81);
+            frames.publish_rgba(child, &[1, 2, 3, 255], 1, 1);
+            frames.set_children(
+                root,
+                vec![ChildFrame {
+                    surface: child,
+                    x: 0,
+                    y: 0,
+                }],
+            );
+            assert!(
+                frames.snapshot(root).expect("frame").hdr.is_none(),
+                "subsurfaces exist only in the SDR rendition"
+            );
+            frames.set_children(root, Vec::new());
+            frames.publish_rgba(root, &[9; 64], 4, 4);
+            assert!(frames.snapshot(root).expect("frame").hdr.is_none());
+        }
+    }
+
+    fn scrgb() -> crate::collab::colorimetry::Colorimetry {
+        crate::collab::colorimetry::Colorimetry {
+            primaries: crate::collab::colorimetry::ColorPrimaries::Bt709,
+            transfer: crate::collab::colorimetry::TransferCharacteristics::Linear,
+            matrix: crate::collab::colorimetry::MatrixCoefficients::Identity,
+            range: crate::collab::colorimetry::ColorRange::Full,
+        }
     }
 
     /// A tab is 1200x800. These are the sizes a client hands us.

@@ -198,7 +198,6 @@ impl ui::widget::Widget for OverlayApp {
         self.leaf.get_rect()
     }
 
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
@@ -225,19 +224,6 @@ impl ui::widget::Widget for OverlayApp {
         _: &ui::presence::PresenceCtx,
     ) {
         self.draws.set(self.draws.get() + 1);
-    }
-    fn handle_event(
-        &mut self,
-        _: &winit::event::WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<taffy::NodeId>,
-        _: taffy::NodeId,
-        _: &taffy::TaffyTree<()>,
-    ) {
     }
 }
 impl ui::widget::AppWidget for OverlayApp {

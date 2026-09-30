@@ -11,6 +11,15 @@ struct CommentMetrics {
     compose_h: f64,
 }
 
+/// One comment card being painted: its rect, the comment, the metrics it
+/// was measured with and the card's inner text width.
+struct CommentCard<'a> {
+    rect: Rect,
+    comment: &'a Comment,
+    metrics: &'a CommentMetrics,
+    inner_w: f64,
+}
+
 /// Non-overlapping layout of a comment/note card's header row. The author name
 /// gets a bounded width so a long name (or an email address) truncates instead
 /// of running under the Resolve chip and the × button. Pure geometry so both
@@ -506,7 +515,7 @@ impl PdfApp {
             && self.bubble_shown_page != 0
             && self.current_page != self.bubble_shown_page
         {
-            self.page_bubble.poke(std::time::Instant::now());
+            self.page_bubble.poke(ui::time::now());
         }
         self.bubble_shown_page = self.current_page;
         let c = &theme.tokens.colors;
@@ -1378,22 +1387,27 @@ impl PdfApp {
             };
             let (matched, active) = self.matched_blocks_for(page_num);
             render::draw_page(
-                scene,
-                tr,
-                theme,
-                base,
+                &mut PaintCtx::new(scene, base, tr, theme),
                 page,
-                *origin,
-                self.zoom(),
-                self.pw(),
-                self.ph(),
-                page_imgs.get(&page_num),
-                page_tiles.get(&page_num),
-                &matched,
-                active,
-                &self.annotations,
-                &self.signatures,
-                self.selected_anno.as_deref(),
+                render::PageFrame {
+                    origin: *origin,
+                    scale: self.zoom(),
+                    page_w: self.pw(),
+                    page_h: self.ph(),
+                },
+                render::PageRaster {
+                    image: page_imgs.get(&page_num),
+                    tiles: page_tiles.get(&page_num),
+                },
+                render::SearchBands {
+                    matched: &matched,
+                    active,
+                },
+                render::Markup {
+                    annotations: &self.annotations,
+                    signatures: &self.signatures,
+                    selected: self.selected_anno.as_deref(),
+                },
             );
 
             self.draw_import_placeholder(scene, base, tr, theme, *origin, i);
@@ -1888,12 +1902,16 @@ impl PdfApp {
             base,
             tr,
             &style,
-            &swatches,
-            true,
-            false,
+            &ui::HudControls {
+                swatches: &swatches,
+                show_note: true,
+                show_delete: false,
+            },
+            ui::HudPlacement {
+                anchor,
+                bounds: self.canvas_rect,
+            },
             self.last_mouse,
-            anchor,
-            self.canvas_rect,
         );
         self.sel_hud = Some(hud);
     }
@@ -1947,17 +1965,14 @@ impl PdfApp {
         sb.render(scene, base, tr, theme, |scene, _tr, base, i, rect| {
             let num = i + 1;
             if let Some(page) = doc.page(num) {
-                render::draw_thumbnail(
-                    scene,
-                    theme,
-                    base,
+                render::Thumbnail {
                     page,
-                    rect,
-                    pw,
-                    thumb_imgs.get(&num),
-                    false,
-                    markup.contains(&num),
-                );
+                    page_w: pw,
+                    raster: thumb_imgs.get(&num),
+                    is_current: false,
+                    has_markup: markup.contains(&num),
+                }
+                .draw(scene, theme, base, rect);
             }
         });
         self.page_sidebar = sb;
@@ -2883,10 +2898,16 @@ impl PdfApp {
             // overlaps regardless of the name's length.
             let hdr = Self::comment_header_layout(card, s);
             self.draw_comment_header_row(scene, base, tr, theme, cm, &hdr, out);
-            let yy =
-                self.draw_comment_body(scene, base, tr, theme, card, cm, &hdr, &m, inner_w, out);
-            let yy = self.draw_comment_replies(scene, base, tr, theme, card, cm, &m, inner_w, yy);
-            self.draw_comment_composer(scene, base, tr, theme, card, cm, &m, yy, out);
+            let comment_card = CommentCard {
+                rect: card,
+                comment: cm,
+                metrics: &m,
+                inner_w,
+            };
+            let ctx = &mut PaintCtx::new(scene, base, tr, theme);
+            let yy = self.draw_comment_body(ctx, &comment_card, &hdr, out);
+            let yy = self.draw_comment_replies(ctx, &comment_card, yy);
+            self.draw_comment_composer(ctx, &comment_card, yy, out);
 
             out.hits.push((SidebarHit::Comment(cm.id.clone()), card));
             y += card_h + 12.0 * s;
@@ -2896,10 +2917,6 @@ impl PdfApp {
     /// A comment card's header row: avatar + author name (bounded so it never
     /// runs under the chips) + delete button + resolve chip, laid out so
     /// nothing overlaps regardless of the name's length.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same comment-card draw context as draw_comments"
-    )]
     fn draw_comment_header_row(
         &self,
         scene: &mut Scene,
@@ -3014,23 +3031,20 @@ impl PdfApp {
     /// A comment card's body — the static text, or the shared inline editor
     /// while it's focused (click to edit; caret while focused). Returns the
     /// running `y` where the replies list should start.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same comment-card draw context as draw_comments"
-    )]
     fn draw_comment_body(
         &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        cm: &Comment,
+        ctx: &mut PaintCtx<'_>,
+        comment_card: &CommentCard<'_>,
         hdr: &CommentHeader,
-        m: &CommentMetrics,
-        inner_w: f64,
         out: &mut SidebarHits,
     ) -> f64 {
+        let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let CommentCard {
+            rect: card,
+            comment: cm,
+            metrics: m,
+            inner_w,
+        } = *comment_card;
         let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
         let body_x = card.x0 + 12.0 * s;
         let body_top = hdr.body_top;
@@ -3094,22 +3108,19 @@ impl PdfApp {
 
     /// A comment card's reply thread — one entry per stored reply, each
     /// preceded by a left rail. Returns the updated running `y`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same comment-card draw context as draw_comments"
-    )]
     fn draw_comment_replies(
         &self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        cm: &Comment,
-        m: &CommentMetrics,
-        inner_w: f64,
+        ctx: &mut PaintCtx<'_>,
+        comment_card: &CommentCard<'_>,
         mut yy: f64,
     ) -> f64 {
+        let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let CommentCard {
+            rect: card,
+            comment: cm,
+            metrics: m,
+            inner_w,
+        } = *comment_card;
         let c = &theme.tokens.colors;
         let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
         for (r, reply_h) in cm.replies.iter().zip(m.reply_heights.iter()) {
@@ -3162,22 +3173,20 @@ impl PdfApp {
 
     /// A comment card's reply composer: the live editor field while composing
     /// a reply, or the "+ Reply" affordance that starts one.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same comment-card draw context as draw_comments"
-    )]
     fn draw_comment_composer(
         &mut self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        card: Rect,
-        cm: &Comment,
-        m: &CommentMetrics,
+        ctx: &mut PaintCtx<'_>,
+        comment_card: &CommentCard<'_>,
         yy: f64,
         out: &mut SidebarHits,
     ) {
+        let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let CommentCard {
+            rect: card,
+            comment: cm,
+            metrics: m,
+            ..
+        } = *comment_card;
         let c = &theme.tokens.colors;
         let composing = self.is_editing(&EditTarget::Reply(cm.id.clone()));
         let s = f64::from(theme.text_scale).clamp(1.0, 2.0);
@@ -3429,17 +3438,14 @@ impl PdfApp {
         self.draw_signature_compose_card(scene, base, tr, theme, card, out);
         y += self.sig_compose_h() + rhythm::SECTION;
 
-        y = self.draw_signature_place_button(scene, base, tr, theme, body, pad, y, out);
+        let ctx = &mut PaintCtx::new(scene, base, tr, theme);
+        y = self.draw_signature_place_button(ctx, body, pad, y, out);
 
-        self.draw_placed_signatures_list(scene, base, tr, theme, body, pad, y, out);
+        self.draw_placed_signatures_list(ctx, body, pad, y, out);
     }
 
     /// The compose card: a name field (Type mode) or an interactive draw pad
     /// (Draw mode) — whichever supplies the signature ink that gets stamped.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same sidebar-draw context as draw_signatures"
-    )]
     fn draw_signature_compose_card(
         &mut self,
         scene: &mut Scene,
@@ -3665,21 +3671,15 @@ impl PdfApp {
 
     /// The "Place signature" button — arms the Sign tool so the next canvas
     /// click stamps the composed ink. Returns the updated running `y`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same sidebar-draw context as draw_signatures"
-    )]
     fn draw_signature_place_button(
         &self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         body: Rect,
         pad: f64,
         y: f64,
         out: &mut SidebarHits,
     ) -> f64 {
+        let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let add = Rect::new(body.x0 + pad, y, body.x1 - pad, y + 38.0);
         let arming = self.tool == Tool::Sign;
         let ready = self.composed_ink().is_some();
@@ -3705,21 +3705,15 @@ impl PdfApp {
 
     /// The "PLACED" header + the scrollable list of already-placed
     /// signatures on the document.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same sidebar-draw context as draw_signatures"
-    )]
     fn draw_placed_signatures_list(
         &self,
-        scene: &mut Scene,
-        base: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         body: Rect,
         pad: f64,
         y_start: f64,
         out: &mut SidebarHits,
     ) {
+        let (scene, base, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         tr.draw_text(
             scene,
             &format!("PLACED  ·  {}", self.signatures.len()),
@@ -3743,10 +3737,6 @@ impl PdfApp {
 
     /// One row of the placed-signatures list: preview thumbnail, signer +
     /// page/date, and the delete (×) button.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the same sidebar-draw context as draw_signatures"
-    )]
     fn draw_placed_signature_row(
         &self,
         scene: &mut Scene,
@@ -3859,7 +3849,7 @@ impl PdfApp {
         if !self.has_document {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let canvas = self.canvas_rect;
         let label = format!("Page {} of {}", self.current_page, self.doc.page_count());
         let text_size = self.type_px.sm;

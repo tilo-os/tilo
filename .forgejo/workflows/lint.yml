@@ -9,21 +9,24 @@ on:
   push:
     branches: ["main"]
   pull_request:
-    branches: ["main"]
+    # Stacked PRs (a PR whose base is another PR's pr/sdk-* branch) get the
+    # same gate; affected-package selection diffs against that base, so each
+    # layer tests its own change.
+    branches: ["main", "pr/sdk-*"]
   workflow_dispatch:
 
 concurrency:
-  # Push and pull-request checks are distinct required evidence. Include both
-  # event and commit so neither can replace another result.
-  group: lint-${{ github.event_name }}-${{ github.sha }}
-  cancel-in-progress: false
+  # A newer commit on a pull request replaces its older run: the lander only
+  # reads the current head. Pushes keep one run per commit.
+  group: lint-${{ github.event_name }}-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   quality:
     runs-on: runner-quality
     timeout-minutes: 30
     container:
-      image: registry.tilo.so/tilo/ci-fast@sha256:21849904f25c17f500394710ac8e080cc16e88a897248fcf5c2d106e3648c9c3
+      image: registry.tilo.so/tilo/ci-fast@sha256:281af08d34010af96f97630aa5fde224b6ca02b130aff553ceb3d297d44fca7d
     env:
       # The policy suite's Cargo metadata and cargo deny resolve every locked
       # crate; read them from the shared download cache, not crates.io.
@@ -40,6 +43,11 @@ jobs:
           token: ${{ secrets.REGISTRY_TOKEN }}
           fetch-depth: 2
           fetch-tags: false
+
+      # Pull requests are checked merged onto main's current tip.
+      - name: Merge onto main
+        id: merge
+        uses: ./.forgejo/actions/merge-main
 
       - name: Restore Cargo downloads
         uses: ./.forgejo/actions/restore-cargo-downloads
@@ -61,13 +69,13 @@ jobs:
         shell: bash
         run: >-
           bash tools/ci/check-changed-rustfmt.sh
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Require reasons for Rust lint exceptions in changed files
         run: >-
           python3 tools/ci/check_changed_rust_allows.py
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'
 
       - name: Repository policy suite
@@ -97,5 +105,5 @@ jobs:
       - name: cargo machete
         run: >-
           bash tools/ci/check-unused-dependencies.sh --changed
-          '${{ github.event.pull_request.base.sha }}'
+          '${{ steps.merge.outputs.main }}'
           '${{ github.event.before }}'

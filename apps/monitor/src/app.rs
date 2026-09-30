@@ -14,13 +14,14 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use ui::search::{CatalogSearchProvider, SearchCatalog, SearchProvider, SearchResult};
+use ui::time::{Duration, Instant, UNIX_EPOCH};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
-use vello::kurbo::{Affine, BezPath, Line, Point, Rect, Stroke};
+use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
@@ -29,6 +30,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 use ui::format::bytes as format_bytes;
 use ui::icons::{self, Icon};
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -51,8 +53,8 @@ use crate::prefs::Prefs;
 use crate::sampler::{Sampler, StopKind};
 use crate::tree::{FlattenOpts, Forest, Row, SumMode};
 use ui::charts::{
-    BarGauge, Chart, ChartLabels, ChartStyle, GaugeStyle, RingGauge, RollingSeries, Series,
-    Sparkline, TrendRange,
+    BarGauge, Chart, ChartLabels, ChartStyle, GaugeReading, GaugeStyle, RingGauge, RollingSeries,
+    Series, Sparkline, TrendRange,
 };
 use ui::widget::{PushNav, PushPane};
 
@@ -155,6 +157,22 @@ enum SignalConfirmation {
 pub enum Tab {
     Processes,
     Resources,
+}
+
+impl Tab {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Processes => "Processes",
+            Self::Resources => "Resources",
+        }
+    }
+
+    fn icon(self) -> Icon {
+        match self {
+            Self::Processes => Icon::Layers,
+            Self::Resources => Icon::BarChart,
+        }
+    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -563,8 +581,10 @@ struct ScrollBarHit {
 /// Process table layout geometry, computed once per frame so the header,
 /// rows and scrollbar passes each take one struct instead of a long, mostly
 /// duplicated parameter list.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct TableGeom {
+    /// The visible columns, in content space and scaled by the text scale.
+    columns: Vec<layout::Column>,
     /// The card's full inner rect (post-panel padding).
     ti: Rect,
     /// The padded column band — header text and row cells clip to this so an
@@ -844,7 +864,7 @@ impl MonitorApp {
         let model = MonitorModel::sample();
         // "now" ⇒ the first (screenshot) frame skips the live refresh and
         // renders the seeded sample untouched.
-        let mut app = Self::build(model, None, Instant::now(), Sampler::inert());
+        let mut app = Self::build(model, None, ui::time::now(), Sampler::inert());
         // The default tree starts collapsed. Select a row from that *visible*
         // projection rather than the globally busiest process, which may be a
         // hidden descendant. A detail pane with destructive controls must
@@ -866,7 +886,7 @@ impl MonitorApp {
     pub fn new_live() -> Self {
         // A `last_refresh` well in the past makes the first `maybe_refresh`
         // fire on the first draw, replacing the empty seed with real data.
-        let stale = Instant::now()
+        let stale = ui::time::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap_or_else(Instant::now);
         Self::build(MonitorModel::empty(), None, stale, Sampler::new())
@@ -939,7 +959,7 @@ impl MonitorApp {
         let mut app = Self::build(
             MonitorModel::sample(),
             None,
-            Instant::now(),
+            ui::time::now(),
             Sampler::controlled(signal_probe),
         );
         app.prefs.auto_refresh = false;
@@ -978,7 +998,7 @@ impl MonitorApp {
         let selected_before = self.selected_identity();
         self.sampler.refresh(&mut self.model);
         self.process_search.refresh(&self.model.processes);
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         self.clear_recycled_selection(selected_before);
         self.record_proc_cpu();
         self.clear_selection_if_filtered_out();
@@ -1176,7 +1196,7 @@ impl MonitorApp {
     /// Queue the exact resource address every visible process control uses.
     /// The host re-resolves it against a fresh catalogue and enforces the
     /// published permission, confirmation, and retry contract before calling
-    /// [`Self::invoke_resource_operation`].
+    /// [`Self::answer_resource_operation`].
     fn request_process_control(&mut self, pid: u32, action: &'static str) {
         if let Some(process) = self
             .model
@@ -1312,7 +1332,7 @@ impl MonitorApp {
     fn copy_pid(&mut self, pid: u32) {
         ui::clipboard_copy(&pid.to_string());
         self.copied_pid = Some(pid);
-        self.copied_at = Some(Instant::now());
+        self.copied_at = Some(ui::time::now());
         self.selected_pid = Some(pid);
     }
 
@@ -1525,7 +1545,7 @@ impl MonitorApp {
     }
 
     fn clock() -> String {
-        let secs = SystemTime::now()
+        let secs = ui::time::wall()
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         format!(
@@ -1863,8 +1883,8 @@ impl MonitorApp {
         // 96 px pair. Both grow by exactly the labels' measured growth over
         // their 1× width, so the 1× thresholds are untouched and a 200 % bar
         // still seats `Processes` / `Resources` before it folds.
-        let (pw, _) = tr.measure_weighted("Processes", sm, None, TextWeight::Semibold);
-        let (rw, _) = tr.measure_weighted("Resources", sm, None, TextWeight::Semibold);
+        let (pw, _) = tr.measure_weighted(Tab::Processes.label(), sm, None, TextWeight::Semibold);
+        let (rw, _) = tr.measure_weighted(Tab::Resources.label(), sm, None, TextWeight::Semibold);
         let label_w = f64::from(pw.max(rw));
         let label_growth = (label_w - label_w / self.density.text_k).max(0.0);
         let want_seg_w = 124.0 + label_growth;
@@ -1880,28 +1900,9 @@ impl MonitorApp {
         let cx = (centre - pair_w / 2.0).clamp(gap_l, (gap_r - pair_w).max(gap_l));
         let proc_r = Rect::new(cx, cy, cx + seg_w, cy + seg_h);
         let res_r = Rect::new(cx + seg_w + 6.0, cy, cx + 2.0 * seg_w + 6.0, cy + seg_h);
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            proc_r,
-            Icon::Layers,
-            "Processes",
-            self.tab == Tab::Processes,
-            compact,
-        );
-        Self::draw_tab_pill_ex(
-            scene,
-            t,
-            tr,
-            theme,
-            res_r,
-            Icon::BarChart,
-            "Resources",
-            self.tab == Tab::Resources,
-            compact,
-        );
+        let mut ctx = PaintCtx::new(scene, t, tr, theme);
+        self.draw_tab_pill(&mut ctx, proc_r, Tab::Processes, compact);
+        self.draw_tab_pill(&mut ctx, res_r, Tab::Resources, compact);
         self.hit.tab_proc = proc_r;
         self.hit.tab_res = res_r;
 
@@ -2019,23 +2020,17 @@ impl MonitorApp {
         self.hit.auto_refresh = auto_refresh_r;
     }
 
-    /// Draw a tab pill. `compact` draws an icon-only pill (the label is
-    /// dropped) so the tab control still fits when the header is narrow.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "tab pills combine paint context and bounds with icon, label, active state and compact layout"
-    )]
-    fn draw_tab_pill_ex(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        r: Rect,
-        icon: Icon,
-        label: &str,
-        active: bool,
-        compact: bool,
-    ) {
+    /// Draw `tab`'s pill in `r`, filled when it is the open tab. `compact`
+    /// draws an icon-only pill (the label is dropped) so the tab control still
+    /// fits when the header is narrow.
+    fn draw_tab_pill(&self, ctx: &mut PaintCtx<'_>, r: Rect, tab: Tab, compact: bool) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let (icon, label, active) = (tab.icon(), tab.label(), self.tab == tab);
         let c = &theme.tokens.colors;
         let radius = r.height() / 2.0;
         if active {
@@ -2238,17 +2233,15 @@ impl MonitorApp {
         overall: f32,
     ) {
         RingGauge::draw_styled(
-            scene,
-            t,
-            tr,
-            center,
-            44.0 * scale,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Circle::new(center, 44.0 * scale),
             9.0 * scale,
-            overall / 100.0,
-            paint::load_color(theme, overall / 100.0),
-            theme,
-            &format!("{overall:.0}%"),
-            "CPU LOAD",
+            &GaugeReading {
+                frac: overall / 100.0,
+                color: paint::load_color(theme, overall / 100.0),
+                label: "CPU LOAD",
+                value: &format!("{overall:.0}%"),
+            },
             &GAUGE,
         );
     }
@@ -2379,15 +2372,14 @@ impl MonitorApp {
             format_bytes(m.mem_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(mi.x0, ram_y, mi.x1, ram_y + gauge_h),
-            theme,
-            m.mem_frac(),
-            paint::load_color(theme, m.mem_frac()),
-            "RAM",
-            &ram_label,
+            &GaugeReading {
+                frac: m.mem_frac(),
+                color: paint::load_color(theme, m.mem_frac()),
+                label: "RAM",
+                value: &ram_label,
+            },
             &GAUGE,
         );
         let swap_label = format!(
@@ -2396,20 +2388,19 @@ impl MonitorApp {
             format_bytes(m.swap_total)
         );
         BarGauge::draw_styled(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             Rect::new(
                 mi.x0,
                 ram_y + gauge_h + 10.0 * scale,
                 mi.x1,
                 ram_y + 2.0 * gauge_h + 10.0 * scale,
             ),
-            theme,
-            m.swap_frac(),
-            c.accent[5],
-            "Swap",
-            &swap_label,
+            &GaugeReading {
+                frac: m.swap_frac(),
+                color: c.accent[5],
+                label: "Swap",
+                value: &swap_label,
+            },
             &GAUGE,
         );
         // A memory sparkline fills the remaining height on the taller (abreast
@@ -2517,15 +2508,14 @@ impl MonitorApp {
             let x0 = ci.x0 + col as f64 * (cell_w + layout::CORE_GAP);
             let y0 = grid_top + rowi as f64 * (layout::CORE_ROW_STRIDE + self.density.core_extra);
             BarGauge::draw_styled(
-                scene,
-                t,
-                tr,
+                &mut PaintCtx::new(scene, t, tr, theme),
                 Rect::new(x0, y0, x0 + cell_w, y0 + 22.0 * scale),
-                theme,
-                usage / 100.0,
-                paint::load_color(theme, usage / 100.0),
-                &format!("C{i}"),
-                &format!("{usage:.0}%"),
+                &GaugeReading {
+                    frac: usage / 100.0,
+                    color: paint::load_color(theme, usage / 100.0),
+                    label: &format!("C{i}"),
+                    value: &format!("{usage:.0}%"),
+                },
                 &GAUGE,
             );
         }
@@ -2665,6 +2655,7 @@ impl MonitorApp {
         // Rows region (above any horizontal scrollbar).
         let view = Rect::new(ti.x0, hdr.y1, ti.x1, ti.y1 - hbar_h);
         let geom = TableGeom {
+            columns,
             ti,
             band,
             hdr,
@@ -2677,8 +2668,8 @@ impl MonitorApp {
             h_overflow,
         };
 
-        self.draw_table_header(scene, t, tr, theme, &columns, &geom);
-        let rows_len = self.draw_table_rows(scene, t, tr, theme, &columns, &geom);
+        self.draw_table_header(scene, t, tr, theme, &geom);
+        let rows_len = self.draw_table_rows(scene, t, tr, theme, &geom);
         self.draw_table_scrollbars(scene, t, theme, &geom, rows_len);
     }
 
@@ -2688,7 +2679,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) {
         let c = &theme.tokens.colors;
@@ -2705,7 +2695,7 @@ impl MonitorApp {
         self.hit.sort_headers.clear();
         let hdr_clip = Rect::new(geom.band.x0, hdr.y0, geom.band.x1, hdr.y1);
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, t, &hdr_clip);
-        for col in columns {
+        for col in &geom.columns {
             let x0 = geom.cols_left + col.x0 - geom.sx;
             let active = self.sort_key == col.key;
             let color = if active { c.text_primary } else { c.text_dim };
@@ -2766,7 +2756,6 @@ impl MonitorApp {
         t: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        columns: &[layout::Column],
         geom: &TableGeom,
     ) -> usize {
         self.rows_per_page = (geom.view.height() / self.density.row_h).floor().max(1.0) as usize;
@@ -2897,7 +2886,13 @@ impl MonitorApp {
                 geom.view.x1,
                 y0 + self.density.row_h - inset,
             );
-            self.draw_table_row(scene, t, tr, theme, columns, geom, p, row, idx % 2 == 1);
+            self.draw_table_row(
+                &mut PaintCtx::new(scene, t, tr, theme),
+                geom,
+                p,
+                row,
+                idx % 2 == 1,
+            );
         }
         scene.pop_layer();
         rows.len()
@@ -2914,22 +2909,23 @@ impl MonitorApp {
     /// Draw one process row: selection/zebra background, the NAME column's
     /// tree indent + twisty, and every other visible column's cell.
     #[allow(
-        clippy::too_many_arguments,
         clippy::many_single_char_names,
-        reason = "threads the render context (scene/transform/text/theme) plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives; t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
+        reason = "t/c/p/x/s/k are this file's established short names for transform/colors/row/coordinate/string/key"
     )]
     fn draw_table_row(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
         alt: bool,
     ) {
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
         let c = &theme.tokens.colors;
         let selected = self.selected_pid == Some(p.pid);
         if selected {
@@ -2980,7 +2976,7 @@ impl MonitorApp {
         // Look a column up by key — the set is now width-dependent (USER is
         // dropped at narrow widths), so cells are addressed by identity, not
         // a fixed index.
-        let column = |k: SortKey| columns.iter().find(|col| col.key == k);
+        let column = |k: SortKey| geom.columns.iter().find(|col| col.key == k);
         // CPU% coloured by load. A collapsed parent's summed total can exceed
         // 100% (multi-core); colour against a single core's scale but clamp
         // the hue so a hot subtree reads as fully loaded.
@@ -3019,7 +3015,7 @@ impl MonitorApp {
         }
 
         // NAME column: tree indent + twisty + name, all in the NAME band.
-        self.draw_table_row_name(scene, t, tr, theme, columns, geom, p, row, selected);
+        self.draw_table_row_name(ctx, geom, p, row);
 
         self.hit.rows.push((p.pid, row));
     }
@@ -3028,25 +3024,23 @@ impl MonitorApp {
     /// `layout::process_columns` always includes NAME; if a future layout
     /// change ever dropped it, this is a no-op rather than a panic — the
     /// row's other cells and hit rect still render regardless.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this row's geometry and data through a single draw call, mirroring charts.rs's gauge/chart primitives"
-    )]
     fn draw_table_row_name(
         &mut self,
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        columns: &[layout::Column],
+        ctx: &mut PaintCtx<'_>,
         geom: &TableGeom,
         p: &Row,
         row: Rect,
-        selected: bool,
     ) {
-        let Some(name_col) = columns.iter().find(|col| col.key == SortKey::Name) else {
+        let Some(name_col) = geom.columns.iter().find(|col| col.key == SortKey::Name) else {
             return;
         };
+        let PaintCtx {
+            scene,
+            transform: t,
+            text: tr,
+            theme,
+        } = ctx.reborrow();
+        let selected = self.selected_pid == Some(p.pid);
         let c = &theme.tokens.colors;
         let fs = ts(tr, theme.tokens.typography.scale.sm);
         let ty = Self::row_text_top(tr, row, fs);
@@ -3552,10 +3546,6 @@ impl MonitorApp {
     /// at a comfortable preferred width), so the box and the pills can never
     /// overlap however narrow the window. Returns its rect, for the count
     /// label.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_search_box(
         &mut self,
         scene: &mut Scene,
@@ -3613,10 +3603,6 @@ impl MonitorApp {
     /// Count label centred in the slack between the search box and the pill
     /// cluster — only drawn when it genuinely fits, so it never overlaps a
     /// pill (the caller only calls this on a single, unstacked row).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this toolbar row's layout state through a single draw call"
-    )]
     fn draw_toolbar_count_label(
         &self,
         scene: &mut Scene,
@@ -3862,10 +3848,6 @@ impl MonitorApp {
     /// whatever vertical slack remains above the stat grid so a tall pane
     /// fills top-to-bottom cleanly instead of leaving gaps. Returns the y
     /// position for the stat grid.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "process sparklines combine paint context, content bounds and vertical position with the selected process sample"
-    )]
     fn draw_detail_sparkline(
         &self,
         scene: &mut Scene,
@@ -3941,10 +3923,6 @@ impl MonitorApp {
     #[allow(
         clippy::many_single_char_names,
         reason = "t/y/c/p/v are the standard graphics convention: transform, position, colour tokens, and this row's process/value"
-    )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the stat grid combines paint context and content rect with the process, its origin and the measured row height"
     )]
     fn draw_detail_stat_grid(
         scene: &mut Scene,
@@ -4265,39 +4243,24 @@ impl MonitorApp {
 
     /// One rolling chart on a raised card: a semibold title, and a faint grid
     /// that stays inside the card instead of competing with its edge.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a chart card combines paint context and bounds with title, series, numeric ceiling and formatted axis labels"
-    )]
     fn area_chart(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
+        ctx: &mut PaintCtx<'_>,
         rect: Rect,
-        theme: &Theme,
-        title: &str,
         series: &[Series],
         max: f32,
-        axis_hi: &str,
-        axis_lo: &str,
+        labels: ChartLabels<'_>,
     ) {
-        let inner = paint::panel(scene, t, rect, theme, 12.0);
+        let theme = ctx.theme;
+        let inner = paint::panel(ctx.scene, ctx.transform, rect, theme, 12.0);
         let style = ChartStyle::default()
             .with_grid(4, Some(paint::inner_rule(theme, 26)))
             .with_title_weight(TextWeight::Semibold);
         Chart::draw_styled(
-            scene,
-            t,
-            tr,
+            ctx,
             inner,
-            theme,
             series,
             TrendRange::up_to(f64::from(max)),
-            ChartLabels {
-                title,
-                axis_hi,
-                axis_lo,
-            },
+            labels,
             &style,
         );
     }
@@ -4332,35 +4295,33 @@ impl MonitorApp {
         let metrics = &self.model.metrics;
         // CPU%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(0),
-            theme,
-            "CPU",
             &[
                 Series::new(metrics.cpu_hist.as_slice().to_vec(), c.accent[5])
                     .with_legend(format!("{:.0}%", metrics.cpu_overall())),
             ],
             100.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "CPU",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         // Memory%.
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             cell(1),
-            theme,
-            "Memory",
             &[
                 Series::new(metrics.mem_hist.as_slice().to_vec(), c.semantic.success)
                     .with_legend(format_bytes(metrics.mem_used)),
             ],
             1.0,
-            "100%",
-            "0%",
+            ChartLabels {
+                title: "Memory",
+                axis_hi: "100%",
+                axis_lo: "0%",
+            },
         );
         self.draw_resources_net_disk_charts(scene, t, tr, theme, cell(2), cell(3));
     }
@@ -4384,12 +4345,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             net_cell,
-            theme,
-            "Network",
             &[
                 Series::new(metrics.net_rx_hist.as_slice().to_vec(), c.semantic.info)
                     .with_legend(format!("↓ {}", fmt_rate(metrics.net_rx))),
@@ -4397,8 +4354,11 @@ impl MonitorApp {
                     .with_legend(format!("↑ {}", fmt_rate(metrics.net_tx))),
             ],
             net_max,
-            &fmt_rate(net_max),
-            "0",
+            ChartLabels {
+                title: "Network",
+                axis_hi: &fmt_rate(net_max),
+                axis_lo: "0",
+            },
         );
         let disk_max = metrics
             .disk_read_hist
@@ -4407,12 +4367,8 @@ impl MonitorApp {
             .max(1.0)
             * 1.2;
         Self::area_chart(
-            scene,
-            t,
-            tr,
+            &mut PaintCtx::new(scene, t, tr, theme),
             disk_cell,
-            theme,
-            "Disk I/O",
             &[
                 Series::new(
                     metrics.disk_read_hist.as_slice().to_vec(),
@@ -4426,8 +4382,11 @@ impl MonitorApp {
                 .with_legend(format!("W {}", fmt_rate(metrics.disk_write))),
             ],
             disk_max,
-            &fmt_rate(disk_max),
-            "0",
+            ChartLabels {
+                title: "Disk I/O",
+                axis_hi: &fmt_rate(disk_max),
+                axis_lo: "0",
+            },
         );
     }
 
@@ -4804,7 +4763,7 @@ impl MonitorApp {
             // Resuming starts a fresh cadence window. That avoids an immediate
             // surprise sample after the user intentionally paused inspection.
             if self.prefs.auto_refresh {
-                self.last_refresh = Instant::now();
+                self.last_refresh = ui::time::now();
             }
             return true;
         }
@@ -4813,7 +4772,7 @@ impl MonitorApp {
             // press-and-hold (open the option popover). Start the hold timer on
             // press; `draw` opens the popover once it crosses the threshold, and
             // `release_interval_press` cycles on an early release.
-            self.interval_press = Some(Instant::now());
+            self.interval_press = Some(ui::time::now());
             self.interval_hold_opened = false;
             return true;
         }
@@ -5100,7 +5059,7 @@ impl MonitorApp {
             "a" | "A" => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             // "s" sends SIGTERM (Stop) to the selection; "g" toggles the
@@ -5431,61 +5390,8 @@ impl MonitorApp {
     }
 }
 
-impl Widget for MonitorApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[MONITOR_OPERATION_TYPE]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = monitor_process_root_resource();
-        root.children.extend(
-            self.model
-                .processes
-                .iter()
-                .take(MAX_CONTEXT_PROCESS_RESOURCES)
-                .map(monitor_process_resource),
-        );
-        vec![root]
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        // One compact root exposes the safe contextual sample. Individual
-        // process ids are resolved lazily below, avoiding an all-process
-        // materialization in the broker's cursor-based directory.
-        let resources = if cursor.is_empty() && max_results > 0 {
-            self.resources(doc)
-        } else {
-            Vec::new()
-        };
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources,
-            next_cursor: Vec::new(),
-            exhausted: true,
-        })
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if id == "processes" {
-            return Some(monitor_process_root_resource());
-        }
-        let (pid, started_at) = parse_process_resource_id(id)?;
-        self.model
-            .processes
-            .iter()
-            .find(|process| process.pid == pid && process.started_at == started_at)
-            .map(monitor_process_resource)
-    }
-
-    fn invoke_resource_operation(
+impl MonitorApp {
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
@@ -5510,16 +5416,43 @@ impl Widget for MonitorApp {
         self.perform_operation(&operation, SignalConfirmation::ActionContract)?;
         Ok(true)
     }
+}
 
-    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
-        vec![Box::new(self.process_search.clone())]
+impl Widget for MonitorApp {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource,
+        dyn ui::undo::UndoPoints
+    );
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[MONITOR_OPERATION_TYPE]
     }
 
-    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
-        self.pending_control_invocation.take()
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _state: &mut AppModel, _path: &ModelPath) {
         // Monitor's observation and safety preferences are device-local, so a
         // shared document sync must never overwrite this window's state.
         self.clear_selection_if_filtered_out();
@@ -5620,39 +5553,32 @@ impl Widget for MonitorApp {
         self.draw_overlays(scene, t, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // A pending stop confirmation is modal: while it's up the shared
         // dialog captures every event (typing, clicks, Esc) and nothing leaks
         // to the process table behind the scrim.
         if self.confirm_stop.is_some() {
-            self.route_confirm_event(event, scale_factor, *modifiers, doc, path, handled);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
+                ctx.handled,
+            );
             return;
         }
-        if self.route_search(
+        if self.route_search(event, ctx) {
+            return;
+        }
+        self.dispatch_event(
             event,
-            scale_factor,
-            *modifiers,
-            doc,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        ) {
-            return;
-        }
-        self.dispatch_event(event, scale_factor, *modifiers, doc, path, handled);
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+            ctx.handled,
+        );
     }
 
     fn name(&self) -> &'static str {
@@ -5712,10 +5638,11 @@ impl Widget for MonitorApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action;
+        let (state, path) = ui::doc::document(state, path);
 
         let activated = matches!(action, Action::Activate | Action::ToggleCheck);
         match target {
@@ -5733,7 +5660,7 @@ impl Widget for MonitorApp {
             "monitor.auto-refresh" if activated => {
                 self.prefs.auto_refresh = !self.prefs.auto_refresh;
                 if self.prefs.auto_refresh {
-                    self.last_refresh = Instant::now();
+                    self.last_refresh = ui::time::now();
                 }
             }
             "monitor.kernel-threads" if activated => {
@@ -5888,14 +5815,6 @@ impl Widget for MonitorApp {
         true
     }
 
-    fn needs_commit(&self) -> bool {
-        self.search_input.needs_commit()
-    }
-
-    fn on_commit(&mut self) {
-        self.search_input.on_commit();
-    }
-
     /// Ask for a 60 Hz frame only for a short-lived visual need. Periodic
     /// sampling uses [`Self::next_wake_deadline`] instead, so an idle Monitor
     /// sleeps between its selected sampling intervals rather than repainting
@@ -5943,6 +5862,78 @@ impl Widget for MonitorApp {
         if reduced {
             self.proc_push.snap(self.proc_push.pane());
         }
+    }
+}
+
+impl ui::undo::UndoPoints for MonitorApp {
+    fn needs_commit(&self) -> bool {
+        self.search_input.needs_commit()
+    }
+    fn on_commit(&mut self) {
+        self.search_input.on_commit();
+    }
+}
+
+impl ui::search::capability::SearchSource for MonitorApp {
+    fn search_providers(&self) -> Vec<Box<dyn SearchProvider>> {
+        vec![Box::new(self.process_search.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for MonitorApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = monitor_process_root_resource();
+        root.children.extend(
+            self.model
+                .processes
+                .iter()
+                .take(MAX_CONTEXT_PROCESS_RESOURCES)
+                .map(monitor_process_resource),
+        );
+        vec![root]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        // One compact root exposes the safe contextual sample. Individual
+        // process ids are resolved lazily below, avoiding an all-process
+        // materialization in the broker's cursor-based directory.
+        let resources = if cursor.is_empty() && max_results > 0 {
+            self.resources(doc)
+        } else {
+            Vec::new()
+        };
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources,
+            next_cursor: Vec::new(),
+            exhausted: true,
+        })
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if id == "processes" {
+            return Some(monitor_process_root_resource());
+        }
+        let (pid, started_at) = parse_process_resource_id(id)?;
+        self.model
+            .processes
+            .iter()
+            .find(|process| process.pid == pid && process.started_at == started_at)
+            .map(monitor_process_resource)
+    }
+}
+
+impl ui::widget::controls::ActionControls for MonitorApp {
+    fn take_control_invocation(&mut self) -> Option<ControlInvocation> {
+        self.pending_control_invocation.take()
+    }
+}
+
+impl ui::history_mode::capability::DocumentHistory for MonitorApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -6019,10 +6010,6 @@ impl MonitorApp {
 
     /// Page scrollbar down the right edge of the body viewport — a
     /// draggable thumb over a page-able track.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the render context plus this frame's scroll geometry through a single draw call"
-    )]
     fn draw_page_scrollbar(
         &mut self,
         scene: &mut Scene,
@@ -6079,7 +6066,7 @@ impl MonitorApp {
 
         // `needs_animation_frame` holds the host long enough to reach the
         // dwell deadline; this tick makes the tooltip visible when due.
-        let _ = self.tooltips.tick(Instant::now());
+        let _ = self.tooltips.tick(ui::time::now());
         if let Some((label, anchor)) = self.tooltips.visible() {
             draw_hover_tooltip(scene, t, text_renderer, theme, anchor, label, self.rect);
         }
@@ -6158,22 +6145,7 @@ impl MonitorApp {
     /// should return immediately — either because the search box consumed
     /// the event, or because a reserved global chord is deliberately left
     /// unhandled so it bubbles to the host.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "threads the full event-dispatch context (event, modifiers, doc, focus, taffy) through one call, mirroring the Widget::handle_event signature it routes"
-    )]
-    fn route_search(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn route_search(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let search_rect = self.hit.search;
         self.search_input.apply_layout_external(Rect::new(
             search_rect.x0 + 34.0,
@@ -6197,7 +6169,7 @@ impl MonitorApp {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
         {
-            let ctrl = modifiers.state().control_key();
+            let ctrl = ctx.modifiers.state().control_key();
             if ctrl
                 && matches!(&key.logical_key, Key::Character(s) if matches!(s.as_str(), "k" | "K" | "/"))
             {
@@ -6213,7 +6185,7 @@ impl MonitorApp {
                 )
             {
                 self.search_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 return true;
             }
         }
@@ -6227,14 +6199,10 @@ impl MonitorApp {
         let mut input_handled = false;
         self.search_input.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut input_handled,
-            focus_target,
-            node_id,
-            taffy,
+            &mut ui::widget::EventCtx {
+                handled: &mut input_handled,
+                ..ctx.reborrow(ctx.path, ctx.node_id)
+            },
         );
         if self.search_input.take_dirty().is_some() {
             self.scroll_off = 0.0;
@@ -6242,7 +6210,7 @@ impl MonitorApp {
             input_handled = true;
         }
         if input_handled && !matches!(event, WindowEvent::CursorMoved { .. }) {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -6279,7 +6247,7 @@ impl MonitorApp {
                 .into_iter()
                 .find(|(rect, _)| rect.contains(self.last_cursor))
                 .map(|(rect, label)| (rect, label.to_string()));
-                let _ = self.tooltips.on_pointer(tooltip, Instant::now());
+                let _ = self.tooltips.on_pointer(tooltip, ui::time::now());
                 // A live scrollbar thumb drag follows the cursor.
                 if self.scroll_drag.is_some() {
                     self.apply_scroll_drag(self.last_cursor);
@@ -6812,13 +6780,13 @@ mod tests {
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, "stop");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
             );
             a.request_process_control(pid, "kill");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -6830,7 +6798,7 @@ mod tests {
             let pid = a.selected_pid.unwrap();
             a.prefs.confirm_kill = true;
             a.prefs.confirm_kill = false;
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process = resources[0]
                 .children
                 .iter()
@@ -6902,7 +6870,7 @@ mod tests {
             a.on_click(Point::new(10.0, 10.0), &mut doc, &root, &mut h);
             assert!(h);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -7661,7 +7629,7 @@ mod tests {
             assert!(h2, "menu item click consumed");
             assert!(!a.context.is_open(), "menu closed after action");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "stop"))
             );
@@ -7695,7 +7663,7 @@ mod tests {
             let mut h2 = false;
             a.on_click(rect.center(), &mut doc, &root, &mut h2);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -7728,7 +7696,7 @@ mod tests {
             let mut h2 = false;
             a.on_click(rect.center(), &mut doc, &root, &mut h2);
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
             );
@@ -7859,14 +7827,16 @@ mod tests {
         let mut focus = None;
         a.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -7988,7 +7958,7 @@ mod tests {
             let before = a.prefs.interval_ms;
             // Simulate a press that started well past the long-press threshold.
             a.interval_press = Some(
-                Instant::now()
+                ui::time::now()
                     .checked_sub(Duration::from_millis(LONG_PRESS_MS as u64 + 200))
                     .unwrap(),
             );
@@ -8261,7 +8231,7 @@ mod tests {
             let pid = a.visible_rows()[0].pid;
             a.request_process_control(pid, "kill");
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -8501,7 +8471,7 @@ mod tests {
             let mut a = app();
             draw_at(&mut a, 1_280.0, 720.0);
             let pid = a.selected_pid.expect("sample selects a process");
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process = resources[0]
                 .children
                 .iter()
@@ -8539,16 +8509,20 @@ mod tests {
                 signal: MonitorSignal::Kill,
             })
             .expect("typed monitor operation serializes");
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &payload,
-                    &doc,
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &payload
+                    ),
+                    &mut doc,
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("the action-contract-confirmed signal executes")
             );
             assert!(
@@ -8570,7 +8544,7 @@ mod tests {
                 a.model.processes.push(process);
             }
             let target = a.model.processes.last().expect("added process").clone();
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let root = resources.first().expect("process root");
             assert_eq!(
                 root.children.len(),
@@ -8585,18 +8559,20 @@ mod tests {
                     .any(|resource| resource.id.0 == target_id),
                 "a tail process is intentionally omitted from the eager page"
             );
-            let resolved = Widget::resource(&a, &AutoCommit::new(), &target_id)
+            let resolved = ui::resources::resource(&a, &AutoCommit::new(), &target_id)
                 .expect("an omitted exact PID generation stays agent-resolvable");
             assert_eq!(resolved.id.0, target_id);
             assert!(resolved.actions.iter().any(|action| action.id == "kill"));
 
-            let page = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
-                .expect("Monitor publishes a bounded directory page");
+            let page =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 1)
+                    .expect("Monitor publishes a bounded directory page");
             assert_eq!(page.resources.len(), 1, "one root obeys max_results=1");
             assert!(page.exhausted);
             assert!(page.next_cursor.is_empty());
-            let empty = Widget::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
-                .expect("zero-size page is still a valid response");
+            let empty =
+                ui::resources::action_directory_resource_page(&a, &AutoCommit::new(), b"", 0)
+                    .expect("zero-size page is still a valid response");
             assert!(empty.resources.is_empty(), "max_results is a hard ceiling");
         }
 
@@ -8610,7 +8586,9 @@ mod tests {
             a.model.processes.push(tail.clone());
             a.process_search.refresh(&a.model.processes);
 
-            let provider = a.search_providers().pop().expect("process provider");
+            let provider = ui::search::capability::search_providers(&a)
+                .pop()
+                .expect("process provider");
             let hit = provider
                 .search_limited("tail-worker", 1)
                 .pop()
@@ -8683,7 +8661,7 @@ mod tests {
                 &mut doc,
                 &automerge::ROOT,
             ));
-            assert!(a.take_control_invocation().is_none());
+            assert!(ui::widget::controls::take_control_invocation(&mut a).is_none());
         }
 
         // Phase `copy_pid_resource_operation_is_safe_and_shows_expiring_toast`.
@@ -8694,7 +8672,7 @@ mod tests {
             a.rect = Rect::new(0.0, 0.0, 1280.0, 800.0);
             let process = a.model.processes[3].clone();
             let pid = process.pid;
-            let resources = Widget::resources(&a, &AutoCommit::new());
+            let resources = ui::resources::resources(&a, &AutoCommit::new());
             let process_resource = resources[0]
                 .children
                 .iter()
@@ -8713,14 +8691,18 @@ mod tests {
                 started_at: process.started_at,
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&operation).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&operation).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("copy invocation accepted")
             );
             assert_eq!(a.copied_pid, Some(pid), "copy recorded");
@@ -8730,14 +8712,18 @@ mod tests {
                 started_at: process.started_at.saturating_add(1),
             };
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut a,
-                    OperationKind::Effect,
-                    MONITOR_OPERATION_TYPE,
-                    &serde_json::to_vec(&stale).unwrap(),
-                    &AutoCommit::new(),
-                    &automerge::ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        OperationKind::Effect,
+                        MONITOR_OPERATION_TYPE,
+                        &serde_json::to_vec(&stale).unwrap()
+                    ),
+                    &mut AutoCommit::new(),
+                    &automerge::ROOT
                 )
+                .map(|started| started.is_some())
                 .is_err(),
                 "a recycled PID cannot receive a stale copy action"
             );
@@ -8746,7 +8732,7 @@ mod tests {
                 "toast active immediately after copying"
             );
             // The toast is time-limited: an old timestamp is no longer active.
-            a.copied_at = Instant::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
+            a.copied_at = ui::time::now().checked_sub(Duration::from_millis(TOAST_MS + 100));
             assert!(
                 !a.copy_toast_active(),
                 "toast expires after its window (not a permanent caption)"
@@ -8891,7 +8877,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "copy-pid"))
             );
@@ -8913,7 +8899,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new(resource_id_for(&a, pid), "kill"))
             );
@@ -8950,7 +8936,7 @@ mod tests {
                 &automerge::ROOT,
             ));
             assert_eq!(
-                a.take_control_invocation()
+                ui::widget::controls::take_control_invocation(&mut a)
                     .map(|invocation| invocation.address),
                 Some(ActionAddress::new("processes", "refresh")),
                 "recovery uses the root resource action, not a direct sampler call"
@@ -8963,7 +8949,7 @@ mod tests {
     ui::action_contract_tests! {
         seed: AutoCommit::new(),
         registry: ui::tilo_actions::ActionRegistry::new(),
-        resources: |doc| Widget::resources(&app(), doc),
+        resources: |doc| ui::resources::resources(&app(), doc),
         palette: ["Refresh processes", "Show process details", "Copy PID", "Stop process"],
     }
 }

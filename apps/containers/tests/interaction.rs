@@ -19,7 +19,6 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::collections::HashMap;
 use tilo_automerge::ApplyIncoming;
 
 use automerge::AutoCommit;
@@ -29,108 +28,73 @@ use containers::doc::{CreateField, DetailTab, Section, ViewDoc};
 use containers::model::sample_engine;
 use containers::terminal;
 use taffy::prelude::*;
+use ui::headless::Framed;
 use ui::offscreen::OffscreenRenderer;
-use ui::presence::PresenceCtx;
-use ui::text_render::TextRenderer;
 use ui::theme::Theme;
 use ui::widget::Widget;
-use vello::Scene;
-use vello::kurbo::{Affine, Point};
+use vello::kurbo::Point;
 
 const VW: u32 = 1280;
 const VH: u32 = 800;
 
-/// A tiny driver that runs the widget through one full layout+draw cycle and
+/// A tiny driver that runs the widget through the production frame host and
 /// can dispatch synthesized events, mirroring `ui::App` / the `--shots` path.
+/// The app is mounted on its first frame; until then it and its document are
+/// driven directly, exactly as before any frame ran.
 struct Driver {
-    app: ContainersApp,
-    doc: AutoCommit,
+    unmounted: Option<(ContainersApp, ui::State)>,
+    mounted: Option<Framed<ContainersApp>>,
     root: automerge::ObjId,
     theme: Theme,
-    last_scene: Scene,
 }
 
 impl Driver {
     fn offline() -> Self {
         let state = ui::State::new();
+        let root = state.root.clone();
         Driver {
-            app: ContainersApp::new(false),
-            doc: state.doc,
-            root: state.root,
+            unmounted: Some((ContainersApp::new(false), state)),
+            mounted: None,
+            root,
             theme: Theme::dark(),
-            last_scene: Scene::new(),
         }
     }
 
-    /// Run sync → `build_layout` → `compute_layout` → `apply_layout` → draw, caching
-    /// the produced scene for inspection.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "VW/VH are fixed viewport constants (1280/800), both exactly \
-                  representable in f32 (well under its 2^24 exact-integer range)"
-    )]
+    fn parts(&mut self) -> (&mut ContainersApp, &mut AutoCommit) {
+        if let Some(framed) = self.mounted.as_mut() {
+            let (app, state) = Framed::split(framed);
+            (app, &mut state.doc)
+        } else {
+            let (app, state) = self.unmounted.as_mut().expect("driver owns its app");
+            (app, &mut state.doc)
+        }
+    }
+
+    fn app(&mut self) -> &mut ContainersApp {
+        self.parts().0
+    }
+
+    fn doc(&mut self) -> &mut AutoCommit {
+        self.parts().1
+    }
+
+    /// Run one full frame (sync → layout → draw) at the default viewport.
     fn frame(&mut self) {
         self.frame_sized(VW, VH);
     }
 
-    /// Same production widget cycle at an explicit viewport. Responsive tests
-    /// use this instead of a mock geometry so the renderer, hit testing, and
-    /// Taffy layout all see the phone/tablet dimensions.
-    #[allow(
-        clippy::cast_precision_loss,
-        reason = "test viewports are small exact integers"
-    )]
+    /// Same production frame at an explicit viewport, rebuilt from scratch.
+    /// Responsive tests use this instead of a mock geometry so the renderer,
+    /// hit testing, and Taffy layout all see the phone/tablet dimensions.
     fn frame_sized(&mut self, width: u32, height: u32) {
-        self.app.sync(&mut self.doc, &self.root);
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let child = self
-            .app
-            .build_layout(&mut taffy, &self.theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                Style {
-                    size: Size {
-                        width: Dimension::length(width as f32),
-                        height: Dimension::length(height as f32),
-                    },
-                    ..Default::default()
-                },
-                &[child],
-            )
-            .unwrap();
-        let mut tr = TextRenderer::new();
-        {
-            let measure_map = node_map.clone();
-            let trr = &mut tr;
-            taffy
-                .compute_layout_with_measure(
-                    root,
-                    taffy::Size {
-                        width: AvailableSpace::Definite(width as f32),
-                        height: AvailableSpace::Definite(height as f32),
-                    },
-                    |known, available, node_id, _, _| {
-                        if let Some(&ptr) = measure_map.get(&node_id) {
-                            unsafe { (*ptr).measure(known, available, trr) }
-                        } else {
-                            taffy::Size::ZERO
-                        }
-                    },
-                )
-                .unwrap();
+        if let Some(framed) = self.mounted.as_mut() {
+            Framed::harness_mut(framed)
+                .relayout_themed((width, height), self.theme.clone())
+                .expect("containers frame lays out");
+        } else {
+            let (app, state) = self.unmounted.take().expect("driver owns its app");
+            self.mounted = Some(Framed::new(state, app, (width, height), self.theme.clone()));
         }
-        self.app.apply_layout(&taffy, child, Point::ORIGIN);
-        let mut scene = Scene::new();
-        let presence = PresenceCtx::empty();
-        self.app.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &self.theme,
-            &presence,
-        );
-        self.last_scene = scene;
     }
 
     /// Move the cursor and left-click, routing through `handle_event`.
@@ -161,16 +125,20 @@ impl Driver {
         let node = taffy.new_leaf(Style::default()).unwrap();
         let mut handled = false;
         let mut focus = None;
-        self.app.handle_event(
+        let root = self.root.clone();
+        let (app, doc) = self.parts();
+        app.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &self.root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -180,8 +148,9 @@ impl Driver {
     }
 
     fn rgba_sized(&self, width: u32, height: u32) -> Vec<u8> {
+        let framed = self.mounted.as_ref().expect("a frame has rendered");
         let mut r = OffscreenRenderer::new(width, height);
-        r.render_rgba(&self.last_scene)
+        r.render_rgba(Framed::harness(framed).scene())
     }
 }
 
@@ -272,7 +241,7 @@ fn sections_and_modals_render_non_blank() {
         d.theme = Theme::dark().with_text_scale(2.0);
         d.frame_sized(PHONE_W, PHONE_H);
 
-        let selected = ViewDoc::selected(&d.doc);
+        let selected = ViewDoc::selected(d.doc());
         assert!(selected.is_some(), "the demo opens a representative detail");
         // This pixel assertion exercises the full production draw path at the
         // formerly broken phone + 200%-text combination. The compact rail and
@@ -287,7 +256,7 @@ fn sections_and_modals_render_non_blank() {
         // return to the full-width list rather than leave focus in a hidden pane.
         d.key(winit::keyboard::NamedKey::Escape);
         assert!(
-            ViewDoc::selected(&d.doc).is_none(),
+            ViewDoc::selected(d.doc()).is_none(),
             "Escape returns from compact detail to the container list"
         );
         d.frame_sized(PHONE_W, PHONE_H);
@@ -301,9 +270,9 @@ fn sections_and_modals_render_non_blank() {
     {
         let mut d = Driver::offline();
         d.frame(); // initial
-        ViewDoc::set_section(&mut d.doc, Section::Images);
+        ViewDoc::set_section(d.doc(), Section::Images);
         d.frame();
-        assert_eq!(ViewDoc::section(&d.doc), Section::Images);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Images);
         let rgba = d.rgba();
         assert!(
             painted_pixels(&rgba) > (VW * VH / 12) as usize,
@@ -315,7 +284,7 @@ fn sections_and_modals_render_non_blank() {
     {
         let mut d = Driver::offline();
         d.frame();
-        ViewDoc::set_section(&mut d.doc, Section::Volumes);
+        ViewDoc::set_section(d.doc(), Section::Volumes);
         d.frame();
         let rgba = d.rgba();
         assert!(
@@ -329,8 +298,8 @@ fn sections_and_modals_render_non_blank() {
         let mut d = Driver::offline();
         d.frame();
         // Open create, focus image, type "n", open the dropdown.
-        d.app.open_create_with_combo();
-        ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "n");
+        d.app().open_create_with_combo();
+        ViewDoc::set_create_field(d.doc(), CreateField::Image, "n");
         d.frame();
         let rgba = d.rgba();
         // The scrim + modal + dropdown must paint over the base — expect a lot of
@@ -356,7 +325,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         let mut d = Driver::offline();
         d.frame();
         // Open the create modal and focus the image combobox.
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
 
         // Baseline: empty filter shows every local image.
         let all = sample_engine().image_references();
@@ -369,7 +338,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         d.type_char("n");
         d.type_char("g");
         d.type_char("i");
-        let typed = ViewDoc::create_field(&d.doc, CreateField::Image);
+        let typed = ViewDoc::create_field(d.doc(), CreateField::Image);
         assert_eq!(
             typed, "ngi",
             "typed chars spliced into the CRDT image field"
@@ -383,7 +352,7 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         );
         // Typing keeps the dropdown open.
         assert!(
-            d.app.is_combo_open(),
+            d.app().is_combo_open(),
             "typing keeps the suggestion dropdown open"
         );
     }
@@ -392,19 +361,19 @@ fn image_combobox_filters_picks_and_keeps_custom() {
     {
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         // Filter to the postgres/redis/etc set with an empty query, move down once,
         // and Enter to commit the highlighted suggestion into the field.
         d.key(winit::keyboard::NamedKey::ArrowDown);
         let all = sample_engine().image_references();
         let expected = all[1].clone(); // highlight moved to index 1
         d.key(winit::keyboard::NamedKey::Enter);
-        let committed = ViewDoc::create_field(&d.doc, CreateField::Image);
+        let committed = ViewDoc::create_field(d.doc(), CreateField::Image);
         assert_eq!(
             committed, expected,
             "Enter commits the highlighted suggestion"
         );
-        assert!(!d.app.is_combo_open(), "picking closes the dropdown");
+        assert!(!d.app().is_combo_open(), "picking closes the dropdown");
     }
 
     // --- phase: typing_custom_image_keeps_value_not_in_list ---
@@ -413,11 +382,11 @@ fn image_combobox_filters_picks_and_keeps_custom() {
         // a local image stays as the field value.
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         for ch in ["g", "h", "c", "r"] {
             d.type_char(ch);
         }
-        let typed = ViewDoc::create_field(&d.doc, CreateField::Image);
+        let typed = ViewDoc::create_field(d.doc(), CreateField::Image);
         assert_eq!(typed, "ghcr", "custom typed value is preserved verbatim");
         let all = sample_engine().image_references();
         assert!(
@@ -438,8 +407,8 @@ fn create_form_input_order_validation_and_command() {
     {
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
-        ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "nginx:latest");
+        d.app().open_create_with_combo();
+        ViewDoc::set_create_field(d.doc(), CreateField::Image, "nginx:latest");
         d.frame();
 
         d.dispatch_modifiers(
@@ -448,7 +417,7 @@ fn create_form_input_order_validation_and_command() {
         );
         d.type_char("p");
         assert_eq!(
-            ViewDoc::create_field(&d.doc, CreateField::Image),
+            ViewDoc::create_field(d.doc(), CreateField::Image),
             "p",
             "Ctrl+A then typing replaces the selection instead of appending"
         );
@@ -458,14 +427,14 @@ fn create_form_input_order_validation_and_command() {
     {
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
-        let mut peer = d.doc.fork();
+        d.app().open_create_with_combo();
+        let mut peer = d.doc().fork();
 
         d.dispatch(&winit::event::WindowEvent::Ime(winit::event::Ime::Commit(
             "接続".into(),
         )));
-        assert_eq!(ViewDoc::create_field(&d.doc, CreateField::Image), "接続");
-        peer.merge_incoming(&mut d.doc).expect("peer merge");
+        assert_eq!(ViewDoc::create_field(d.doc(), CreateField::Image), "接続");
+        peer.merge_incoming(d.doc()).expect("peer merge");
         assert_eq!(
             ViewDoc::create_field(&peer, CreateField::Image),
             "接続",
@@ -477,17 +446,17 @@ fn create_form_input_order_validation_and_command() {
     {
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
-        assert!(d.app.is_combo_open());
+        d.app().open_create_with_combo();
+        assert!(d.app().is_combo_open());
 
         d.key(winit::keyboard::NamedKey::Tab);
         assert!(
-            !d.app.is_combo_open(),
+            !d.app().is_combo_open(),
             "leaving Image closes its suggestions"
         );
         d.type_char("8");
         assert_eq!(
-            ViewDoc::create_field(&d.doc, CreateField::Ports),
+            ViewDoc::create_field(d.doc(), CreateField::Ports),
             "8",
             "Tab advances from Image to Ports in the existing six-field order"
         );
@@ -498,28 +467,28 @@ fn create_form_input_order_validation_and_command() {
         // Exercise Containers' existing hit/action policy; only paint is shared.
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         d.frame();
 
         // Button centres for the 520×540 modal in this 1280×800 driver.
         d.click(828.0, 636.0);
-        assert!(d.app.is_create_open());
+        assert!(d.app().is_create_open());
 
-        ViewDoc::set_create_field(&mut d.doc, CreateField::Image, "nginx:latest");
+        ViewDoc::set_create_field(d.doc(), CreateField::Image, "nginx:latest");
         d.frame();
         d.key(winit::keyboard::NamedKey::Enter);
-        assert!(!d.app.is_create_open());
+        assert!(!d.app().is_create_open());
 
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         d.frame();
         d.click(722.0, 636.0);
-        assert!(!d.app.is_create_open());
+        assert!(!d.app().is_create_open());
 
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         d.key(winit::keyboard::NamedKey::Escape);
-        assert!(d.app.is_create_open() && !d.app.is_combo_open());
+        assert!(d.app().is_create_open() && !d.app().is_combo_open());
         d.key(winit::keyboard::NamedKey::Escape);
-        assert!(!d.app.is_create_open());
+        assert!(!d.app().is_create_open());
     }
 
     // --- phase: create_form_assembles_full_podman_run ---
@@ -553,9 +522,9 @@ fn create_form_input_order_validation_and_command() {
     {
         let mut d = Driver::offline();
         d.frame();
-        d.app.open_create_with_combo();
+        d.app().open_create_with_combo();
         d.frame();
-        let tree = d.app.accessibility().expect("create dialog is semantic");
+        let tree = d.app().accessibility().expect("create dialog is semantic");
         let nodes = semantic_nodes(&tree);
         assert!(nodes.iter().any(|node| {
             node.role == ui::a11y::Role::Dialog && node.name.as_deref() == Some("Create container")
@@ -573,14 +542,15 @@ fn create_form_input_order_validation_and_command() {
             "modal semantics do not leak the background navigation"
         );
 
-        assert!(d.app.perform_semantic_action(
+        let (app, doc) = d.parts();
+        assert!(app.perform_semantic_action(
             "containers.create.field:image",
             &ui::a11y::Action::SetValue("alpine:3.20".into()),
-            &mut d.doc,
-            &d.root,
+            doc,
+            &automerge::ROOT,
         ));
         assert_eq!(
-            ViewDoc::create_field(&d.doc, CreateField::Image),
+            ViewDoc::create_field(d.doc(), CreateField::Image),
             "alpine:3.20"
         );
     }
@@ -627,21 +597,26 @@ fn container_resources_open_terminal_and_log_detail() {
         let mut d = Driver::offline();
         let id = sample_engine().containers[1].id.clone();
         let payload = serde_json::to_vec(&vec!["logs", id.as_str()]).unwrap();
+        let (app, doc) = d.parts();
         assert!(
-            d.app
-                .invoke_resource_operation(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
                     ui::tilo_actions::OperationKind::View,
                     "containers.logs",
                     &payload,
-                    &d.doc,
-                    &d.root,
-                )
-                .unwrap()
+                ),
+                doc,
+                &automerge::ROOT,
+            )
+            .map(|started| started.is_some())
+            .unwrap()
         );
-        d.app.sync(&mut d.doc, &d.root);
-        assert_eq!(ViewDoc::section(&d.doc), Section::Containers);
-        assert_eq!(ViewDoc::selected(&d.doc).as_deref(), Some(id.as_str()));
-        assert_eq!(ViewDoc::tab(&d.doc), DetailTab::Logs);
+        let (app, doc) = d.parts();
+        app.sync(doc, &automerge::ROOT);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Containers);
+        assert_eq!(ViewDoc::selected(d.doc()).as_deref(), Some(id.as_str()));
+        assert_eq!(ViewDoc::tab(d.doc()), DetailTab::Logs);
     }
 }
 
@@ -657,45 +632,48 @@ fn keyboard_pointer_and_semantic_navigation() {
         let mut d = Driver::offline();
         d.frame();
         d.type_char("3"); // volumes
-        assert_eq!(ViewDoc::section(&d.doc), Section::Volumes);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Volumes);
         d.type_char("4"); // distrobox
-        assert_eq!(ViewDoc::section(&d.doc), Section::Distrobox);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Distrobox);
         d.type_char("2"); // images
-        assert_eq!(ViewDoc::section(&d.doc), Section::Images);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Images);
         d.type_char("1"); // containers
-        assert_eq!(ViewDoc::section(&d.doc), Section::Containers);
+        assert_eq!(ViewDoc::section(d.doc()), Section::Containers);
     }
 
     // --- phase: sidebar_collapses_and_expands_via_shortcut ---
     {
         let mut d = Driver::offline();
         d.frame();
-        let wide = d.app.rail_width();
-        assert!(d.app.rail_expanded(), "sidebar starts expanded");
+        let wide = d.app().rail_width();
+        assert!(d.app().rail_expanded(), "sidebar starts expanded");
         // 'b' toggles the collapse.
         d.type_char("b");
         // Pump frames so the eased slide settles toward collapsed.
         for _ in 0..400 {
             d.frame();
-            if !d.app.rail_expanded() {
+            if !d.app().rail_expanded() {
                 break;
             }
         }
-        let narrow = d.app.rail_width();
+        let narrow = d.app().rail_width();
         assert!(
             narrow < wide,
             "rail narrows when collapsed ({narrow} < {wide})"
         );
-        assert!(!d.app.rail_expanded(), "labels hidden once collapsed");
+        assert!(!d.app().rail_expanded(), "labels hidden once collapsed");
         // Toggle back open.
         d.type_char("b");
         for _ in 0..400 {
             d.frame();
-            if d.app.rail_expanded() {
+            if d.app().rail_expanded() {
                 break;
             }
         }
-        assert!(d.app.rail_expanded(), "rail re-expands on a second toggle");
+        assert!(
+            d.app().rail_expanded(),
+            "rail re-expands on a second toggle"
+        );
     }
 
     // --- phase: clicking_a_container_row_changes_selection ---
@@ -704,14 +682,14 @@ fn keyboard_pointer_and_semantic_navigation() {
         d.frame();
         // The offline demo seeds an initial selection on first sync; clear it so
         // we observe the click producing a fresh selection.
-        ViewDoc::set_selected(&mut d.doc, None);
+        ViewDoc::set_selected(d.doc(), None);
         d.frame();
-        assert!(ViewDoc::selected(&d.doc).is_none(), "selection cleared");
+        assert!(ViewDoc::selected(d.doc()).is_none(), "selection cleared");
         // Click the first list row (below the header, in the list area).
         d.click(300.0, 140.0);
         d.frame();
         assert!(
-            ViewDoc::selected(&d.doc).is_some(),
+            ViewDoc::selected(d.doc()).is_some(),
             "clicking a container row selects it and opens the detail pane"
         );
     }
@@ -720,12 +698,12 @@ fn keyboard_pointer_and_semantic_navigation() {
     {
         let mut d = Driver::offline();
         d.frame(); // consume the one-shot demo selection
-        ViewDoc::set_selected(&mut d.doc, None);
+        ViewDoc::set_selected(d.doc(), None);
         d.frame();
         let expected = sample_engine().containers[0].id.clone();
         let target = format!("containers.container:{expected}:select");
         let tree = d
-            .app
+            .app()
             .accessibility()
             .expect("custom canvas exports a semantic window");
         assert_eq!(tree.role, ui::a11y::Role::Window);
@@ -736,14 +714,15 @@ fn keyboard_pointer_and_semantic_navigation() {
                 && node.name.as_deref().is_some_and(|name| !name.is_empty())
                 && node.bounds.is_some()
         }));
-        assert!(d.app.perform_semantic_action(
+        let (app, doc) = d.parts();
+        assert!(app.perform_semantic_action(
             &target,
             &ui::a11y::Action::Activate,
-            &mut d.doc,
-            &d.root,
+            doc,
+            &automerge::ROOT,
         ));
         assert_eq!(
-            ViewDoc::selected(&d.doc).as_deref(),
+            ViewDoc::selected(d.doc()).as_deref(),
             Some(expected.as_str())
         );
     }

@@ -17,17 +17,10 @@ pub const MAX_FIELDS: usize = 32;
 pub const MAX_FIELD_BYTES: usize = 16 * 1024;
 const MAX_BACKUP_BYTES: usize = 64 * 1024 * 1024;
 const BACKUP_MAGIC: &[u8] = b"TILOPWBACKUP";
-/// Version 1: implied Argon2id profile and a hand-rolled XChaCha20-Poly1305
-/// header. Read-only.
-const BACKUP_V1: u8 = 1;
-/// Version 2: the magic, this byte, then a `tilo-seal` password envelope
+/// The magic, this byte, then a `tilo-seal` password envelope
 /// that records its Argon2id parameters and salt.
 const BACKUP_V2: u8 = 2;
 const BACKUP_V2_PREFIX: &[u8] = b"TILOPWBACKUP\x02";
-const BACKUP_SALT_BYTES: usize = 16;
-const BACKUP_NONCE_BYTES: usize = 24;
-const BACKUP_V1_HEADER_BYTES: usize =
-    BACKUP_MAGIC.len() + 1 + BACKUP_SALT_BYTES + BACKUP_NONCE_BYTES;
 const BACKUP_READ_LIMIT: u64 = MAX_BACKUP_BYTES as u64 + 1;
 
 pub fn import_request() -> ui::portal::PickRequest {
@@ -282,8 +275,7 @@ pub fn export_encrypted_backup(
     Ok(out)
 }
 
-/// Open a backup created by [`export_encrypted_backup`] (version 2) or by an
-/// earlier build (version 1). Authentication is verified before JSON is
+/// Open a backup created by [`export_encrypted_backup`]. Authentication is verified before JSON is
 /// parsed, so wrong passwords and modified files yield no partial vault
 /// contents.
 pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<SecretItem>, String> {
@@ -298,7 +290,6 @@ pub fn import_encrypted_backup(backup: &[u8], passphrase: &str) -> Result<Vec<Se
         .split_first()
         .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
     let plaintext = match *version {
-        BACKUP_V1 => open_v1_backup(backup, passphrase)?,
         BACKUP_V2 => open_v2_backup(body, passphrase)?,
         _ => return Err("This Passwords backup uses an unsupported version".into()),
     };
@@ -331,24 +322,6 @@ fn open_v2_backup(body: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, S
     .map_err(|_| "The password is incorrect or the backup was changed".to_string())
 }
 
-fn open_v1_backup(backup: &[u8], passphrase: &str) -> Result<Zeroizing<Vec<u8>>, String> {
-    if backup.len() <= BACKUP_V1_HEADER_BYTES {
-        return Err("This is not a valid Passwords backup".into());
-    }
-    let (header, ciphertext) = backup
-        .split_at_checked(BACKUP_V1_HEADER_BYTES)
-        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    let (salt, nonce) = header
-        .get(BACKUP_MAGIC.len().saturating_add(1)..)
-        .and_then(|rest| rest.split_at_checked(BACKUP_SALT_BYTES))
-        .ok_or_else(|| "This is not a valid Passwords backup".to_string())?;
-    let nonce = <&[u8; BACKUP_NONCE_BYTES]>::try_from(nonce)
-        .map_err(|_| "This is not a valid Passwords backup".to_string())?;
-    let key = derive_backup_key(passphrase, salt)?;
-    tilo_seal::legacy::open_xchacha20poly1305(&key, nonce, header, ciphertext)
-        .map_err(|_| "The password is incorrect or the backup was changed".to_string())
-}
-
 fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     if passphrase.chars().count() < 12 {
         return Err("Use at least 12 characters for the backup password".into());
@@ -359,59 +332,25 @@ fn validate_backup_passphrase(passphrase: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Argon2id v1.3 cost for backup keys. Version 1 files do not record these,
-/// so for them they are part of the format; version 2 files store them in
-/// the authenticated header, so new backups can raise them without a format
-/// change. New backups keep the same (OWASP baseline) profile so restores
-/// stay fast on low-end devices.
+/// Argon2id v1.3 cost for backup keys. Files store them in the authenticated
+/// header, so new backups can raise them without a format change. The OWASP
+/// baseline profile keeps restores fast on low-end devices.
 const BACKUP_KDF_PARAMS: PasswordParams = PasswordParams {
     m_cost_kib: 19 * 1024,
     t_cost: 2,
     p_cost: 1,
 };
-/// The most work a version 2 file may ask a reader to do.
+/// The most work a backup file may ask a reader to do.
 const BACKUP_MAX_MEMORY_KIB: u32 = 1024 * 1024;
 const BACKUP_MAX_ITERATIONS: u32 = 16;
 const BACKUP_MAX_LANES: u32 = 8;
-
-fn derive_backup_key(passphrase: &str, salt: &[u8]) -> Result<tilo_seal::SymmetricKey, String> {
-    envelope::derive_password_key(passphrase.as_bytes(), salt, BACKUP_KDF_PARAMS)
-        .map_err(|_| "Could not secure the backup password".to_string())
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn backup_envelope_format_is_stable_versioned_and_backward_compatible() {
-        eprintln!("phase backup_key_derivation_is_stable_across_argon2_releases");
-        {
-            // Recorded from the original `Argon2::default()` derivation; existing
-            // backups only open if this never changes.
-            let key = derive_backup_key("correct horse battery", b"0123456789abcdef").unwrap();
-            assert_eq!(
-                *key.expose_secret(),
-                [
-                    0xeb, 0xd2, 0x3b, 0xa8, 0x28, 0xc3, 0x4e, 0xc4, 0x30, 0x85, 0x0a, 0x85, 0xbe,
-                    0x94, 0x09, 0x8a, 0xa1, 0x08, 0xd2, 0x51, 0x90, 0xbf, 0x10, 0xbc, 0xe1, 0xf5,
-                    0xc4, 0xd0, 0xab, 0x71, 0x71, 0xae,
-                ]
-            );
-        }
-
-        eprintln!("phase restores_v1_backup_created_by_the_previous_windows_app");
-        {
-            let backup = include_bytes!("../tests/fixtures/backup-v1.tilopw");
-            let items = import_encrypted_backup(backup, "Owned backup fixture 52!").unwrap();
-            assert_eq!(items.len(), 1);
-            let item = items.first().unwrap();
-            assert_eq!(item.title, "Native Grün 🌍");
-            assert_eq!(item.username, "proof@example.invalid");
-            assert_eq!(item.password, "Owned fixture password 92!");
-            assert!(item.origins.contains("https://example.invalid"));
-        }
-
+    fn backup_envelope_format_is_versioned_and_cannot_be_downgraded() {
         eprintln!("phase new_backups_are_version_2_envelopes_that_cannot_be_downgraded");
         {
             let item = SecretItem::login("Mail", "ada", "strong secret");
@@ -436,7 +375,7 @@ mod tests {
                 );
             }
             let mut downgraded = backup.to_vec();
-            downgraded[BACKUP_MAGIC.len()] = BACKUP_V1;
+            downgraded[BACKUP_MAGIC.len()] = 1;
             assert!(import_encrypted_backup(&downgraded, "a sufficiently long password").is_err());
         }
     }
@@ -529,7 +468,7 @@ mod tests {
         {
             let backup = export_encrypted_backup(&[], "a sufficiently long password").unwrap();
             // Prefix plus the whole v2 envelope header (magic .. nonce).
-            let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + BACKUP_NONCE_BYTES;
+            let v2_header_len = BACKUP_V2_PREFIX.len() + 8 + 12 + 1 + 16 + 24;
             for length in 0..=v2_header_len {
                 assert!(
                     import_encrypted_backup(
@@ -537,12 +476,6 @@ mod tests {
                         "a sufficiently long password"
                     )
                     .is_err()
-                );
-            }
-            let v1 = include_bytes!("../tests/fixtures/backup-v1.tilopw");
-            for length in 0..=BACKUP_V1_HEADER_BYTES {
-                assert!(
-                    import_encrypted_backup(&v1[..length], "Owned backup fixture 52!").is_err()
                 );
             }
             let mut unsupported = backup;

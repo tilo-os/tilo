@@ -5,8 +5,7 @@
 //! not JSON snapshots: two collaborators changing the hostname and keyboard
 //! must not win/lose a whole profile race. Device inventory, a selected drive,
 //! destructive confirmation, progress and worker handles are machine/window
-//! local facts. The legacy scalar fields remain readable as a one-way migration
-//! source, but no new writer emits them.
+//! local facts.
 //!
 //! ```text
 //! root
@@ -39,7 +38,6 @@ impl ImagerDoc {
     /// Idempotent: only writes fields that are missing.
     pub fn seed(doc: &mut AutoCommit, _targets: &[TargetDrive]) {
         let _ = doc.put(&ROOT, "imager_schema", 2i64);
-        Self::migrate_legacy(doc);
         if Self::source_map_read(doc).is_none() {
             Self::set_source(doc, None);
         }
@@ -83,7 +81,6 @@ impl ImagerDoc {
         Self::source_map_read(doc)
             .and_then(|map| (!read_bool(doc, &map, "deleted").unwrap_or(false)).then_some(map))
             .and_then(|map| Self::read_source_fields(doc, &map))
-            .or_else(|| Self::read_json::<Option<Source>>(doc, "source").flatten())
     }
 
     /// Stable resource identity for a reviewed source. Prefer immutable digest,
@@ -129,7 +126,7 @@ impl ImagerDoc {
     // ---- recent sources ---------------------------------------------------
     pub fn recent(doc: &AutoCommit) -> Vec<Source> {
         let Some(recent) = Self::map_read(doc, &ROOT, "recent_v2") else {
-            return Self::read_json(doc, "recent").unwrap_or_default();
+            return Vec::new();
         };
         let mut rows: Vec<(i64, String, Source)> = doc
             .keys(&recent)
@@ -214,10 +211,9 @@ impl ImagerDoc {
 
     // ---- live install profile --------------------------------------------
     pub fn profile(doc: &AutoCommit) -> InstallProfile {
-        Self::profile_map_read(doc).map_or_else(
-            || Self::read_json(doc, "profile").unwrap_or_default(),
-            |map| Self::read_profile_fields(doc, &map),
-        )
+        Self::profile_map_read(doc)
+            .map(|map| Self::read_profile_fields(doc, &map))
+            .unwrap_or_default()
     }
     pub fn set_profile(doc: &mut AutoCommit, profile: &InstallProfile) {
         let Some(map) = Self::profile_map(doc) else {
@@ -388,9 +384,8 @@ impl ImagerDoc {
         if let Some(timezone) = read_str(doc, map, "timezone") {
             profile.timezone = timezone;
         }
-        let filesystem = read_str(doc, map, "filesystem").or_else(|| read_str(doc, map, "layout"));
-        if let Some(filesystem) =
-            filesystem.and_then(|value| crate::model::Filesystem::from_key(&value))
+        if let Some(filesystem) = read_str(doc, map, "filesystem")
+            .and_then(|value| crate::model::Filesystem::from_key(&value))
         {
             profile.filesystem = filesystem;
         }
@@ -409,34 +404,6 @@ impl ImagerDoc {
             profile.user.autologin = read_bool(doc, &user, "autologin").unwrap_or(false);
         }
         profile
-    }
-
-    fn migrate_legacy(doc: &mut AutoCommit) {
-        if Self::profile_map_read(doc).is_none()
-            && let Some(profile) = Self::read_json::<InstallProfile>(doc, "profile")
-        {
-            Self::set_profile(doc, &profile);
-        }
-        if Self::source_map_read(doc).is_none()
-            && let Some(source) = Self::read_json::<Option<Source>>(doc, "source").flatten()
-        {
-            Self::set_source(doc, Some(&source));
-        }
-        if Self::map_read(doc, &ROOT, "recent_v2").is_none()
-            && let Some(recent) = Self::read_json::<Vec<Source>>(doc, "recent")
-        {
-            Self::set_recent(doc, &recent);
-        }
-    }
-
-    #[cfg(test)]
-    fn write_json<T: serde::Serialize>(doc: &mut AutoCommit, key: &str, val: &T) {
-        let json = serde_json::to_string(val).unwrap_or_else(|_| "null".into());
-        let _ = doc.put(&ROOT, key, json);
-    }
-    fn read_json<T: serde::de::DeserializeOwned>(doc: &AutoCommit, key: &str) -> Option<T> {
-        let raw = read_str(doc, &ROOT, key)?;
-        serde_json::from_str(&raw).ok()
     }
 }
 
@@ -503,9 +470,9 @@ mod tests {
         }
     }
 
-    /// Source and profile persistence and legacy migration.
+    /// Source and profile persistence.
     #[test]
-    fn document_state_round_trips_and_migrates_without_secrets() {
+    fn document_state_round_trips() {
         // Phase `source_round_trips`.
         {
             let mut doc = seeded();
@@ -540,28 +507,6 @@ mod tests {
                 doc.get(&ROOT, "profile").unwrap().is_none(),
                 "fresh profile writes never emit an opaque JSON scalar"
             );
-        }
-
-        // Phase `legacy_json_migrates_without_replicating_secrets`.
-        {
-            let mut doc = AutoCommit::new();
-            let legacy = InstallProfile {
-                hostname: "migrated".into(),
-                user: crate::model::UserAccount {
-                    password: "do-not-share".into(),
-                    ..crate::model::UserAccount::default()
-                },
-                ..InstallProfile::default()
-            };
-            ImagerDoc::write_json(&mut doc, "profile", &legacy);
-            ImagerDoc::seed(&mut doc, &[]);
-            let migrated = ImagerDoc::profile(&doc);
-            assert_eq!(migrated.hostname, "migrated");
-            assert!(migrated.user.password.is_empty());
-            assert!(matches!(
-                doc.get(&ROOT, "profile_v2").unwrap(),
-                Some((Value::Object(ObjType::Map), _))
-            ));
         }
     }
 }

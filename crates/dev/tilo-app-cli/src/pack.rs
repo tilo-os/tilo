@@ -31,7 +31,7 @@ pub fn load_identity(path: &Path) -> Result<SigningIdentity> {
     Ok(SigningIdentity::from_seed(&seed))
 }
 
-/// What [`pack_payload`] produced.
+/// What [`pack_manifest`] produced.
 pub struct Packed {
     pub id: String,
     pub bytes: u64,
@@ -45,17 +45,13 @@ pub struct Packed {
 ///
 /// Returns an error when the manifest is invalid, packing or writing fails,
 /// the archive exceeds the application size ceiling, or it does not verify.
-pub fn pack_payload(
-    manifest_path: &Path,
+pub fn pack_manifest(
+    mut manifest: Manifest,
     resource_kinds: Vec<String>,
     payload: &Path,
     output: &Path,
     identity: &SigningIdentity,
 ) -> Result<Packed> {
-    let source = std::fs::read_to_string(manifest_path)
-        .with_context(|| format!("reading {}", manifest_path.display()))?;
-    let mut manifest = Manifest::from_toml_str(&source)
-        .with_context(|| format!("parsing {}", manifest_path.display()))?;
     manifest.publisher.identity = format!("ed25519:{}", hex::encode(identity.public_key_bytes()));
     manifest.resources.kinds = resource_kinds;
     let packed =
@@ -72,11 +68,10 @@ pub fn pack_payload(
     writer.flush().context("flushing package archive")?;
     drop(writer);
     let bytes = std::fs::metadata(output)?.len();
-    if !tilo_app_package::tapp_size_allowed(packed.meta.manifest.package.kind, bytes) {
-        bail!(
-            "the package is {bytes} bytes; the limit for an application is {} bytes",
-            tilo_app_package::MAX_APP_TAPP_BYTES
-        );
+    if let Some(limit) = tilo_app_package::app_size_limit(&packed.meta.manifest)
+        && bytes > limit
+    {
+        bail!("the package is {bytes} bytes; the limit for this application is {limit} bytes");
     }
 
     let reader = std::io::BufReader::new(std::fs::File::open(output)?);

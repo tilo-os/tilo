@@ -321,18 +321,8 @@ fn prepare_workspace_namespace(enable_peer_sync: bool, state_path: &std::path::P
     }
 }
 
-/// Mints a room identity and an owner for any workspace restored from a state file written before
-/// either concept existed — otherwise nobody can grant anything in it, or "yesterday's workspace"
-/// and "today's" resolve to different rooms.
+/// Adopts every ownerless workspace for its selected identity.
 fn adopt_tree_ownership(tree: &mut WorkspaceTree) {
-    let roomless = tree.adopt_roomless_workspaces();
-    if !roomless.is_empty() {
-        tracing::info!(
-            "collaboration: minted a room identity for {} workspace(s)",
-            roomless.len()
-        );
-    }
-
     // Someone has to own each room or nobody can grant anything in it.
     // Resolve per room so hosted mode uses the same selected identity that
     // its certified collaboration join presents.
@@ -514,6 +504,16 @@ fn install_presence_pump(
         let received = !drained.is_empty();
         let now = std::time::Instant::now();
         for entry in drained {
+            // A pointer anchored to a tab's tile is placed by the native frame loop over its own
+            // tiles; this window has no tile map to place it with, and its offset is no desktop point.
+            if matches!(
+                serde_json::from_str::<ui::presence::PresenceKey>(&entry.key)
+                    .ok()
+                    .and_then(|key| key.pointer_space()),
+                Some(ui::presence::PointerSpace::Tile { .. })
+            ) {
+                continue;
+            }
             // A frame addressed to a room is this session learning a named person is in it; putting them on
             // that room's roster is what the avatar stack, wheel-disc dots, and collaborators overlay render from.
             if let Ok(ui::presence::PresenceKey::Workspace { id }) =

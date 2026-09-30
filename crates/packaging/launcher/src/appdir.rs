@@ -39,11 +39,6 @@ pub const PERSONAL_ROOM: &str = "personal";
 /// Directory under the user's data home that holds every room.
 pub const ROOMS_DIR: &str = "tilo-rooms";
 
-/// Marker written into an app directory that adopted pre-partition
-/// state — its presence makes the adoption happen exactly once, and its
-/// contents name where the bytes came from.
-const ADOPTION_MARKER: &str = ".tilo-adopted-from";
-
 /// Turn a workspace id into a single path component that cannot escape
 /// its parent.
 ///
@@ -90,16 +85,7 @@ fn hex_digest(raw: &str) -> String {
 /// The user's data home, as the *launcher's* own environment describes
 /// it. Mirrors `cli::data_home` so host and in-sandbox sides agree.
 pub fn host_data_home() -> Option<PathBuf> {
-    if let Some(xdg) = std::env::var_os("XDG_DATA_HOME")
-        && !xdg.is_empty()
-    {
-        return Some(PathBuf::from(xdg));
-    }
-    let home = std::env::var_os("HOME")?;
-    if home.is_empty() {
-        return None;
-    }
-    Some(Path::new(&home).join(".local/share"))
+    xdg_paths::xdg::data_home()
 }
 
 /// Host location of one package's directory in one room.
@@ -130,7 +116,7 @@ fn sanitise_component(raw: &str) -> String {
     mapped
 }
 
-/// Create (and migrate into, once) the directory this launch gets.
+/// Create the directory this launch gets.
 ///
 /// Returns the host path to bind at [`SANDBOX_APP_DIR`]. Errors are
 /// real: an app with nowhere to write loses the user's work on exit, so
@@ -154,118 +140,32 @@ pub fn prepare_host_app_dir(
     for sub in [".local/share", ".local/state", ".config", ".cache"] {
         std::fs::create_dir_all(dir.join(sub))?;
     }
-    adopt_legacy_state_into_personal_room(data_home, &room, package_id, &dir);
+    remove_startup_traces_from_home(&dir);
     Ok(dir)
 }
 
-/// **Migration.** Copy pre-partition app state into the personal room,
-/// once, leaving the original untouched.
-///
-/// Before partitioning, every app kept its state at `<data
-/// home>/<package id>` (`cli::standalone_state_dir`), one directory
-/// whichever room it opened into. That directory now has a home: the
-/// personal room, where a launch with no workspace already lands.
-///
-/// Three deliberate choices, all reversible:
-///
-/// - **Copy, not move** — a downgrade must not lose data (the source is
-///   the only copy of things like a TOTP seed); the old directory stays
-///   on disk with whatever it held.
-/// - **Personal room only** — copying into every room would put a
-///   user's library in a workspace they may share; bringing a record
-///   into another room is a gesture the user makes, not the launcher.
-/// - **Once** — [`ADOPTION_MARKER`] records that it happened, so a
-///   second launch never overwrites room edits with a stale original.
-///
-/// **What it does not adopt.** Only `<data home>/<package id>` — where
-/// `app_state::DocStore` keeps a package's document and its
-/// `records/<key>/` subtree. Ad-hoc locations apps also used
-/// (`~/.local/share/tilo-notes`, …) are left alone; adopting them would
-/// mean the launcher holding a per-package path list, the thing this
-/// change removes.
-///
-/// To reverse: delete `<data home>/tilo-rooms/personal/<package>`. The
-/// original at `<data home>/<package>` was never touched.
-fn adopt_legacy_state_into_personal_room(
-    data_home: &Path,
-    room: &str,
-    package_id: &str,
-    app_dir: &Path,
-) {
-    if room != PERSONAL_ROOM {
+/// **Migration.** Startup traces used to be written at the top of the app
+/// directory, which is the app's home: Files listed them, and the one being
+/// written kept it repainting. They now go to `.local/state`; the old files
+/// are diagnostics nothing reads, so they are removed rather than moved.
+fn remove_startup_traces_from_home(dir: &Path) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
-    }
-    let marker = app_dir.join(ADOPTION_MARKER);
-    if marker.exists() {
-        return;
-    }
-    let legacy = data_home.join(sanitise_component(package_id));
-    // Guard against the rooms tree adopting itself, which a package id of
-    // `tilo-rooms` would otherwise arrange.
-    if !legacy.is_dir() || legacy.starts_with(data_home.join(ROOMS_DIR)) {
-        let _ = std::fs::write(&marker, b"nothing to adopt\n");
-        return;
-    }
-    let dest = app_dir
-        .join(".local/share")
-        .join(sanitise_component(package_id));
-    if dest.exists() {
-        let _ = std::fs::write(&marker, b"destination already present\n");
-        return;
-    }
-    match copy_tree(&legacy, &dest) {
-        Ok(n) => {
-            tracing::info!(
-                target: "tilo_launcher::appdir",
-                package = %package_id,
-                from = %legacy.display(),
-                to = %dest.display(),
-                entries = n,
-                "adopted pre-partition app state into the personal room \
-                 (the original was copied, not moved)",
-            );
-            let _ = std::fs::write(&marker, format!("{}\n", legacy.display()).as_bytes());
-        }
-        Err(e) => {
-            // A failed adoption must not refuse the launch: the app still has a
-            // working, empty directory. Losing the library is visible; losing the
-            // app is worse.
-            tracing::warn!(
-                target: "tilo_launcher::appdir",
-                package = %package_id,
-                from = %legacy.display(),
-                "could not adopt pre-partition app state: {e}",
-            );
-            let _ = std::fs::remove_dir_all(&dest);
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if name.starts_with("startup-")
+            && Path::new(name)
+                .extension()
+                .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+            let _ = std::fs::remove_file(entry.path());
         }
     }
-}
-
-/// Recursive copy that recreates symlinks as symlinks rather than
-/// following them — following one into `/` would copy the whole
-/// filesystem.
-fn copy_tree(src: &Path, dst: &Path) -> io::Result<usize> {
-    let mut count = 0usize;
-    std::fs::create_dir_all(dst)?;
-    for entry in std::fs::read_dir(src)? {
-        let entry = entry?;
-        let kind = entry.file_type()?;
-        let from = entry.path();
-        let to = dst.join(entry.file_name());
-        if kind.is_symlink() {
-            let target = std::fs::read_link(&from)?;
-            let _ = std::os::unix::fs::symlink(target, &to);
-            count = count.saturating_add(1);
-        } else if kind.is_dir() {
-            count = count.saturating_add(copy_tree(&from, &to)?);
-        } else if kind.is_file() {
-            std::fs::copy(&from, &to)?;
-            count = count.saturating_add(1);
-        }
-        // Sockets, fifos and device nodes are not state; skipping them is not
-        // a loss and copying them isn't possible.
-    }
-    Ok(count)
 }
 
 /// Bind the app's directory into the sandbox and point the environment
@@ -436,75 +336,19 @@ mod tests {
             assert!(dir.join(".cache").is_dir());
             assert_eq!(dir, tmp.path().join("tilo-rooms/room-a/so.tilo.notes"));
         }
-    }
-
-    #[test]
-    fn legacy_state_adoption_is_single_safe_and_personal() {
-        // Phase `legacy_state_is_adopted_into_the_personal_room_only`.
-        // The migration adopts into the personal room and nowhere else.
+        // Phase `startup_traces_leave_the_apps_home`.
         {
             let tmp = tempfile::tempdir().unwrap();
-            let legacy = tmp.path().join("so.tilo.notes");
-            std::fs::create_dir_all(&legacy).unwrap();
-            std::fs::write(legacy.join("state.bin"), b"old library").unwrap();
-
-            let workspace =
-                prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            let dir = prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            std::fs::write(dir.join("startup-7.json"), "{}").unwrap();
+            std::fs::write(dir.join("startup-notes.txt"), "mine").unwrap();
+            std::fs::create_dir(dir.join("startup-album.json")).unwrap();
+            prepare_host_app_dir(tmp.path(), Some("room-a"), "so.tilo.notes").unwrap();
+            assert!(!dir.join("startup-7.json").exists());
+            assert!(dir.join("startup-notes.txt").is_file(), "not a trace");
             assert!(
-                !workspace
-                    .join(".local/share/so.tilo.notes/state.bin")
-                    .exists(),
-                "a workspace room must start empty"
-            );
-
-            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-            let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
-            assert_eq!(
-                std::fs::read(&adopted).unwrap(),
-                b"old library",
-                "the personal room adopts pre-partition state"
-            );
-            assert!(
-                legacy.join("state.bin").exists(),
-                "the original is copied, not moved"
-            );
-        }
-        // Phase `adoption_happens_exactly_once`.
-        // A second launch must not overwrite what the user did in the room
-        // with a stale copy of the original.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let legacy = tmp.path().join("so.tilo.notes");
-            std::fs::create_dir_all(&legacy).unwrap();
-            std::fs::write(legacy.join("state.bin"), b"old").unwrap();
-
-            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-            let adopted = personal.join(".local/share/so.tilo.notes/state.bin");
-            std::fs::write(&adopted, b"edited in the room").unwrap();
-
-            prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-            assert_eq!(
-                std::fs::read(&adopted).unwrap(),
-                b"edited in the room",
-                "a re-launch must not re-copy over the user's edits"
-            );
-        }
-        // Phase `adoption_does_not_follow_symlinks_out_of_the_tree`.
-        // A symlink in the legacy tree is copied as a link. Following it
-        // would pull whatever it names into the app's directory.
-        {
-            let tmp = tempfile::tempdir().unwrap();
-            let outside = tmp.path().join("outside-secret");
-            std::fs::write(&outside, b"not the app's").unwrap();
-            let legacy = tmp.path().join("so.tilo.notes");
-            std::fs::create_dir_all(&legacy).unwrap();
-            std::os::unix::fs::symlink(&outside, legacy.join("link")).unwrap();
-
-            let personal = prepare_host_app_dir(tmp.path(), None, "so.tilo.notes").unwrap();
-            let copied = personal.join(".local/share/so.tilo.notes/link");
-            assert!(
-                copied.symlink_metadata().unwrap().file_type().is_symlink(),
-                "a symlink must be copied as a symlink, not resolved"
+                dir.join("startup-album.json").is_dir(),
+                "a directory is the user's"
             );
         }
     }

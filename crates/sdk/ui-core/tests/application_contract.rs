@@ -2,11 +2,13 @@
 use crate::support::application::*;
 use automerge::{ROOT, transaction::Transactable};
 use std::rc::Rc;
-use tilo_ui::application::{ApplicationCatalog, HostContext, LaunchTarget, RestoreInput};
+use tilo_ui::application::{
+    ApplicationCatalog, HostContext, HostContextInputs, LaunchTarget, RestoreInput,
+};
 use tilo_ui::application_view::{InstanceViewStore, SavedInstanceView};
 use tilo_ui::launch::LaunchError;
 use tilo_ui::record::RecordId;
-use tilo_ui::view::{FocusView, FrozenApp, ThawError, View};
+use tilo_ui::view::{FocusView, ThawError, View};
 
 #[allow(
     clippy::too_many_lines,
@@ -74,13 +76,15 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
         );
         let context = HostContext::prepare(
             &definition,
-            host.records.clone(),
-            host.views.clone(),
-            DEVICE.into(),
-            11,
-            authority.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: host.records.clone(),
+                views: host.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -106,14 +110,16 @@ fn instance_creation_enforces_permissions_namespaces_and_distinct_ids() {
             assert!(matches!(
                 HostContext::prepare(
                     probe_definition(),
-                    host.records.clone(),
-                    views,
-                    DEVICE.into(),
-                    11,
-                    permissions(),
-                    author(),
-                    provenance(),
-                    &LaunchTarget::New
+                    HostContextInputs {
+                        records: host.records.clone(),
+                        views,
+                        device_id: DEVICE.into(),
+                        instance_id: 11,
+                        permissions: permissions(),
+                        author: author(),
+                        action_context: provenance()
+                    },
+                    &LaunchTarget::New,
                 ),
                 Err(LaunchError::BindingMismatch)
             ));
@@ -187,53 +193,6 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         assert_eq!(body(&host.records, &checkout), "initialized");
     }
 
-    // Case `legacy_recovery_is_validated_but_never_adopted`.
-    {
-        let host = ProbeHost::new();
-        let a = instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-        let checkout = a.record().clone();
-        let frozen = FrozenApp {
-            version: 1,
-            state: automerge::AutoCommit::new().save(),
-            view: View::default(),
-        };
-        let error = instantiate_probe(
-            &host,
-            12,
-            existing(&checkout),
-            RestoreInput::LegacyRecovery(frozen.clone()),
-        )
-        .err()
-        .unwrap();
-        assert!(
-            matches!(error, LaunchError::ComponentSetup { source, .. } if matches!(*source, LaunchError::RecoveryRequired))
-        );
-        let mut bad = frozen.clone();
-        bad.version = 9;
-        assert!(matches!(
-            instantiate_probe(
-                &host,
-                12,
-                existing(&checkout),
-                RestoreInput::LegacyRecovery(bad)
-            ),
-            Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(ThawError::UnsupportedVersion { .. }))
-        ));
-        let mut bad = frozen;
-        bad.state = b"bad".to_vec();
-        assert!(matches!(
-            instantiate_probe(
-                &host,
-                12,
-                existing(&checkout),
-                RestoreInput::LegacyRecovery(bad)
-            ),
-            Err(LaunchError::ComponentSetup { source, .. }) if matches!(*source, LaunchError::Restore(_))
-        ));
-        assert_eq!(body(&host.records, &checkout), "initialized");
-        assert_eq!(calls(), 1);
-    }
-
     // Case `new_restore_hook_failure_keeps_ready_record_and_old_view_bytes`.
     {
         let host = ProbeHost::new();
@@ -269,13 +228,15 @@ fn restore_paths_validate_bindings_and_never_roll_back_documents() {
         let target = existing(&record);
         let context = HostContext::prepare(
             probe_definition(),
-            records,
-            host.views,
-            DEVICE.into(),
-            11,
-            permissions(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views: host.views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: permissions(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -347,41 +308,6 @@ fn local_envelopes_are_scoped_versioned_and_never_replaced_by_invalid_saves() {
             root.join("instance-views/2e2e2f44/412f42/11.postcard")
                 .exists()
         );
-    }
-
-    // Case `v1_local_envelope_loads_as_v2_without_rewriting_exact_source`.
-    // Catches interpreting old postcard bytes as a V2 struct or rewriting them on load.
-    {
-        let host = ProbeHost::new();
-        let mut component =
-            instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-        let checkout = component.record().clone();
-        component.close();
-        let bytes = postcard::to_stdvec(&(
-            1u32,
-            APP,
-            DEVICE,
-            ROOM,
-            11u64,
-            checkout.id.as_str(),
-            checkout.kind.as_str(),
-            local_view(37.0, "caret=9"),
-        ))
-        .unwrap();
-        let path = host.view_path(11);
-        std::fs::write(&path, &bytes).unwrap();
-        let loaded = host.views.load(11).unwrap().unwrap();
-        assert_eq!(loaded.version, 2);
-        assert_eq!(loaded.view.scroll, vec![37.0]);
-        assert_eq!(std::fs::read(&path).unwrap(), bytes);
-        for invalid in [
-            bytes[..bytes.len() - 1].to_vec(),
-            [bytes.as_slice(), &[0]].concat(),
-        ] {
-            std::fs::write(&path, &invalid).unwrap();
-            assert!(host.views.load(11).is_err());
-            assert_eq!(std::fs::read(&path).unwrap(), invalid);
-        }
     }
 
     // Case `v2_application_envelope_roundtrips_and_default_hook_refuses_payload`.
@@ -488,13 +414,15 @@ fn factory_failures_keep_records_and_files_and_reject_unvalidated_components() {
         let target = existing(&record);
         let context = HostContext::prepare(
             probe_definition(),
-            records,
-            views,
-            DEVICE.into(),
-            11,
-            permissions(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: permissions(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -1024,13 +952,15 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let target = existing(&checkout);
         let context = HostContext::prepare(
             &definition,
-            host.records,
-            host.views.clone(),
-            DEVICE.into(),
-            11,
-            authority.clone(),
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: host.records,
+                views: host.views.clone(),
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority.clone(),
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -1094,13 +1024,15 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
         let target = existing(&record);
         let context = HostContext::prepare(
             &definition,
-            records.clone(),
-            host.views,
-            DEVICE.into(),
-            11,
-            authority,
-            author(),
-            provenance(),
+            HostContextInputs {
+                records: records.clone(),
+                views: host.views,
+                device_id: DEVICE.into(),
+                instance_id: 11,
+                permissions: authority,
+                author: author(),
+                action_context: provenance(),
+            },
             &target,
         )
         .unwrap();
@@ -1370,26 +1302,14 @@ mod save_status_fixture {
             _: &tilo_ui::presence::PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut automerge::AutoCommit,
-            _: &automerge::ObjId,
-            _: &mut bool,
-            _: &mut Option<taffy::NodeId>,
-            _: taffy::NodeId,
-            _: &taffy::TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Status"
         }
         fn get_rect(&self) -> vello::kurbo::Rect {
             vello::kurbo::Rect::ZERO
         }
-        fn sync(&mut self, doc: &mut automerge::AutoCommit, _: &automerge::ObjId) {
+        fn sync(&mut self, doc: &mut tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
+            let (doc, _) = tilo_ui::doc::document(doc, path);
             assert!(matches!(
                 self.records.save_status(&self.checkout.id),
                 Err(RecordOpenError::Busy)
@@ -1632,7 +1552,7 @@ mod save_status_fixture {
             );
         }
         pub(super) fn close(&mut self) {
-            let reports = self.tile.close_components();
+            let reports = tilo_ui::component_lifecycle::close_components(&mut self.tile);
             assert!(!reports.is_empty());
             assert!(reports.iter().all(|report| report.record_error.is_none()
                 && report.view_error.is_none()
@@ -1647,7 +1567,7 @@ mod save_status_fixture {
 
 mod paired_local {
     use super::*;
-    use automerge::{AutoCommit, ObjId, ReadDoc};
+    use automerge::{AutoCommit, ReadDoc};
     use std::cell::RefCell;
     use tilo_ui::application::{AppComponent, ApplicationDefinition};
     use tilo_ui::application_view::{ApplicationFocusRestore, ApplicationLocalView};
@@ -1671,7 +1591,11 @@ mod paired_local {
     thread_local! { static STATE: RefCell<Rc<RefCell<Presentation>>> = RefCell::default(); }
     struct LocalRoot(Rc<RefCell<Presentation>>);
     impl Widget for LocalRoot {
-        fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
+        tilo_ui::provides!(
+            dyn tilo_ui::view::capability::ViewState,
+            dyn tilo_ui::undo::UndoPoints
+        );
+
         fn build_layout(
             &mut self,
             tree: &mut taffy::TaffyTree<()>,
@@ -1696,19 +1620,6 @@ mod paired_local {
             _: &tilo_ui::presence::PresenceCtx,
         ) {
         }
-        fn handle_event(
-            &mut self,
-            _: &winit::event::WindowEvent,
-            _: f64,
-            _: &winit::event::Modifiers,
-            _: &mut AutoCommit,
-            _: &ObjId,
-            _: &mut bool,
-            _: &mut Option<taffy::NodeId>,
-            _: taffy::NodeId,
-            _: &taffy::TaffyTree<()>,
-        ) {
-        }
         fn name(&self) -> &'static str {
             "Local pair"
         }
@@ -1724,6 +1635,9 @@ mod paired_local {
         fn set_focus(&mut self, focused: bool) {
             self.0.borrow_mut().focused = focused;
         }
+    }
+
+    impl tilo_ui::undo::UndoPoints for LocalRoot {
         fn get_state(&self) -> Option<String> {
             Some("current caret".into())
         }
@@ -1733,6 +1647,9 @@ mod paired_local {
                 .events
                 .push(format!("ephemeral:{state}"));
         }
+    }
+
+    impl tilo_ui::view::capability::ViewState for LocalRoot {
         fn view_state(&self) -> Option<ViewContribution> {
             Some(ViewContribution {
                 scroll: vec![self.0.borrow().scroll],

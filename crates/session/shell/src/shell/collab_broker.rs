@@ -11,12 +11,11 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use collab_types::{
-    ArtifactId, ArtifactKind, OpClass, RedactedMarker, ValidationError,
-    validate_admitted_inbound_op,
-};
+use collab_types::ArtifactId;
 #[cfg(test)]
-use collab_types::{DocumentMutation, document_artifact_id, document_attestation_id};
+use collab_types::{
+    DocumentMutation, OpClass, ValidationError, document_artifact_id, document_attestation_id,
+};
 use ui::collaboration::CollabEvent;
 
 pub use crate::shell::collab_core::{
@@ -27,6 +26,8 @@ use crate::shell::network::{
     InboundAppPresence, InboundDocument, InboundScrollbackRequest, InboundScrollbackResponse,
     ShellNetwork,
 };
+#[cfg(test)]
+use tilo_action_broker::collab_inbound::validate_route as validate_document_route;
 
 /// What a room calls the peers in it, keyed by the handle presence
 /// frames identify their sender by. Same shape as
@@ -470,152 +471,37 @@ impl DrainQueues {
             std::mem::take(&mut *buf)
         };
         for entry in drained_signed {
-            let envelope = *entry.envelope;
-            let artifact = envelope.artifact;
-            let route = CrdtRoute::record(&entry.app_id, &entry.cluster_id, &entry.record_id);
-            let payload = validate_document_route(&route, &envelope);
-            let validation = match &payload {
-                Ok(payload) => {
-                    let Ok(mut ch) = self.channels.lock() else {
-                        return false;
-                    };
-                    let channel = match payload {
-                        collab_types::WholeDocumentPayload::Cleartext(_) => {
-                            collab_types::document_channel_id(
-                                &entry.app_id,
-                                &entry.cluster_id,
-                                &entry.record_id,
-                            )
-                        }
-                        collab_types::WholeDocumentPayload::Encrypted { channel, .. } => *channel,
-                    };
-                    if ch.document_encryption_allowed(channel, envelope.encryption.as_ref()) {
-                        let state = ch.state_for(artifact);
-                        state.artifacts.insert(artifact, ArtifactKind::Note);
-                        state.artifact_apps.insert(artifact, entry.app_id.clone());
-                        validate_admitted_inbound_op(
-                            &envelope,
-                            entry.role,
-                            state,
-                            std::time::SystemTime::now(),
-                            Duration::from_secs(300),
-                        )
-                    } else {
-                        Err(ValidationError::DocumentRouteMismatch)
-                    }
-                }
-                Err(error) => Err(error.clone()),
+            let peer = entry.peer;
+            let document = tilo_action_broker::collab_inbound::RemoteDocument {
+                app_id: entry.app_id,
+                cluster_id: entry.cluster_id,
+                record_id: entry.record_id,
+                role: entry.role,
+                replayed: entry.replayed,
+                envelope: *entry.envelope,
             };
-            match (payload, validation) {
-                (Ok(_), Ok(())) => {
-                    self.accept_signed_op(envelope, entry.peer, &route, labels, announced);
-                }
-                (_, Err(ValidationError::OpAlreadyRedacted { target })) => {
-                    self.record_already_redacted(envelope, artifact, target);
-                }
-                (_, Err(reason)) => {
-                    tracing::warn!("collab_broker (net): dropping invalid signed op: {reason}",);
-                    if let Ok(mut ch) = self.channels.lock() {
-                        ch.audit.record(
-                            artifact,
-                            AuditEntry {
-                                envelope: Box::new(envelope),
-                                rejection: Some(reason),
-                                at: std::time::SystemTime::now(),
-                            },
-                        );
-                    }
-                }
-                (Err(_), Ok(())) => return false,
+            // Same id and room lookup the peer's presence arrives under, so
+            // one person reads as one participant.
+            let delivered = tilo_action_broker::collab_inbound::deliver(
+                &self.channels,
+                &self.table,
+                document,
+                |route| {
+                    remote_participant_id(
+                        &route.cluster_id,
+                        peer,
+                        &|c| self.net.peer_labels(c),
+                        &self.table,
+                        labels,
+                        announced,
+                    )
+                },
+            );
+            if !delivered {
+                return false;
             }
         }
         true
-    }
-
-    /// Record a signed op that passed validation and fan it to local
-    /// apps — the `Ok(())` arm of [`Self::drain_documents`]'s per-entry
-    /// match, split out to keep that match's arms short.
-    fn accept_signed_op(
-        &self,
-        envelope: collab_types::SignedOp,
-        peer: u64,
-        route: &CrdtRoute,
-        labels: &mut HashMap<String, (Instant, PeerLabels)>,
-        announced: &mut HashMap<(String, u64), (String, u64)>,
-    ) {
-        let artifact = envelope.artifact;
-        if let Ok(mut ch) = self.channels.lock() {
-            let mls_vault = ch.mls_vault.clone();
-            ch.record_history(&envelope);
-            let state = ch.state_for(artifact);
-            state.record_validated_op(envelope.clone());
-            if envelope.op_class == OpClass::Compaction
-                && let Ok(cp) = collab_types::parse_compaction_payload(&envelope)
-            {
-                let _ = state.apply_compaction(&cp);
-            }
-            if envelope.op_class == OpClass::Compaction
-                && let Some(metadata) = envelope.encryption
-                && let Some(vault) = mls_vault
-                && let Err(error) = vault.mint_snapshot_receipt(metadata.channel, &envelope)
-            {
-                tracing::warn!(%error, "encrypted snapshot was accepted but durable receipt minting failed");
-            }
-        }
-        if envelope.op_class == OpClass::Redact {
-            apply_redaction_from_envelope(&envelope, artifact, &self.channels);
-        }
-        // Same id and room lookup the peer's
-        // presence arrives under, so one
-        // person reads as one participant.
-        let from_user_id = remote_participant_id(
-            &route.cluster_id,
-            peer,
-            &|c| self.net.peer_labels(c),
-            &self.table,
-            labels,
-            announced,
-        );
-        let event = CollabEvent::Document {
-            envelope: Box::new(envelope),
-            from_user_id,
-            decrypted_payload: None,
-        };
-        // An unaddressed route is dropped rather than shown to every app.
-        self.table.fanout_to_route(&event, u64::MAX, route);
-    }
-
-    /// Late-arriving op via Iroh, already redacted: don't fan, push a
-    /// marker entry so the seq stream stays gapless — the
-    /// `OpAlreadyRedacted` arm of [`Self::drain_signed`]'s per-entry
-    /// match, split out to keep that match's arms short.
-    fn record_already_redacted(
-        &self,
-        envelope: collab_types::SignedOp,
-        artifact: ArtifactId,
-        target: collab_types::OpId,
-    ) {
-        tracing::warn!(
-            artifact = ?artifact,
-            target = ?target,
-            "collab_broker (net): late-arriving op already redacted",
-        );
-        if let Ok(mut ch) = self.channels.lock() {
-            let state = ch.state_for(artifact);
-            let mut marker_envelope = envelope.clone();
-            if let Ok(marker_bytes) = RedactedMarker::v1().canonical() {
-                marker_envelope.payload = marker_bytes;
-            }
-            state.record_validated_op(marker_envelope);
-            ch.audit.record(
-                artifact,
-                AuditEntry {
-                    envelope: Box::new(envelope),
-                    rejection: Some(ValidationError::OpAlreadyRedacted { target }),
-                    at: std::time::SystemTime::now(),
-                },
-            );
-        }
     }
 
     /// Drain inbound scrollback requests; publish a response only if
@@ -698,19 +584,6 @@ impl DrainQueues {
     }
 }
 
-fn validate_document_route(
-    route: &CrdtRoute,
-    envelope: &collab_types::SignedOp,
-) -> Result<collab_types::WholeDocumentPayload, ValidationError> {
-    collab_types::validate_whole_document_payload_route(
-        &route.app_id,
-        &route.cluster_id,
-        &route.record_id,
-        envelope,
-    )
-    .map_err(|_| ValidationError::DocumentRouteMismatch)
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "one ordered broker assembly: vaults, services, media, authority, then network attachment"
@@ -731,7 +604,7 @@ fn spawn_inner(
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
     let (mls_authority, channel_encryption) =
-        open_session_services(membership.as_ref(), &channels, config.is_none());
+        open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -906,6 +779,7 @@ type SessionServices = (
 #[cfg(test)]
 fn open_session_services(
     _: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    _: Option<&Arc<ShellNetwork>>,
     _: &Arc<Mutex<BrokerChannels>>,
     _: bool,
 ) -> SessionServices {
@@ -915,6 +789,7 @@ fn open_session_services(
 #[cfg(not(test))]
 fn open_session_services(
     membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    peer_sync: Option<&Arc<ShellNetwork>>,
     channels: &Arc<Mutex<BrokerChannels>>,
     open_vault: bool,
 ) -> SessionServices {
@@ -940,8 +815,12 @@ fn open_session_services(
                 state.install_mls_vault(vault.clone());
             }
             if let Some(workspaces) = membership.cloned() {
-                channel_encryption =
-                    open_channel_encryption(&vault, workspaces, Arc::clone(channels));
+                channel_encryption = open_channel_encryption(
+                    &vault,
+                    workspaces,
+                    peer_sync.cloned(),
+                    Arc::clone(channels),
+                );
             }
             if let Some(workspaces) = membership.cloned() {
                 match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
@@ -956,19 +835,20 @@ fn open_session_services(
             }
         }
         Err(error) => {
-            tracing::warn!(%error, "MLS collaboration unavailable: Secret Service provider was not installed");
+            tracing::warn!(%error, "MLS collaboration unavailable: no system secret store answered");
         }
     }
     (mls_authority, channel_encryption)
 }
 
 /// Start this device's channel encryption service over the session's
-/// Secret Service vault and certified device key. Without either, channels
+/// secret-store vault and certified device key. Without either, channels
 /// stay closed to this device rather than falling back to plaintext.
 #[cfg(not(test))]
 fn open_channel_encryption(
     vault: &crate::shell::collab_mls_authority::SecretServiceMlsVault,
     workspaces: crate::shell::state::WorkspaceTreeHandle,
+    net: Option<Arc<ShellNetwork>>,
     channels: Arc<Mutex<BrokerChannels>>,
 ) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
     let paths = crate::firstboot::collaboration_identity_paths();
@@ -979,9 +859,13 @@ fn open_channel_encryption(
             return None;
         }
     };
+    let authenticated: crate::shell::channel_policy::AuthenticatedDevices = match net {
+        Some(net) => Box::new(move |user| net.authenticated_devices_of(user)),
+        None => Box::new(|_| Vec::new()),
+    };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
-        crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet(),
+        crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
     );
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {

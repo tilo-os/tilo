@@ -25,6 +25,8 @@ pub(crate) struct IngressConfig {
     pub certificates: Vec<CertificateDer<'static>>,
     pub key: PrivateKeyDer<'static>,
     pub local_enrollment: Option<Arc<crate::https::LocalEnrollment>>,
+    /// Dashboard origins that may embed the page; empty forbids embedding.
+    pub frame_ancestors: Vec<String>,
 }
 // Operation time is captured only from the actual owner. Numeric time exists
 // solely for the existing explicit fixture renewal path.
@@ -75,6 +77,8 @@ pub(crate) struct InstalledIngress {
     )>,
     /// LIVE_V1 grant authority and its admitted-change forwarder task.
     live: Option<crate::live_service::InstalledLive<crate::owner_turn::NativeOwner>>,
+    /// The session's legacy windows, re-published on the live relay.
+    legacy: crate::legacy_windows::LegacyWindows,
 }
 /// When the owner loop next evaluates delivery retention: after every owner
 /// commit, otherwise at a bounded cadence, and after a failure only after a
@@ -204,18 +208,16 @@ impl InstalledIngress {
         Ok(true)
     }
 
+    /// Serve on a pair from [`crate::https::bind_https_pair`].
     #[cfg(test)]
     pub(crate) async fn start(
         owner: &mut SessionOwner,
         current: CommittedAuthority,
-        listener: TcpListener,
+        (listener, udp): (TcpListener, std::net::UdpSocket),
         config: IngressConfig,
     ) -> Result<Self> {
-        let endpoint = endpoint(
-            listener.local_addr()?,
-            config.certificates.clone(),
-            config.key.clone_key(),
-        )?;
+        let endpoint =
+            endpoint_from_socket(udp, config.certificates.clone(), config.key.clone_key())?;
         let channels = https::try_ingress_channel()?;
         Self::start_bound(owner, current, listener, config, endpoint, channels).await
     }
@@ -276,6 +278,7 @@ impl InstalledIngress {
             retention: RetentionSchedule::default(),
             onboarding: None,
             live,
+            legacy: crate::legacy_windows::LegacyWindows::new(owner.peer().room()),
         };
         installed.refresh_current(owner)?;
         Ok(installed)
@@ -368,8 +371,10 @@ impl InstalledIngress {
         }
         // No grant until the relay-retained room state has been merged: a
         // restored older state must not issue one to a since-revoked member.
-        if matches!(request.route(), Route::Media(_) | Route::LiveGrant)
-            && !self.current.governance_reconciled()
+        if matches!(
+            request.route(),
+            Route::Media(_) | Route::LiveGrant | Route::LegacyInput
+        ) && !self.current.governance_reconciled()
         {
             let _ = request.respond(
                 hyper::StatusCode::SERVICE_UNAVAILABLE,
@@ -397,10 +402,16 @@ impl InstalledIngress {
                 (hyper::StatusCode::CONFLICT, b"stale-participation".to_vec())
             }
             // LIVE_V1 clients fall back to the durable path on 404.
-            Err(_) if request.route() == Route::LiveGrant && self.live.is_none() => {
+            Err(_)
+                if matches!(request.route(), Route::LiveGrant | Route::LegacyInput)
+                    && self.live.is_none() =>
+            {
                 (hyper::StatusCode::NOT_FOUND, b"unsupported".to_vec())
             }
-            Err(_) => (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec()),
+            Err(error) => {
+                tracing::warn!(route = ?request.route(), %error, "delivery request refused");
+                (hyper::StatusCode::FORBIDDEN, b"permission-denied".to_vec())
+            }
         };
         let _ = request.respond(status, body);
         self.maintain(owner);
@@ -539,9 +550,42 @@ impl InstalledIngress {
     pub(crate) fn sync_actions(&mut self, actions: Option<&crate::action_host::ActionHost>) {
         self.data.sync_private(actions);
     }
+    /// Legacy-window video the session device `author` published as presence.
+    pub(crate) fn legacy_window(
+        &mut self,
+        author: [u8; 32],
+        message: &tilo_peer_state::NeighbourMsg,
+    ) {
+        if let Some(live) = &self.live {
+            self.legacy.observe(&live.relay, author, message);
+        }
+    }
+
+    /// Input from controlling viewers to forward to sessions, and whether
+    /// this host's governor identity must go first.
+    pub(crate) fn take_legacy_input(&mut self) -> (bool, Vec<tilo_peer_state::NeighbourMsg>) {
+        self.legacy.take_input(std::time::Instant::now())
+    }
+
+    /// The session devices whose legacy windows are streamed.
+    pub(crate) fn legacy_publishers(&self) -> std::collections::BTreeSet<[u8; 32]> {
+        self.legacy.publishers()
+    }
+
+    /// Whether the session device `author` is subscribed to the room's relay.
+    pub(crate) fn legacy_subscribed(&mut self, author: [u8; 32], subscribed: bool) {
+        if let Some(live) = &self.live {
+            self.legacy
+                .subscribed(&live.relay, author, subscribed, std::time::Instant::now());
+        }
+    }
+
     /// Resume held polls after any owner commit, or when one nears its deadline.
     /// Called by the host after every owner-affecting turn; cheap otherwise.
     pub(crate) fn maintain(&mut self, owner: &mut SessionOwner) {
+        if let Some(live) = &self.live {
+            self.legacy.maintain(&live.relay, std::time::Instant::now());
+        }
         self.data.observe_turn(tokio::time::Instant::now());
         if self.data.has_pending_work() {
             let budget = self.transport.host_bytes();
@@ -703,6 +747,30 @@ impl InstalledIngress {
                     &verified,
                 )
             }
+            Route::LegacyInput => {
+                let live = &self
+                    .live
+                    .as_ref()
+                    .context("live relay not installed")?
+                    .service;
+                let proof = RequestProof::decode(request.proof().context("missing proof")?)?;
+                let exact =
+                    Request::new(request.method().as_str(), request.target(), request.body())?;
+                let verified = self
+                    .sessions
+                    .admit_current(owner, &self.current, &proof, &exact)?;
+                {
+                    let guard = self.current.read().map_err(anyhow::Error::msg)?;
+                    let turn = crate::owner_turn::NativeTurn::held(guard, owner.workspace_id());
+                    live.check_control(&turn, &verified)?;
+                }
+                let input = tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::InputRequest::decode(request.body())
+                    .map_err(|error| anyhow::anyhow!("invalid legacy window input: {error}"))?;
+                self.legacy
+                    .queue_input(input, &owner.identity.native_cert.device_public_key)
+                    .map_err(anyhow::Error::msg)?;
+                Ok(b"{}".to_vec())
+            }
             _ => anyhow::bail!("data handler not installed"),
         }
     }
@@ -780,10 +848,6 @@ fn endpoint_from_socket(
         runtime,
     )?)
 }
-#[expect(
-    clippy::too_many_arguments,
-    reason = "each argument is a distinct piece of custody or context the caller already holds"
-)]
 async fn serve_h3(
     endpoint: quinn::Endpoint,
     authority: String,
@@ -865,6 +929,8 @@ mod live_forward_tests;
 mod live_tests;
 #[cfg(test)]
 mod local_enrollment_tests;
+#[cfg(test)]
+mod staged_retry_tests;
 #[cfg(test)]
 mod tests;
 

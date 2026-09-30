@@ -249,14 +249,16 @@ impl SourceEditor {
         // the resolve falls back to it even if the binding were ever cleared.
         self.code.handle_event(
             event,
-            1.0,
-            modifiers,
-            doc,
-            text_id,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers,
+                state: doc,
+                path: text_id,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -357,10 +359,6 @@ impl SourceEditor {
     /// Draw a floating tooltip card near `at` carrying a diagnostic's message
     /// (and its first hint, dimmed). Sizing is measured from the text so the
     /// card hugs the content.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "diagnostic tooltip painting combines scene resources and theme with its anchor and diagnostic message/hint"
-    )]
     fn draw_tooltip(
         &self,
         scene: &mut Scene,

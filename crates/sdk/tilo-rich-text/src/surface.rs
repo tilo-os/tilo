@@ -3,10 +3,11 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use qdoc::snapshot::BlockView;
 use qdoc_rich_text::{ChangeCursor, RichText, RichTextAction, RichTextState};
-use ui::automerge::{AutoCommit, ChangeHash, ObjId};
+use ui::automerge::{AutoCommit, ChangeHash};
 use ui::framework::{ResourceSurface, SurfaceCx};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
@@ -594,6 +595,8 @@ impl ResourceSurface<RichText> for RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints; inner = editor);
+
     type Inner = BlockEditor;
 
     fn inner(&self) -> &BlockEditor {
@@ -604,7 +607,8 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         &mut self.editor
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         self.source.sync(state);
         // An edit made outside an input event (an accessibility action).
         self.commit(state);
@@ -614,35 +618,18 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         self.editor.sync(state, path);
     }
 
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
         if let Some(outcome) = self.outcome_of(event, *ctx.modifiers) {
             self.outcome = Some(outcome);
             *ctx.handled = true;
             return;
         }
-        self.editor.handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+        self.editor.handle_event(event, ctx);
         self.commit(ctx.state);
     }
 
     // Every edit is an action bounded into undo steps by its source or the
     // host; the editor's own commit requests would close a word mid-typing.
-    fn needs_commit(&self) -> bool {
-        false
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
-        self.source.take_committed()
-    }
 
     /// An assistive technology focuses the field or sets its text, as a
     /// person typing would: the new text is written through the source's
@@ -650,9 +637,10 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         match action {
             ui::a11y::Action::Focus => {
                 Widget::set_focus(&mut self.editor, true);
@@ -668,7 +656,18 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
             _ => self.editor.perform_action(action, state, path),
         }
     }
+}
 
+impl<S: RichTextSource + 'static> ui::undo::UndoPoints for RichTextSurface<S> {
+    fn needs_commit(&self) -> bool {
+        false
+    }
+}
+
+impl<S: RichTextSource + 'static> ui::undo::CommittedActions for RichTextSurface<S> {
+    fn take_committed_action(&mut self) -> Option<Vec<ChangeHash>> {
+        self.source.take_committed()
+    }
     fn keeps_undo_step_open(&self) -> bool {
         self.source.keeps_step_open()
     }

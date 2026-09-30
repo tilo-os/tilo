@@ -19,6 +19,9 @@
 #                  (.forgejo/workflows/build-image.yml), never a production key.
 #   series         TILO_ALLOW_EMPTY_SERIES=1, as in that lane.
 #   browser        TILO_WITH_BROWSER=0 (the WPE engine is ~45 minutes cold).
+#   debug info     TILO_RUST_DEBUGINFO=0, as CI's dev image lane.
+#   layer epoch    TILO_LAYER_EPOCH=base: layers dated by the base image, so a new
+#                  commit alone does not invalidate podman's layer cache.
 #   Rust builder   TILO_CARGO_FRESHNESS=content: the builder keeps its target
 #                  cache and recompiles only what changed (os/Containerfile).
 #
@@ -34,8 +37,18 @@ esac
 # shellcheck disable=SC1091
 . "$TILO_OS_DIR/base-snapshot.env"
 _li_published_rpms=""
-if _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>/dev/null)"; then
-  _li_published_rpms="$_li_resolved"
+# A registry that cannot be reached must stop the build: taking it for "not
+# published" would switch the base to a local snapshot and rebuild everything.
+if [ -z "${RPMS_REF:-}" ]; then
+  _li_rc=0
+  _li_err="$(mktemp)"
+  _li_resolved="$("$TILO_OS_DIR/dev/resolve-rpm-snapshot.sh" 2>"$_li_err")" || _li_rc=$?
+  _li_why="$(tail -n 1 "$_li_err")"; rm -f "$_li_err"
+  case "$_li_rc" in
+    0) _li_published_rpms="$_li_resolved" ;;
+    3) die "local inputs: the RPM snapshot registry could not be asked; retry, or set RPMS_REF
+  $_li_why" ;;
+  esac
 fi
 _li_pin="$(sed -n "s/^$_li_pin_var=//p" "$TILO_OS_DIR/kernel-snapshot.env")"
 _li_buildroot="$(sed -n "s/^$_li_buildroot_var=//p" "$TILO_OS_DIR/kernel-buildroot-snapshot.env")"
@@ -44,6 +57,13 @@ mkdir -p "$_li_cache"
 
 : "${TILO_WITH_BROWSER:=0}"
 : "${TILO_ALLOW_EMPTY_SERIES:=1}"
+# No debug info in the in-image compile, as CI's dev image lane: it compiles
+# faster, and the same compile settings share that lane's compiler cache.
+: "${TILO_RUST_DEBUGINFO:=0}"
+# Layers dated by the base image, not the commit: podman keys its layer cache on
+# the epoch, so a commit time rebuilt every layer after every commit
+# (os/dev/build-image.sh TILO_LAYER_EPOCH).
+: "${TILO_LAYER_EPOCH:=base}"
 if [ -z "${TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY:-}" ]; then
   # RFC 8032 test vector 1: public, non-production, for build validation only.
   TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY=d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a
@@ -55,7 +75,7 @@ case " ${TILO_BUILD_ARGS:-} " in
   *TILO_CARGO_FRESHNESS=*) ;;
   *) TILO_BUILD_ARGS="${TILO_BUILD_ARGS:-} --build-arg TILO_CARGO_FRESHNESS=${TILO_CARGO_FRESHNESS:-content}" ;;
 esac
-export TILO_WITH_BROWSER TILO_ALLOW_EMPTY_SERIES TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY TILO_BUILD_ARGS
+export TILO_WITH_BROWSER TILO_ALLOW_EMPTY_SERIES TILO_OFFICIAL_REGISTRY_OWNER_PUBKEY TILO_BUILD_ARGS TILO_RUST_DEBUGINFO TILO_LAYER_EPOCH
 
 # --- RPM snapshot --------------------------------------------------------------
 if [ -n "${RPMS_REF:-}" ]; then
@@ -112,7 +132,7 @@ else
     if [ -n "$KERNEL_RPMS_REF" ]; then
       _li_kernel_note="the newest CI-built $_li_arch kernel whose signed provenance binds a signed build environment"
     else
-      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the snapshot-kernel-buildroot workflow"
+      [ -n "$_li_buildroot" ] || die "no $_li_buildroot_var in os/kernel-buildroot-snapshot.env to build a local kernel on; run the build-buildroots workflow"
       _li_kernel_hash="$( { printf '%s\n' "$_li_buildroot"; git -C "$TILO_REPO" ls-files -s -- os/kernel os/external-assets/github-assets.tsv; } | sha256sum | cut -c1-16)"
       KERNEL_RPMS_REF="localhost/tilo-kernel:$_li_arch-$_li_kernel_hash"
       if podman image exists "$KERNEL_RPMS_REF"; then

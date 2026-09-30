@@ -3,18 +3,21 @@
 
 use std::collections::HashMap;
 use ui::doc::read_str;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use desktop_policy::{AppCandidate, DefaultAppResolver, PersonalDefaults, ResourceKind};
 use taffy::{NodeId, TaffyTree};
 use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
+use crate::i18n::{t, t_args};
 use crate::widgets::{caption, card, choice_row_described, rows, value_row};
+use ui::i18n::ArgValue;
 
 pub struct PersonalAppsPane {
     candidates: Vec<AppCandidate>,
@@ -52,6 +55,22 @@ impl PersonalAppsPane {
             actions: ui::ActionHost::new(),
             composed: None,
             rect: Rect::ZERO,
+        }
+    }
+
+    fn resource_label(resource: &ResourceKind) -> String {
+        if let Some(ext) = resource.extension_name() {
+            t_args(
+                "settings-personal-apps-ext-files",
+                &[("ext", ArgValue::Text(ext.to_string()))],
+            )
+        } else if let Some(scheme) = resource.scheme_name() {
+            t_args(
+                "settings-personal-apps-scheme-links",
+                &[("scheme", ArgValue::Text(scheme.to_string()))],
+            )
+        } else {
+            resource.display_label()
         }
     }
 
@@ -106,38 +125,36 @@ impl PersonalAppsPane {
                     || options.first().cloned().unwrap_or_default(),
                     |a| Self::option(a),
                 );
-            let label = resource.display_label();
+            let label = Self::resource_label(resource);
             let picker_path = Self::draft_key(&Self::key(resource));
             let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
             file_rows.push(choice_row_described(
                 &label,
-                "Your choice follows you unless this workspace chooses another app.",
+                &t("settings-personal-apps-choice-follows"),
                 Box::new(picker),
             ));
         }
         let body = if file_rows.is_empty() {
-            rows(vec![caption(
-                "No installed application currently declares a supported file or link type. Defaults appear here as apps are installed.",
-            )])
+            rows(vec![caption(&t("settings-personal-apps-empty"))])
         } else {
             rows(file_rows)
         };
         let scope = card(
-            "Personal",
+            &t("settings-personal-apps-scope"),
             rows(vec![
-                value_row("Applies to", "Your identity on every device"),
-                caption(
-                    "A workspace may set a shared choice. In Workspace Settings you can follow it, return to this personal choice, or select a different app for that workspace.",
+                value_row(
+                    &t("settings-personal-apps-applies-to"),
+                    &t("settings-personal-apps-applies-value"),
                 ),
+                caption(&t("settings-personal-apps-scope-caption")),
                 Box::new(
                     Button::new(
                         "open-workspace-app-defaults",
-                        "Open current workspace app rules",
+                        &t("settings-personal-apps-open-workspace"),
                         None,
                     )
-                    .with_size(236.0, 40.0)
                     .on_effect(|| {
                         let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
                             route: os_actions::WorkspaceSettingsRoute::AppsFiles,
@@ -146,7 +163,10 @@ impl PersonalAppsPane {
                 ),
             ]),
         );
-        crate::widgets::cards(vec![scope, card("Open files and links with", body)])
+        crate::widgets::cards(vec![
+            scope,
+            card(&t("settings-personal-apps-files-title"), body),
+        ])
     }
 
     fn draft_key(canonical: &str) -> String {
@@ -223,7 +243,10 @@ pub fn installed_candidates() -> Vec<AppCandidate> {
 }
 
 impl Widget for PersonalAppsPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             let initial_values = {
                 let resolver = DefaultAppResolver::new(&self.candidates);
@@ -365,36 +388,15 @@ impl Widget for PersonalAppsPane {
             c.draw(scene, transform, text_renderer, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
@@ -410,24 +412,27 @@ impl Widget for PersonalAppsPane {
             .into_iter()
             .collect()
     }
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "personal-apps",
-            "Personal app defaults",
-            "Change default apps",
-        )
-    }
     fn name(&self) -> &'static str {
         "PersonalAppsPane"
     }
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for PersonalAppsPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "personal-apps",
+            &t("settings-personal-apps-undo-name"),
+            &t("settings-personal-apps-undo-action"),
+        )
     }
 }
 
@@ -441,6 +446,22 @@ mod tests {
             resources: [ResourceKind::extension(ext).unwrap()].into(),
         }
     }
+    #[test]
+    fn personal_apps_copy_comes_from_the_catalogue() {
+        assert_eq!(
+            t("settings-personal-apps-files-title"),
+            "Open files and links with"
+        );
+        assert_eq!(
+            PersonalAppsPane::resource_label(&ResourceKind::extension("pdf").unwrap()),
+            ".pdf files"
+        );
+        assert_eq!(
+            PersonalAppsPane::resource_label(&ResourceKind::scheme("https").unwrap()),
+            "https: links"
+        );
+    }
+
     /// Dropdown choices persist and MIME/scheme claims are personal defaults.
     #[test]
     fn personal_default_apps_persist_and_expose_claims() {

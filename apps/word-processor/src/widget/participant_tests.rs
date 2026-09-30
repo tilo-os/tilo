@@ -253,7 +253,7 @@ fn views_rebase_under_concurrent_edits() {
 #[test]
 fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     let (mut wp, mut state, ids) = widget_with(&["hello", "other"]);
-    let _ = wp.take_committed_action();
+    let _ = ui::undo::take_committed_action(&mut wp);
     let (agent, human) = (pid("agent"), pid("human-2"));
     wp.set_participant_view(&agent, &caret(&ids[0], 5), &state.doc);
     wp.set_participant_view(&human, &caret(&ids[0], 5), &state.doc);
@@ -286,7 +286,7 @@ fn a_participant_edit_advances_its_own_caret_but_not_the_windows_undo() {
     );
     assert_eq!(wp.local_participant_view(), local_before);
     assert_eq!(
-        wp.take_committed_action(),
+        ui::undo::take_committed_action(&mut wp),
         None,
         "a participant's edit never opens the local window's undo group"
     );
@@ -414,14 +414,16 @@ fn press(wp: &mut WordProcessorWidget, state: &mut ui::State, input: &Input) {
             event: ev,
             is_synthetic: false,
         },
-        1.0,
-        &mods,
-        &mut state.doc,
-        &state.root,
-        &mut handled,
-        &mut focus,
-        NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &mods,
+            state: &mut state.doc,
+            path: &state.root,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -707,8 +709,13 @@ fn view_operations_move_only_the_invokers_view() {
 fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
     let (mut wp, mut state, ids) = widget_with(&["one", "two"]);
     let agent = pid("agent-task:7");
-    assert!(Widget::join_participant(&mut wp, &agent));
-    assert!(!Widget::join_participant(&mut wp, &agent), "idempotent");
+    assert!(ui::collaboration::participants::join_participant(
+        &mut wp, &agent
+    ));
+    assert!(
+        !ui::collaboration::participants::join_participant(&mut wp, &agent),
+        "idempotent"
+    );
     // No document at join time: placed on the next sync.
     wp.sync(&mut state.doc, &state.root);
     assert_eq!(
@@ -718,9 +725,10 @@ fn joined_participants_start_at_the_document_end_and_leave_cleanly() {
     assert_eq!(wp.participant_presence(&state.doc).len(), 1);
     // Per-participant resolution through the Widget hooks.
     assert!(
-        Widget::resource_for(&wp, Some(&agent), &state.doc, "word-processor.document").is_some()
+        ui::resources::resource_for(&wp, Some(&agent), &state.doc, "word-processor.document")
+            .is_some()
     );
-    Widget::leave_participant(&mut wp, &agent);
+    ui::collaboration::participants::leave_participant(&mut wp, &agent);
     assert_eq!(wp.participant_view(&agent, &state.doc), None);
     assert!(wp.participant_presence(&state.doc).is_empty());
 }
@@ -774,8 +782,8 @@ fn a_noted_outcome_is_adopted_only_after_its_edit_applied() {
 #[test]
 fn a_participant_host_publishes_the_schema_as_its_own_tree() {
     let (mut wp, state, _) = widget_with(&["x"]);
-    Widget::set_participant_host(&mut wp, true);
-    let published = Widget::resources(&wp, &state.doc);
+    ui::collaboration::participants::set_participant_host(&mut wp, true);
+    let published = ui::resources::resources(&wp, &state.doc);
     let schema =
         <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc);
     assert_eq!(published.len(), schema.len());
@@ -867,14 +875,14 @@ fn a_delivered_view_operation_moves_only_its_participants_view() {
 #[test]
 fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view() {
     let (mut wp, state, ids) = widget_with(&["first paragraph", "tail"]);
-    Widget::set_participant_host(&mut wp, true);
+    ui::collaboration::participants::set_participant_host(&mut wp, true);
     let agent = pid("agent-task:5");
     wp.set_participant_view(&agent, &caret(&ids[1], 4), &state.doc);
     let tree = {
         let _scope = ui::invocation_scope::InvokerScope::enter(
             ActionInvoker::actor("agent-actor").with_participant(agent.clone()),
         );
-        Widget::resources(&wp, &state.doc)
+        ui::resources::resources(&wp, &state.doc)
     };
     assert_eq!(
         format!(
@@ -909,7 +917,7 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
     );
     // Outside any invocation the host still publishes the schema.
     assert_eq!(
-        Widget::resources(&wp, &state.doc).len(),
+        ui::resources::resources(&wp, &state.doc).len(),
         <WordProcessorWidget as tilo_actions::ResourceProvider>::catalogue_schema(&wp, &state.doc)
             .len()
     );
@@ -921,12 +929,12 @@ fn a_participant_host_resolves_a_delivered_invocation_against_the_invokers_view(
 #[test]
 fn a_participant_host_resolves_a_participantless_invocation_against_its_own_view() {
     let (mut wp, state, _) = widget_with(&["first paragraph"]);
-    Widget::set_participant_host(&mut wp, true);
+    ui::collaboration::participants::set_participant_host(&mut wp, true);
     let own = <WordProcessorWidget as tilo_actions::ResourceProvider>::resources(&wp, &state.doc);
     let tree = {
         let _scope =
             ui::invocation_scope::InvokerScope::enter(ActionInvoker::actor("certified-job"));
-        Widget::resources(&wp, &state.doc)
+        ui::resources::resources(&wp, &state.doc)
     };
     let ids = |resources: &[Resource]| -> Vec<String> {
         fn walk(resource: &Resource, out: &mut Vec<String>) {

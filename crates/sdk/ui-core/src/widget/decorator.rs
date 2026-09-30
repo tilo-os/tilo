@@ -55,10 +55,8 @@
 //!   widget's own method, so an override of the derived-from method alone is
 //!   not what the host calls: override the entry point the host uses
 //!   (`draw_with_presence` for painting in a live frame, and `draw` for
-//!   callers that paint directly). Input is the exception: overriding either
-//!   [`handle_event`](Widget::handle_event) or
-//!   [`handle_event_ctx`](Widget::handle_event_ctx) works, because the
-//!   default `handle_event` goes through the decorator's `handle_event_ctx`.
+//!   callers that paint directly). Input has a single entry point,
+//!   [`handle_event`](Widget::handle_event).
 //! * **The inner widget owns its layout node.** The inner widget registers
 //!   itself in the node map during `build_layout`, so hooks the host reaches
 //!   by sweeping or hit-testing that map (`cursor_shape`, `tooltip`,
@@ -73,6 +71,7 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::{AppModel, ModelPath, capability};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -80,15 +79,11 @@ use vello::kurbo::Affine;
 use winit::event::WindowEvent;
 
 use super::{
-    ActionDirectoryInvocationDomain, ActionDirectoryResourcePage, AudiencePresentationProvider,
-    Collaborative, CompleteContentProvider, Continuable, ControlBindingMetadata, EventCtx,
-    FloatingSurfaceProvider, FullscreenProvider, LayoutInfo, ManualPolicy, NativeViewLifecycle,
-    ParticipantPresence, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult,
-    ResourceOperationStart, Widget, WindowCloseAdmission,
+    EventCtx, LayoutInfo, ManualPolicy, PrimaryScrollAction, PrimaryScrollRegion,
+    PrimaryScrollResult, ResourceOperationStart, Widget,
 };
 use crate::dnd::DragPayload;
-use crate::permissions::PermissionScope;
-use crate::presence::{PresenceCtx, PresenceKey};
+use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::time::Instant;
@@ -123,52 +118,6 @@ pub trait Decorator {
         std::any::type_name::<Self>()
     }
 
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) {
-        self.inner_mut()
-            .document_action_applied(action, before, doc, path);
-    }
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        self.inner().history_registration()
-    }
-
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        self.inner().document_history_definition()
-    }
-
-    fn provides_document_history(&self) -> bool {
-        self.inner().provides_document_history()
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        self.inner().visit_framework_history(visitor);
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        self.inner_mut().visit_framework_history_mut(visitor);
-    }
-
     #[doc(hidden)]
     fn resets_callback_binding(&self) -> bool {
         self.inner().resets_callback_binding()
@@ -184,44 +133,12 @@ pub trait Decorator {
         self.inner().inactive_callback_boundary()
     }
 
-    fn native_input_snapshot(&self, state: &AutoCommit, path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
         self.inner().native_input_snapshot(state, path)
-    }
-
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        self.inner_mut().on_window_close_requested()
-    }
-
-    fn take_window_close_intent(&mut self) -> bool {
-        self.inner_mut().take_window_close_intent()
-    }
-
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        self.inner().unsaved_documents(doc)
-    }
-
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        self.inner_mut().checkpoint_components()
-    }
-
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().finish_admitted_close()
-    }
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        self.inner_mut().try_flush_owned_persistence()
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        self.inner().has_pending_control_invocation()
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().close_components()
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        self.inner_mut().take_component_close_reports()
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -248,46 +165,12 @@ pub trait Decorator {
         self.inner_mut().visit_components(request)
     }
 
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        self.inner_mut().collaborative_mut()
+    fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        self.inner().provide(request);
     }
 
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        self.inner_mut().native_view_lifecycle_mut()
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        self.inner().floating_surface_provider()
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        self.inner_mut().floating_surface_provider_mut()
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        self.inner().audience_presentation_provider()
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        self.inner_mut().audience_presentation_provider_mut()
-    }
-
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        self.inner().fullscreen_provider()
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        self.inner_mut().fullscreen_provider_mut()
-    }
-
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        self.inner().complete_content_provider()
-    }
-
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        self.inner_mut().complete_content_provider_mut()
+    fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>) {
+        self.inner_mut().provide_mut(request);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -301,19 +184,11 @@ pub trait Decorator {
         self.inner_mut().set_interaction_environment(environment);
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.inner_mut().sync(state, path);
     }
 
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        self.inner().continuable()
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        self.inner_mut().continuable_mut()
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         self.inner_mut().update(state, path)
     }
 
@@ -374,50 +249,8 @@ pub trait Decorator {
             .draw(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event_ctx(
-            self,
-            event,
-            &mut EventCtx {
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            },
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        self.inner_mut().handle_event(
-            event,
-            ctx.scale_factor,
-            ctx.modifiers,
-            ctx.state,
-            ctx.path,
-            ctx.handled,
-            ctx.focus_target,
-            ctx.node_id,
-            ctx.taffy,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        self.inner_mut().handle_event(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -542,8 +375,8 @@ pub trait Decorator {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut().perform_action(action, state, path)
     }
@@ -552,8 +385,8 @@ pub trait Decorator {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut()
             .perform_action_at(action, key_path, state, path)
@@ -563,8 +396,8 @@ pub trait Decorator {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut()
             .perform_semantic_action(target, action, state, path)
@@ -586,86 +419,29 @@ pub trait Decorator {
         self.inner().opening()
     }
 
-    fn needs_commit(&self) -> bool {
-        self.inner().needs_commit()
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        self.inner_mut().take_commit_context()
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.inner_mut().take_control_invocation()
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        self.inner_mut()
-            .on_control_invocation_result(address, result);
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        self.inner().control_action_bindings()
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        self.inner().has_action_control_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.inner_mut()
-            .refresh_control_action_availability(allowed);
-    }
-
-    fn on_commit(&mut self) {
-        self.inner_mut().on_commit();
-    }
-
-    fn get_state(&self) -> Option<String> {
-        self.inner().get_state()
-    }
-
-    fn set_state(&mut self, state: &str) {
-        self.inner_mut().set_state(state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         self.inner().text_review()
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         self.inner_mut().on_external_event(payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.inner_mut().on_nav_gesture(dir, state, path)
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        self.inner().nav_availability()
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         self.inner_mut().take_focus_reset()
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        self.inner().record_intent()
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        self.inner().view_state()
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        self.inner_mut().restore_view_state(view);
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -684,83 +460,8 @@ pub trait Decorator {
         self.inner_mut().set_motion_reduced(reduced);
     }
 
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        self.inner_mut().set_record_scope(record);
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        self.inner().presence_key()
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        self.inner().presence_payload()
-    }
-
     fn needs_idle_sync(&self) -> bool {
         self.inner().needs_idle_sync()
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.inner().permission_scope()
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.inner().resources(doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        self.inner()
-            .action_directory_resource_page(doc, cursor, max_results)
-    }
-
-    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        self.inner().action_directory_revision(doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.inner().resource(doc, id)
-    }
-
-    fn action_directory_visibility(
-        &self,
-        doc: &AutoCommit,
-        resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        self.inner().action_directory_visibility(doc, resource_id)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        self.inner().search_providers()
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
-        self.inner_mut()
-            .activate_search_result(action_id, doc, path);
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.inner_mut().take_committed_action()
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        self.inner().keeps_undo_step_open()
-    }
-
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-        self.inner_mut().set_undo_status(status)
-    }
-
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        self.inner_mut().take_undo_request()
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        self.inner_mut().handle_local_undo_request(request)
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
@@ -774,56 +475,6 @@ pub trait Decorator {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.inner_mut().start_operation(op, doc, path)
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        self.inner_mut()
-            .invoke_resource_operation(kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        self.inner_mut()
-            .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation(invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        self.inner_mut()
-            .start_resource_operation_with_document(invocation, kind, type_id, payload, doc, path)
     }
 
     fn poll_resource_operation(
@@ -841,7 +492,7 @@ pub trait Decorator {
         self.inner().accepts_drop(payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AutoCommit, path: &ObjId) {
+    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
         self.inner_mut().on_drop(payload, state, path);
     }
 
@@ -928,13 +579,6 @@ pub trait Decorator {
             .draw_overlay(scene, transform, text_renderer, theme, presence);
     }
 
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        self.inner().action_directory_invocation_domain(doc)
-    }
-
     fn apply_primary_vertical_scroll(
         &mut self,
         action: PrimaryScrollAction,
@@ -942,44 +586,16 @@ pub trait Decorator {
         self.inner_mut().apply_primary_vertical_scroll(action)
     }
 
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        self.inner().caller_view_resources(doc)
-    }
-
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.inner_mut().collaboration_children_mut()
-    }
-
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         self.inner_mut().focus_requested(target, tree)
-    }
-
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        self.inner().history_restore_readiness(scope)
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        self.inner_mut().install_control_custody(domain, attachment)
     }
 
     fn is_default_keyboard_focus(&self) -> bool {
         self.inner().is_default_keyboard_focus()
     }
 
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        self.inner_mut().join_participant(participant)
-    }
-
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         self.inner().keyboard_input_scope()
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        self.inner_mut().leave_participant(participant)
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
@@ -990,58 +606,14 @@ pub trait Decorator {
         self.inner_mut().native_view_frame_start()
     }
 
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        self.inner().participant_presence(doc)
-    }
-
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         self.inner().primary_vertical_scroll()
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        self.inner_mut().release_record_scope()
-    }
-
-    /// [`Self::resource`] in `participant`'s tree. The local view (`None`)
-    /// is this decorator's own [`Self::resource`], so an override there is
-    /// honoured; a participant's tree is the inner widget's. A decorator that
-    /// adds resources of its own overrides this too.
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        match participant {
-            None => Decorator::resource(self, doc, id),
-            Some(_) => self.inner().resource_for(participant, doc, id),
-        }
-    }
-
-    /// [`Self::resources`] in `participant`'s tree, as [`Self::resource_for`].
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        match participant {
-            None => Decorator::resources(self, doc),
-            Some(_) => self.inner().resources_for(participant, doc),
-        }
     }
 
     fn semantic_readers(
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         self.inner().semantic_readers()
-    }
-
-    fn set_participant_host(&mut self, host: bool) {
-        self.inner_mut().set_participant_host(host)
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        self.inner_mut().set_participant_label(participant, label)
     }
 
     fn unmount_native_views(&mut self) {
@@ -1081,51 +653,6 @@ impl<T: Decorator> Widget for T {
         Decorator::concrete_type_name(self)
     }
 
-    fn document_action_applied(
-        &mut self,
-        action: &tilo_actions::EncodedAction,
-        before: &[automerge::ChangeHash],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) {
-        Decorator::document_action_applied(self, action, before, doc, path);
-    }
-
-    fn history_registration(
-        &self,
-    ) -> Result<
-        Option<crate::history_mode::HistoryRegistration>,
-        crate::history_mode::HistoryRegistrationError,
-    > {
-        Decorator::history_registration(self)
-    }
-
-    fn document_history_definition(
-        &self,
-    ) -> Option<&'static crate::history_mode::HistoryDefinition> {
-        Decorator::document_history_definition(self)
-    }
-
-    fn provides_document_history(&self) -> bool {
-        Decorator::provides_document_history(self)
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history(
-        &self,
-        visitor: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
-    ) {
-        Decorator::visit_framework_history(self, visitor);
-    }
-
-    #[doc(hidden)]
-    fn visit_framework_history_mut(
-        &mut self,
-        visitor: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
-    ) {
-        Decorator::visit_framework_history_mut(self, visitor);
-    }
-
     #[doc(hidden)]
     fn resets_callback_binding(&self) -> bool {
         Decorator::resets_callback_binding(self)
@@ -1141,44 +668,12 @@ impl<T: Decorator> Widget for T {
         Decorator::inactive_callback_boundary(self)
     }
 
-    fn native_input_snapshot(&self, state: &AutoCommit, path: &ObjId) -> Option<serde_json::Value> {
+    fn native_input_snapshot(
+        &self,
+        state: &AppModel,
+        path: &ModelPath,
+    ) -> Option<serde_json::Value> {
         Decorator::native_input_snapshot(self, state, path)
-    }
-
-    fn on_window_close_requested(&mut self) -> WindowCloseAdmission {
-        Decorator::on_window_close_requested(self)
-    }
-
-    fn take_window_close_intent(&mut self) -> bool {
-        Decorator::take_window_close_intent(self)
-    }
-
-    fn unsaved_documents(&self, doc: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
-        Decorator::unsaved_documents(self, doc)
-    }
-
-    fn checkpoint_components(&mut self) -> Vec<String> {
-        Decorator::checkpoint_components(self)
-    }
-
-    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::finish_admitted_close(self)
-    }
-
-    fn try_flush_owned_persistence(&mut self) -> Option<Result<(), String>> {
-        Decorator::try_flush_owned_persistence(self)
-    }
-
-    fn has_pending_control_invocation(&self) -> bool {
-        Decorator::has_pending_control_invocation(self)
-    }
-
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::close_components(self)
-    }
-
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        Decorator::take_component_close_reports(self)
     }
 
     fn callback_binding(&self) -> Option<crate::bound_dispatch::CallbackBinding> {
@@ -1205,46 +700,12 @@ impl<T: Decorator> Widget for T {
         Decorator::visit_components(self, request)
     }
 
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Decorator::collaborative_mut(self)
+    fn provide<'a>(&'a self, request: &mut capability::Request<'a, '_>) {
+        Decorator::provide(self, request);
     }
 
-    fn native_view_lifecycle_mut(&mut self) -> Option<&mut dyn NativeViewLifecycle> {
-        Decorator::native_view_lifecycle_mut(self)
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Decorator::floating_surface_provider(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Decorator::floating_surface_provider_mut(self)
-    }
-
-    fn audience_presentation_provider(&self) -> Option<&dyn AudiencePresentationProvider> {
-        Decorator::audience_presentation_provider(self)
-    }
-
-    fn audience_presentation_provider_mut(
-        &mut self,
-    ) -> Option<&mut dyn AudiencePresentationProvider> {
-        Decorator::audience_presentation_provider_mut(self)
-    }
-
-    fn fullscreen_provider(&self) -> Option<&dyn FullscreenProvider> {
-        Decorator::fullscreen_provider(self)
-    }
-
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn FullscreenProvider> {
-        Decorator::fullscreen_provider_mut(self)
-    }
-
-    fn complete_content_provider(&self) -> Option<&dyn CompleteContentProvider> {
-        Decorator::complete_content_provider(self)
-    }
-
-    fn complete_content_provider_mut(&mut self) -> Option<&mut dyn CompleteContentProvider> {
-        Decorator::complete_content_provider_mut(self)
+    fn provide_mut<'a>(&'a mut self, request: &mut capability::RequestMut<'a, '_>) {
+        Decorator::provide_mut(self, request);
     }
 
     fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
@@ -1258,19 +719,11 @@ impl<T: Decorator> Widget for T {
         Decorator::set_interaction_environment(self, environment);
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         Decorator::sync(self, state, path);
     }
 
-    fn continuable(&self) -> Option<&dyn Continuable> {
-        Decorator::continuable(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn Continuable> {
-        Decorator::continuable_mut(self)
-    }
-
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         Decorator::update(self, state, path)
     }
 
@@ -1329,38 +782,8 @@ impl<T: Decorator> Widget for T {
         Decorator::draw(self, scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "temporary compatibility adapter; implementations use EventCtx"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        Decorator::handle_event(
-            self,
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
-    }
-
-    fn handle_event_ctx(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
-        Decorator::handle_event_ctx(self, event, ctx);
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        Decorator::handle_event(self, event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1485,8 +908,8 @@ impl<T: Decorator> Widget for T {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_action(self, action, state, path)
     }
@@ -1495,8 +918,8 @@ impl<T: Decorator> Widget for T {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_action_at(self, action, key_path, state, path)
     }
@@ -1505,8 +928,8 @@ impl<T: Decorator> Widget for T {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::perform_semantic_action(self, target, action, state, path)
     }
@@ -1527,84 +950,29 @@ impl<T: Decorator> Widget for T {
         Decorator::opening(self)
     }
 
-    fn needs_commit(&self) -> bool {
-        Decorator::needs_commit(self)
-    }
-
-    fn take_commit_context(&mut self) -> Option<tilo_actions::ActionContext> {
-        Decorator::take_commit_context(self)
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        Decorator::take_control_invocation(self)
-    }
-
-    fn on_control_invocation_result(
-        &mut self,
-        address: &tilo_actions::ActionAddress,
-        result: &Result<ResourceOperationStart, tilo_actions::DoorError>,
-    ) {
-        Decorator::on_control_invocation_result(self, address, result);
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        Decorator::control_action_bindings(self)
-    }
-
-    fn has_action_control_bindings(&self) -> bool {
-        Decorator::has_action_control_bindings(self)
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        Decorator::refresh_control_action_availability(self, allowed);
-    }
-
-    fn on_commit(&mut self) {
-        Decorator::on_commit(self);
-    }
-
-    fn get_state(&self) -> Option<String> {
-        Decorator::get_state(self)
-    }
-
-    fn set_state(&mut self, state: &str) {
-        Decorator::set_state(self, state);
-    }
-
     fn text_review(&self) -> Option<(usize, String)> {
         Decorator::text_review(self)
     }
 
-    fn on_external_event(&mut self, payload: &str, state: &mut AutoCommit, root: &ObjId) {
+    fn on_external_event(&mut self, payload: &str, state: &mut AppModel, root: &ModelPath) {
         Decorator::on_external_event(self, payload, state, root);
     }
 
     fn on_nav_gesture(
         &mut self,
         dir: crate::gesture::NavDirection,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         Decorator::on_nav_gesture(self, dir, state, path)
     }
 
+    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+        Decorator::nav_availability(self)
+    }
+
     fn take_focus_reset(&mut self) -> bool {
         Decorator::take_focus_reset(self)
-    }
-
-    fn record_intent(&self) -> Option<crate::record::RecordCheckout> {
-        Decorator::record_intent(self)
-    }
-
-    fn view_state(&self) -> Option<crate::view::ViewContribution> {
-        Decorator::view_state(self)
-    }
-
-    fn restore_view_state(&mut self, view: &crate::view::ViewContribution) {
-        Decorator::restore_view_state(self, view);
     }
 
     fn dev_route(&self) -> Option<super::router::RouteSnapshot> {
@@ -1623,81 +991,8 @@ impl<T: Decorator> Widget for T {
         Decorator::set_motion_reduced(self, reduced);
     }
 
-    fn set_record_scope(&mut self, record: &crate::record::RecordId) {
-        Decorator::set_record_scope(self, record);
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        Decorator::presence_key(self)
-    }
-
-    fn presence_payload(&self) -> Option<(PresenceKey, crate::collaboration::PresencePayload)> {
-        Decorator::presence_payload(self)
-    }
-
     fn needs_idle_sync(&self) -> bool {
         Decorator::needs_idle_sync(self)
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        Decorator::permission_scope(self)
-    }
-
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::resources(self, doc)
-    }
-
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ActionDirectoryResourcePage> {
-        Decorator::action_directory_resource_page(self, doc, cursor, max_results)
-    }
-
-    fn action_directory_revision(&self, doc: &AutoCommit) -> Option<String> {
-        Decorator::action_directory_revision(self, doc)
-    }
-
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        Decorator::resource(self, doc, id)
-    }
-
-    fn action_directory_visibility(
-        &self,
-        doc: &AutoCommit,
-        resource_id: &str,
-    ) -> Option<tilo_actions::ActionAddress> {
-        Decorator::action_directory_visibility(self, doc, resource_id)
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn crate::search::SearchProvider>> {
-        Decorator::search_providers(self)
-    }
-
-    fn activate_search_result(&mut self, action_id: &str, doc: &mut AutoCommit, path: &ObjId) {
-        Decorator::activate_search_result(self, action_id, doc, path);
-    }
-
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        Decorator::take_committed_action(self)
-    }
-
-    fn keeps_undo_step_open(&self) -> bool {
-        Decorator::keeps_undo_step_open(self)
-    }
-
-    fn set_undo_status(&mut self, status: &mut dyn FnMut() -> crate::undo::UndoStatus) {
-        Decorator::set_undo_status(self, status)
-    }
-
-    fn take_undo_request(&mut self) -> Option<crate::undo::UndoRequest> {
-        Decorator::take_undo_request(self)
-    }
-
-    fn handle_local_undo_request(&mut self, request: crate::undo::UndoRequest) -> bool {
-        Decorator::handle_local_undo_request(self, request)
     }
 
     fn apply_room_action(&mut self, doc: &mut AutoCommit, type_id: &str, payload: &[u8]) -> bool {
@@ -1711,54 +1006,6 @@ impl<T: Decorator> Widget for T {
         path: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         Decorator::start_operation(self, op, doc, path)
-    }
-
-    fn invoke_resource_operation(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<bool, String> {
-        Decorator::invoke_resource_operation(self, kind, type_id, payload, doc, path)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        Decorator::invoke_resource_operation_v2(self, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation(self, invocation, kind, type_id, payload, doc, path)
-    }
-
-    fn start_resource_operation_with_document(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &mut AutoCommit,
-        path: &ObjId,
-    ) -> Result<Option<ResourceOperationStart>, String> {
-        Decorator::start_resource_operation_with_document(
-            self, invocation, kind, type_id, payload, doc, path,
-        )
     }
 
     fn poll_resource_operation(
@@ -1775,7 +1022,7 @@ impl<T: Decorator> Widget for T {
         Decorator::accepts_drop(self, payload)
     }
 
-    fn on_drop(&mut self, payload: DragPayload, state: &mut AutoCommit, path: &ObjId) {
+    fn on_drop(&mut self, payload: DragPayload, state: &mut AppModel, path: &ModelPath) {
         Decorator::on_drop(self, payload, state, path);
     }
 
@@ -1862,13 +1109,6 @@ impl<T: Decorator> Widget for T {
         Decorator::draw_overlay(self, scene, transform, text_renderer, theme, presence);
     }
 
-    fn action_directory_invocation_domain(
-        &self,
-        doc: &AutoCommit,
-    ) -> ActionDirectoryInvocationDomain {
-        Decorator::action_directory_invocation_domain(self, doc)
-    }
-
     fn apply_primary_vertical_scroll(
         &mut self,
         action: PrimaryScrollAction,
@@ -1876,44 +1116,16 @@ impl<T: Decorator> Widget for T {
         Decorator::apply_primary_vertical_scroll(self, action)
     }
 
-    fn caller_view_resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        Decorator::caller_view_resources(self, doc)
-    }
-
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        Decorator::collaboration_children_mut(self)
-    }
-
     fn focus_requested(&mut self, target: Option<NodeId>, tree: &TaffyTree<()>) {
         Decorator::focus_requested(self, target, tree)
-    }
-
-    fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        Decorator::history_restore_readiness(self, scope)
-    }
-
-    fn install_control_custody(
-        &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_custody::CustodyAttachment,
-    ) {
-        Decorator::install_control_custody(self, domain, attachment)
     }
 
     fn is_default_keyboard_focus(&self) -> bool {
         Decorator::is_default_keyboard_focus(self)
     }
 
-    fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        Decorator::join_participant(self, participant)
-    }
-
     fn keyboard_input_scope(&self) -> Option<crate::application::InstanceId> {
         Decorator::keyboard_input_scope(self)
-    }
-
-    fn leave_participant(&mut self, participant: &tilo_actions::ParticipantId) {
-        Decorator::leave_participant(self, participant)
     }
 
     fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
@@ -1924,47 +1136,14 @@ impl<T: Decorator> Widget for T {
         Decorator::native_view_frame_start(self)
     }
 
-    fn participant_presence(&self, doc: &AutoCommit) -> Vec<ParticipantPresence> {
-        Decorator::participant_presence(self, doc)
-    }
-
     fn primary_vertical_scroll(&self) -> Option<PrimaryScrollRegion> {
         Decorator::primary_vertical_scroll(self)
-    }
-
-    fn release_record_scope(&mut self) -> Result<(), String> {
-        Decorator::release_record_scope(self)
-    }
-
-    fn resource_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-        id: &str,
-    ) -> Option<tilo_actions::Resource> {
-        Decorator::resource_for(self, participant, doc, id)
-    }
-
-    fn resources_for(
-        &self,
-        participant: Option<&tilo_actions::ParticipantId>,
-        doc: &AutoCommit,
-    ) -> Vec<tilo_actions::Resource> {
-        Decorator::resources_for(self, participant, doc)
     }
 
     fn semantic_readers(
         &self,
     ) -> &'static [crate::semantic_document_read::RegisteredSemanticReader] {
         Decorator::semantic_readers(self)
-    }
-
-    fn set_participant_host(&mut self, host: bool) {
-        Decorator::set_participant_host(self, host)
-    }
-
-    fn set_participant_label(&mut self, participant: &tilo_actions::ParticipantId, label: &str) {
-        Decorator::set_participant_label(self, participant, label)
     }
 
     fn unmount_native_views(&mut self) {

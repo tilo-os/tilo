@@ -1,9 +1,9 @@
 //! Serialized package/catalog actor. All blocking package and network work
 //! crosses this one queue; the UI only performs non-blocking snapshot drains.
 
-use std::borrow::Borrow;
-use std::collections::{HashMap, VecDeque};
-use std::hash::Hash;
+use std::num::NonZeroUsize;
+
+use lru::LruCache;
 use std::sync::mpsc;
 use std::sync::{
     Arc,
@@ -25,7 +25,10 @@ use crate::sources::{
 use crate::{FlatpakRef, StoreItem};
 
 const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
-const CACHE_CAP: usize = 128;
+const CACHE_CAP: NonZeroUsize = match NonZeroUsize::new(128) {
+    Some(cap) => cap,
+    None => NonZeroUsize::MIN,
+};
 
 #[derive(Clone, Debug)]
 pub enum Request {
@@ -153,8 +156,8 @@ struct State {
     base_items: Vec<StoreItem>,
     installed: Vec<(String, String)>,
     remotes: Vec<Remote>,
-    searches: LruMap<String, Vec<StoreItem>>,
-    details: LruMap<String, StoreItem>,
+    searches: LruCache<String, Vec<StoreItem>>,
+    details: LruCache<String, StoreItem>,
     /// The current palette/action directory. Rebuilding it is linear in a
     /// catalogue snapshot, so it belongs on this serialized worker rather
     /// than in the UI's snapshot-drain loop.
@@ -184,8 +187,8 @@ fn run(
         base_items: Vec::new(),
         installed: Vec::new(),
         remotes: Vec::new(),
-        searches: LruMap::new(CACHE_CAP),
-        details: LruMap::new(CACHE_CAP),
+        searches: LruCache::new(CACHE_CAP),
+        details: LruCache::new(CACHE_CAP),
         search_index,
         item_index: ui::search::ListIndex::default(),
     };
@@ -380,8 +383,8 @@ fn handle(
             reason,
         } => {
             let result = moderation_registry(&registry_name).and_then(|registry| {
-                let now = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                let now = ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_secs();
                 let mut nonce = [0_u8; 16];
@@ -443,7 +446,7 @@ fn search(query: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) ->
             .map(|record| flathub_record_to_item(record, &state.installed))
             .collect();
         let items = merge(tilo, flatpak);
-        state.searches.insert(query.clone(), items.clone());
+        state.searches.put(query.clone(), items.clone());
         items
     };
     let label = format!("{} results for “{}”.", items.len(), query);
@@ -459,7 +462,7 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
         .find(|item| item.id == id && matches!(item.source, StoreSource::Tilo { .. }))
         .cloned()
     {
-        state.details.insert(id.to_string(), item.clone());
+        state.details.put(id.to_string(), item.clone());
         Some(item)
     } else {
         let loaded = crate::flathub_client::fetch_appstream(id)
@@ -467,7 +470,7 @@ fn detail(id: &str, state: &mut State, snapshots: &mpsc::Sender<Snapshot>) -> bo
             .map(|record| flathub_record_to_item(&record, &state.installed))
             .or_else(|| state.base_items.iter().find(|item| item.id == id).cloned());
         if let Some(item) = loaded.as_ref() {
-            state.details.insert(id.to_string(), item.clone());
+            state.details.put(id.to_string(), item.clone());
         }
         loaded
     };
@@ -505,10 +508,6 @@ fn send(
     )
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "snapshot emission keeps the complete worker state transition explicit at each call site"
-)]
 fn send_tracked(
     snapshots: &mpsc::Sender<Snapshot>,
     state: &State,
@@ -538,8 +537,8 @@ fn submit_report(
     envelope: &ReportEnvelope,
 ) -> Result<registry_types::ModerationCase, crate::moderation_client::ModerationClientError> {
     let registry = moderation_registry(registry_name)?;
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let now = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs();
     let envelope_bytes = serde_json::to_vec(envelope)
@@ -742,55 +741,6 @@ fn registries_summary(registries: &[RegistryConfig]) -> String {
     )
 }
 
-struct LruMap<K, V> {
-    values: HashMap<K, V>,
-    order: VecDeque<K>,
-    capacity: usize,
-}
-
-impl<K: Clone + Eq + Hash, V> LruMap<K, V> {
-    fn new(capacity: usize) -> Self {
-        Self {
-            values: HashMap::new(),
-            order: VecDeque::new(),
-            capacity,
-        }
-    }
-
-    /// Generic over `Borrow<Q>` (like [`HashMap::get`]) so callers can look
-    /// up by `&str` without owning a `String` just for the query.
-    fn get<Q>(&mut self, key: &Q) -> Option<&V>
-    where
-        K: Borrow<Q>,
-        Q: Eq + Hash + ?Sized,
-    {
-        if let Some(index) = self.order.iter().position(|item| item.borrow() == key)
-            && let Some(key) = self.order.remove(index)
-        {
-            self.order.push_back(key);
-        }
-        self.values.get(key)
-    }
-
-    fn insert(&mut self, key: K, value: V) {
-        self.values.insert(key.clone(), value);
-        if let Some(index) = self.order.iter().position(|item| item == &key) {
-            self.order.remove(index);
-        }
-        self.order.push_back(key);
-        while self.values.len() > self.capacity {
-            if let Some(oldest) = self.order.pop_front() {
-                self.values.remove(&oldest);
-            }
-        }
-    }
-
-    fn clear(&mut self) {
-        self.values.clear();
-        self.order.clear();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -833,8 +783,8 @@ mod tests {
             base_items: items,
             installed: Vec::new(),
             remotes: Vec::new(),
-            searches: LruMap::new(CACHE_CAP),
-            details: LruMap::new(CACHE_CAP),
+            searches: LruCache::new(CACHE_CAP),
+            details: LruCache::new(CACHE_CAP),
             search_index,
             item_index: ui::search::ListIndex::default(),
         }
@@ -843,24 +793,13 @@ mod tests {
     /// LRU eviction, non-blocking requests and the authoritative action directory.
     #[test]
     fn worker_cache_is_non_blocking_and_keeps_the_authoritative_directory() {
-        // Case `lru_revisit_is_retained_and_oldest_is_evicted`.
-        {
-            let mut cache = LruMap::new(2);
-            cache.insert("a", 1);
-            cache.insert("b", 2);
-            assert_eq!(cache.get(&"a"), Some(&1));
-            cache.insert("c", 3);
-            assert!(cache.get(&"a").is_some());
-            assert!(cache.get(&"b").is_none());
-        }
-
         // Case `request_and_drain_are_non_blocking`.
         {
             let worker = StoreWorker::spawn(None, StoreSearchIndex::default());
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             assert!(worker.request(Request::Search("editor".into())));
             assert!(started.elapsed() < Duration::from_millis(50));
-            let started = std::time::Instant::now();
+            let started = ui::time::now();
             let _ = worker.try_snapshot();
             assert!(started.elapsed() < Duration::from_millis(20));
         }

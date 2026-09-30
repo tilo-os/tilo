@@ -28,11 +28,10 @@ use durable_store::{
 };
 
 use crate::{
-    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LEGACY_PACKAGE_ROOM_CLAIM,
-    LEGACY_RECORD_ROOM_CLAIM, LOCK_FILE, RECORD_SUCCESSOR_CLAIM, RECORDS_DIR, ROOMS_DIR,
-    StoreError, acquire_gate, acquire_writer_lock, claim_legacy_room_migration, ensure_state_dir,
-    io_err, open_directory, same_file, sync_directory_ancestors, validate_absolute_directory,
-    validate_package_id, validate_record_key,
+    ACTOR_FILE, CANONICAL_GATE, DEFAULT_DEBOUNCE, DOCUMENT_FILE, LOCK_FILE, RECORD_SUCCESSOR_CLAIM,
+    RECORDS_DIR, ROOMS_DIR, StoreError, acquire_gate, acquire_writer_lock, claim_marker,
+    ensure_state_dir, io_err, open_directory, same_file, sync_directory_ancestors,
+    validate_absolute_directory, validate_package_id, validate_record_key,
 };
 
 /// Directory below the profile root holding every instance's local view.
@@ -252,12 +251,6 @@ impl FsStore {
                 validate_record_key(workspace)?;
                 Ok(Target::Document(
                     self.package_dir(package)?.join(ROOMS_DIR).join(workspace),
-                ))
-            }
-            StorageKey::PackageRecord { package, record } => {
-                validate_record_key(record)?;
-                Ok(Target::Document(
-                    self.package_dir(package)?.join(RECORDS_DIR).join(record),
                 ))
             }
             StorageKey::View {
@@ -558,16 +551,6 @@ impl DurableStore for FsStore {
     fn claim(&self, key: &StorageKey, claimant: &str) -> Result<bool, SeamError> {
         validate_record_key(claimant)?;
         let marker = match key {
-            StorageKey::Package { package } => {
-                self.package_dir(package)?.join(LEGACY_PACKAGE_ROOM_CLAIM)
-            }
-            StorageKey::PackageRecord { package, record } => {
-                validate_record_key(record)?;
-                self.package_dir(package)?
-                    .join(RECORDS_DIR)
-                    .join(record)
-                    .join(LEGACY_RECORD_ROOM_CLAIM)
-            }
             // A room record adopted under a new identity (see
             // `ui::RecordCheckout::formerly`): the claimant is its successor.
             StorageKey::Record { .. } => match self.target(key)? {
@@ -582,7 +565,7 @@ impl DurableStore for FsStore {
             _ => {
                 return Err(SeamError::InvalidKey {
                     key: key.to_string(),
-                    reason: "only retained package documents and room records are claimed".into(),
+                    reason: "only room records are claimed".into(),
                 });
             }
         };
@@ -590,7 +573,7 @@ impl DurableStore for FsStore {
             fs::create_dir_all(parent)
                 .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
         }
-        Ok(claim_legacy_room_migration(&marker, claimant)?)
+        Ok(claim_marker(&marker, claimant)?)
     }
 
     fn local_path(&self, key: &StorageKey) -> Option<PathBuf> {
@@ -709,8 +692,7 @@ fn open_owner(shared: &Shared, directory: &Path) -> Result<Owner, StoreError> {
 }
 
 /// Join a document's shared writers: the shared gate keeps exclusive owners
-/// out, and whoever wins the writer lock is primary. A path an older layout
-/// left as a file is recovered first (see [`ensure_state_dir`]).
+/// out, and whoever wins the writer lock is primary.
 fn open_shared_owner(directory: &Path) -> Result<Owner, StoreError> {
     ensure_state_dir(directory)?;
     let handle =
@@ -915,13 +897,13 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
         owner.check()?;
         if let Some(writer) = &batch.writer {
             let sidecar = owner.directory.join(ACTOR_FILE);
-            atomic_file::write(&sidecar, hex::encode(writer).as_bytes())
+            tilo_files::native::atomic::write(&sidecar, hex::encode(writer).as_bytes())
                 .map_err(|e| io_err(format!("writing {}", sidecar.display()), e))?;
         }
         let document = owner.directory.join(DOCUMENT_FILE);
         return match &batch.op {
             WriteOp::Replace(bytes) => {
-                atomic_file::write(&document, bytes)
+                tilo_files::native::atomic::write(&document, bytes)
                     .map_err(|e| io_err(format!("writing {}", document.display()), e))?;
                 sync_ancestors(shared, &owner.directory)?;
                 owner.check()
@@ -935,7 +917,7 @@ fn commit(shared: &Shared, taken: &Taken) -> Result<(), StoreError> {
                 fs::create_dir_all(parent)
                     .map_err(|e| io_err(format!("creating {}", parent.display()), e))?;
             }
-            atomic_file::write(view, bytes)
+            tilo_files::native::atomic::write(view, bytes)
                 .map_err(|e| io_err(format!("writing {}", view.display()), e))
         }
         WriteOp::Append(bytes) => {
@@ -1088,10 +1070,6 @@ mod tests {
                     StorageKey::room_index("so.tilo.test", "room-a"),
                     package.join(ROOMS_DIR).join("room-a"),
                 ),
-                (
-                    StorageKey::package_record("so.tilo.test", "rec"),
-                    package.join(RECORDS_DIR).join("rec"),
-                ),
             ] {
                 let shared = store.lease_shared(&key).unwrap();
                 assert!(shared.primary);
@@ -1103,21 +1081,6 @@ mod tests {
                 assert!(directory.join(LOCK_FILE).is_file());
                 assert_eq!(store.local_path(&key), Some(directory.join(DOCUMENT_FILE)));
             }
-        }
-        // Phase `a_stale_state_file_is_moved_aside_for_shared_writers_only`.
-        {
-            let tmp = TempDir::new().unwrap();
-            let store = FsStore::new(tmp.path());
-            let path = tmp.path().join("so.tilo.test");
-            fs::write(&path, b"old layout").unwrap();
-            let key = StorageKey::package("so.tilo.test");
-            assert!(store.lease(&key).is_err(), "exclusive owners never adopt");
-            let _shared = store.lease_shared(&key).unwrap();
-            assert!(path.is_dir());
-            assert_eq!(
-                fs::read(tmp.path().join("so.tilo.test.stale")).unwrap(),
-                b"old layout"
-            );
         }
         // Phase `record_writes_require_a_lease_and_invalid_keys_are_refused`.
         {

@@ -15,10 +15,17 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Embeds a WebView engine."
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["network.http", "webview"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"
@@ -42,10 +49,12 @@ namespaces = [
     "mount",
     "net",
 ]
-# JavaScriptCore requires JIT mappings, so the launcher grants this package
-# `tilo-jit` only when its image-owned entitlement lists the package id. The
-# profile lifts W^X while retaining the other deny rules.
-seccomp    = "tilo-jit"
+# Both engines need JIT mappings, and Chromium also builds its own renderer
+# sandbox from user, PID and network namespaces. `tilo-web-engine` is
+# `tilo-jit` plus exactly those; the launcher grants each part only when the
+# image's entitlement lists (jit-entitled.conf, web-engine-entitled.conf) name
+# the package, and otherwise falls back to what they do grant.
+seccomp    = "tilo-web-engine"
 landlock   = "strict"
 
 [sandbox.net]

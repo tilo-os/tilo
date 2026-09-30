@@ -22,8 +22,9 @@ path = "src/main.rs"
 dev-overrides = []
 
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 bounded-command = { path = "../../system/bounded-command" }
 # The registry wire format + the per-entry publisher signature check.
 registry-types = { path = "../registry-types" }
@@ -37,7 +38,7 @@ package-store = { path = "../package-store" }
 tilo-app-package = { path = "../tilo-app-package" }
 clap.workspace = true
 clap_complete.workspace = true
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 hex.workspace = true
 blake3.workspace = true
 serde.workspace = true
@@ -45,7 +46,7 @@ serde_json.workspace = true
 thiserror.workspace = true
 toml.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
-tilo-net = { path = "../../system/tilo-net", features = ["blocking"] }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
 workspace-hack = { version = "0.1" }
 
 [dev-dependencies]

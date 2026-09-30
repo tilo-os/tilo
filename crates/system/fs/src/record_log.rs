@@ -27,7 +27,6 @@ const CHANGESETS: TableDefinition<&[u8], &[u8]> = TableDefinition::new("record_c
 const META: TableDefinition<&str, &[u8]> = TableDefinition::new("record_log_meta");
 
 const SCHEMA_KEY: &str = "schema";
-const LEGACY_IMPORTED_KEY: &str = "legacy_json_imported";
 pub const RECORD_LOG_SCHEMA: u16 = 1;
 
 /// One stored changeset and where its envelopes start in the log.
@@ -132,20 +131,8 @@ impl RecordLog {
         })
     }
 
-    /// Whether record files from before the log were imported already.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error when the log cannot be read.
-    pub fn legacy_imported(&self) -> Result<bool, RecordLogError> {
-        let txn = self.db.begin_read()?;
-        let meta = txn.open_table(META)?;
-        Ok(meta.get(LEGACY_IMPORTED_KEY)?.is_some())
-    }
-
     /// Append `ops` in order, and `changeset` beside them, in one durable
-    /// transaction. With `mark_imported`, the same transaction records that
-    /// the legacy record files are in the log. Returns the position of the
+    /// transaction. Returns the position of the
     /// first op; op `i` is at `first + i`.
     ///
     /// # Errors
@@ -160,7 +147,6 @@ impl RecordLog {
         &self,
         ops: &[(Uuid, &RecordEnvelopeV1)],
         changeset: Option<&SignedChangesetV1>,
-        mark_imported: bool,
     ) -> Result<u64, RecordLogError> {
         #[cfg(test)]
         if self.fail_appends.load(std::sync::atomic::Ordering::Relaxed) {
@@ -182,10 +168,6 @@ impl RecordLog {
                 value.extend_from_slice(&first.to_be_bytes());
                 txn.open_table(CHANGESETS)?
                     .insert(changeset_key(changeset).as_slice(), value.as_slice())?;
-            }
-            if mark_imported {
-                txn.open_table(META)?
-                    .insert(LEGACY_IMPORTED_KEY, [1_u8].as_slice())?;
             }
         }
         txn.commit()?;

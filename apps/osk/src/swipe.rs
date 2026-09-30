@@ -1,7 +1,8 @@
 //! Swipe-to-type decoder (W9a).
 //!
 //! Given a gesture path traced across the keyboard, return ranked candidate
-//! English words. This is the classic **SHARK²/gesture-typing** approach:
+//! words in the keyboard's language. This is the classic
+//! **SHARK²/gesture-typing** approach:
 //!
 //! 1. Map each letter to the centre of its key (from the live
 //!    [`crate::layout::key_rects`] geometry — one source of truth with what
@@ -29,7 +30,7 @@ use std::collections::HashMap;
 
 use vello::kurbo::{Point, Rect};
 
-use crate::dict::Dictionary;
+use crate::dict::{Dictionary, Language, fold_char};
 use crate::layout::{KeyAction, KeyId, KeyboardLayout};
 
 /// Number of points each path (user + ideal) is resampled to before scoring.
@@ -58,24 +59,41 @@ pub trait SwipeModel {
         layout: &KeyboardLayout,
         top_n: usize,
     ) -> Vec<Candidate>;
+
+    /// The user switched to a layout that types `language`. Decoders with
+    /// per-language vocabularies follow it; the default keeps decoding as
+    /// before.
+    fn set_language(&mut self, _language: Language) {}
 }
 
 /// SHARK²-style geometric + dictionary swipe decoder (the shipping path).
 pub struct GeometricSwipeModel {
     dict: Dictionary,
+    /// The embedded language `dict` holds; `None` for a custom dictionary,
+    /// which a language switch leaves alone.
+    language: Option<Language>,
 }
 
 impl GeometricSwipeModel {
+    /// Build a decoder over the embedded dictionary of `language`.
+    pub fn for_language(language: Language) -> Self {
+        Self {
+            dict: Dictionary::for_language(language),
+            language: Some(language),
+        }
+    }
+
     /// Build a decoder over the embedded English dictionary.
     pub fn english() -> Self {
-        Self {
-            dict: Dictionary::english(),
-        }
+        Self::for_language(Language::English)
     }
 
     /// Build a decoder over a custom dictionary (tests / other locales).
     pub fn with_dictionary(dict: Dictionary) -> Self {
-        Self { dict }
+        Self {
+            dict,
+            language: None,
+        }
     }
 
     pub fn dictionary(&self) -> &Dictionary {
@@ -95,6 +113,12 @@ impl GeometricSwipeModel {
 }
 
 impl SwipeModel for GeometricSwipeModel {
+    fn set_language(&mut self, language: Language) {
+        if self.language.is_some_and(|current| current != language) {
+            *self = Self::for_language(language);
+        }
+    }
+
     fn decode(
         &self,
         path: &[Point],
@@ -135,7 +159,8 @@ impl SwipeModel for GeometricSwipeModel {
         let mut scored: Vec<Candidate> = Vec::new();
         for entry in self.dict.words() {
             let word = &entry.word;
-            let chars: Vec<char> = word.chars().collect();
+            // Accented letters are swiped through their base key (é on e).
+            let chars: Vec<char> = word.chars().map(fold_char).collect();
             // length window: a swipe through k keys traces ~k segments.
             let len = chars.len() as i32;
             if len < 1 {
@@ -540,7 +565,7 @@ mod tests {
         let (layout, geom) = qwerty_geom();
         let model = GeometricSwipeModel::english();
         let path = path_through("keyboard", &geom, &layout);
-        let t0 = std::time::Instant::now();
+        let t0 = ui::time::now();
         let _ = model.decode_top(&path, &geom, &layout, 8);
         let dt = t0.elapsed();
         assert!(dt.as_millis() < 200, "decode took {dt:?} (budget headroom)");

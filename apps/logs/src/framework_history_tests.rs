@@ -19,8 +19,7 @@ fn managed_driver() -> ui::headless::Driver {
 }
 
 fn managed_driver_for(root: Box<dyn Widget>) -> ui::headless::Driver {
-    let definition = root
-        .document_history_definition()
+    let definition = ui::history_mode::capability::document_history_definition(root.as_ref())
         .expect("Logs root must declare framework History");
     let scope = &definition.scopes[0];
     let HistoryPresentation::External { reason } = scope.presentation else {
@@ -113,14 +112,18 @@ fn managed_history_is_truthful_inert_and_returns_to_the_same_logs_view() {
 fn invoke(app: &mut crate::LogsApp, operation: &crate::actions::LogsOperation) {
     let payload = serde_json::to_vec(&operation).unwrap();
     assert!(
-        Widget::invoke_resource_operation(
+        Widget::start_operation(
             app,
-            OperationKind::Effect,
-            crate::actions::LOGS_OPERATION_TYPE,
-            &payload,
-            &automerge::AutoCommit::new(),
-            &automerge::ROOT,
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                OperationKind::Effect,
+                crate::actions::LOGS_OPERATION_TYPE,
+                &payload
+            ),
+            &mut automerge::AutoCommit::new(),
+            &automerge::ROOT
         )
+        .map(|started| started.is_some())
         .unwrap()
     );
 }
@@ -295,9 +298,9 @@ fn held_export_snapshot_survives_history_and_settles_once_for_the_exact_selectio
 #[test]
 fn logs_history_declaration_is_static_and_external_only() {
     // The production root type declares Logs History without querying the journal.
-    let definition = offline_root()
-        .document_history_definition()
-        .expect("production Logs root type declares History");
+    let definition =
+        ui::history_mode::capability::document_history_definition(offline_root().as_ref())
+            .expect("production Logs root type declares History");
     assert_eq!(definition.app_id, "so.tilo.logs");
     assert!(std::ptr::eq(
         definition,

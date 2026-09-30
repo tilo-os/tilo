@@ -12,7 +12,6 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -20,9 +19,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::text_selection::Selection;
@@ -399,12 +398,13 @@ impl LinkPopover {
             &crate::surface::edge_outline(filter_rect, 4.0),
         );
         self.filter_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.filter,
-            &self.filter_selection,
-            "Find a note…",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.filter,
+                selection: &self.filter_selection,
+                placeholder: "Find a note…",
+                show_caret: true,
+            },
             Rect::new(
                 filter_rect.x0 + 6.0,
                 filter_rect.y0,
@@ -412,11 +412,11 @@ impl LinkPopover {
                 filter_rect.y1,
             ),
             &TextStyle::new(tokens.typography.scale.sm),
-            tokens.colors.text_primary,
-            tokens.colors.text_dim,
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            true,
+            QueryInk::accented(
+                tokens.colors.text_primary,
+                tokens.colors.text_dim,
+                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            ),
         );
     }
 
@@ -507,7 +507,6 @@ fn count_f64(v: usize) -> f64 {
 
 // LinkPopover lives in overlay space so most methods no-op.
 impl Widget for LinkPopover {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -526,19 +525,6 @@ impl Widget for LinkPopover {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

@@ -17,11 +17,11 @@
 //! every path mutation against them so the user can't `..` out of the
 //! sandbox boundary.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
@@ -1060,8 +1060,6 @@ impl FilePicker {
 }
 
 impl Widget for FilePicker {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1129,35 +1127,24 @@ impl Widget for FilePicker {
         self.draw_footer(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.on_cursor_moved(p, handled);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.on_cursor_moved(p, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                self.on_mouse_wheel(delta, handled);
+                self.on_mouse_wheel(delta, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.on_left_click(*modifiers, handled);
+                self.on_left_click(*ctx.modifiers, ctx.handled);
             }
             WindowEvent::KeyboardInput { event: ke, .. } if ke.state == ElementState::Pressed => {
-                self.on_key_pressed(ke, *modifiers, handled);
+                self.on_key_pressed(ke, *ctx.modifiers, ctx.handled);
             }
             _ => {}
         }
@@ -1351,8 +1338,8 @@ impl Widget for FilePicker {
     fn perform_action(
         &mut self,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         matches!(action, crate::a11y::Action::Activate) && self.activate_focus()
     }
@@ -1361,8 +1348,8 @@ impl Widget for FilePicker {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         use crate::a11y::{Action, hash_key};
         let Some((&control_key, rest)) = key_path.split_first() else {
@@ -1611,30 +1598,21 @@ impl FilePicker {
             self.draw_filter_chip(scene, transform, text_renderer, theme, row_size);
         }
 
-        draw_button(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            self.cancel_rect,
-            "Cancel",
-            self.hover_button == Some(0),
-            false,
-            self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel),
-            false,
-        );
-        draw_button(
-            scene,
-            transform,
+        let cancel = footer_button(text_renderer, theme, self.cancel_rect, "Cancel", false)
+            .hovered(self.hover_button == Some(0))
+            .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Cancel));
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &cancel);
+        let confirm = footer_button(
             text_renderer,
             theme,
             self.open_rect,
             self.confirm_label(),
-            self.hover_button == Some(1),
             true,
-            self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm),
-            !self.can_commit_open(),
-        );
+        )
+        .hovered(self.hover_button == Some(1))
+        .focused(self.has_keyboard_focus && self.focus == Some(PickerFocus::Confirm))
+        .disabled(!self.can_commit_open());
+        crate::widget::Button::paint(scene, transform, text_renderer, theme, &confirm);
     }
 
     /// Save-mode filename text field. Split out of `draw_footer` to keep
@@ -1980,45 +1958,37 @@ impl FilePicker {
 // (scene + transform + text_renderer + theme, plus this draw's own
 // content); every parameter is independently load-bearing.
 #[allow(
-    clippy::too_many_arguments,
     clippy::fn_params_excessive_bools,
     reason = "immediate-mode paint helper mirrors the canonical ButtonFace state"
 )]
-fn draw_button(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
+/// A footer button in the canonical immediate-mode button face, so the
+/// picker footer stays visually locked to the retained widget and every
+/// converted app. Callers add the hover, focus and disabled state.
+fn footer_button<'a>(
+    text_renderer: &TextRenderer,
     theme: &Theme,
     rect: Rect,
-    label: &str,
-    is_hover: bool,
+    label: &'a str,
     is_primary: bool,
-    is_focused: bool,
-    is_disabled: bool,
-) {
-    // Share the canonical immediate-mode button face so the picker footer
-    // stays visually locked to the retained widget and every converted app.
-    let face = crate::widget::ButtonFace::new(rect, label)
+) -> crate::widget::ButtonFace<'a> {
+    crate::widget::ButtonFace::new(rect, label)
         .radius(f64::from(theme.tokens.radii.md))
         .text_size(renderer_type_size(
             text_renderer,
             theme.tokens.typography.scale.sm,
         ))
         .weight(crate::text_render::TextWeight::Regular)
-        .hovered(is_hover)
-        .focused(is_focused)
-        .disabled(is_disabled)
         .style(if is_primary {
             crate::widget::ButtonStyle::Primary
         } else {
             crate::widget::ButtonStyle::Neutral
-        });
-    crate::widget::Button::paint(scene, transform, text_renderer, theme, &face);
+        })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::fs;
     use winit::event::{DeviceId, ElementState, MouseButton};
 
@@ -2051,14 +2021,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 
@@ -2722,14 +2694,16 @@ mod tests {
         let root = automerge::ROOT;
         picker.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

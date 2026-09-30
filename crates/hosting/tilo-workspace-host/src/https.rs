@@ -65,6 +65,8 @@ pub enum Route {
     Media(MediaRoute),
     /// Proof-required LIVE_V1 grant issue/renewal.
     LiveGrant,
+    /// Proof-required input for a legacy window from a controlling viewer.
+    LegacyInput,
 }
 
 /// Closed inert media route registry; route selection alone grants no authority.
@@ -114,6 +116,9 @@ impl Route {
                 AUTH_BYTES
             }
             Self::LiveGrant => tilo_delivery_protocol::delivery_v3::live_wire::MAX_GRANT_BYTES,
+            Self::LegacyInput => {
+                tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::MAX_INPUT_BYTES
+            }
             _ => 0,
         }
     }
@@ -138,6 +143,13 @@ struct Origin {
     exact: String,
     authority: String,
     port: u16,
+    /// `localhost`, `127.0.0.1` or `[::1]`; otherwise a public DNS origin that
+    /// an edge forwards to an explicitly configured listener.
+    loopback: bool,
+    /// `Content-Security-Policy: frame-ancestors …` for the page, when a
+    /// partner dashboard may embed this origin; only then may a cross-site
+    /// iframe navigation load the page (never a peer route).
+    frame_ancestors: Option<hyper::header::HeaderValue>,
     /// `Alt-Svc` advertised on HTTP/1.1 and HTTP/2 responses once the same
     /// port also serves these routes over HTTP/3 (UDP). Clients that cannot
     /// reach UDP keep using HTTP/2.
@@ -151,19 +163,83 @@ impl Origin {
         let authority = uri
             .authority()
             .ok_or_else(|| io::Error::other("missing HTTPS authority"))?;
+        let loopback = matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]");
         if uri.scheme_str() != Some("https")
             || value != format!("https://{authority}")
-            || !matches!(authority.host(), "localhost" | "127.0.0.1" | "[::1]")
+            || authority.as_str().contains('@')
+            || authority.port_u16() == Some(0)
+            || !(loopback || is_dns_name(authority.host()))
         {
-            return Err(io::Error::other("local HTTPS origin required"));
+            return Err(io::Error::other(
+                "exact HTTPS origin with a loopback or DNS host required",
+            ));
         }
         Ok(Self {
             exact: value.into(),
             authority: authority.to_string(),
             port: authority.port_u16().unwrap_or(443),
+            loopback,
+            frame_ancestors: None,
             alt_svc: None,
         })
     }
+}
+
+/// A partner dashboard loading the page into its iframe: the only cross-site
+/// request an embeddable origin accepts. Peer routes stay same-origin.
+fn framed_page_navigation(parts: &Parts, origin: &Origin) -> bool {
+    let path = parts.uri.path();
+    origin.frame_ancestors.is_some()
+        && parts.method == Method::GET
+        && !path.starts_with("/peer")
+        && !path.starts_with("/tilo-peer")
+        && parts
+            .headers
+            .get("sec-fetch-mode")
+            .is_some_and(|v| v == "navigate")
+        && parts
+            .headers
+            .get("sec-fetch-dest")
+            .is_some_and(|v| v == "iframe")
+}
+
+/// `frame-ancestors` for exact dashboard origins: `https://` with a loopback or
+/// DNS host, or `http://` on loopback for local development.
+#[cfg(any(test, feature = "media"))]
+fn frame_ancestors_policy(ancestors: &[String]) -> io::Result<hyper::header::HeaderValue> {
+    if ancestors.is_empty() || ancestors.len() > 16 {
+        return Err(io::Error::other("1-16 frame ancestors required"));
+    }
+    for ancestor in ancestors {
+        let valid = match ancestor.strip_prefix("http://") {
+            Some(authority) => {
+                Origin::parse(&format!("https://{authority}")).is_ok_and(|origin| origin.loopback)
+            }
+            None => Origin::parse(ancestor).is_ok(),
+        };
+        if !valid {
+            return Err(io::Error::other("frame ancestor must be an exact origin"));
+        }
+    }
+    hyper::header::HeaderValue::from_str(&format!("frame-ancestors {}", ancestors.join(" ")))
+        .map_err(io::Error::other)
+}
+
+/// A lowercase DNS name of LDH labels. IP literals are not public origins:
+/// their certificates and `Host` spellings are not canonical.
+pub(crate) fn is_dns_name(host: &str) -> bool {
+    host.len() <= 253
+        && !host
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || byte == b'.')
+        && host.split('.').all(|label| {
+            (1..=63).contains(&label.len())
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        })
 }
 
 #[derive(Debug)]
@@ -203,6 +279,23 @@ struct Parsed {
     route: Route,
     target: String,
     proof: Option<Vec<u8>>,
+}
+
+/// A loopback TCP listener and UDP socket on one port, as HTTPS and HTTP/3
+/// share it. Holding the TCP port reserves nothing on UDP, where a parallel
+/// test may already hold that number, so a taken UDP port draws a new pair.
+#[cfg(all(test, feature = "media"))]
+pub(crate) async fn bind_https_pair() -> (tokio::net::TcpListener, std::net::UdpSocket) {
+    loop {
+        let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, 0))
+            .await
+            .unwrap();
+        match std::net::UdpSocket::bind(listener.local_addr().unwrap()) {
+            Ok(udp) => return (listener, udp),
+            Err(error) if error.kind() == std::io::ErrorKind::AddrInUse => {}
+            Err(error) => panic!("bind the HTTP/3 half: {error}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -261,9 +354,10 @@ fn check_origin_base(parts: &Parts, origin: &Origin) -> Result<(), Rejection> {
     if headers
         .get("origin")
         .is_some_and(|v| v.as_bytes() != origin.exact.as_bytes())
-        || headers
-            .get("sec-fetch-site")
-            .is_some_and(|v| !matches!(v.as_bytes(), b"same-origin" | b"none"))
+        || headers.get("sec-fetch-site").is_some_and(|v| {
+            !matches!(v.as_bytes(), b"same-origin" | b"none")
+                && !framed_page_navigation(parts, origin)
+        })
     {
         return Err(Rejection::denied());
     }
@@ -309,6 +403,11 @@ fn parse_head_checked(parts: &Parts) -> Result<Parsed, Rejection> {
             if parts.uri.query().is_none() =>
         {
             Route::LiveGrant
+        }
+        ("POST", tilo_delivery_protocol::delivery_v3::live_wire::legacy_window::INPUT_TARGET)
+            if parts.uri.query().is_none() =>
+        {
+            Route::LegacyInput
         }
         ("GET", path) if parts.uri.query().is_none() && snapshot_chunk_target(path).is_some() => {
             Route::SnapshotChunk
@@ -467,6 +566,96 @@ pub struct BufferedRequest {
     cancelled: watch::Receiver<bool>,
     response: oneshot::Sender<Reply>,
     lease: Arc<Lease>,
+    admission: Admission,
+}
+/// Whether a service has taken a request on. The request deadline bounds only
+/// how long it may wait for that: the front answers the retryable 503 for a
+/// request still queued at its deadline, which then must have no effect. A
+/// started request is answered by its service, however long that takes, as
+/// long as the service keeps making progress (the owner-turn stall budget).
+pub(crate) struct Admission {
+    phase: Arc<std::sync::Mutex<Phase>>,
+    started: std::sync::Mutex<Option<oneshot::Sender<tilo_action_broker::owner_turn::TurnWatch>>>,
+    progress: std::sync::Mutex<Option<tilo_action_broker::owner_turn::TurnProgress>>,
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Phase {
+    Queued,
+    Started,
+    Abandoned,
+}
+/// The front's view of one request's [`Admission`].
+struct AdmissionFront {
+    phase: Arc<std::sync::Mutex<Phase>>,
+    started: oneshot::Receiver<tilo_action_broker::owner_turn::TurnWatch>,
+}
+impl Admission {
+    fn new() -> (Self, AdmissionFront) {
+        let phase = Arc::new(std::sync::Mutex::new(Phase::Queued));
+        let (started, started_rx) = oneshot::channel();
+        (
+            Self {
+                phase: Arc::clone(&phase),
+                started: std::sync::Mutex::new(Some(started)),
+                progress: std::sync::Mutex::new(None),
+            },
+            AdmissionFront {
+                phase,
+                started: started_rx,
+            },
+        )
+    }
+    /// An admission no front waits on (tests that build requests directly).
+    #[cfg(test)]
+    pub(crate) fn unwatched() -> Self {
+        Self::new().0
+    }
+    fn phase(&self) -> Phase {
+        *self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+}
+impl AdmissionFront {
+    /// At the deadline: give up on a request no service has started.
+    fn abandon_if_queued(&self) -> bool {
+        let mut phase = self
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let queued = *phase == Phase::Queued;
+        if queued {
+            *phase = Phase::Abandoned;
+        }
+        queued
+    }
+    /// Wait for the reply. Queued past `deadline`: the retryable 503. Started:
+    /// the service's own answer, unless it stops making progress.
+    async fn reply(
+        mut self,
+        deadline: Instant,
+        response: oneshot::Receiver<Reply>,
+    ) -> Option<Reply> {
+        use tilo_action_broker::owner_turn::TurnWait;
+        let mut response = response;
+        let turn = tokio::select! {
+            biased;
+            reply = &mut response => return reply.ok(),
+            turn = &mut self.started => turn.ok()?,
+            () = tokio::time::sleep_until(deadline) => {
+                if self.abandon_if_queued() {
+                    return None;
+                }
+                // Started under the lock, so its turn is already sent.
+                self.started.await.ok()?
+            }
+        };
+        match turn.wait(response).await {
+            TurnWait::Answered(reply) => Some(reply),
+            TurnWait::Lost | TurnWait::Stalled => None,
+        }
+    }
 }
 impl BufferedRequest {
     pub fn method(&self) -> &Method {
@@ -488,9 +677,63 @@ impl BufferedRequest {
         self.deadline
     }
     pub fn is_cancelled(&self) -> bool {
-        *self.cancelled.borrow()
-            || self.cancelled.has_changed().is_err()
-            || Instant::now() >= self.deadline
+        match self.admission.phase() {
+            Phase::Abandoned => return true,
+            Phase::Started => {}
+            Phase::Queued if Instant::now() >= self.deadline => return true,
+            Phase::Queued => {}
+        }
+        *self.cancelled.borrow() || self.cancelled.has_changed().is_err()
+    }
+    /// Take the request on before its first effect. From here the front waits
+    /// for this answer while the service makes progress, instead of answering
+    /// 503 at the deadline. Returns false when the front already answered 503:
+    /// the request must then have no effect.
+    #[must_use]
+    pub fn start(&self) -> bool {
+        let mut phase = self
+            .admission
+            .phase
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match *phase {
+            Phase::Abandoned => return false,
+            Phase::Started => return true,
+            Phase::Queued if Instant::now() >= self.deadline => {
+                *phase = Phase::Abandoned;
+                return false;
+            }
+            Phase::Queued => {}
+        }
+        *phase = Phase::Started;
+        let (progress, turn) =
+            tilo_action_broker::owner_turn::start(tilo_action_broker::owner_turn::STALL_BUDGET);
+        if let Some(started) = self
+            .admission
+            .started
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _ = started.send(turn);
+        }
+        *self
+            .admission
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(progress);
+        true
+    }
+    /// A step of a started request completed: renew its stall budget.
+    pub fn advance(&self) {
+        if let Some(progress) = &*self
+            .admission
+            .progress
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+        {
+            progress.advance();
+        }
     }
     pub fn cancellation(&self) -> watch::Receiver<bool> {
         self.cancelled.clone()
@@ -767,13 +1010,14 @@ impl HttpsAdapter {
     ) -> io::Result<Self> {
         let origin = Origin::parse(origin)?;
         let address = listener.local_addr()?;
-        if !address.ip().is_loopback()
-            || address.port() != origin.port
+        // A loopback origin is reached directly, so it names the listener's
+        // port. A public origin is reached through an edge that may map ports.
+        if (origin.loopback && address.port() != origin.port)
             || certificates.is_empty()
             || certificates.iter().map(|cert| cert.len()).sum::<usize>() > 64 * 1024
             || key.secret_der().len() > 64 * 1024
         {
-            return Err(io::Error::other("invalid local TLS listener configuration"));
+            return Err(io::Error::other("invalid TLS listener configuration"));
         }
         let mut config = rustls::ServerConfig::builder_with_provider(Arc::new(
             rustls::crypto::ring::default_provider(),
@@ -794,6 +1038,23 @@ impl HttpsAdapter {
             local_enrollment: None,
         })
     }
+    /// Let the listed dashboard origins embed the page (`frame-ancestors`).
+    #[cfg(feature = "media")]
+    pub(crate) fn with_frame_ancestors(mut self, ancestors: &[String]) -> io::Result<Self> {
+        if ancestors.is_empty() {
+            return Ok(self);
+        }
+        let policy = frame_ancestors_policy(ancestors)?;
+        self.origin = Arc::new(Origin {
+            exact: self.origin.exact.clone(),
+            authority: self.origin.authority.clone(),
+            port: self.origin.port,
+            loopback: self.origin.loopback,
+            frame_ancestors: Some(policy),
+            alt_svc: self.origin.alt_svc.clone(),
+        });
+        Ok(self)
+    }
     /// Advertise HTTP/3 on this port (`Alt-Svc`), after the caller installed
     /// the HTTP/3 service on the same port's QUIC endpoint.
     #[cfg(feature = "media")]
@@ -804,6 +1065,8 @@ impl HttpsAdapter {
                 exact: self.origin.exact.clone(),
                 authority: self.origin.authority.clone(),
                 port: self.origin.port,
+                loopback: self.origin.loopback,
+                frame_ancestors: self.origin.frame_ancestors.clone(),
                 alt_svc: Some(value),
             });
         }
@@ -1030,7 +1293,13 @@ where
                 .insert("content-length", length.into());
             return Ok(response);
         }
-        return Ok(asset_response(&parts, asset, lease));
+        let mut response = asset_response(&parts, asset, lease);
+        if navigation && let Some(policy) = &origin.frame_ancestors {
+            response
+                .headers_mut()
+                .insert("content-security-policy", policy.clone());
+        }
+        return Ok(response);
     }
     let parsed = parse_head_checked(&parts)?;
     let limit = parsed.route.body_limit();
@@ -1075,6 +1344,7 @@ where
     let (cancel, cancelled) = watch::channel(false);
     let _cancel = CancelOnDrop(cancel);
     let (reply, response_rx) = oneshot::channel();
+    let (admission, front) = Admission::new();
     let request = BufferedRequest {
         method: parts.method,
         target: parsed.target,
@@ -1085,6 +1355,7 @@ where
         cancelled,
         response: reply,
         lease,
+        admission,
     };
     let queue = if matches!(parsed.route, Route::Media(_)) {
         &ingress.media
@@ -1096,10 +1367,10 @@ where
     queue
         .try_send(request)
         .map_err(|_| Rejection::unavailable())?;
-    let reply = timeout_at(deadline, response_rx)
+    let reply = front
+        .reply(deadline, response_rx)
         .await
-        .map_err(|_| Rejection::unavailable())?
-        .map_err(|_| Rejection::unavailable())?;
+        .ok_or_else(Rejection::unavailable)?;
     Ok(response(
         reply.status,
         ResponseBody::full(reply.body, Some(reply.lease)),

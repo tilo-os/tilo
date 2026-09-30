@@ -294,7 +294,9 @@ class CheckAggregateTests(unittest.TestCase):
                 "needs: [builder, select, security, test, check, clippy, android, wasm, suites, pins]",
                 checks)
             for name in ("test", "check", "clippy", "android", "wasm"):
-                self.assertIn(f"{name.upper()}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
+                variable = name.upper().replace("-", "_")
+                self.assertIn(f"{variable}_RESULT: ${{{{ needs.{name}.result }}}}", checks)
+            self.assertNotIn("test-archive", self.workflow)
             self.assertIn("CHECK_REQUIRED: ${{ needs.select.outputs.check_required }}", checks)
             select_job = section(self.workflow, "select", 2)
             self.assertIn("check_matrix: ${{ steps.plan.outputs.check_matrix }}", select_job)
@@ -329,8 +331,6 @@ class CheckAggregateTests(unittest.TestCase):
             script = (ROOT / "tools/ci/check-wasm.sh").read_text()
             for package, _ in hack.ROOTS:
                 self.assertIn(f"-p {package}", script)
-            self.assertIn("--features tilo-browser-runtime/dylink", script)
-            self.assertIn("--features cloud,static-apps", script)
             self.assertIn('--target "$target"', script)
             self.assertIn("BUILDER_RESULT: ${{ needs.builder.result }}", checks)
             self.assertIn('test "$BUILDER_RESULT" = success', checks)

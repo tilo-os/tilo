@@ -387,11 +387,6 @@ impl DrillInList {
         self.back.center()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, shared verbatim by every \
-                  drill-in pane (wifi/bluetooth/vpn) that opens with this header"
-    )]
     pub fn draw_header(
         &self,
         scene: &mut Scene,
@@ -446,10 +441,6 @@ impl DrillInList {
     /// Centred dim empty-state message in the band the first row would
     /// occupy under `list_top` — without it the pane read as broken rather
     /// than "nothing here yet".
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, matching draw_header"
-    )]
     pub fn draw_empty_from(
         scene: &mut Scene,
         transform: Affine,
@@ -481,22 +472,15 @@ impl DrillInList {
     /// real item gets the same Control surface; the former special-cased
     /// first item made a list of two look like one selected card plus stray
     /// text. Returns the leading glyph box for the owning pane to paint.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one positional argument per painted value, shared verbatim by every \
-                  drill-in pane (wifi/bluetooth/vpn) that paints rows with it"
-    )]
     pub fn draw_discovery_row(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut ui::paint::PaintCtx<'_>,
         row: Rect,
-        _index: usize,
         cursor: Option<Point>,
         trailing_reserve: f64,
         label: &str,
     ) -> Rect {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let hovered = cursor.is_some_and(|point| row.contains(point));
         paint_control(scene, transform, theme, row, hovered, false);
         let glyph = leading_glyph(row, CONTROL_INSET, GLYPH);
@@ -590,12 +574,8 @@ mod tests {
             let mut scene = Scene::new();
             let row = Rect::new(100.0, 200.0, 420.0, 244.0);
             let glyph = DrillInList::draw_discovery_row(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
+                &mut ui::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
                 row,
-                0,
                 None,
                 0.0,
                 "Coffee shop",

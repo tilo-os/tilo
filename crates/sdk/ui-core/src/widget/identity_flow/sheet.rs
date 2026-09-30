@@ -33,13 +33,14 @@
 use std::cell::RefCell;
 
 use vello::Scene;
-use vello::kurbo::{Affine, Rect, RoundedRect, Stroke, Vec2};
+use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::MouseScrollDelta;
 use winit::keyboard::{Key, NamedKey};
 
+use crate::paint::PaintCtx;
 use crate::text_metrics::renderer_type_size;
-use crate::text_render::{TextRenderer, TextWeight};
+use crate::text_render::{TextRenderer, TextStyle, TextWeight};
 use crate::theme::Theme;
 use crate::widget::checkbox::{Checkbox, CheckboxFace};
 use crate::widget::modal_frame::{
@@ -469,46 +470,22 @@ pub(super) fn paragraph_height(
 /// Paint `text` in `role`, its measured line box vertically centred in
 /// `rect`, wrapped to the rect's width when `wrap`. Measured and drawn with
 /// one style, so the centring is exact rather than `(h - 13.0) / 2.0`.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one text painter receives the shared paint context plus what it paints"
-)]
 pub(super) fn paint_text(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     text: &str,
     role: Role,
     align: Align,
     wrap: bool,
 ) {
-    paint_text_in(
-        scene,
-        transform,
-        text_renderer,
-        theme,
-        rect,
-        text,
-        role,
-        role.color(theme),
-        align,
-        wrap,
-    );
+    let color = role.color(ctx.theme);
+    paint_text_in(ctx, rect, text, role, color, align, wrap);
 }
 
 /// [`paint_text`] with an explicit ink, for a placeholder or a value on a
 /// fill the role's ink was not derived against.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one text painter receives the shared paint context plus what it paints"
-)]
 pub(super) fn paint_text_in(
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
+    ctx: &mut PaintCtx<'_>,
     rect: Rect,
     text: &str,
     role: Role,
@@ -520,21 +497,14 @@ pub(super) fn paint_text_in(
         return;
     }
     let max_width = wrap.then_some(rect.width());
-    let (w, h) = measure(text_renderer, theme, role, text, max_width);
+    let (w, h) = measure(ctx.text, ctx.theme, role, text, max_width);
     let x = match align {
         Align::Start => rect.x0,
         Align::Center => rect.x0 + (rect.width() - w) / 2.0,
     };
     let y = rect.y0 + (rect.height() - h) / 2.0;
-    text_renderer.draw_text_weighted(
-        scene,
-        text,
-        role.size(theme, text_renderer),
-        color,
-        transform.pre_translate(Vec2::new(x, y)),
-        max_width.map(narrow),
-        role.weight(),
-    );
+    let style = TextStyle::new(role.size(ctx.theme, ctx.text)).with_weight(role.weight());
+    ctx.text(text, &style, color, Point::new(x, y), max_width.map(narrow));
 }
 
 /// Seat an embedded [`TextInput`] in the row the plan gave it. The field
@@ -614,10 +584,6 @@ pub(super) fn check_box_rect(row: Rect, theme: &Theme) -> Rect {
 /// A checkbox row: the shared checkbox face at the row's start, its label
 /// one gap to the right, both centred on the row. Returns the box rect; the
 /// caller keeps the whole row as the hit target, so the label toggles too.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "one row painter receives the shared paint context plus the row's state"
-)]
 pub(super) fn paint_check_row(
     scene: &mut Scene,
     transform: Affine,
@@ -645,10 +611,7 @@ pub(super) fn paint_check_row(
         row.y1,
     );
     paint_text(
-        scene,
-        transform,
-        text_renderer,
-        theme,
+        &mut PaintCtx::new(scene, transform, text_renderer, theme),
         label_rect,
         label,
         Role::Value,
@@ -839,11 +802,8 @@ pub(super) fn paint_qr(
         paint_cell(scene, transform, theme, rect, false);
         let inset = f64::from(theme.tokens.spacing.s3);
         paint_text(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            rect.inset(inset),
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            rect.inset(-inset),
             &format!("QR error: {err}"),
             Role::Error,
             Align::Center,

@@ -15,7 +15,7 @@ unchanged.
 ## Building
 
 ```sh
-# Core + Books + Writer + test page in one directory (local development):
+# Core + Books + Writer + Chat + test page in one directory (local development):
 crates/browser/tilo-browser-runtime/scripts/build-web-dev.sh /abs/out [PACKAGE...]
 python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 
@@ -23,6 +23,7 @@ python3 -m http.server -d /abs/out   # then open it in a browser with WebGPU
 crates/browser/tilo-browser-runtime/scripts/build-web-core.sh /abs/out [--features "..."]
 crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out ebook
 crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out word-processor
+crates/browser/tilo-browser-runtime/scripts/build-web-app.sh /abs/out chat
 ```
 
 Tools: the pinned Rust toolchain with `wasm32-unknown-unknown`, wasm-bindgen
@@ -41,13 +42,20 @@ The Cloud frontend's monolithic module is unchanged in behaviour:
 
 | feature | adds |
 |---|---|
-| (none, the default) | the toolkit core: toolkit, page host, catalogue; no apps, no peer |
+| (none, the default) | the toolkit core: toolkit, page host, catalogue, the canonical desktop over page-owned rooms (`local`); no apps, no peer |
 | `dylink` | links the cdylib as a dynamic-linking main module (see below) |
 | `static-apps` | compiles Writer, Chat, Notes, Calculator and Books into the module |
-| `cloud` | the certified peer, iroh transport, delivery, onboarding, MoQ media, the canonical desktop |
+| `cloud` | the certified peer (HTTPS delivery, onboarding, invited guests), MoQ media, the canonical desktop |
 
 Host tests (`cargo test -p tilo-browser-runtime`) always cover the peer modules
 and the catalogue's apps.
+
+`cloud` adds no dependency: every crate the peer uses is already in the core.
+Since the ABI id leaves the core crate out, `build-web-core.sh OUT --features
+cloud` builds a core with the peer (`connectPeer` in `peer.mjs`) that has the
+default core's ABI id and links the same app side modules, from the same
+registry. A page that needs the peer loads that core instead of the default
+one, not a second runtime.
 
 ## The web app collection
 
@@ -55,7 +63,7 @@ and the catalogue's apps.
 collection needs; a crate built with other features is another crate with other
 symbol names. The web core follows the same rule: it is built in one Cargo
 invocation with the apps of the web collection (`TILO_WEB_COLLECTION`, default
-`ebook word-processor`; recorded in `runtime.json`), so each crate they share
+`ebook word-processor chat`; recorded in `runtime.json`), so each crate they share
 with the core carries every feature any of them needs. An app outside the
 collection builds as long as it needs nothing more; otherwise
 `build-web-app.sh` names the crates and it joins the collection, which changes
@@ -182,6 +190,21 @@ app's `assets/web/`, stored content-addressed as `assets/<sha256>.<ext>` and
 named by their path below that directory (neither Books nor Writer has any; both
 embed their data).
 
+## Apps outside the Tilo tree
+
+`tilo-app build --platform web` (and `dev`, `run`) builds the app's bundle,
+as `build --target web --bundle app` does: `wasm32` has no dynamic linking,
+so the runtime and the app are one module. A small generated crate under
+`<target>/tilo-app/web/<package>/crate` depends on `tilo-browser-runtime` and
+the app, registers the app's `definition()` at start, and builds into the app
+workspace's target directory as its own Cargo workspace (with that
+workspace's `[patch]`, profiles and lock file), so an app anywhere builds
+against the SDK checkout it names. The bundle lands in
+`<target>/tilo-app/web/<package>/bundle` in `build.sh`'s layout and opens at
+`index.html?app=<id>`; `--output` copies it. `package --target web` writes
+it in the immutable layout Cloud serves. There is no side-module web
+package: this runtime has no separately published core to link one into.
+
 ## Loading apps in the page
 
 ```js
@@ -266,7 +289,8 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
   `take_open_file` and reports the resource that now holds it
   (`OpenFile::report_opened`), which the page reads as `mount.opened` and as
   an `{opened}` status before `gpu-pending`.
-- Every standalone mount of one profile/device also shares a content store
+- Every standalone mount of one profile/device (and every window of a local
+  desktop of it) also shares a content store
   (`HostContext::content`, a `tilo_content::ContentStore`) for the page's
   lifetime, as it shares records. Books puts an opened EPUB there and records
   it in its library row by content hash, exactly as it records an imported
@@ -288,6 +312,130 @@ phone.invokeAction(phone.opened.resource, 'highlight-selection');
 `open.html` in the dev output exercises this with two mounts (see
 [Building](#building)); put an EPUB next to it as `odyssey.epub`, or pass
 `?open=URL`, or pick a file.
+
+## The page's own desktop
+
+`mountDesktop(element, {app: 'desktop', local})` runs the canonical desktop
+(`tilo_desktop::composition::DesktopSurface` and its chrome, as the Cloud
+frontend does) without a peer. `src/local_desktop.rs` builds one room document
+per seeded workspace (the first is the mount's `room`, the others derived from
+it) and is their only topology owner: a command the shell binds is reduced
+with `tilo_desktop_model::commands::apply_command`, projected with
+`project_owned_contents`/`bind_tab_record` as the workspace host does, and
+handed to the desktop as its next admission in the same frame, instead of
+being queued for a peer. Nothing is replicated or persisted but the apps'
+records, which go to the profile's storage like a standalone mount's.
+
+- Windows are resolved through the same catalogue and resolver as standalone
+  mounts: the host links every seeded app (and `local.apps`) before mounting,
+  and an app `openApp`/`{kind: 'open'}` names before opening it. The
+  launcher, search and palette offer the linked apps.
+- A window with `record` opens that record (it must exist in the mount's room,
+  as a standalone mount's `record` does). Every other window is one the owner
+  created: its app makes a new record when the window first mounts
+  (`HostContext::prepare_new_record`, the app's own initialiser); no other
+  missing record is ever created.
+- The page's mounts of one record re-sync each other, standalone or desktop
+  window, so a Books library opened on a "phone" mount shows its book and
+  annotations live in the desktop's window.
+- Each window's app and record are in the navigation snapshot's `entries`
+  (`{route, label, app, record}`; `record` is null for a package-primary
+  app), and `openApp(app, {record})` (`{kind: 'open', app, record}`) opens a
+  new window on an existing record. So a page can mount another author on a
+  window's document, say an agent's hidden Writer mount on the notes the
+  desktop's Writer shows:
+
+  ```js
+  await desktop.openApp('so.tilo.word-processor');
+  const notes = desktop.navigation.getSnapshot().entries.at(-1).record;
+  const agent = await mountDesktop(hidden, {app: 'so.tilo.word-processor', record: notes, author: 'Reading agent', ...shared});
+  ```
+- Activity names every change: the page's mounts of one profile and device
+  share each record's document, and each writes its edits to it as its
+  `author`'s own actor, so edits another mount made (the phone's Books, the
+  agent's Writer and Chat) show under that mount's `author`, as an agent
+  when the mount is an agent mount (`agent`) or the author is one of the
+  workspace's agent `members`. Rows show the name; one author's changes
+  count as one person, and only people history can name are offered as
+  filters. Room changes carry the time the owner made them; a record's
+  genesis (made at time zero, before anyone edited it; a package-primary
+  document such as Chat's included) is left out of Activity, as nobody made
+  it (the document's own history keeps it as the version to restore to).
+  Housekeeping an app declares about a document, such as Chat's read marker
+  or Books' reading position, stays in the document's own history but is
+  not workspace activity.
+- `actions`/`invokeAction` take `{window}` (a tab id; the focused window by
+  default) and go through that window's action door.
+- Permissions are the page author's, as for a standalone mount (`Owner`).
+  A workspace's seeded `members` and `grants` become its
+  `Workspace::capabilities`, which the workspace settings (People, Agents,
+  Privacy) render read-only; nothing enforces them in this peer.
+- The desktop's tile catalogue follows the page's installs, so an app linked
+  after the mount opens in a window like one linked before it.
+
+## Chat with an agent
+
+Chat (`so.tilo.chat`) is package-primary: every mount of one
+profile/device/room opens the room's one workspace, so two mounts are two
+participants in the same conversation and show each other's messages live.
+The first mount creates the workspace (its author owns it), so mount the
+person first. A mount with `agent` acts as an agent: its `author` must be an
+agent task participant, `agent-task:<task>`, which the app admits under the
+display name, as a host admits a delivered agent task.
+
+```js
+const room = {profile: 'demo', device: 'demo-device', room: '0b5f1c2e-9d7a-4c55-8a1e-3f1d2c4b5a69'};
+const you = await mountDesktop(youElement, {app: 'so.tilo.chat', ...room, author: 'Visitor', instance: 1});
+const agent = await mountDesktop(agentElement, {app: 'so.tilo.chat', ...room, instance: 2,
+  author: 'agent-task:reading', agent: 'Reading agent'});
+
+const general = 'chat.channel:c_general';   // the starter workspace's channel
+// Post from either mount; the message is that mount's author's.
+agent.invokeAction(general, 'post', {value: 'Welcome aboard. Which book are we reading?'});
+
+// Messages: a channel asked for by name lists its latest 20 messages as
+// children, kind `chat.message`, label `<author name>: <first 72 characters>`.
+const seen = new Set();
+function newMessages(mount) {
+  const ids = [...new Set(mount.actions(general)
+    .filter(a => a.resource_kind === 'chat.message').map(a => a.address.resource))];
+  return ids.filter(id => !seen.has(id) && seen.add(id))
+    .map(id => mount.invokeAction(id, 'read').output.value);
+}
+// Each: {id, channel, parent, author, authorName, agent, mine, ts, edited, text, work}
+for (const message of newMessages(agent)) {
+  if (message.agent) continue;                 // the agent's own lines
+  const reply = await answer(message.text);    // the page's model call
+  agent.invokeAction(general, 'post', {value: reply});
+}
+
+// The agent's record of what it did, on its own message (the newest here):
+agent.invokeAction(replyId, 'set-work', {state: 'done', did: 'Add note',
+  steps: [{resource: book, label: 'Add note', outcome: 'applied'}]});
+```
+
+- `post` takes `{value}` (a prompted action; `@Name` of a member becomes a
+  mention). An agent mount's post is recorded as the agent's
+  (`agent_authors/<author>` in the document), so every mount shows it as
+  `Reading agent · agent`; its own mount shows "You". The agent is not a row
+  in the People panel.
+- `read` on `chat.message:<id>` returns the message without changing
+  anything: `author` is the participant id (the mount's `author`),
+  `authorName` what the room calls them, `agent` whether it is an agent's,
+  `mine` whether this mount wrote it, `text` the whole plain text, `parent`
+  the thread it replies to or null, and `work` the agent's record or null.
+  The eager `actions()` listing holds no messages (it stays bounded); only
+  `actions('chat.channel:<id>')` and `actions('chat.message:<id>')` do.
+- `set-work` is offered on an agent mount's own messages only. `state` is
+  `taken`, `doing` (with `did`, `about`), `done` (with `did`) or `refused`;
+  `why` is how it decided; `steps` lists the operations it dispatched as
+  `{resource, label, outcome: asked | applied | no_change | refused, why?}`;
+  `say` supplies the words of a message that has none yet. It writes the
+  same `SetAgentWork` a delivered agent task writes, read back as `work`.
+  Chat's timeline does not draw the work yet; a page shows it itself.
+
+`chat.html` in the dev output mounts both side by side; "Agent: answer new
+messages" replies to what the person wrote since the last answer.
 
 ## Loading from a registry
 
@@ -327,14 +475,26 @@ fetched only when text demands it, or during idle prewarm within its budget.
 
 ## Sizes
 
-`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-27 on main with
-the Cloud stack merged (collection Books + Writer, no `cloud`):
+The canonical desktop over page-owned rooms (`local`) costs the core
+1.23 MiB raw and 311 KiB brotli (`-Oz`: 18.27 MiB / 4.09 MiB before, 19.50
+MiB / 4.40 MiB after, measured 2026-09-28): the shell itself
+(`tilo_desktop`, 358 KiB linked; `tilo_desktop_model`, `tilo_automation`,
+`collab_types`), which the core linked but dead-stripped before.
+
+`build-web-dev.sh` writes `build/sizes.md`. Measured 2026-09-28 (collection
+Books + Writer + Chat, no `cloud`):
 
 | module | linked | linked, brotli | `-Oz` | `-Oz`, brotli |
 |---|---:|---:|---:|---:|
-| core | 32.02 MiB | 4.81 MiB | 16.25 MiB | 3.65 MiB |
-| Books (`so.tilo.ebook`) | 1.50 MiB | 287 KiB | 854 KiB | 248 KiB |
-| Writer (`so.tilo.word-processor`) | 5.03 MiB | 661 KiB | 2.07 MiB | 588 KiB |
+| core | 36.60 MiB | 5.70 MiB | 18.82 MiB | 4.42 MiB |
+| Books (`so.tilo.ebook`) | 2.69 MiB | 468 KiB | 1.49 MiB | 414 KiB |
+| Writer (`so.tilo.word-processor`) | 5.39 MiB | 704 KiB | 2.21 MiB | 625 KiB |
+| Chat (`so.tilo.chat`) | 2.56 MiB | 423 KiB | 1.39 MiB | 370 KiB |
+
+Chat joining the collection grows the core from 18.27 MiB / 4.09 MiB (`-Oz`,
+brotli) to 18.82 MiB / 4.42 MiB: mostly the emoji tables (`crates/text/emoji`,
+in the core through `tilo-desktop` but dead code until Chat's picker imports
+them), and the generic instantiations Chat imports.
 
 | fonts | count | raw | brotli |
 |---|---:|---:|---:|
@@ -375,6 +535,41 @@ shaders):
 | 9 | hashbrown | 418 | | 19 | image_webp | 103 |
 | 10 | serde_json | 387 | | 20 | regex_syntax | 102 |
 
+## Collaboration end to end
+
+`crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs` puts native macOS
+apps, headless Chrome pages and a host agent in one room of a local
+`tilo-relay dev` host on spare ports, and checks what a person would see: the
+same record on every side; edits native to browser, browser to native and
+browser to browser, with the time until the other side shows them; named
+cursors and carets both ways; a page that joins late; an agent's edit and
+cursor on native and in the pages; and a reloaded page that keeps its device
+and room membership. Per app it runs the native shell with `TILO_COLLAB_HOST`
+under a throwaway runtime profile that carries the dev host's user root, two
+pages, then a third, and (with `--agents --agent-model scripted`) an agent
+spawned from a page. It writes `summary.json` and `summary.md` (a check-by-app
+table) under `--out` and stops everything it started.
+
+```sh
+cargo build --release -p tilo-relay --features web,agents
+cargo build -p shell --bin tilo-runtime-mcp -p notes -p sheets -p scratchpad
+crates/browser/tilo-browser-runtime/scripts/build.sh /abs/bundle --bundle desktop
+node crates/browser/tilo-web-desktop/scripts/collab-e2e.mjs --bundle /abs/bundle \
+  --apps notes,sheets,scratchpad --out /abs/e2e
+```
+
+`--build` runs those builds itself (the bundle with `--profile dev` into
+`OUT/bundle` when `--bundle` is not given); `--no-agent` leaves the agent out
+for a relay without `agents`. The native window is read and edited from
+outside the process through the macOS accessibility API
+(`collab-e2e-ax.swift`, compiled with `swiftc` on first use), so the terminal
+running the script needs Accessibility permission; the native pointer moves
+through a `TILO_NATIVE_SCENARIO` timeline. Native presence from the pages is
+read from the runtime daemon's log. The screen must stay unlocked for the whole
+run: a locked screen presents no native window, so the script refuses to start
+on one. Each page's channel state (`peer.channelDiagnostics()`) is saved as
+`*-channels.txt`. macOS only.
+
 ## Tests
 
 ```sh
@@ -383,7 +578,9 @@ node --test crates/browser/tilo-browser-runtime/web/dylink.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-installer.test.mjs \
   crates/browser/tilo-browser-runtime/web/app-directory.test.mjs \
   crates/browser/tilo-browser-runtime/web/open-file.test.mjs \
-  crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs \
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/abi.test.mjs \
+  crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs
 cargo test --locked -j4 -p tilo-browser-runtime --lib catalog::
 # the wasm32 type check CI runs for every change these builds depend on
 tools/ci/check-wasm.sh

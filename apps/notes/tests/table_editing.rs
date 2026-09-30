@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use taffy::prelude::*;
 use ui::a11y::{AccessNode, Action};
+use ui::headless::Framed;
 use ui::presence::PresenceCtx;
 use ui::theme::Theme;
 use ui::widget::Widget;
@@ -11,11 +12,7 @@ use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
 struct Fixture {
-    editor: BlockEditor,
-    tree: TaffyTree<()>,
-    node: NodeId,
-    renderer: ui::TextRenderer,
-    doc: automerge::AutoCommit,
+    editor: Framed<BlockEditor>,
 }
 
 impl Fixture {
@@ -28,46 +25,22 @@ impl Fixture {
         ]);
         editor.set_action_interception(true);
         let mut fixture = Self {
-            editor,
-            tree: TaffyTree::new(),
-            node: NodeId::new(0),
-            renderer: crate::component_support::renderer(),
-            doc: automerge::AutoCommit::new(),
+            editor: crate::component_support::framed_block_editor(
+                editor,
+                500.0,
+                (0.0, 0.0),
+                Theme::dark(),
+            ),
         };
-        fixture.paint();
         fixture.editor.take_structure_dirty();
         fixture.editor.is_dirty();
         fixture
     }
 
     fn paint(&mut self) {
-        self.tree = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        self.node = self
-            .editor
-            .build_layout(&mut self.tree, &Theme::dark(), &mut nodes);
-        self.tree
-            .compute_layout_with_measure(
-                self.node,
-                Size {
-                    width: AvailableSpace::Definite(500.0),
-                    height: AvailableSpace::MaxContent,
-                },
-                |known, available, node, _, _| {
-                    nodes.get(&node).map_or(Size::ZERO, |ptr| unsafe {
-                        (**ptr).measure(known, available, &mut self.renderer)
-                    })
-                },
-            )
-            .unwrap();
-        self.editor.apply_layout(&self.tree, self.node, Point::ZERO);
-        self.editor.draw(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut self.renderer,
-            &Theme::dark(),
-            &PresenceCtx::empty(),
-        );
+        Framed::harness_mut(&mut self.editor)
+            .recompose()
+            .expect("the table editor lays out");
     }
 
     fn target(&self, block: usize, row: usize, column: usize) -> String {
@@ -82,8 +55,8 @@ impl Fixture {
         reason = "test helper owns each semantic action for immediate dispatch"
     )]
     fn action(&mut self, target: &str, action: Action) -> bool {
-        self.editor
-            .perform_semantic_action(target, &action, &mut self.doc, &automerge::ROOT)
+        let (editor, state) = Framed::split(&mut self.editor);
+        editor.perform_semantic_action(target, &action, &mut state.doc, &state.root)
     }
 
     fn value(&self, block: usize, row: usize, column: usize) -> String {
@@ -111,17 +84,8 @@ impl Fixture {
         modifiers: ModifiersState,
     ) -> Vec<ui::widget::BlockEditOp> {
         self.editor.begin_action_intercept();
-        self.editor.handle_event(
-            &event,
-            1.0,
-            &Modifiers::from(modifiers),
-            &mut self.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            self.node,
-            &self.tree,
-        );
+        Framed::harness_mut(&mut self.editor)
+            .dispatch_to_root_with(&event, &Modifiers::from(modifiers));
         let ops = self.editor.take_intercepted_ops();
         self.paint();
         ops
@@ -209,7 +173,7 @@ impl Bound {
     fn sync(&mut self, state: &mut ui::State) {
         let surface = self.panel.body_editor_mut();
         surface.sync(&mut state.doc, &automerge::ROOT);
-        if let Some(before) = surface.take_committed_action() {
+        if let Some(before) = ui::undo::take_committed_action(surface) {
             state.record_committed_action(before, None, None);
         }
         self.paint();
@@ -257,14 +221,16 @@ impl Bound {
         let node = self.node;
         self.panel.body_editor_mut().handle_event(
             &event,
-            1.0,
-            &Modifiers::default(),
-            &mut state.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &self.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut state.doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &self.tree,
+            },
         );
         self.sync(state);
     }
@@ -507,14 +473,16 @@ fn table_focus_is_exclusive_and_survives_shape_changes() {
                 event: shift,
                 is_synthetic: false,
             },
-            1.0,
-            &Modifiers::from(ModifiersState::SHIFT),
-            &mut state.doc,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &b.tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::from(ModifiersState::SHIFT),
+                state: &mut state.doc,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &b.tree,
+            },
         );
         b.sync(&mut state);
         let current = b.editor().blocks()[0].text().to_owned();

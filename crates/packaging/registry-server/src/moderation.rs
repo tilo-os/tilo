@@ -653,6 +653,15 @@ impl ArtifactHosts {
     }
 }
 
+/// The URL a version names for the artifact `blake3_hex` this registry hosts:
+/// its loopback `<base_url>/artifacts/` in local development, the official
+/// artifact origin otherwise.
+pub(crate) fn artifact_url(base_url: &str, blake3_hex: &str) -> String {
+    let prefix =
+        local_artifact_prefix(base_url).unwrap_or_else(|| OFFICIAL_ARTIFACT_PREFIX.to_owned());
+    format!("{prefix}{}.tapp", blake3_hex.to_ascii_lowercase())
+}
+
 /// `<base_url>/artifacts/` when `base_url` is a loopback HTTP origin without
 /// credentials, path, query or fragment; `None` for every public deployment.
 fn local_artifact_prefix(base_url: &str) -> Option<String> {
@@ -905,8 +914,10 @@ fn validate_bound_version(
                 )
         ),
         registry_types::WEB_PLATFORM
+        | registry_types::LINUX_PLATFORM
         | registry_types::WINDOWS_PLATFORM
-        | registry_types::MACOS_PLATFORM => target.validate().is_ok(),
+        | registry_types::MACOS_PLATFORM
+        | registry_types::ANDROID_PLATFORM => target.validate().is_ok(),
         _ => false,
     };
     let canonical_url = artifacts.allows(&version.tapp_url);
@@ -1248,6 +1259,36 @@ mod tests {
             validate_version_history(&no_abi, Some(&current), &official),
             Err(ModerationError::UnsupportedPackageTarget { .. })
         ));
+    }
+
+    #[test]
+    fn android_versions_are_a_separate_target_history() {
+        let key = SigningKey::generate(&mut UnwrapErr(SysRng));
+        let current = entry(&key, 42);
+        let official = ArtifactHosts::default();
+        let mut with_android = current.clone();
+        for (architecture, isa) in [("aarch64", "aarch64"), ("x86_64", "x86_64")] {
+            let mut android = with_android.versions[0].clone();
+            android.version = "0.0.1".into();
+            android.target = registry_types::RegistryTarget {
+                platform: registry_types::ANDROID_PLATFORM.into(),
+                architecture: architecture.into(),
+                isa: isa.into(),
+                runtime: Some("tilo-runtime/2026.07".into()),
+            };
+            with_android.versions.push(android);
+        }
+        assert!(validate_version_history(&with_android, Some(&current), &official).is_ok());
+
+        for (architecture, isa) in [("armv7", "armv7"), ("aarch64", "")] {
+            let mut bad = with_android.clone();
+            bad.versions[1].target.architecture = architecture.into();
+            bad.versions[1].target.isa = isa.into();
+            assert!(matches!(
+                validate_version_history(&bad, Some(&current), &official),
+                Err(ModerationError::UnsupportedPackageTarget { .. })
+            ));
+        }
     }
 
     #[test]

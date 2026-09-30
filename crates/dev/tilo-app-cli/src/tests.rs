@@ -6,10 +6,12 @@ fn request(dir: PathBuf) -> NewAppRequest {
         app_id: None,
         title: None,
         template: Some(Template::Starter),
+        example: None,
         directory: Some(dir),
         ui_path: None,
         sdk_git: None,
         sdk_rev: None,
+        sdk_version: None,
         dry_run: false,
     }
 }
@@ -72,7 +74,7 @@ fn minimal_generated_graph_app(root: &Path) {
     .unwrap();
     std::fs::write(
         root.join("src/lib.rs"),
-        format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+        format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
     )
     .unwrap();
 }
@@ -802,7 +804,6 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         minimal_generated_graph_app(&app);
         let custom_root =
             "fn custom() { let _ = crate::screens::router(\"main\", &Theme::default()); }\n";
-        assert_eq!(migrate_generated_graph_context(custom_root), custom_root);
         std::fs::write(
             app.join("src/lib.rs"),
             format!("pub mod screens;\n{custom_root}"),
@@ -827,7 +828,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         assert!(!app.join("src/components/profile_card.rs").exists());
         std::fs::write(
             app.join("src/lib.rs"),
-            format!("pub mod screens;\n\n{}", legacy_graph_app_template()),
+            format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}"),
         )
         .unwrap();
 
@@ -929,7 +930,7 @@ fn components_register_and_mount_only_with_compatible_typed_props() {
         assert!(library.contains("crate::screens::router_with("));
         assert!(library.contains("crate::components::ui_graph_context()"));
         assert!(!library.contains("crate::screens::router(\"main\""));
-        syn::parse_file(&library).expect("migrated generated root is valid Rust");
+        syn::parse_file(&library).expect("generated root is valid Rust");
     }
 
     // Phase: component_template_replacement_requires_compatible_graph_props.
@@ -1600,7 +1601,7 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
             plan.artifact_dir(),
             Some(plan.app_dir.join("target/scenario-artifacts").as_path())
         );
-        let payload = plan.cases[0].cargo.args.last().unwrap().to_string_lossy();
+        let payload = plan.cases[0].args.last().unwrap().to_string_lossy();
         assert!(payload.contains("\"viewport\":[1024,768]"), "{payload}");
         assert!(payload.contains("\"audit\":true"), "{payload}");
         for artifact in [
@@ -1619,14 +1620,16 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
         let case = |name: &str, script: &str| ScenarioCasePlan {
             name: name.into(),
             source: temp.path().join(format!("{name}.json")),
-            cargo: CargoPlan {
-                app_dir: temp.path().to_path_buf(),
-                program: OsString::from("/bin/sh"),
-                args: vec![OsString::from("-c"), OsString::from(script)],
-            },
+            args: vec![OsString::from("-c"), OsString::from(script)],
         };
         let plan = ScenarioSuitePlan {
             app_dir: temp.path().to_path_buf(),
+            build: CargoPlan {
+                app_dir: temp.path().to_path_buf(),
+                program: OsString::from("false"),
+                args: Vec::new(),
+            },
+            bin: None,
             artifact_dir: Some(temp.path().join("artifacts")),
             cases: vec![
                 case(
@@ -1638,12 +1641,54 @@ fn screen_scenarios_scaffold_plan_and_run_isolated_workflows() {
             ],
         };
 
-        let outcome = plan.execute().unwrap();
+        let outcome = plan.run_cases(Path::new("/bin/sh")).unwrap();
         assert!(temp.path().join("artifacts").is_dir());
         assert_eq!(outcome.passed, ["isolated", "continued"]);
         assert_eq!(outcome.failed.len(), 1);
         assert_eq!(outcome.failed[0].name, "failure");
         assert!(outcome.failed[0].detail.contains('7'));
+    }
+
+    // Phase: scenario_build_runs_outside_the_isolated_state.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let manifest = temp.path().join("Cargo.toml");
+        std::fs::write(&manifest, "").unwrap();
+        let app = temp.path().join("app");
+        std::fs::write(
+            &app,
+            "#!/bin/sh\ncase \"$XDG_CONFIG_HOME\" in */tilo-scenario-*) exit 0;; esac\nexit 9\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&app, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+        let artifact = serde_json::json!({
+            "reason": "compiler-artifact",
+            "manifest_path": manifest.canonicalize().unwrap(),
+            "target": {"name": "app"},
+            "executable": app,
+            "filenames": [app],
+        });
+        let build = format!(
+            "case \"$XDG_CONFIG_HOME\" in */tilo-scenario-*) exit 3;; esac; echo '{artifact}'"
+        );
+        let plan = ScenarioSuitePlan {
+            app_dir: temp.path().to_path_buf(),
+            build: CargoPlan {
+                app_dir: temp.path().to_path_buf(),
+                program: OsString::from("/bin/sh"),
+                args: vec![OsString::from("-c"), OsString::from(build)],
+            },
+            bin: Some("app".into()),
+            artifact_dir: None,
+            cases: vec![ScenarioCasePlan {
+                name: "default".into(),
+                source: temp.path().join("default.json"),
+                args: Vec::new(),
+            }],
+        };
+        let outcome = plan.execute().unwrap();
+        assert_eq!(outcome.passed, ["default"], "{:?}", outcome.failed);
     }
 }
 
@@ -1676,7 +1721,7 @@ fn add_artifact_protects_work_and_stays_inside_the_app() {
         );
 
         std::fs::create_dir_all(app.join("locales")).unwrap();
-        std::fs::write(app.join("locales/en-US.ftl"), source_catalog()).unwrap();
+        std::fs::write(app.join("locales/en-US.ftl"), STARTER_APP_CATALOG).unwrap();
         let registry = locale_registry_source(&["en-US".to_owned()]);
         std::fs::write(app.join("src/locales.rs"), &registry).unwrap();
         let preview = add_app_artifact(AddRequest {
@@ -1938,10 +1983,7 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         let translation_path = app.join("locales/de-DE.ftl");
         let translation = std::fs::read_to_string(&translation_path)
             .unwrap()
-            .replace(
-                "starter-title = Your first Tilo app",
-                "starter-title = Meine Tilo-App",
-            )
+            .replace("starter-title = Hello", "starter-title = Meine Tilo-App")
             .replace(
                 "starter-greeting = Hello, { $name }!",
                 "starter-greeting = Hallo, { $benutzer }!",
@@ -2059,40 +2101,12 @@ fn locales_are_registered_validated_and_synced_without_losing_translations() {
         );
     }
 
-    // Phase: add_locale_migrates_only_the_previous_generated_setup.
+    // Phase: add_locale_refuses_an_app_without_the_generated_registry.
     {
         let temp = tempfile::tempdir().unwrap();
         let app = temp.path().join("reading-list");
         create_app(request(app.clone())).unwrap();
         let library_path = app.join("src/lib.rs");
-        let current = std::fs::read_to_string(&library_path).unwrap();
-        assert_eq!(current.matches(GENERATED_LOCALE_SETUP).count(), 1);
-        std::fs::write(
-            &library_path,
-            current.replacen(GENERATED_LOCALE_SETUP, LEGACY_GENERATED_LOCALE_SETUP, 1),
-        )
-        .unwrap();
-        std::fs::remove_file(app.join("src/locales.rs")).unwrap();
-
-        let migrated = add_app_artifact(AddRequest {
-            start: app.clone(),
-            artifact: AddArtifact::Locale {
-                locale: "it-IT".into(),
-            },
-            force: false,
-            dry_run: false,
-        })
-        .unwrap();
-        assert_eq!(migrated.files.len(), 3);
-        let library = std::fs::read_to_string(&library_path).unwrap();
-        assert!(library.contains(GENERATED_LOCALE_SETUP));
-        assert!(!library.contains("SOURCE_CATALOG"));
-        assert_eq!(
-            parse_locale_registry(&std::fs::read_to_string(app.join("src/locales.rs")).unwrap())
-                .unwrap(),
-            ["en-US", "it-IT"]
-        );
-
         std::fs::remove_file(app.join("src/locales.rs")).unwrap();
         let before = std::fs::read_to_string(&library_path).unwrap();
         let error = add_app_artifact(AddRequest {
@@ -2466,10 +2480,8 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(destination.join("Cargo.toml").is_file());
         let cargo = std::fs::read_to_string(destination.join("Cargo.toml")).unwrap();
         let cargo: toml::Value = toml::from_str(&cargo).unwrap();
-        let shader_path = cargo["patch"]["crates-io"]["vello_shaders"]["path"]
-            .as_str()
-            .unwrap();
-        assert!(destination.join(shader_path).join("Cargo.toml").is_file());
+        let sdk_path = cargo["dependencies"]["ui"]["path"].as_str().unwrap();
+        assert!(destination.join(sdk_path).join("Cargo.toml").is_file());
         assert!(destination.join("src/main.rs").is_file());
         assert!(destination.join("tests/app.rs").is_file());
         assert!(destination.join("tests/headless-actions.json").is_file());
@@ -2477,18 +2489,15 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
             std::fs::read_to_string(destination.join("locales/en-US.ftl")).expect("catalog");
         assert!(catalog.contains("starter-greeting = Hello, { $name }!"));
         let main = std::fs::read_to_string(destination.join("src/main.rs")).expect("main");
-        assert!(main.contains("ui::framework::run::<reading_list::App>()"));
+        assert!(main.contains("ui::main!(reading_list::App);"));
         let library = std::fs::read_to_string(destination.join("src/lib.rs")).expect("library");
         assert!(library.contains("pub const APP_ID: &str = \"local.dev.reading.list\";"));
-        assert!(library.contains("#[derive(Model, Debug, Clone, PartialEq)]"));
-        assert!(library.contains("#[resource(kind = \"generated.profile\""));
+        assert!(library.contains("#[derive(Model, Default, Debug, Clone, PartialEq)]"));
+        assert!(library.contains("#[resource(kind = \"generated.greeting\""));
         assert!(library.contains("impl ResourceApp for App"));
-        assert!(library.contains(".input(|profile| profile.name.clone(), Profile::SET_NAME)"));
+        assert!(library.contains(".input(|greeting| greeting.name.clone(), Greeting::SET_NAME)"));
         assert!(library.contains("with_id(\"name-input\")"));
-        assert!(library.contains(".checkbox("));
-        assert!(library.contains("NumberInput::from_state(value)"));
-        assert!(library.contains("Slider::from_state,"));
-        assert!(library.contains("Dropdown::from_state("));
+        assert!(library.contains("cx.button(\"starter-clear\", Greeting::CLEAR.invoke())"));
         assert!(library.contains("labeled_field(\"starter-name-label\", name)"));
         assert!(!library.contains("LocalState::new"));
         assert!(!library.contains("ActionForm"));
@@ -2503,13 +2512,12 @@ fn new_apps_are_created_whole_with_their_workspace_registration() {
         assert!(manifest.contains("mode = \"off\""));
         let app_test =
             std::fs::read_to_string(destination.join("tests/app.rs")).expect("generated app test");
-        assert!(app_test.contains("use reading_list::{App, Profile};"));
+        assert!(app_test.contains("use reading_list::{App, Greeting};"));
         assert!(!app_test.contains("generated_app"));
         assert!(app_test.contains("TestApp::<App>::new()"));
-        assert!(app_test.contains("Replica::<Profile>::new()"));
+        assert!(app_test.contains("Replica::<Greeting>::new()"));
         assert!(app_test.contains("perform_named(\"name-input\""));
         assert!(app_test.contains("SemanticExpectation::named(\"greeting\")"));
-        assert!(app_test.contains("perform_named(\"volume-slider\""));
         assert!(app_test.contains("with_role(ui::Role::Viewer)"));
         assert!(app_test.contains("app.undo()"));
         assert!(app_test.contains("reopen()"));
@@ -2693,7 +2701,7 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         req.app_id = None;
         req.template = None;
         let mut input = std::io::Cursor::new(
-            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n4\n\n".to_vec(),
+            b"Bad Name\nreading-list\n\nbad-id\norg.example.reading-list\n10\n3\n\n".to_vec(),
         );
         let mut output = Vec::new();
 
@@ -2705,14 +2713,16 @@ fn the_interactive_wizard_retries_declines_and_cancels_cleanly() {
         assert!(transcript.contains("invalid package name \"Bad Name\""));
         assert!(transcript.contains("invalid app id \"bad-id\""));
         assert!(transcript.contains("1) starter"));
-        assert!(transcript.contains("5) graph"));
+        assert!(transcript.contains("4) graph"));
         assert!(transcript.contains("unknown template \"10\""));
         assert!(transcript.contains("Review:"));
-        assert!(transcript.contains("Template:    tree — Professional hierarchy browser"));
+        assert!(transcript.contains(
+            "Template:    collection — A list of items the user adds, edits, checks off and removes"
+        ));
         assert!(transcript.contains(&format!("Destination: {}", destination.display())));
         assert!(transcript.contains("Create this app [Y/n]:"));
         let source = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
-        assert!(source.contains("TreeView::new"), "{source}");
+        assert!(source.contains("cx.each("), "{source}");
     }
 
     // Phase: interactive_wizard_declines_before_publishing_any_files.
@@ -2993,8 +3003,7 @@ fn doctor_reports_actionable_failures_in_app_manifests() {
 }
 
 /// Doctor validates generated screens, locales and scenarios, preflights graph component factories
-/// and typed props, marks app-owned component contexts unverifiable, and keeps the generated form v1
-/// props contract readable.
+/// and typed props, and marks app-owned component contexts unverifiable.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3177,18 +3186,6 @@ fn doctor_validates_generated_screens_components_and_contracts() {
             check.label == "component registry" && check.status == DoctorStatus::Fail
         }));
     }
-
-    // Phase: doctor_keeps_the_generated_form_v1_props_contract_readable.
-    {
-        let contract = graph_props_contract(
-            "legacy-form",
-            "// tilo-app:graph-props=form-v1\npub fn register_ui_graph() {}\n",
-        )
-        .unwrap();
-        assert_eq!(contract, GraphPropsContract::FormV1);
-        let props = serde_json::json!({"value": "Ada", "enabled": true});
-        assert!(contract.invalid_props(props.as_object().unwrap()).is_none());
-    }
 }
 
 /// A dry run writes nothing; the summary prints copyable commands for shell-unsafe paths;
@@ -3264,132 +3261,93 @@ fn creation_inputs_are_validated_and_printed_safely() {
         );
     }
 
-    // Phase: template_prompt_accepts_names_and_shortcuts.
+    // Phase: template_prompt_accepts_names_and_numbers.
     {
-        assert_eq!(parse_template("1").unwrap(), Template::Starter);
-        assert_eq!(parse_template("starter").unwrap(), Template::Starter);
-        assert_eq!(parse_template("S").unwrap(), Template::Starter);
-        assert_eq!(parse_template("data").unwrap(), Template::Data);
-        assert_eq!(parse_template("3").unwrap(), Template::List);
-        assert_eq!(parse_template("d").unwrap(), Template::Data);
-        assert_eq!(parse_template("list").unwrap(), Template::List);
-        assert_eq!(parse_template("L").unwrap(), Template::List);
-        assert_eq!(parse_template("tree").unwrap(), Template::Tree);
-        assert_eq!(parse_template("T").unwrap(), Template::Tree);
-        assert_eq!(parse_template("graph").unwrap(), Template::Graph);
-        assert_eq!(parse_template("5").unwrap(), Template::Graph);
-        assert_eq!(parse_template("builder").unwrap(), Template::Graph);
-        assert_eq!(parse_template("async").unwrap(), Template::Async);
-        assert_eq!(parse_template("6").unwrap(), Template::Async);
-        assert_eq!(parse_template("task").unwrap(), Template::Async);
-        assert_eq!(parse_template("document").unwrap(), Template::Document);
-        assert_eq!(parse_template("7").unwrap(), Template::Document);
-        assert_eq!(parse_template("editor").unwrap(), Template::Document);
-        assert_eq!(parse_template("qr").unwrap(), Template::Qr);
-        assert_eq!(parse_template("8").unwrap(), Template::Qr);
-        assert_eq!(parse_template("showcase").unwrap(), Template::Qr);
-        assert_eq!(parse_template("9").unwrap(), Template::Workspace);
-        assert_eq!(
-            parse_template("master-detail").unwrap(),
-            Template::Workspace
-        );
+        for (number, template) in (1..).zip(Template::ALL) {
+            assert_eq!(parse_template(template.name()).unwrap(), template);
+            assert_eq!(parse_template(&format!(" {number} ")).unwrap(), template);
+        }
+        assert_eq!(parse_template("Collection").unwrap(), Template::Collection);
+        assert!(parse_template("0").is_err());
+        assert!(parse_template("5").is_err());
         assert!(parse_template("dashboard").is_err());
+        let retired = parse_template("list").unwrap_err().to_string();
+        assert!(retired.contains("--from-example virtual-list"), "{retired}");
     }
 }
 
-/// The data, QR, workspace, graph, list, tree, async and document templates each compose the
-/// toolkit patterns they are meant to demonstrate.
+/// The starter, document, collection and graph templates each compose the toolkit patterns they
+/// are meant to start from.
 #[test]
 #[allow(
     clippy::too_many_lines,
     reason = "one scenario test: each phase is a former standalone test kept verbatim as a scoped block"
 )]
 fn each_template_composes_the_toolkit_patterns_it_teaches() {
-    // Phase: data_template_renders_cells_and_uses_stable_row_ids.
+    // Phase: every_template_has_its_own_catalog_and_uses_only_its_messages.
     {
-        let spec = AppSpec {
-            package_name: "log-browser".into(),
-            crate_name: "log_browser".into(),
-            title: "Log Browser".into(),
-            app_id: "so.tilo.log.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Data,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("with_text(|row| row.name.clone())"));
-        assert!(source.contains("with_id(\"rows-table\")"));
-        assert!(source.contains("with_accessible_name(\"data-accessible-name\")"));
-        assert!(source.contains("impl TableModel for Rows"));
-        assert!(source.contains("const ROW_COUNT: usize = 100_000_000"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("std::thread::spawn"));
-        assert!(source.contains("fn poll_changes"));
-        assert!(source.contains("TableModelChange::RowsChanged"));
-        assert!(source.contains("completion.complete(rows)"));
-        assert!(source.contains("with_widget"));
-        assert!(source.contains("let actions = cx.actions();"));
-        assert!(source.contains("Review::OPEN.with(row.id)"));
-        assert!(source.contains("pub id: u64"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Table"));
-        assert!(test.contains("row:3:0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("only the sparse viewport is semantic"));
-        assert!(test.contains("app.state().opened"));
+        for template in Template::ALL {
+            let spec = AppSpec {
+                package_name: "notes".into(),
+                crate_name: "notes".into(),
+                title: "Notes".into(),
+                app_id: "so.tilo.notes".into(),
+                sdk: AppSdk::Workspace {
+                    ui_path: PathBuf::from("../../crates/sdk/ui-core"),
+                },
+                template,
+            };
+            let files = render(&spec).unwrap();
+            let catalog = &files
+                .iter()
+                .find(|(path, _)| path == Path::new("locales/en-US.ftl"))
+                .expect("a source catalog")
+                .1;
+            let messages = parse_fluent_catalog(catalog).expect("the catalog parses");
+            let source = files
+                .iter()
+                .filter(|(path, _)| path.extension().is_none_or(|extension| extension != "ftl"))
+                .map(|(_, source)| source.as_str())
+                .collect::<String>();
+            for id in messages.entries.keys() {
+                assert!(
+                    source.contains(&format!("\"{id}\"")),
+                    "{}: {id} is in the catalog but not used",
+                    template.name()
+                );
+            }
+            for other in Template::ALL.into_iter().filter(|other| *other != template) {
+                assert!(
+                    !catalog.contains(&format!("{}-", other.name())),
+                    "{} carries {} messages",
+                    template.name(),
+                    other.name()
+                );
+            }
+        }
     }
 
-    // Phase: qr_template_composes_ime_input_state_visual_output_and_accessibility.
+    // Phase: collection_template_uses_item_actions_and_starts_empty.
     {
         let spec = AppSpec {
-            package_name: "qr-code".into(),
-            crate_name: "qr_code".into(),
-            title: "QR Code".into(),
-            app_id: "so.tilo.qr.code".into(),
+            package_name: "errands".into(),
+            crate_name: "errands".into(),
+            title: "Errands".into(),
+            app_id: "so.tilo.errands".into(),
             sdk: AppSdk::Workspace {
                 ui_path: PathBuf::from("../../crates/sdk/ui-core"),
             },
-            template: Template::Qr,
+            template: Template::Collection,
         };
         let source = app_lib(&spec);
-        assert!(source.contains(".input(|code| code.payload.clone(), Code::SET_PAYLOAD)"));
-        assert!(source.contains("cx.value(|code| code.payload.clone())"));
-        assert!(source.contains("ModelView::from_state"));
-        assert!(source.contains("QrWidget::new"));
-        assert!(source.contains("with_id(\"qr-output\")"));
-        assert!(source.contains("with_alt(alt)"));
+        assert!(source.contains("pub items: Collection<Item>"));
+        assert!(source.contains("item: &Id"));
+        assert!(source.contains("cx.each(|items| &items.items, item_row)"));
+        assert!(source.contains("EmptyState::new"));
         let test = app_test(&spec);
-        assert!(test.contains("你好 Rust GUI"));
-        assert!(test.contains("Role::Image"));
-        assert!(test.contains("name_contains"));
-        assert!(app_readme(&spec).contains("payload-specific alternative text"));
-    }
-
-    // Phase: workspace_template_composes_navigation_and_isolated_durable_detail_views.
-    {
-        let spec = AppSpec {
-            package_name: "project-workspace".into(),
-            crate_name: "project_workspace".into(),
-            title: "Project Workspace".into(),
-            app_id: "so.tilo.project.workspace".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Workspace,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("AppShell::new"));
-        assert!(source.contains("with_narrow_screen_state"));
-        assert!(source.contains("workspace-back"));
-        assert!(source.contains("cx.switch(&selected"));
-        assert!(source.contains(".on_select"));
-        assert!(source.contains("pub projects: Collection<Project>"));
-        assert!(source.contains("Workspace::SET_TITLE.map(move |title| (id, title))"));
-        let test = app_test(&spec);
-        assert!(test.contains("workspace_keeps_master_detail_views_isolated_and_synchronized"));
+        assert!(test.contains("the_list_starts_empty_and_rows_edit_their_item"));
         assert!(test.contains("app.undo()"));
-        assert!(app_readme(&spec).contains("responsive master-detail shell"));
+        assert!(app_readme(&spec).contains("item actions"));
     }
 
     // Phase: graph_template_generates_a_valid_editable_screen.
@@ -3442,100 +3400,10 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         assert!(app_readme(&spec).contains("tilo-app ui apply"));
         assert!(app_readme(&spec).contains("--mount main"));
         assert!(app_readme(&spec).contains("available to every generated screen automatically"));
-    }
-
-    // Phase: list_template_starts_sparse_variable_and_interactive.
-    {
-        let spec = AppSpec {
-            package_name: "activity-feed".into(),
-            crate_name: "activity_feed".into(),
-            title: "Activity Feed".into(),
-            app_id: "so.tilo.activity.feed".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::List,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("ITEM_COUNT: usize = 100_000_000"));
-        assert!(source.contains("impl ListModel for ActivityModel"));
-        assert!(source.contains("LatestRequest::new()"));
-        assert!(source.contains("VirtualList::new_async"));
-        assert!(source.contains("ListRowState::Loading"));
-        assert!(source.contains("ListModelChange::RowsChanged"));
-        assert!(source.contains("with_semantic_key(u64::to_string)"));
-        assert!(source.contains("if index % 5 == 0"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("Feed::OPEN.with(*key)"));
-        assert!(source.contains("with_id(\"activity-list\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::List"));
-        assert!(test.contains("key:3"));
-        assert!(test.contains("open-0"));
-        assert!(test.contains("wait_for_named"));
-        assert!(test.contains("delegate measurements drive variable rows"));
-    }
-
-    // Phase: tree_template_uses_stable_ids_and_professional_tree_defaults.
-    {
-        let spec = AppSpec {
-            package_name: "project-browser".into(),
-            crate_name: "project_browser".into(),
-            title: "Project Browser".into(),
-            app_id: "so.tilo.project.browser".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Tree,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("TreeNode::branch"));
-        assert!(source.contains("with_expanded([1, 2])"));
-        assert!(source.contains("multi_select(true)"));
-        assert!(source.contains("with_row_delegate"));
-        assert!(source.contains("Button::new"));
-        assert!(source.contains("reorderable()"));
-        assert!(source.contains("with_viewport(280.0, 36.0)"));
-        assert!(source.contains("with_accessible_name"));
-        assert!(source.contains("with_id(\"workspace-tree\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("Role::Tree"));
-        assert!(test.contains("perform_semantic_named"));
-        assert!(test.contains("node:3"));
-        assert!(test.contains("more-4"));
-    }
-
-    // Phase: async_template_uses_typed_wakeup_and_keyed_result_views.
-    {
-        let spec = AppSpec {
-            package_name: "repo-scan".into(),
-            crate_name: "repo_scan".into(),
-            title: "Repo Scan".into(),
-            app_id: "so.tilo.repo.scan".into(),
-            sdk: AppSdk::Workspace {
-                ui_path: PathBuf::from("../../crates/sdk/ui-core"),
-            },
-            template: Template::Async,
-        };
-        let source = app_lib(&spec);
-        assert!(source.contains("LatestTask::new(LoadState::Idle)"));
-        assert!(source.contains("task.begin(LoadState::Loading)"));
-        assert!(source.contains("completion.complete(state)"));
-        assert!(source.contains("cancel_task.cancel(LoadState::Idle)"));
-        assert!(source.contains("Button::new(\"cancel-task\""));
-        assert!(source.contains("std::thread::spawn"));
-        assert!(source.contains("ModelView::from_state_by"));
-        assert!(source.contains("with_arg(\"count\""));
-        assert!(source.contains("with_id(\"task-result\")"));
-        let test = app_test(&spec);
-        assert!(test.contains("app_runs_background_work_on_the_resource_input"));
-        assert!(test.contains("generated.background-task:root"));
-        assert!(test.contains("wait_for_named(\"task-result\""));
-        assert!(source.contains("live.with(|scan| scan.folder.clone())"));
-        let actions = headless_actions(&spec);
-        assert!(actions.contains("\"action\": \"activate\""));
-        assert!(actions.contains("\"expect\""));
-        assert!(actions.contains("\"timeout_ms\": 1000"));
+        for target in ["linux", "macos", "web"] {
+            assert!(app_readme(&spec).contains(&format!("tilo-app run --target {target}")));
+            assert!(app_readme(&spec).contains(&format!("tilo-app package --target {target}")));
+        }
     }
 
     // Phase: document_template_uses_direct_durable_bindings_and_undo_contract.
@@ -3552,18 +3420,18 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
         };
         let source = app_lib(&spec);
         assert!(source.contains(".input(|document| document.title.clone(), Document::SET_TITLE)"));
-        assert!(source.contains("cx.text(|document| document.title.clone())"));
+        assert!(source.contains(".text(|document| document.title.clone())"));
         assert!(source.contains("multiline(true)"));
         assert!(source.contains("#[action(destructive)]"));
         let test = app_test(&spec);
-        assert!(test.contains("document_fields_are_synchronized_and_undoable"));
+        assert!(test.contains("the_preview_follows_the_inputs_and_undo_reverts"));
         assert!(test.contains("app.undo()"));
         assert!(test.contains("sync_with"));
     }
 }
 
-/// Every template uses the toolkit resource action host and generates valid Rust and actions, a
-/// legacy graph app still migrates, and generated README commands work in a workspace or standalone.
+/// Every template uses the toolkit resource action host and generates valid Rust and actions, and
+/// generated README commands work in a workspace or standalone.
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -3572,17 +3440,7 @@ fn each_template_composes_the_toolkit_patterns_it_teaches() {
 fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
     // Phase: every_template_uses_the_toolkit_resource_action_host.
     {
-        for template in [
-            Template::Starter,
-            Template::Data,
-            Template::List,
-            Template::Tree,
-            Template::Graph,
-            Template::Async,
-            Template::Document,
-            Template::Qr,
-            Template::Workspace,
-        ] {
+        for template in Template::ALL {
             let spec = AppSpec {
                 package_name: "generated-app".into(),
                 crate_name: "generated_app".into(),
@@ -3607,25 +3465,13 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             assert!(!source.contains("pub fn app_root"), "{template:?}");
             assert!(!source.contains("fn resources("), "{template:?}");
             assert!(
-                app_main(&spec).contains("ui::framework::run::<generated_app::App>()"),
+                app_main(&spec).contains("ui::main!(generated_app::App);"),
                 "{template:?}"
             );
             let test = app_test(&spec);
             assert!(test.contains("TestApp::<"), "{template:?}");
             assert!(!test.contains("app_root"), "{template:?}");
         }
-    }
-
-    // Phase: a_legacy_generated_graph_app_still_migrates_to_the_component_context.
-    {
-        let legacy = legacy_graph_app_template();
-        assert!(legacy.contains(LEGACY_GRAPH_ROUTER_CALL));
-        let source = format!("pub mod screens;\n\n{legacy}");
-        let migrated = migrate_generated_graph_context(&source);
-        assert!(migrated.contains(GENERATED_GRAPH_ROUTER_CALL));
-        assert!(!migrated.contains(LEGACY_GRAPH_ROUTER_CALL));
-        let current = format!("pub mod screens;\n\n{GRAPH_APP_TEMPLATE}");
-        assert_eq!(migrate_generated_graph_context(&current), current);
     }
 
     // Phase: generated_readme_commands_work_inside_workspace_or_standalone.
@@ -3640,9 +3486,18 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 template: Template::Starter,
             };
             let readme = app_readme(&spec);
+            assert!(readme.contains(&format!("{}\n", standalone::INSTALL_COMMAND)));
+            assert!(standalone::INSTALL_COMMAND.contains(standalone::DEFAULT_SDK_GIT));
             assert!(readme.contains("tilo-app check --fix\n"));
-            assert!(readme.contains("tilo-app new notes --template starter --dev"));
-            assert!(readme.contains("\"resource\":\"generated.profile\""));
+            assert!(
+                !readme.contains("tilo-app new notes"),
+                "the README of an app does not scaffold it again"
+            );
+            assert!(readme.contains("tilo-app check --platform all\n"));
+            assert!(readme.contains("tilo-app keys new\n"));
+            assert!(readme.contains("tilo-app apply --domain example.com\n"));
+            assert!(readme.contains("tilo-app publish\n"));
+            assert!(readme.contains("\"resource\":\"generated.greeting\""));
             assert!(readme.contains("`#[derive(Model)]` resource"));
             assert!(readme.contains("tilo-app test\n"));
             assert!(readme.contains("tilo-app dev\n"));
@@ -3666,6 +3521,15 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
                 ));
             assert!(readme.contains("tilo-app package\n"));
             assert!(readme.contains("`cargo test` and `cargo run`"));
+            assert!(!readme.contains("Before publishing"));
+            let local = app_readme(&AppSpec {
+                app_id: "local.dev.notes".into(),
+                ..spec
+            });
+            assert!(
+                local.contains("Before publishing, change it in `tilo-app.toml`"),
+                "a local.dev id says it cannot be published"
+            );
         }
     }
 
@@ -3683,26 +3547,44 @@ fn every_template_generates_valid_rust_actions_and_working_readme_commands() {
             let manifest: toml::Table =
                 toml::from_str(&cargo_toml(&spec).expect("render Cargo.toml"))
                     .expect("generated Cargo.toml");
-            let hack = manifest
-                .get("dependencies")
-                .and_then(|dependencies| dependencies.get("workspace-hack"));
+            let target = |cfg: &str, name: &str| {
+                manifest
+                    .get("target")
+                    .and_then(|targets| targets.get(cfg))
+                    .and_then(|target| target.get("dependencies"))
+                    .and_then(|dependencies| dependencies.get(name))
+                    .cloned()
+            };
+            let native = "cfg(not(target_arch = \"wasm32\"))";
+            let hack = target(native, "workspace-hack");
             assert_eq!(hack.is_some(), workspace_member, "{manifest:#?}");
+            if workspace_member {
+                assert!(
+                    manifest
+                        .get("dependencies")
+                        .and_then(|dependencies| dependencies.get("workspace-hack"))
+                        .is_none(),
+                    "the hack's native feature set must stay off the web build"
+                );
+                assert!(
+                    manifest
+                        .get("dependencies")
+                        .and_then(|dependencies| dependencies.get("ui"))
+                        .is_some(),
+                    "one SDK dependency for every target: {manifest:#?}"
+                );
+                let sections = manifest
+                    .get("target")
+                    .and_then(toml::Value::as_table)
+                    .map_or(0, toml::Table::len);
+                assert_eq!(sections, 1, "only the hack is target-specific");
+            }
         }
     }
 
     // Phase: every_template_generates_valid_rust_and_actions.
     {
-        for template in [
-            Template::Starter,
-            Template::Data,
-            Template::List,
-            Template::Tree,
-            Template::Graph,
-            Template::Async,
-            Template::Document,
-            Template::Qr,
-            Template::Workspace,
-        ] {
+        for template in Template::ALL {
             let spec = AppSpec {
                 package_name: "demo".into(),
                 crate_name: "demo".into(),
@@ -3861,6 +3743,52 @@ fn app_task_plans_are_scoped_to_the_app_and_gated_by_doctor() {
                 OsString::from("reading-list"),
             ]
         );
+    }
+
+    // Phase: platform_clippy_lints_other_targets_and_leaves_the_host_to_check.
+    {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("reading-list");
+        create_app(request(destination.clone())).expect("create app");
+        let host = PackageArch::host().expect("an x86_64 or aarch64 host");
+        for platform in [PackagePlatform::Tilo, PackagePlatform::Linux] {
+            assert_eq!(
+                plan_platform_clippy(&destination, platform, None).expect("host plan"),
+                None,
+                "{platform:?} on this machine is the host build"
+            );
+        }
+        let other = match host {
+            PackageArch::X86_64 => PackageArch::Aarch64,
+            PackageArch::Aarch64 => PackageArch::X86_64,
+        };
+        let cross = plan_platform_clippy(&destination, PackagePlatform::Linux, Some(other))
+            .expect("cross plan")
+            .expect("another architecture is linted");
+        assert_eq!(
+            cross.args,
+            [
+                OsString::from("clippy"),
+                OsString::from("--manifest-path"),
+                destination.join("Cargo.toml").into_os_string(),
+                OsString::from("--package"),
+                OsString::from("reading-list"),
+                OsString::from("--target"),
+                OsString::from(format!("{}-unknown-linux-gnu", other.as_str())),
+                OsString::from("--no-deps"),
+                OsString::from("--"),
+                OsString::from("-D"),
+                OsString::from("warnings"),
+            ]
+        );
+        let windows = plan_platform_clippy(&destination, PackagePlatform::Windows, None)
+            .expect("windows plan")
+            .expect("windows is not the host");
+        assert!(windows.args.contains(&OsString::from(format!(
+            "{}-pc-windows-msvc",
+            host.as_str()
+        ))));
+        assert!(plan_platform_clippy(&destination, PackagePlatform::Web, None).is_err());
     }
 
     // Phase: app_task_refuses_to_spawn_when_doctor_fails.
@@ -4033,8 +3961,14 @@ fn package_size_is_reported_against_the_app_budget() {
         package: Some(2000),
         binary: Some(2500),
     };
-    let report =
-        size::SizeReport::measure(payload, &[PathBuf::from("bin/app")], 1500, budget).unwrap();
+    let report = size::SizeReport::measure(
+        payload,
+        &[PathBuf::from("bin/app")],
+        1500,
+        budget,
+        tilo_app_package::MAX_APP_TAPP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         report
             .files
@@ -4059,10 +3993,34 @@ fn package_size_is_reported_against_the_app_budget() {
     assert_eq!(json["package_bytes"], 1500);
     assert_eq!(json["over_budget"].as_array().unwrap().len(), 1);
 
-    let over = size::SizeReport::measure(payload, &[], 2001, budget).unwrap();
+    let over = size::SizeReport::measure(
+        payload,
+        &[],
+        2001,
+        budget,
+        tilo_app_package::MAX_APP_TAPP_BYTES,
+    )
+    .unwrap();
     assert_eq!(
         over.overruns(),
         ["the package is 1 B over its budget of 2.0 KiB"]
+    );
+
+    // A build that links the toolkit in answers to the registry's limit for
+    // its platform, the one the registry enforces.
+    let android = size::SizeReport::measure(
+        payload,
+        &[],
+        16 * 1024 * 1024,
+        size::Budget::default(),
+        tilo_app_package::platform_size_limit(PackagePlatform::Android.registry_name()),
+    )
+    .unwrap();
+    assert_eq!(android.limit, tilo_app_package::MAX_DESKTOP_APP_TAPP_BYTES);
+    assert!(
+        android.render().contains("25% of the 64.0 MiB limit"),
+        "{}",
+        android.render()
     );
 }
 
@@ -4133,6 +4091,8 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
                 profile: None,
                 static_link: false,
                 target: None,
+                platform: PackagePlatform::Tilo,
+                arch: None,
                 features: Vec::new(),
                 no_default_features: false,
                 force: false,
@@ -4165,6 +4125,8 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
                 profile: None,
                 static_link: false,
                 target: None,
+                platform: PackagePlatform::Tilo,
+                arch: None,
                 features: Vec::new(),
                 no_default_features: false,
                 force: false,
@@ -4193,9 +4155,15 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         let identity = pack::load_identity(&identity_path).expect("load identity");
         let output = temp.path().join("reading-list.tapp");
         let kinds = resource_kinds::declared_in(&spec.app_dir).expect("resource kinds");
-        assert_eq!(kinds, ["generated.profile"], "the starter's resource");
-        let packed = pack::pack_payload(&spec.manifest_path, kinds, &payload, &output, &identity)
-            .expect("pack");
+        assert_eq!(kinds, ["generated.greeting"], "the starter's resource");
+        let manifest = || {
+            tilo_app_package::Manifest::from_toml_str(
+                &std::fs::read_to_string(&spec.manifest_path).expect("manifest"),
+            )
+            .expect("parse manifest")
+        };
+        let packed =
+            pack::pack_manifest(manifest(), kinds, &payload, &output, &identity).expect("pack");
         assert_eq!(
             packed.bytes,
             std::fs::metadata(&output).expect("tapp").len()
@@ -4206,21 +4174,15 @@ fn packaging_is_scoped_safe_and_never_clobbers_output() {
         assert_eq!(tapp.meta.id.to_string(), packed.id);
         assert_eq!(
             tapp.meta.manifest.resources.kinds,
-            ["generated.profile"],
+            ["generated.greeting"],
             "the signed manifest declares the app's resource kinds"
         );
         assert_eq!(tapp.meta.publisher(), identity.public_key_bytes());
         assert!(tapp.missing().is_empty(), "the package carries its payload");
 
-        let again = pack::pack_payload(
-            &spec.manifest_path,
-            Vec::new(),
-            &payload,
-            &output,
-            &identity,
-        )
-        .err()
-        .expect("an existing output is not overwritten");
+        let again = pack::pack_manifest(manifest(), Vec::new(), &payload, &output, &identity)
+            .err()
+            .expect("an existing output is not overwritten");
         assert!(format!("{again:#}").contains("creating"), "{again:#}");
     }
 
@@ -4735,13 +4697,9 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         .unwrap();
     let workspace: toml::Table = toml::from_str(&read(&checkout.join("Cargo.toml"))).unwrap();
     let workspace_patches = workspace["patch"]["crates-io"].as_table().unwrap();
-    let forks = [
-        "automerge",
-        "winit",
-        "vello",
-        "wayland-backend",
-        "rustls-native-certs",
-    ];
+    // winit, vello and automerge are not patched: the SDK depends on its forks
+    // by path, as `tilo-winit`, `tilo-vello` and `tilo-automerge-fork`.
+    let forks = ["wayland-backend", "rustls-native-certs"];
     // Forks pinned in public git repositories reach the app exactly as the workspace pins them.
     let git_forks = ["accesskit", "atspi", "rustypipe"];
     let pinned_as_workspace = |patches: &toml::Table| {
@@ -4792,7 +4750,7 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         let profile = &manifest["profile"];
         assert_eq!(profile["dev"]["debug"].as_str(), Some("line-tables-only"));
         assert_eq!(
-            profile["dev"]["package"]["automerge"]["opt-level"].as_integer(),
+            profile["dev"]["package"]["tilo-automerge-fork"]["opt-level"].as_integer(),
             Some(3)
         );
         assert_eq!(profile["thin-app"]["panic"].as_str(), Some("unwind"));
@@ -4823,6 +4781,22 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(config.get("source").is_none() && config.get("build").is_none());
         assert_eq!(read(&app.join(".gitignore")), "/target\n");
         assert!(doctor_app(&app).unwrap().is_ready());
+    }
+
+    // Phase: `--ui-path` may name the checkout itself, not only one of its SDK crates.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let mut req = request(app.clone());
+        req.ui_path = Some(checkout.clone());
+        create_app_from(temp.path(), req).unwrap();
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let ui_path = manifest["dependencies"]["ui"]["path"].as_str().unwrap();
+        assert_eq!(
+            app.join(ui_path).canonicalize().unwrap(),
+            checkout.join("crates/sdk/tilo-app"),
+            "{ui_path}"
+        );
     }
 
     // Phase: without a checkout the SDK and every fork come from one pinned git commit.
@@ -4865,6 +4839,50 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
         assert!(report.summary().contains(rev), "{}", report.summary());
     }
 
+    // Phase: on the published SDK the app names tilo-app by version, alone.
+    {
+        let temp = tempfile::tempdir().unwrap();
+        let app = temp.path().join("reading-list");
+        let mut req = request(app.clone());
+        req.sdk_version = Some(String::new());
+        let outcome = create_app_from(temp.path(), req).unwrap();
+        let version = standalone::Baseline::embedded()
+            .unwrap()
+            .sdk_version()
+            .unwrap()
+            .to_owned();
+        assert_eq!(
+            outcome.sdk,
+            Some(standalone::SdkSource::Registry {
+                version: version.clone()
+            })
+        );
+        let manifest: toml::Table = toml::from_str(&read(&app.join("Cargo.toml"))).unwrap();
+        let dependencies = manifest["dependencies"].as_table().unwrap();
+        assert_eq!(dependencies.keys().collect::<Vec<_>>(), ["ui"]);
+        assert_eq!(dependencies["ui"]["package"].as_str(), Some("tilo-app"));
+        assert_eq!(dependencies["ui"]["version"].as_str(), Some(&*version));
+        assert!(dependencies["ui"].get("path").is_none());
+        assert!(manifest.get("patch").is_none());
+        assert!(manifest.get("features").is_none());
+        assert!(
+            manifest["lints"]["rust"]["unexpected_cfgs"]["check-cfg"][0]
+                .as_str()
+                .is_some_and(|cfg| cfg.contains("\"thin\""))
+        );
+        assert!(manifest.get("profile").is_some());
+        assert!(!app.join("Cargo.lock").exists());
+        assert!(app.join("rust-toolchain.toml").exists());
+        assert!(!read(&app.join("src/main.rs")).contains("runtime_dylib"));
+        let report = doctor_app(&app).unwrap();
+        assert!(report.is_ready(), "{}", report.summary());
+        assert!(
+            report.summary().contains("from the registry"),
+            "{}",
+            report.summary()
+        );
+    }
+
     // Phase: Cargo's caches are never mistaken for a checkout to build against.
     {
         let home = Path::new("/home/ada/.cargo");
@@ -4880,8 +4898,8 @@ fn standalone_apps_build_against_the_sdk_the_workspace_tests() {
     }
 }
 
-/// Inside the Tilo workspace the toolkit is built on its own; a standalone app cannot select it,
-/// so every artifact for its target is linked dynamically and the toolkit comes in as a dependency.
+/// Inside the Tilo workspace the toolkit comes in as a dependency with the flags the host and the
+/// library share; a standalone app links every artifact for its target dynamically instead.
 #[test]
 fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace() {
     let manifest = Path::new("/apps/notes/Cargo.toml");
@@ -4896,13 +4914,14 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
     let member = thin_dev_steps(manifest, "notes", &ThinDevLinkage::WorkspaceToolkit, true);
     assert_eq!(
         member.iter().map(|step| step.label).collect::<Vec<_>>(),
-        [
-            "the shared toolkit",
-            "the reload host",
-            "the reload library"
-        ]
+        ["the reload host", "the reload library"]
     );
-    assert_eq!(args(&member[0])[..3], ["rustc", "-p", "runtime-dylib"]);
+    assert!(
+        member
+            .iter()
+            .all(|step| !args(step).contains(&"runtime-dylib".to_owned())),
+        "a step that selects the toolkit with its own flags rebuilds it for every other step"
+    );
     assert!(member.iter().all(|step| step.cargo.env.is_empty()));
     assert!(!args(&member[1]).contains(&"--target".to_owned()));
 
@@ -4938,18 +4957,39 @@ fn thin_dev_builds_link_the_toolkit_dynamically_inside_and_outside_the_workspace
 }
 
 #[test]
+#[cfg(unix)]
+fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
+    let temp = tempfile::tempdir().expect("temp dir");
+    let output = temp.path().join("invocation.txt");
+    let executable = temp.path().join("app-bin");
+    std::fs::write(
+        &executable,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$1\" \"$2\" > '{}'\n",
+            output.display()
+        ),
+    )
+    .unwrap();
+    seal_script(&executable);
+    let mut child = spawn_dev_binary(
+        temp.path(),
+        &executable,
+        &[OsString::from("--document"), OsString::from("A file.qdoc")],
+    )
+    .unwrap();
+    assert!(child.wait().unwrap().success());
+    assert_eq!(
+        std::fs::read_to_string(output).unwrap(),
+        format!(
+            "{}\n--document\nA file.qdoc\n",
+            temp.path().canonicalize().unwrap().display()
+        )
+    );
+}
+
+#[test]
 fn every_template_scaffolds_a_portable_app() {
-    for template in [
-        Template::Starter,
-        Template::Data,
-        Template::List,
-        Template::Tree,
-        Template::Graph,
-        Template::Async,
-        Template::Document,
-        Template::Qr,
-        Template::Workspace,
-    ] {
+    for template in Template::ALL {
         let root = tempfile::tempdir().unwrap();
         let app = root.path().join(template.name());
         let mut new_app = request(app.clone());
@@ -4959,36 +4999,111 @@ fn every_template_scaffolds_a_portable_app() {
         assert!(report.passed(), "{}: {}", template.name(), report.render());
         assert!(report.files > 0);
         assert!(report.render().starts_with("portability: ok"));
+        // The manifest declares every capability the generated code uses.
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap();
+        let declared: Vec<&str> = manifest
+            .capabilities
+            .required
+            .iter()
+            .chain(&manifest.capabilities.optional)
+            .map(String::as_str)
+            .collect();
+        let missing = crate::capability_usage::undeclared(&app, &declared).unwrap();
+        assert!(missing.is_empty(), "{}: {missing:?}", template.name());
     }
 }
 
 #[test]
-fn native_declaration_replaces_line_exceptions_and_must_be_needed() {
-    let root = tempfile::tempdir().unwrap();
-    let native = platform_specific_app(root.path());
-    let declare = |app: &Path| {
-        let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
-        std::fs::write(
-            app.join("tilo-app.toml"),
-            format!("{manifest}\n[platform]\nnative = \"Needs the host's process table.\"\n"),
+fn every_workspace_app_declares_what_it_uses_and_its_targets_provide_what_it_requires() {
+    let apps = portability::workspace_apps(Path::new(env!("CARGO_MANIFEST_DIR"))).unwrap();
+    assert!(apps.len() >= 50, "found {} apps", apps.len());
+    let mut problems = Vec::new();
+    for app in apps {
+        let manifest = tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
         )
         .unwrap();
+        let capabilities = &manifest.capabilities;
+        let declared: Vec<&str> = capabilities
+            .required
+            .iter()
+            .chain(&capabilities.optional)
+            .map(String::as_str)
+            .collect();
+        for (capability, sites) in crate::capability_usage::undeclared(&app, &declared).unwrap() {
+            problems.push(format!(
+                "{}: uses {capability} ({:?})",
+                app.display(),
+                sites[0]
+            ));
+        }
+        for platform in manifest.package.platforms() {
+            let Some(target) = targets::Target::from_platform(platform.as_str()) else {
+                continue;
+            };
+            for finding in tilo_caps::check(&capabilities.required, &capabilities.optional, target)
+            {
+                if finding.is_error(false) {
+                    problems.push(format!("{} on {target}: {finding:?}", app.display()));
+                }
+            }
+        }
+    }
+    assert!(problems.is_empty(), "{}", problems.join("\n"));
+}
+
+#[test]
+fn a_capability_the_code_uses_must_be_declared_before_a_build() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("locator");
+    create_app(request(app.clone())).unwrap();
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str("\npub fn locate() { let _ = ui::location::Feature::Location; }\n");
+    std::fs::write(app.join("src/lib.rs"), lib).unwrap();
+    let project = |app: &Path| targets::Project {
+        app_dir: app.to_path_buf(),
+        cargo_manifest: app.join("Cargo.toml"),
+        package: "locator".into(),
+        lib_name: "locator".into(),
+        bin: "locator".into(),
+        manifest_path: app.join("tilo-app.toml"),
+        manifest: tilo_app_package::Manifest::from_toml_str(
+            &std::fs::read_to_string(app.join("tilo-app.toml")).unwrap(),
+        )
+        .unwrap(),
+        workspace_root: app.to_path_buf(),
+        target_dir: app.join("target"),
+        sdk_root: app.to_path_buf(),
     };
-    declare(&native);
-    let report = lint_portability(&native).unwrap();
-    assert!(report.passed(), "{}", report.render());
+    let error = targets::check_target(&project(&app), targets::Target::Linux, false)
+        .unwrap_err()
+        .to_string();
     assert!(
-        report
-            .render()
-            .contains("declared native in tilo-app.toml: \"Needs the host's process table.\"")
+        error.contains(
+            "error[capability]: the code uses `location` but tilo-app.toml does not declare it"
+        ),
+        "{error}"
+    );
+    assert!(error.contains("--> src/lib.rs:"), "{error}");
+    assert!(
+        error.contains("tilo-app add capability location"),
+        "{error}"
     );
 
-    let portable = root.path().join("portable");
-    create_app(request(portable.clone())).unwrap();
-    declare(&portable);
-    let report = lint_portability(&portable).unwrap();
-    assert!(!report.passed());
-    assert!(report.render().contains("remove the [platform] table"));
+    let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
+    std::fs::write(
+        app.join("tilo-app.toml"),
+        manifest.replacen(
+            "[publisher]",
+            "[capabilities]\noptional = [\"location\"]\n\n[publisher]",
+            1,
+        ),
+    )
+    .unwrap();
+    targets::check_target(&project(&app), targets::Target::Linux, false).unwrap();
 }
 
 fn platform_specific_app(root: &Path) -> PathBuf {
@@ -5033,8 +5148,22 @@ mod platform_tests;
 fn test_symlink() {
     std::os::unix::fs::symlink("a", "b").unwrap();
 }
+
+include!("included.rs");
+
+pub fn gated() {
+    #[cfg(test)]
+    if true {
+        let _ = std::os::raw::c_int::default();
+    }
+}
 "#,
     );
+    std::fs::write(
+        app.join("src/included.rs"),
+        "pub use std::os::raw::c_char;\n",
+    )
+    .unwrap();
     std::fs::write(app.join("src/lib.rs"), lib).unwrap();
     std::fs::write(
         app.join("src/platform.rs"),
@@ -5082,6 +5211,7 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
         ("src/lib.rs", NativeCrate),
         ("src/lib.rs", Ffi),
         ("src/platform.rs", OsStd),
+        ("src/included.rs", OsStd),
     ] {
         assert!(
             sites.contains(&(expected.0.to_owned(), expected.1)),
@@ -5093,6 +5223,13 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
     assert!(sites.iter().all(|(path, _)| path != "src/platform_tests.rs"
         && path != "src/orphan.rs"
         && path != "src/main.rs"));
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| !finding.what.contains("c_int")),
+        "a test-gated statement is not shipped"
+    );
     assert_eq!(
         report
             .findings
@@ -5103,38 +5240,137 @@ fn portability_lint_reports_shipped_platform_code_with_remedies() {
         "dev-dependencies are exempt"
     );
     let rendered = report.render();
-    assert!(rendered.contains("error[portability]: src/lib.rs:"));
+    assert!(rendered.contains("error[portability/R2]: src/lib.rs:"));
     assert!(rendered.contains("`std::os::unix::fs` is an OS-specific standard library module"));
     assert!(rendered.contains("= help: call a platform crate instead"));
     assert!(rendered.contains("enable the semantic SDK feature `ui/media-session`"));
-    assert!(rendered.contains("[platform]\n    native = \"<one-line reason>\""));
+    assert!(rendered.contains(
+        "platforms = [\"linux\", \"macos\"]\n    platform-reason = \"<one-line reason>\""
+    ));
+    // `std::fs` fails on the web; `tilo_files` replaces it.
+    assert!(rendered.contains("error[portability/W3]: src/platform.rs:1: `std::fs`"));
 }
 
 #[test]
-#[cfg(unix)]
-fn rebuilt_dev_binary_receives_app_arguments_and_app_working_directory() {
-    let temp = tempfile::tempdir().expect("temp dir");
-    let output = temp.path().join("invocation.txt");
-    let executable = temp.path().join("app-bin");
+fn portability_lint_reports_a_temp_dir_fallback_which_panics_on_the_web() {
+    let root = tempfile::tempdir().unwrap();
+    let app = platform_specific_app(root.path());
+    let platform = std::fs::read_to_string(app.join("src/platform.rs")).unwrap();
     std::fs::write(
-        &executable,
+        app.join("src/platform.rs"),
         format!(
-            "#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$PWD\" \"$1\" \"$2\" > '{}'\n",
-            output.display()
+            "{platform}pub fn cache(home: Option<std::path::PathBuf>) -> std::path::PathBuf {{ home.unwrap_or_else(std::env::temp_dir) }}\n"
         ),
     )
     .unwrap();
-    seal_script(&executable);
-    let mut child = spawn_dev_binary(
-        temp.path(),
-        &executable,
-        &[OsString::from("--document"), OsString::from("A file.qdoc")],
-    )
-    .unwrap();
-    assert!(child.wait().unwrap().success());
+    let rendered = lint_portability(&app).unwrap().render();
+    assert!(
+        rendered
+            .lines()
+            .any(|line| line.contains("portability/W3]: src/platform.rs:2:")
+                && line.contains("temp_dir")),
+        "{rendered}"
+    );
+}
+
+fn narrow_platforms(app: &Path, platforms: &str, reason: &str) {
+    let manifest = std::fs::read_to_string(app.join("tilo-app.toml")).unwrap();
+    let manifest = manifest.replacen(
+        "[package]\n",
+        &format!("[package]\nplatforms = {platforms}\nplatform-reason = {reason:?}\n"),
+        1,
+    );
+    std::fs::write(app.join("tilo-app.toml"), manifest).unwrap();
+}
+
+#[test]
+fn narrowed_platforms_replace_line_exceptions() {
+    let root = tempfile::tempdir().unwrap();
+    let desktop = platform_specific_app(root.path());
+    narrow_platforms(
+        &desktop,
+        "[\"linux\", \"macos\"]",
+        "Needs the host's process table.",
+    );
+    let report = lint_portability(&desktop).unwrap();
+    assert!(report.passed(), "{}", report.render());
+    assert!(report.render().contains(
+        "platforms narrowed to linux, macos in tilo-app.toml: \"Needs the host's process table.\""
+    ));
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| !finding.kind.rule().starts_with('W')),
+        "the web traps do not apply without web"
+    );
+    assert!(report.exempt > 0);
+
+    // Narrowing needs no platform code of its own (a C dependency the lint
+    // cannot see is a reason too), but the report says when it found none.
+    let portable = root.path().join("portable");
+    create_app(request(portable.clone())).unwrap();
+    narrow_platforms(&portable, "[\"linux\"]", "Links a C library.");
+    let report = lint_portability(&portable).unwrap();
+    assert!(report.passed());
+    assert!(report.render().contains("widen `platforms`"));
+}
+
+#[test]
+fn portability_rules_follow_the_app_platforms() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("disks");
+    create_app(request(app.clone())).unwrap();
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str(
+        r#"
+pub fn mount() {
+    let _ = std::process::Command::new("udisksctl").status();
+    let _ = std::env::var_os("XDG_RUNTIME_DIR");
+    let _ = "https://demo.local/clip.mp4";
+    std::thread::spawn(|| {});
+}
+"#,
+    );
+    std::fs::write(app.join("src/lib.rs"), lib).unwrap();
+    let kinds = |report: &portability::PortabilityReport| -> Vec<portability::FindingKind> {
+        report.findings.iter().map(|finding| finding.kind).collect()
+    };
+
+    let report = lint_portability(&app).unwrap();
+    assert!(!report.passed(), "an OS tool fails a portable app");
     assert_eq!(
-        std::fs::read_to_string(output).unwrap(),
-        format!("{}\n--document\nA file.qdoc\n", temp.path().display())
+        kinds(&report),
+        [
+            portability::FindingKind::OsTool,
+            portability::FindingKind::PlatformPath,
+            portability::FindingKind::Thread,
+        ]
+    );
+    assert!(
+        report
+            .render()
+            .contains("`Command::new(\"udisksctl\")` runs an OS tool")
+    );
+
+    narrow_platforms(
+        &app,
+        "[\"tilo-os\"]",
+        "Administers block devices through udisks.",
+    );
+    let report = lint_portability(&app).unwrap();
+    assert!(report.passed(), "{}", report.render());
+    assert!(kinds(&report).is_empty(), "{:?}", report.findings);
+    assert_eq!(report.exempt, 3);
+}
+
+#[test]
+fn the_embedded_portability_rules_cover_every_rule_id() {
+    let rules = portability::rules().unwrap();
+    let ids: Vec<&str> = rules.rules.keys().map(String::as_str).collect();
+    assert_eq!(
+        ids,
+        ["D1", "D2", "F1", "R1", "R2", "R3", "R4", "W1", "W2", "W3"]
     );
 }
 
@@ -5223,6 +5459,24 @@ fn reload_replaces_the_contents_of_every_open_window() {
     assert_eq!(open[1].contents, "draft");
 }
 
+/// How long a spawned stand-in app may take to reach a state on a loaded
+/// machine. Waits end as soon as the state is reached.
+#[cfg(unix)]
+const PROCESS_DEADLINE: Duration = Duration::from_secs(30);
+
+/// Kills and reaps the stand-in app on every exit from the test, including a
+/// failed assertion.
+#[cfg(unix)]
+struct KillOnDrop(std::process::Child);
+
+#[cfg(unix)]
+impl Drop for KillOnDrop {
+    fn drop(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
 #[test]
 #[cfg(unix)]
 fn dev_reload_signal_updates_every_window_without_a_new_process() {
@@ -5242,12 +5496,14 @@ while true; do sleep 0.2; done\n",
     )
     .unwrap();
     seal_script(&script);
-    let mut child = std::process::Command::new(&script)
-        .arg(&state)
-        .spawn()
-        .expect("app process");
+    let child = KillOnDrop(
+        std::process::Command::new(&script)
+            .arg(&state)
+            .spawn()
+            .expect("app process"),
+    );
     let ready = state.with_extension("ready");
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
         panic!("clock");
     };
     while Instant::now() < deadline && !ready.is_file() {
@@ -5256,12 +5512,12 @@ while true; do sleep 0.2; done\n",
     assert!(ready.is_file(), "the app did not open its windows");
     let pid = std::fs::read_to_string(state.with_extension("pid")).unwrap();
     assert!(
-        reload_running_dev_app(&child),
+        reload_running_dev_app(&child.0),
         "the running app accepts an in-place reload"
     );
     let contents_path = state.with_extension("contents");
     let mut contents = String::new();
-    let Some(deadline) = Instant::now().checked_add(Duration::from_secs(2)) else {
+    let Some(deadline) = Instant::now().checked_add(PROCESS_DEADLINE) else {
         panic!("clock");
     };
     while Instant::now() < deadline {
@@ -5271,8 +5527,7 @@ while true; do sleep 0.2; done\n",
         }
         std::thread::sleep(Duration::from_millis(20));
     }
-    let _ = child.kill();
-    let _ = child.wait();
+    drop(child);
     assert_eq!(
         std::fs::read_to_string(state.with_extension("windows")).unwrap(),
         "primary\nnotes\n"
@@ -5605,4 +5860,253 @@ fn catalog_only_edits_reload_without_a_build() {
             Path::new("/apps/demo/src/gone.rs"),
         ]
     );
+}
+
+fn checkout_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..")
+}
+
+fn example_title(example: &examples::Example) -> String {
+    let lib = example
+        .files
+        .iter()
+        .find(|(path, _)| *path == "src/lib.rs")
+        .map(|(_, source)| *source)
+        .expect("every example has a src/lib.rs");
+    let line = lib
+        .lines()
+        .find_map(|line| line.strip_prefix("pub const APP_TITLE: &str = \""))
+        .expect("every example names its title");
+    line.trim_end_matches("\";").to_owned()
+}
+
+fn files_under(root: &Path) -> BTreeSet<PathBuf> {
+    let mut files = BTreeSet::new();
+    let mut pending = vec![root.to_path_buf()];
+    while let Some(dir) = pending.pop() {
+        for entry in std::fs::read_dir(&dir).expect("read example directory") {
+            let path = entry.expect("example entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else {
+                files.insert(path.strip_prefix(root).expect("under root").to_path_buf());
+            }
+        }
+    }
+    files
+}
+
+/// Each example in the checkout is exactly what `tilo-app new --from-example`
+/// renders for it under its own identity: the generated files are the ones
+/// `new` writes, and the example's own files are the ones the CLI embeds.
+#[test]
+fn every_example_is_what_new_renders_for_it() {
+    let root = checkout_root();
+    let names = files_under(&root.join("examples/apps"))
+        .into_iter()
+        .filter_map(|path| {
+            (path.file_name()? == "tilo-app.toml")
+                .then(|| path.parent()?.to_str().map(str::to_owned))
+                .flatten()
+        })
+        .collect::<BTreeSet<_>>();
+    let listed = examples::ALL
+        .iter()
+        .map(|example| example.name.to_owned())
+        .collect::<BTreeSet<_>>();
+    assert_eq!(names, listed, "examples/apps and the catalogue agree");
+
+    for example in examples::ALL {
+        let spec = AppSpec {
+            package_name: example.package_name(),
+            crate_name: example.crate_name(),
+            title: example_title(example),
+            app_id: format!("so.tilo.example.{}", example.name),
+            sdk: AppSdk::Workspace {
+                ui_path: PathBuf::from("../../../crates/sdk/tilo-app"),
+            },
+            template: Template::Starter,
+        };
+        let mut rendered = render(&spec).expect("render");
+        examples::overlay(
+            &mut rendered,
+            example,
+            &spec.crate_name,
+            &spec.app_id,
+            &spec.title,
+        )
+        .expect("overlay");
+        let dir = root.join(example.path());
+        let on_disk = files_under(&dir);
+        let generated = rendered
+            .iter()
+            .map(|(path, _)| path.clone())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(on_disk, generated, "{}: file set", example.name);
+        for (path, source) in &rendered {
+            let disk = std::fs::read_to_string(dir.join(path)).expect("example file");
+            assert_eq!(&disk, source, "{}: {}", example.name, path.display());
+        }
+    }
+}
+
+/// Threads and the std clock are absent on the web: the web rules (W1, W2)
+/// record them apart as what makes an app native-only, an app for every
+/// platform fails on them (strict mode), and the web build refuses it before
+/// building anything.
+#[test]
+fn portability_lint_records_what_the_web_target_cannot_run() {
+    let root = tempfile::tempdir().unwrap();
+    let app = root.path().join("worker");
+    create_app(request(app.clone())).unwrap();
+    let report = lint_portability(&app).unwrap();
+    assert!(report.web_capable(), "{}", report.render());
+
+    let mut lib = std::fs::read_to_string(app.join("src/lib.rs")).unwrap();
+    lib.push_str(
+        r#"
+use std::time::{Duration, Instant, SystemTime};
+
+pub fn work() -> Duration {
+    let started = Instant::now();
+    std::thread::spawn(|| {}).join().ok();
+    let _ = SystemTime::now();
+    started.elapsed()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn exempt() {
+        std::thread::sleep(std::time::Duration::ZERO);
+        let _ = std::net::TcpListener::bind("127.0.0.1:0");
+    }
+}
+"#,
+    );
+    std::fs::write(app.join("src/lib.rs"), &lib).unwrap();
+    let report = lint_portability(&app).unwrap();
+    assert!(!report.passed(), "{}", report.render());
+    assert!(
+        report
+            .findings
+            .iter()
+            .all(|finding| finding.severity == portability::Severity::Error),
+        "{}",
+        report.render()
+    );
+    assert!(!report.web_capable());
+    let line = |needle: &str| {
+        lib.lines()
+            .position(|line| line.contains(needle))
+            .map(|index| index + 1)
+    };
+    let sites: Vec<_> = report
+        .web
+        .iter()
+        .map(|finding| (finding.line, finding.kind))
+        .collect();
+    for (needle, kind) in [
+        (
+            "let started = Instant::now()",
+            portability::FindingKind::Clock,
+        ),
+        ("std::thread::spawn", portability::FindingKind::Thread),
+        ("SystemTime::now()", portability::FindingKind::Clock),
+    ] {
+        assert!(
+            sites.contains(&(line(needle).unwrap(), kind)),
+            "{needle} is not flagged in {sites:?}"
+        );
+    }
+    assert!(
+        report
+            .web
+            .iter()
+            .all(|finding| finding.line < line("#[cfg(test)]").unwrap()),
+        "tests are exempt: {sites:?}"
+    );
+    let rendered = report.render();
+    assert!(rendered.contains("portability/W1"), "{rendered}");
+
+    let error = crate::web::build_web(&app, &crate::web::WebBuildRequest::default())
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("cannot run on the web"), "{error}");
+    assert!(error.contains("W1"), "{error}");
+    assert!(!app.join("target/tilo-app").exists());
+}
+
+/// Every example is listed with its lesson in examples/README.md and
+/// docs/examples.md, and every example passes the portability lint.
+#[test]
+fn every_example_is_indexed_and_portable() {
+    let root = checkout_root();
+    let index = std::fs::read_to_string(root.join("examples/README.md")).expect("index");
+    let design = std::fs::read_to_string(root.join("docs/examples.md")).expect("design");
+    for example in examples::ALL {
+        let link = format!("[`{}`](apps/{}/)", example.name, example.name);
+        assert!(index.contains(&link), "examples/README.md lists {link}");
+        assert!(
+            design.contains(&format!("`{}`", example.name)),
+            "docs/examples.md describes {}",
+            example.name
+        );
+        let report = portability::lint_app(&root.join(example.path())).expect("lint");
+        assert!(report.passed(), "{}", report.render());
+        assert_eq!(
+            example.web,
+            report.web_capable(),
+            "{}: the Web column must say what the lint finds\n{}",
+            example.name,
+            report.render_web()
+        );
+    }
+    let json = examples::examples_json();
+    assert_eq!(
+        json.as_array().map(Vec::len),
+        Some(examples::ALL.len()),
+        "{json}"
+    );
+    assert!(examples::find("list").is_err());
+}
+
+/// An app started from an example outside the checkout is renamed throughout
+/// and passes the same structural checks as an app from a template.
+#[test]
+fn an_app_from_an_example_is_renamed_and_ready() {
+    for example in examples::ALL {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let destination = temp.path().join("my-app");
+        let mut req = request(destination.clone());
+        req.name = Some("my-app".into());
+        req.title = Some("My App".into());
+        req.template = None;
+        req.example = Some(example);
+        let outcome = create_app_from(temp.path(), req).expect("create from example");
+        assert_eq!(outcome.app_id, "local.dev.my.app");
+
+        let lib = std::fs::read_to_string(destination.join("src/lib.rs")).unwrap();
+        assert!(
+            lib.contains("pub const APP_ID: &str = \"local.dev.my.app\";"),
+            "{}",
+            example.name
+        );
+        assert!(lib.contains("pub const APP_TITLE: &str = \"My App\";"));
+        let tests = std::fs::read_to_string(destination.join("tests/app.rs")).unwrap();
+        assert!(tests.contains("my_app::"), "{}: {tests}", example.name);
+        let readme = std::fs::read_to_string(destination.join("README.md")).unwrap();
+        assert!(readme.starts_with("# My App\n"), "{readme}");
+        for path in files_under(&destination) {
+            let source = std::fs::read_to_string(destination.join(&path)).unwrap_or_default();
+            assert!(
+                !source.contains(&example.crate_name()),
+                "{}: {} keeps the example's crate name",
+                example.name,
+                path.display()
+            );
+        }
+        let report = doctor_app(&destination).unwrap();
+        assert!(report.is_ready(), "{}: {}", example.name, report.summary());
+    }
 }

@@ -82,10 +82,10 @@ pub trait CertificateAuthority: Send + Sync {
         room: Uuid,
         certificate: &tilo_user_identity::DeviceCert,
     ) -> Result<(), String>;
-    /// Whether `_certificate`'s own device governs `_room`. A foreign device is
-    /// held to the workspace's cap only in rooms it does not govern; the
-    /// default governs none.
-    fn governs(&self, _room: Uuid, _certificate: &tilo_user_identity::DeviceCert) -> bool {
+    /// Whether `_device` governs `_room`; `None` is this host's own device.
+    /// A foreign device is held to the workspace's cap only in rooms it does
+    /// not govern; the default governs none.
+    fn governs(&self, _room: Uuid, _device: Option<&[u8; 32]>) -> bool {
         false
     }
     /// Local SDK admission may additionally require a host's current enrollment record.
@@ -123,6 +123,10 @@ pub enum PeerActionAttachmentError {
     TransportClosed,
     /// Local validation, custody, capacity, or broker work failed.
     Failed,
+    /// The broker answered no effect-free request (the initial catalogue or a
+    /// heartbeat) in time. Nothing was admitted, so a fresh attachment on a
+    /// reconnected transport may replace this one.
+    Unresponsive,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -399,7 +403,7 @@ impl PeerActionQueue {
         let ActionMessage::BrokerCatalogue { host: current, .. } = self
             .request("initial_catalogue", None, None, None)
             .await
-            .map_err(|_| PeerActionAttachmentError::Failed)?
+            .map_err(effect_free_failure)?
         else {
             return Err(PeerActionAttachmentError::Failed);
         };
@@ -462,7 +466,7 @@ impl PeerActionQueue {
                     watches.retain(|(_, _, response)| matches!(response, ActionMessage::Observation { update: Some(update), uncertain: false, .. } if !update.is_terminal()));
                 }
                 _ = tick.tick() => {
-                    self.request("heartbeat", None, None, None).await.map_err(|_| PeerActionAttachmentError::Failed)?;
+                    self.request("heartbeat", None, None, None).await.map_err(effect_free_failure)?;
                 }
             }
         }
@@ -624,6 +628,19 @@ fn attachment_send_error(error: tilo_relay::client::ClientError) -> PeerActionAt
     }
 }
 
+/// A failed request that carries no action: a busy or slow broker is
+/// transient, anything else still fails the attachment.
+fn effect_free_failure(failure: RequestFailure) -> PeerActionAttachmentError {
+    match failure {
+        RequestFailure::ReplyTimeout | RequestFailure::Capacity => {
+            PeerActionAttachmentError::Unresponsive
+        }
+        RequestFailure::QueueClosed
+        | RequestFailure::ReplyClosed
+        | RequestFailure::BrokerRejected => PeerActionAttachmentError::Failed,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -749,6 +766,32 @@ mod tests {
         assert!(!*replacement_ready.borrow());
         replacement.0.send_replace(true);
         assert!(*replacement_ready.borrow());
+    }
+
+    /// A heartbeat the broker never answers ends the attachment as
+    /// replaceable, not as a terminal failure: nothing was admitted.
+    #[tokio::test(start_paused = true)]
+    async fn an_unanswered_heartbeat_is_replaceable_not_terminal() {
+        let (queue, _held_broker) = PeerActionQueue::channel();
+        let failure = queue
+            .request("heartbeat", None, None, None)
+            .await
+            .unwrap_err();
+        assert_eq!(failure, RequestFailure::ReplyTimeout);
+        assert_eq!(
+            effect_free_failure(failure),
+            PeerActionAttachmentError::Unresponsive
+        );
+        for failure in [
+            RequestFailure::QueueClosed,
+            RequestFailure::ReplyClosed,
+            RequestFailure::BrokerRejected,
+        ] {
+            assert_eq!(
+                effect_free_failure(failure),
+                PeerActionAttachmentError::Failed
+            );
+        }
     }
 
     #[test]

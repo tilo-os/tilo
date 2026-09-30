@@ -6,13 +6,11 @@ use crate::record::{RecordCheckout, RecordId, RecordKind};
 use crate::state::State;
 use crate::view::{FreezeThaw, ViewContribution, ViewSubset};
 use crate::widget::Widget;
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use taffy::TaffyTree;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect as KurboRect};
-use winit::event::WindowEvent;
 
 /// No focus field — [`ViewSubset`] excludes the caret.
 struct ViewRoot {
@@ -34,7 +32,11 @@ impl ViewRoot {
 }
 
 impl Widget for ViewRoot {
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
+    crate::provides!(
+        dyn crate::record::capability::RecordScoped,
+        dyn crate::view::capability::ViewState
+    );
+
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -55,13 +57,15 @@ impl Widget for ViewRoot {
         _p: &PresenceCtx,
     ) {
     }
-    fn handle_event_ctx(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {}
     fn name(&self) -> &'static str {
         "view-root"
     }
     fn get_rect(&self) -> KurboRect {
         self.rect
     }
+}
+
+impl crate::view::capability::ViewState for ViewRoot {
     fn view_state(&self) -> Option<ViewContribution> {
         Some(ViewContribution {
             scroll: self.scroll.clone(),
@@ -72,6 +76,9 @@ impl Widget for ViewRoot {
         self.scroll = view.scroll.clone();
         self.mode = view.view_mode.clone();
     }
+}
+
+impl crate::record::capability::RecordScoped for ViewRoot {
     fn record_intent(&self) -> Option<RecordCheckout> {
         let r = self.resource.as_ref()?;
         RecordId::parse(r).map(|id| RecordCheckout::new(id, RecordKind::new("document")))

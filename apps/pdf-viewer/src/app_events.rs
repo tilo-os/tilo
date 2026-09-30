@@ -345,7 +345,7 @@ impl PdfApp {
             self.next_page();
         }
         // Keep the indicator up right after a nav click.
-        self.page_bubble.poke(std::time::Instant::now());
+        self.page_bubble.poke(ui::time::now());
         self.dirty = true;
         true
     }
@@ -1049,14 +1049,16 @@ impl PdfApp {
         };
         input.handle_event(
             event,
-            scale,
-            &modifiers,
-            state,
-            &automerge::ROOT,
-            &mut false,
-            &mut None,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: scale,
+                modifiers: &modifiers,
+                state,
+                path: &automerge::ROOT,
+                handled: &mut false,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -1507,14 +1509,16 @@ mod event_tests {
             let mut focus = None;
             self.app.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut self.st.doc,
-                &self.st.root,
-                &mut handled,
-                &mut focus,
-                self.node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut self.st.doc,
+                    path: &self.st.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: self.node,
+                    taffy: &self.taffy,
+                },
             );
             handled
         }
@@ -1661,7 +1665,7 @@ mod event_tests {
         let after = app.annotations.iter().find(|a| a.id == hl.id).unwrap();
         assert_eq!(after.color, Swatch::Green);
         assert!(
-            app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut app).is_some(),
             "the recolour dispatched an action and stashed one undo boundary"
         );
 
@@ -2080,7 +2084,7 @@ mod event_tests {
             "a highlight drag through handle_event adds an annotation"
         );
         assert!(
-            rig.app.take_committed_action().is_some(),
+            ui::undo::take_committed_action(&mut rig.app).is_some(),
             "the new highlight dispatched an action and stashed one undo boundary"
         );
         assert!(
@@ -2415,7 +2419,7 @@ mod event_tests {
             .first()
             .expect("sample seeds annotations")
             .clone();
-        let resources = Widget::resources(&app, &st.doc);
+        let resources = ui::resources::resources(&app, &st.doc);
         let want_id = format!("pdf.annotation:{}", anno.id);
         let res = resources[0]
             .children

@@ -73,14 +73,16 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let typing = WindowEvent::Ime(Ime::Commit(String::new()));
         (&mut picker as &mut dyn Widget).handle_event(
             &typing,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         let c = picker.color();
@@ -101,14 +103,16 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         let typing = WindowEvent::Ime(Ime::Commit(String::new()));
         (&mut picker as &mut dyn Widget).handle_event(
             &typing,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         let c = picker.color();
@@ -138,14 +142,16 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         };
         (&mut picker as &mut dyn Widget).handle_event(
             &move_ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         // The picker proposes focus on its own node id (the App needs that to
@@ -157,14 +163,16 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         };
         (&mut picker as &mut dyn Widget).handle_event(
             &press_ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         // Simulate App::set_focused_node manually — tests don't run App.run().
@@ -209,25 +217,29 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         };
         (&mut picker as &mut dyn Widget).handle_event(
             &move_in,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
         (&mut picker as &mut dyn Widget).handle_event(
             &press,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
         // Drive the App-side focus routing (see other test).
         (&mut picker as &mut dyn Widget).set_focus(true);
@@ -243,14 +255,16 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         };
         (&mut picker as &mut dyn Widget).handle_event(
             &release,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         // Well outside hex_input_rect, near the SV square rather than the
@@ -264,25 +278,29 @@ fn embedded_hex_input_takes_focus_and_applies_only_valid_hex() {
         };
         (&mut picker as &mut dyn Widget).handle_event(
             &move_out,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
         (&mut picker as &mut dyn Widget).handle_event(
             &press,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ObjId::Root,
-            &mut handled,
-            &mut focus_target,
-            root_node,
-            &taffy,
+            &mut tilo_ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ObjId::Root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: root_node,
+                taffy: &taffy,
+            },
         );
 
         assert!(

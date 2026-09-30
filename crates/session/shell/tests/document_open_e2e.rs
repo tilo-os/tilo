@@ -112,14 +112,16 @@ impl Session {
         let mut focus: Option<NodeId> = None;
         host.handle_event(
             event,
-            1.0,
-            &modifiers,
-            &mut self.doc,
-            &self.root,
-            &mut handled,
-            &mut focus,
-            layout.child_node,
-            &layout.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut self.doc,
+                path: &self.root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: layout.child_node,
+                taffy: &layout.taffy,
+            },
         );
     }
 

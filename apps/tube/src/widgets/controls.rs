@@ -5,8 +5,8 @@
 //! focus treatment, and accessibility semantics.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
@@ -75,8 +75,6 @@ impl Switch {
 }
 
 impl Widget for Switch {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -128,21 +126,11 @@ impl Widget for Switch {
         Toggle::paint(scene, transform, theme, &face);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hovered = self.rect.contains(point);
                 if hovered != self.hovered {
                     self.hovered = hovered;
@@ -153,10 +141,10 @@ impl Widget for Switch {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
-            } if self.hovered && !*handled => {
+            } if self.hovered && !*ctx.handled => {
                 self.activate();
-                *focus_target = Some(node_id);
-                *handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -165,8 +153,8 @@ impl Widget for Switch {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(
             action,
@@ -238,6 +226,7 @@ impl Widget for Switch {
 mod tests {
     use super::*;
     use crate::action::{self, SettingFlag};
+    use automerge::AutoCommit;
 
     fn switch() -> Switch {
         Switch::new(

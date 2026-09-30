@@ -6,7 +6,7 @@
 //! (single-group paint paths) and `group_row.rs`'s state-only unit tests.
 //!
 //! Skips gracefully when no wgpu adapter is available. Set
-//! `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
+//! `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state
 //! (`group_row_<state>.png`) for by-eye inspection.
 
 #![allow(
@@ -111,7 +111,7 @@ fn pixel_hash(buf: &[u8]) -> u64 {
 }
 
 fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
-    let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
@@ -322,14 +322,16 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 let mut focus: Option<NodeId> = None;
                 row.handle_event(
                     &ev,
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &path,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    taffy,
+                    &mut tilo_ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &path,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy,
+                    },
                 );
             };
             // Press on group 100's bar background, then move past group 200's

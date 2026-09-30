@@ -2800,7 +2800,7 @@ fn reveal_inspector_rect_for_test(app: &mut VideoEditorApp, r: &Regions, rect: R
 fn resource_and_view_actions_target_exact_entities() {
     // Case `resource_operations_reject_wrong_kinds_without_changing_state`.
     {
-        let (mut app, doc) = app_and_doc();
+        let (mut app, mut doc) = app_and_doc();
         let selected_before = app.selected();
         let playhead_before = app.playhead;
         let clip = app.project.clips[0].id;
@@ -2809,13 +2809,16 @@ fn resource_and_view_actions_target_exact_entities() {
         })
         .unwrap();
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                &reveal,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                    &reveal
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -2827,14 +2830,16 @@ fn resource_and_view_actions_target_exact_entities() {
         })
         .unwrap();
         assert!(
-            Widget::start_resource_operation(
+            Widget::start_operation(
                 &mut app,
-                tilo_actions::InvocationId::new(),
-                tilo_actions::OperationKind::View,
-                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                &import,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                    &import
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -2846,7 +2851,7 @@ fn resource_and_view_actions_target_exact_entities() {
     // A chosen search row resolves through the exported resource tree and the
     // operation broker, then opens the exact clip and timeline instant.
     {
-        let (mut app, doc) = app_and_doc();
+        let (mut app, mut doc) = app_and_doc();
         let clip = app.project.clips[0].clone();
         let media = app
             .project
@@ -2855,7 +2860,7 @@ fn resource_and_view_actions_target_exact_entities() {
             .name
             .clone();
 
-        let providers = app.search_providers();
+        let providers = ui::search::capability::search_providers(&app);
         let provider = providers.first().expect("the editor publishes a provider");
         let hit = provider
             .search(&media)
@@ -2863,21 +2868,26 @@ fn resource_and_view_actions_target_exact_entities() {
             .find(|h| h.action_address() == Some(crate::actions::reveal_clip_address(clip.id)))
             .expect("the exact clip is findable by source name");
         let address = hit.action_address().expect("canonical search address");
-        let encoded = tilo_actions::door::encode(&app.resources(&doc), &address, None)
-            .expect("the address resolves through the live resource tree");
+        let encoded =
+            tilo_actions::door::encode(&ui::resources::resources(&app, &doc), &address, None)
+                .expect("the address resolves through the live resource tree");
 
         app.playback.playing = true;
         app.playhead = 0.0;
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                &encoded.type_id,
-                &encoded.payload,
-                &doc,
-                &automerge::ROOT,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .expect("view operation succeeds")
-        );
+            .expect("view operation succeeds"),
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
         assert!(
             (app.playhead - clip.start).abs() < 1e-3,
             "the hit put the playhead on the clip: {}",
@@ -2891,7 +2901,7 @@ fn resource_and_view_actions_target_exact_entities() {
     // Clip markers resolve their current collaborative position at execution
     // time and select their owner, rather than replaying a stale timestamp.
     {
-        let (mut app, doc) = app_and_doc();
+        let (mut app, mut doc) = app_and_doc();
         let cid = app.project.clips[0].id;
         let marker = crate::model::Marker::new(1.25, "Exact beat", 1);
         let marker_id = marker.id;
@@ -2905,11 +2915,14 @@ fn resource_and_view_actions_target_exact_entities() {
         let address = crate::actions::reveal_marker_address(marker_id);
         let encoded = tilo_actions::door::encode(&resources, &address, None)
             .expect("marker action is exported");
-        app.invoke_resource_operation(
-            tilo_actions::OperationKind::View,
-            &encoded.type_id,
-            &encoded.payload,
-            &doc,
+        app.start_operation(
+            &ui::widget::ResourceOperation::local(
+                ui::tilo_actions::InvocationId::new(),
+                tilo_actions::OperationKind::View,
+                &encoded.type_id,
+                &encoded.payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .expect("view marker");
@@ -2918,7 +2931,7 @@ fn resource_and_view_actions_target_exact_entities() {
     }
     // Case `effect_view_action_targets_its_instance_and_refuses_a_stale_id`.
     {
-        let (mut app, doc) = app_and_doc();
+        let (mut app, mut doc) = app_and_doc();
         let clip_id = app.project.clips[0].id;
         let clip = app.project.clip_mut(clip_id).expect("fixture clip");
         clip.add_effect(crate::model::EffectKind::Sepia);
@@ -2930,16 +2943,20 @@ fn resource_and_view_actions_target_exact_entities() {
         })
         .expect("operation serializes");
 
-        assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+        assert!(matches!(
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .expect("live effect resolves"),
-        );
+            Some(ui::widget::ResourceOperationStart::Accepted)
+        ));
         assert_eq!(app.selected(), Some(clip_id));
 
         app.project
@@ -2947,12 +2964,15 @@ fn resource_and_view_actions_target_exact_entities() {
             .expect("fixture clip")
             .remove_effect_id(effect_id);
         assert!(
-            app.invoke_resource_operation(
-                tilo_actions::OperationKind::View,
-                crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
-                &payload,
-                &doc,
-                &automerge::ROOT,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::View,
+                    crate::actions::VIDEO_EDITOR_OPERATION_TYPE,
+                    &payload
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err(),
             "a stale effect operation cannot resolve a duplicate by position",
@@ -4433,14 +4453,16 @@ fn dispatch(app: &mut VideoEditorApp, doc: &mut AutoCommit, ev: WindowEvent) {
     let node = NodeId::new(0);
     app.handle_event(
         &ev,
-        1.0,
-        &winit::event::Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4572,14 +4594,16 @@ fn dispatch_mods(
     let node = NodeId::new(0);
     app.handle_event(
         &ev,
-        1.0,
-        &winit::event::Modifiers::from(mods),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &winit::event::Modifiers::from(mods),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -7770,27 +7794,34 @@ fn history_buttons_follow_the_host() {
         let (_, rect) = app.history_buttons(&r)[0];
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
         assert_eq!(
-            app.take_undo_request(),
+            ui::undo::take_undo_request(&mut app),
             None,
             "with nothing to undo the button raises no request at all",
         );
         // Once the host says there is, the same press does.
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
         });
         click(&mut app, &mut doc, rect.center().x, rect.center().y);
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
         assert_eq!(
-            app.take_undo_request(),
+            ui::undo::take_undo_request(&mut app),
+            Some(ui::UndoRequest::Undo)
+        );
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
             None,
             "and the request is taken once"
         );
         // Redo is still unavailable, and its button still refuses.
         let (_, redo) = app.history_buttons(&r)[1];
         click(&mut app, &mut doc, redo.center().x, redo.center().y);
-        assert_eq!(app.take_undo_request(), None, "redo is separately gated");
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
+            None,
+            "redo is separately gated"
+        );
     }
     // Case `the_undo_node_reports_disabled_exactly_when_it_cannot_act`:
     // The accessibility node must report `disabled` exactly when the verb is
@@ -7822,7 +7853,7 @@ fn history_buttons_follow_the_host() {
             "the reader hears the honest reason, not a described action",
         );
 
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             undo_summary: Some("2 fields".into()),
             ..Default::default()
@@ -7841,17 +7872,20 @@ fn history_buttons_follow_the_host() {
     // Case `activating_the_undo_node_raises_the_same_request_a_click_does`.
     {
         let (mut app, _doc) = app_and_doc();
-        app.set_undo_status(&mut || ui::UndoStatus {
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus {
             can_undo: true,
             ..Default::default()
         });
         let key = ui::a11y::hash_key(&ui::UndoRequest::Undo.verb());
         assert!(app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), Some(ui::UndoRequest::Undo));
+        assert_eq!(
+            ui::undo::take_undo_request(&mut app),
+            Some(ui::UndoRequest::Undo)
+        );
         // With the history empty again the same activation refuses.
-        app.set_undo_status(&mut || ui::UndoStatus::empty());
+        ui::undo::set_undo_status(&mut app, &mut || ui::UndoStatus::empty());
         assert!(!app.a11y_transport_action(&ui::a11y::Action::Activate, &[key]));
-        assert_eq!(app.take_undo_request(), None);
+        assert_eq!(ui::undo::take_undo_request(&mut app), None);
         // And the transport's own buttons still work, so the new key lookup
         // has not shadowed them.
         let play = ui::a11y::hash_key(&2usize);

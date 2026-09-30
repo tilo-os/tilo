@@ -162,7 +162,7 @@ fn shot_handler(args: &LaunchArgs) -> Result<(), LaunchError> {
         _ => None,
     };
     // Keep screenshot state independent of persisted zoom and Places ordering.
-    let mut widget = FileExplorerWidget::with_persistence(None, xdg_paths::home());
+    let mut widget = FileExplorerWidget::with_persistence(None, tilo_paths::home());
     // Optional `--path <dir>` starts the shot in a specific directory
     // (e.g. to capture a deep breadcrumb trail), else the default
     // cold-start location is used.
@@ -754,14 +754,16 @@ fn apply_post_layout_scenario(
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         Some("reorder") => {
@@ -804,14 +806,16 @@ fn apply_post_layout_scenario(
             let mods = winit::event::Modifiers::default();
             widget.handle_event(
                 &ev,
-                1.0,
-                &mods,
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut focus,
-                child,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: child,
+                    taffy,
+                },
             );
         }
         Some("history") => {

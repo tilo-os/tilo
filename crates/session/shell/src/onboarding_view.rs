@@ -25,6 +25,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value, transaction::Transactable};
 use taffy::{NodeId, TaffyTree};
@@ -37,7 +38,7 @@ use ui::widget::{
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use vello::peniko::{BlendMode, Fill};
-use winit::event::{ElementState, Modifiers, WindowEvent};
+use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
@@ -48,6 +49,9 @@ use crate::onboarding::{
 use crate::shell::i18n::{t, t_args};
 use os_actions::codec_pack::{CodecAction, CodecPackStatus, PackState};
 
+/// How often setup looks for news from its background work (codec install,
+/// nearby pairing) while that work runs.
+const BACKGROUND_POLL: Duration = Duration::from_millis(250);
 const PANEL_MAX_WIDTH: f32 = 760.0;
 // Longer translated/large-text pages scroll inside this limit. Short pages
 // retain their intrinsic height so setup never becomes a mostly empty modal.
@@ -597,6 +601,8 @@ pub struct OnboardingView {
     /// re-reads the status.
     codec_changed: Arc<AtomicBool>,
     codec_watching: bool,
+    /// When `sync` last looked at the background work above.
+    synced_at: Instant,
 }
 
 impl OnboardingView {
@@ -820,6 +826,7 @@ impl OnboardingView {
             codec_error: None,
             codec_changed: Arc::new(AtomicBool::new(false)),
             codec_watching: false,
+            synced_at: Instant::now(),
         }
     }
 
@@ -2699,11 +2706,13 @@ impl Widget for OnboardingView {
         clippy::too_many_lines,
         reason = "one ordered reducer owns all modal OOBE actions and secret cleanup transitions"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         let before = self.flow.screen();
         let tour_before = self.tour_page;
         let ready_before = self.identity_ready_page;
         let codec_page_before = self.codec_page;
+        self.synced_at = Instant::now();
         self.refresh_codec_state();
 
         // Pull widget-local edits (notably passphrases) into their process-local
@@ -3402,39 +3411,20 @@ impl Widget for OnboardingView {
         self.draw_picker(scene, transform, text_renderer, theme, presence);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "onboarding forwards the Widget event, CRDT, focus and layout context to its picker and composed child controls"
-    )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some((_, picker)) = self.picker.as_mut() {
             picker.set_rect(onboarding_picker_rect(self.rect));
             let mut picker_taffy = TaffyTree::<()>::new();
             if let Ok(picker_node) = picker_taffy.new_leaf(taffy::Style::default()) {
                 picker.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    picker_node,
-                    &picker_taffy,
+                    &mut ui::widget::EventCtx {
+                        taffy: &picker_taffy,
+                        ..ctx.reborrow(ctx.path, picker_node)
+                    },
                 );
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         if self.tour_page.is_some()
@@ -3445,8 +3435,10 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
-            *handled = true;
+            let _ = ctx
+                .state
+                .put(ctx.path, KEY_TOUR_SKIP, ScalarValue::Boolean(true));
+            *ctx.handled = true;
             return;
         }
         // Escape follows the visible Back action while the identity ceremony
@@ -3465,25 +3457,17 @@ impl Widget for OnboardingView {
                         && matches!(event.logical_key, Key::Named(NamedKey::Escape))
             )
         {
-            let _ = state.put(path, KEY_BACK, ScalarValue::Boolean(true));
-            *handled = true;
+            let _ = ctx
+                .state
+                .put(ctx.path, KEY_BACK, ScalarValue::Boolean(true));
+            *ctx.handled = true;
             return;
         }
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -3532,6 +3516,25 @@ impl Widget for OnboardingView {
             .as_mut()
             .is_some_and(|c| c.take_structure_dirty());
         own || child
+    }
+
+    fn next_wake_deadline(&self) -> Option<Instant> {
+        // The codecs worker and status watcher only raise `codec_changed`,
+        // and nearby pairing reports through its child and a status file;
+        // nothing wakes the compositor for them, so look while they run.
+        let polling =
+            self.codec_running.is_some() || self.codec_watching || self.nearby_child.is_some();
+        let mut earliest = if polling {
+            self.synced_at.checked_add(BACKGROUND_POLL)
+        } else {
+            None
+        };
+        self.for_each_child(&mut |child| {
+            if let Some(deadline) = child.next_wake_deadline() {
+                earliest = Some(earliest.map_or(deadline, |old: Instant| old.min(deadline)));
+            }
+        });
+        earliest
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3636,6 +3639,7 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use tempfile::TempDir;
     use ui::widget::identity_flow::{IdentityRecord, SerializableIdentity};
+    use winit::event::Modifiers;
 
     fn view() -> (OnboardingView, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
@@ -3740,14 +3744,16 @@ mod tests {
         let mut focus_target = None;
         view.handle_event(
             &escape_event(),
-            1.0,
-            &Modifiers::default(),
-            document,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: document,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         handled
     }
@@ -4378,10 +4384,11 @@ mod tests {
             }
             assert!(navigation.contains("Start here, Everyday, Work, Media, and System tools"));
             assert!(navigation.contains("Super+Tab"));
-            assert!(navigation.contains("four-finger swipe"));
+            assert!(navigation.contains("Super+Tab or pinch"));
             assert!(navigation.contains("Super+arrow keys"));
             assert!(navigation.contains("three-finger swipe"));
-            assert!(navigation.contains("Up and down switch workspaces"));
+            assert!(navigation.contains("Up and down go to the strip above or below"));
+            assert!(navigation.contains("a four-finger swipe, switch workspaces"));
             assert!(navigation.contains("Left and right step between tiled windows"));
             assert!(
                 !navigation.contains("Super+W"),
@@ -5037,6 +5044,13 @@ mod tests {
         walk_to_codecs(&mut view, &mut doc);
         press(&mut doc, KEY_CODECS_INSTALL);
         view.sync(&mut doc, &automerge::ROOT);
+        // Nothing wakes the compositor for the worker, so the view does.
+        let limit = Instant::now().checked_add(BACKGROUND_POLL).unwrap();
+        assert!(
+            view.next_wake_deadline()
+                .is_some_and(|deadline| deadline <= limit),
+            "a running install keeps looking for its result"
+        );
         // The helper reports progress through its status file.
         started.recv().unwrap();
         view.codec_changed.store(true, Ordering::Release);
@@ -5628,14 +5642,16 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut document,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut document,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(handled, "the labelled checkbox row must handle {event:?}");
             }
@@ -5702,14 +5718,16 @@ mod tests {
                 let mut handled = false;
                 view.handle_event(
                     &event,
-                    1.0,
-                    &Modifiers::default(),
-                    &mut document,
-                    &automerge::ROOT,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &Modifiers::default(),
+                        state: &mut document,
+                        path: &automerge::ROOT,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
                 if !matches!(event, WindowEvent::CursorMoved { .. }) {
                     assert!(

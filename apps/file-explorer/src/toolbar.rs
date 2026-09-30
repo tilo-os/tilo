@@ -28,6 +28,7 @@
 //! body shell), and its stateless button children are rebuilt each layout.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
 use taffy::{
     AlignItems, Dimension, Display, FlexDirection, LengthPercentage, NodeId, Rect as TaffyRect,
@@ -63,19 +64,21 @@ const NAV_H: f32 = 32.0;
 // and navigation affordances through this entire in-between range.
 const COMPACT_BREAKPOINT_PX: f64 = 760.0;
 
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "navigation availability and the two responsive-layout flags are independent toolbar facts"
-)]
+/// Which history and hierarchy moves the current location allows.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NavAvailability {
+    pub back: bool,
+    pub forward: bool,
+    pub up: bool,
+}
+
 pub struct FileToolbar {
     sink: CommandSink,
     /// The editable path bar (breadcrumb ⇄ text field). Persistent so an
     /// in-progress path edit survives the app's per-frame rebuild.
     path_bar: PathBar,
     // Live context, refreshed each rebuild via `set_context`.
-    can_back: bool,
-    can_forward: bool,
-    can_up: bool,
+    nav: NavAvailability,
     view_mode: ViewMode,
     archive_read_only: bool,
     // Stateless children, rebuilt each `build_layout`.
@@ -93,9 +96,7 @@ impl FileToolbar {
         Self {
             path_bar: PathBar::new(sink.clone()),
             sink,
-            can_back: false,
-            can_forward: false,
-            can_up: false,
+            nav: NavAvailability::default(),
             view_mode: ViewMode::List,
             archive_read_only: false,
             left: Vec::new(),
@@ -110,27 +111,25 @@ impl FileToolbar {
     }
 
     /// Refresh the live context (called before each rebuild).
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::fn_params_excessive_bools,
-        reason = "navigation availability and archive mode are independent facts supplied by the owning Files state"
-    )]
     pub fn set_context(
+        &mut self,
+        nav: NavAvailability,
+        view_mode: ViewMode,
+        archive_read_only: bool,
+    ) {
+        self.nav = nav;
+        self.view_mode = view_mode;
+        self.archive_read_only = archive_read_only;
+    }
+
+    /// Show `current` in the path bar, abbreviating under `home` and naming
+    /// any of `workspace_roots` it lies in (called before each rebuild).
+    pub fn set_path(
         &mut self,
         current: std::path::PathBuf,
         home: Option<std::path::PathBuf>,
         workspace_roots: Vec<std::path::PathBuf>,
-        can_back: bool,
-        can_forward: bool,
-        can_up: bool,
-        view_mode: ViewMode,
-        archive_read_only: bool,
     ) {
-        self.can_back = can_back;
-        self.can_forward = can_forward;
-        self.can_up = can_up;
-        self.view_mode = view_mode;
-        self.archive_read_only = archive_read_only;
         self.path_bar.set_path(current, home, workspace_roots);
     }
 
@@ -171,7 +170,7 @@ impl FileToolbar {
             "files.back",
             Icon::ArrowLeft,
             FileCommand::Back,
-            self.can_back,
+            self.nav.back,
             &t("files-back"),
         )];
         if !self.compact {
@@ -179,7 +178,7 @@ impl FileToolbar {
                 "files.forward",
                 Icon::ArrowRight,
                 FileCommand::Forward,
-                self.can_forward,
+                self.nav.forward,
                 &t("files-forward"),
             ));
         }
@@ -187,7 +186,7 @@ impl FileToolbar {
             "files.up",
             Icon::ArrowUp,
             FileCommand::Up,
-            self.can_up,
+            self.nav.up,
             &t("files-up"),
         ));
         controls
@@ -324,7 +323,7 @@ impl FileToolbar {
 
     /// Whether a compact overflow should offer Forward navigation.
     pub fn can_go_forward(&self) -> bool {
-        self.can_forward
+        self.nav.forward
     }
 
     /// Group node ranges within the toolbar row's children. `None` if
@@ -342,7 +341,7 @@ impl FileToolbar {
 }
 
 impl Widget for FileToolbar {
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.path_bar.sync(state, path);
     }
 
@@ -483,64 +482,28 @@ impl Widget for FileToolbar {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        let Ok(children) = taffy.children(node_id) else {
+        let Ok(children) = ctx.taffy.children(ctx.node_id) else {
             return;
         };
         let Some((left_ns, path_n, right_ns)) = self.child_groups(&children) else {
             return;
         };
         // Path bar first, so it captures the keyboard while editing.
-        self.path_bar.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            path_n,
-            taffy,
-        );
+        self.path_bar
+            .handle_event(event, &mut ctx.reborrow(ctx.path, path_n));
         for (c, &n) in self.left.iter_mut().zip(left_ns.iter()) {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         for (c, &n) in self.right.iter_mut().zip(right_ns.iter()) {
-            if *handled {
+            if *ctx.handled {
                 break;
             }
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
 

@@ -134,6 +134,41 @@ pub fn configured_font_system() -> FontSystem {
     crate::font_catalog::fixture_font_system()
 }
 
+thread_local! {
+    static LAYOUT_RENDERERS: std::cell::RefCell<Vec<TextRenderer>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `f` with a layout-only renderer at `text_scale`, for widgets that
+/// must measure in `apply_layout`, which is handed no renderer. Building one
+/// loads every installed font (tens of milliseconds) and layout runs every
+/// frame an animation is live, so renderers are pooled per thread; a nested
+/// call takes its own from the pool rather than borrowing the outer one.
+pub fn with_layout_renderer<R>(text_scale: f32, f: impl FnOnce(&mut TextRenderer) -> R) -> R {
+    let mut renderer = LAYOUT_RENDERERS
+        .with(|pool| pool.borrow_mut().pop())
+        .unwrap_or_default();
+    renderer.set_text_scale(text_scale);
+    let out = f(&mut renderer);
+    LAYOUT_RENDERERS.with(|pool| pool.borrow_mut().push(renderer));
+    out
+}
+
+/// The font database a host built for this process, when its fonts do not
+/// come from the system: a browser page has no system fonts, so a renderer
+/// made without one would shape with none. Set by
+/// [`TextRenderer::with_browser_font_system`] and each optional font it
+/// installs.
+static HOST_FONT_DATABASE: std::sync::RwLock<Option<(String, cosmic_text::fontdb::Database)>> =
+    std::sync::RwLock::new(None);
+
+fn share_host_font_database(font_system: &FontSystem) {
+    *HOST_FONT_DATABASE
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner) =
+        Some((font_system.locale().to_owned(), font_system.db().clone()));
+}
+
 /// Build a font system whose generic families are deterministic across the
 /// developer distrobox and the Tilo image. cosmic-text's platform fallback
 /// still supplies script-aware Noto faces for Arabic, Indic, CJK, emoji, and
@@ -153,6 +188,13 @@ pub fn configured_font_system() -> FontSystem {
         crate::font_catalog::android_font_system(crate::i18n::I18nManager::current_locale())
     {
         return font_system;
+    }
+    let host = HOST_FONT_DATABASE
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    if let Some((locale, database)) = host {
+        return crate::font_catalog::system_over(locale, database);
     }
     let mut font_system = FontSystem::new();
     let database = font_system.db_mut();
@@ -944,10 +986,6 @@ pub trait TextLayoutEngine {
         style: &TextStyle,
     ) -> (f32, f32);
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "A layout engine needs renderer/scene, text and layout constraints, style, color, and the destination transform."
-    )]
     fn draw(
         &mut self,
         renderer: &mut TextRenderer,
@@ -1394,6 +1432,17 @@ struct GlyphRun {
     normalized_coords: Vec<vello::NormalizedCoord>,
 }
 
+/// Consecutive rich-text glyphs that share a face, weight, size, colour and
+/// baseline, flushed as one `draw_glyphs` call.
+struct GlyphBatch<'a> {
+    face_id: cosmic_text::fontdb::ID,
+    glyphs: &'a [cosmic_text::LayoutGlyph],
+    size: f32,
+    color: Color,
+    line_y: f32,
+    variations: &'a [FontVariation],
+}
+
 /// Shaped glyph geometry plus the `(width, height)` measure derived from the
 /// same cosmic-text buffer, so a layout miss can reuse a prior paint (and a
 /// layout warm can satisfy the paint that follows) without reshaping.
@@ -1524,7 +1573,7 @@ pub struct TextRenderer {
     /// while the font system is accessed.
     shape_cache: HashMap<ShapeKey, ShapedText>,
     /// Surfaced via [`Self::take_shape_stats`] so the frame profiler
-    /// (`QUICK_UI_PERF`) can attribute draw-phase time between cosmic-text
+    /// (`TILO_UI_PERF`) can attribute draw-phase time between cosmic-text
     /// and Vello encoding.
     shape_hits: u64,
     shape_misses: u64,
@@ -1646,6 +1695,7 @@ impl TextRenderer {
 
     /// Construct a renderer over the verified browser startup catalog.
     pub fn with_browser_font_system(font_system: FontSystem) -> Self {
+        share_host_font_database(&font_system);
         let mut renderer = Self::with_font_system(font_system);
         renderer.browser_font_demands = Some(BTreeSet::new());
         renderer
@@ -1682,6 +1732,7 @@ impl TextRenderer {
         let changed = catalog.install_browser_asset(&mut self.font_system, name, bytes)?;
         self.browser_font_assets.insert(name.to_owned());
         if changed {
+            share_host_font_database(&self.font_system);
             self.bump_generation();
         }
         Ok(changed)
@@ -1876,9 +1927,11 @@ impl TextRenderer {
     ) -> Option<f32> {
         let width = max_width?;
         // Balance and hyphenation consult the wrap width even when the natural
-        // line would fit; keep those keys distinct.
+        // line would fit; keep those keys distinct. So does drawing a centred
+        // or end-aligned line: its glyphs sit inside the width.
         if style.wrap_mode == TextWrapMode::Balance
             || !matches!(style.hyphenation, Hyphenation::None)
+            || (warm_shape && matches!(style.align, ParagraphAlign::Center | ParagraphAlign::End))
         {
             return Some(width);
         }
@@ -2169,67 +2222,7 @@ impl TextRenderer {
         );
     }
 
-    /// Draw `text` with explicit weight + italic + optional monospace family
-    /// override, used by [`crate::widget::RichTextLine`] to paint inline-mark
-    /// spans. Pair with [`Self::measure_styled`] for accurate measurement.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Styled span painting exposes content, size/weight/italic/family, color, transform, and wrapping width alongside the scene."
-    )]
-    pub fn draw_text_styled(
-        &mut self,
-        scene: &mut Scene,
-        text: &str,
-        size: f32,
-        color: Color,
-        transform: Affine,
-        max_width: Option<f32>,
-        weight: TextWeight,
-        italic: bool,
-        monospace: bool,
-    ) {
-        let family = if monospace {
-            FontChoice::Monospace
-        } else {
-            FontChoice::SansSerif
-        };
-        let style = TextStyle::new(size)
-            .with_weight(weight)
-            .with_italic(italic)
-            .with_family(family);
-        self.draw_style(scene, text, color, transform, max_width, &style);
-    }
-
-    /// Draw `text` shaped in an explicit [`FontChoice`] family (serif / a
-    /// named installed family / …) with a weight and italic flag.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Explicit-font painting exposes content, family and typography, color, transform, and wrapping width alongside the scene."
-    )]
-    pub fn draw_text_font(
-        &mut self,
-        scene: &mut Scene,
-        text: &str,
-        size: f32,
-        color: Color,
-        transform: Affine,
-        max_width: Option<f32>,
-        weight: TextWeight,
-        italic: bool,
-        family: &FontChoice,
-    ) {
-        let style = TextStyle::new(size)
-            .with_weight(weight)
-            .with_italic(italic)
-            .with_family(family.clone());
-        self.draw_style(scene, text, color, transform, max_width, &style);
-    }
-
     /// Measure `text` shaped in an explicit [`FontChoice`].
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Font measurement mirrors the text, size, wrapping width, weight, italic flag, and family accepted by font painting."
-    )]
     pub fn measure_font(
         &mut self,
         text: &str,
@@ -2262,7 +2255,7 @@ impl TextRenderer {
         set.into_iter().collect()
     }
 
-    /// Measure `text` with style attributes. Mirrors [`Self::draw_text_styled`].
+    /// Measure `text` with style attributes and an optional monospace family.
     /// NOT cached — these calls are rare (one per segment per frame).
     pub fn measure_styled(
         &mut self,
@@ -2287,13 +2280,6 @@ impl TextRenderer {
 
     /// Same as [`TextRenderer::draw_text`] but takes an explicit typographic
     /// [`TextWeight`], for chrome labels that need to lift off the body.
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Weighted text painting takes scene/content plus size, color, transform, wrapping width, and typographic weight."
-    )]
     pub fn draw_text_weighted(
         &mut self,
         scene: &mut Scene,
@@ -2767,17 +2753,15 @@ impl TextRenderer {
         if !uniform {
             return false;
         }
-        self.flush_glyphs(
-            scene,
-            first.font_id,
-            run.glyphs,
-            first.font_size,
-            resolve_rich_color(color, first.color_opt),
-            transform,
-            run.line_y + shift.offset(first.font_size),
-            &layout.font_variations,
-            clip,
-        );
+        let batch = GlyphBatch {
+            face_id: first.font_id,
+            glyphs: run.glyphs,
+            size: first.font_size,
+            color: resolve_rich_color(color, first.color_opt),
+            line_y: run.line_y + shift.offset(first.font_size),
+            variations: &layout.font_variations,
+        };
+        self.flush_glyphs(scene, &batch, transform, clip);
         true
     }
 
@@ -2822,17 +2806,15 @@ impl TextRenderer {
                 && !batch.is_empty()
             {
                 let dy = cur_shift.offset(batch_size);
-                self.flush_glyphs(
-                    scene,
+                let glyphs = GlyphBatch {
                     face_id,
-                    &batch,
-                    batch_size,
-                    resolve_rich_color(color, cur_color),
-                    transform,
-                    run.line_y + dy,
-                    &layout.font_variations,
-                    clip,
-                );
+                    glyphs: &batch,
+                    size: batch_size,
+                    color: resolve_rich_color(color, cur_color),
+                    line_y: run.line_y + dy,
+                    variations: &layout.font_variations,
+                };
+                self.flush_glyphs(scene, &glyphs, transform, clip);
                 batch.clear();
             }
             face = Some(g.font_id);
@@ -2849,85 +2831,63 @@ impl TextRenderer {
             && !batch.is_empty()
         {
             let dy = cur_shift.offset(batch_size);
-            self.flush_glyphs(
-                scene,
-                f,
-                &batch,
+            let glyphs = GlyphBatch {
+                face_id: f,
+                glyphs: &batch,
                 size,
-                resolve_rich_color(color, cur_color),
-                transform,
-                run.line_y + dy,
-                &layout.font_variations,
-                clip,
-            );
+                color: resolve_rich_color(color, cur_color),
+                line_y: run.line_y + dy,
+                variations: &layout.font_variations,
+            };
+            self.flush_glyphs(scene, &glyphs, transform, clip);
         }
         if let Some(marker) = exercised_hyphen
             && let Some(hyphen) = self.visible_discretionary_hyphen(marker)
         {
             let global_byte = layout.glyph_global_byte(run.line_i, marker.start);
             let shift = layout.baseline_at(global_byte);
-            self.flush_glyphs(
-                scene,
-                hyphen.font_id,
-                std::slice::from_ref(&hyphen),
-                hyphen.font_size,
-                resolve_rich_color(color, hyphen.color_opt),
-                transform,
-                run.line_y + shift.offset(hyphen.font_size),
-                &layout.font_variations,
-                clip,
-            );
+            let glyphs = GlyphBatch {
+                face_id: hyphen.font_id,
+                glyphs: std::slice::from_ref(&hyphen),
+                size: hyphen.font_size,
+                color: resolve_rich_color(color, hyphen.color_opt),
+                line_y: run.line_y + shift.offset(hyphen.font_size),
+                variations: &layout.font_variations,
+            };
+            self.flush_glyphs(scene, &glyphs, transform, clip);
         }
     }
 
-    // Standard immediate-mode paint-helper signature for this vello
-    // renderer (scene + transform + text_renderer + theme, plus this
-    // draw's own content); every parameter is independently load-bearing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Glyph submission needs scene, face and glyph batch, size/color, transform/baseline, font variations, and clip bounds."
-    )]
     fn flush_glyphs(
         &mut self,
         scene: &mut Scene,
-        face_id: cosmic_text::fontdb::ID,
-        glyphs: &[cosmic_text::LayoutGlyph],
-        size: f32,
-        color: Color,
+        batch: &GlyphBatch<'_>,
         transform: Affine,
-        line_y: f32,
-        variations: &[FontVariation],
         clip: Option<Rect>,
     ) {
-        let Some(first) = glyphs.first() else {
+        let Some(first) = batch.glyphs.first() else {
             return;
         };
-        let Some(vello_font) = self.vello_font(face_id, first.font_weight) else {
+        let Some(vello_font) = self.vello_font(batch.face_id, first.font_weight) else {
             return;
         };
         debug_assert!(
-            glyphs
+            batch
+                .glyphs
                 .iter()
                 .all(|glyph| glyph.font_weight == first.font_weight)
         );
-        let normalized_coords = self.normalized_coords(face_id, variations, first.font_weight);
+        let normalized_coords =
+            self.normalized_coords(batch.face_id, batch.variations, first.font_weight);
 
         if let Some(clip) = clip
-            && self.glyph_batch_outside(
-                &vello_font,
-                face_id,
-                glyphs,
-                size,
-                line_y,
-                &normalized_coords,
-                transform,
-                clip,
-            )
+            && self.glyph_batch_outside(&vello_font, batch, &normalized_coords, transform, clip)
         {
             return;
         }
 
-        let vello_glyphs = glyphs.iter().map(|g| {
+        let line_y = batch.line_y;
+        let vello_glyphs = batch.glyphs.iter().map(|g| {
             let (x, y) = glyph_paint_origin(g, g.x, line_y);
             vello::Glyph {
                 id: u32::from(g.glyph_id),
@@ -2938,28 +2898,28 @@ impl TextRenderer {
 
         scene
             .draw_glyphs(&vello_font)
-            .font_size(size)
+            .font_size(batch.size)
             .normalized_coords(&normalized_coords)
-            .brush(color)
+            .brush(batch.color)
             .transform(transform)
             .draw(StyleRef::Fill(vello::peniko::Fill::NonZero), vello_glyphs);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Glyph culling needs font identity and variations, glyphs and size, baseline/transform, and the device-space clip."
-    )]
     fn glyph_batch_outside(
         &mut self,
         font: &Font,
-        face: cosmic_text::fontdb::ID,
-        glyphs: &[cosmic_text::LayoutGlyph],
-        size: f32,
-        line_y: f32,
+        batch: &GlyphBatch<'_>,
         coords: &[vello::NormalizedCoord],
         transform: Affine,
         clip: Rect,
     ) -> bool {
+        let GlyphBatch {
+            face_id: face,
+            glyphs,
+            size,
+            line_y,
+            ..
+        } = *batch;
         #[allow(
             clippy::cast_possible_truncation,
             reason = "the narrowing is intentional to reject transforms that overflow f32"
@@ -3110,6 +3070,33 @@ pub(crate) fn rich_run_outside_clip(
 mod tests {
     use super::*;
 
+    /// A short centred line drawn in a wide box sits in the middle of the
+    /// box, and an end-aligned one at its end: the draw keeps the width even
+    /// though the line fits without wrapping.
+    #[test]
+    fn a_line_that_fits_is_drawn_where_its_alignment_puts_it() {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
+            let style = TextStyle::new(16.0).with_align(align);
+            let width = renderer.collapse_unused_max_width("New note", Some(400.0), &style, true);
+            let runs = renderer.shaped_runs("New note", width, &style);
+            runs.iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let start = first_x(&mut renderer, ParagraphAlign::Start);
+        let center = first_x(&mut renderer, ParagraphAlign::Center);
+        let end = first_x(&mut renderer, ParagraphAlign::End);
+        let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
+        assert!(start.abs() < 1.0, "{start}");
+        assert!(
+            (center - (400.0 - natural) / 2.0).abs() < 2.0,
+            "{center} of {natural}"
+        );
+        assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
+    }
+
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {
         // Case `explicit_catalog_constructs_the_production_renderer_and_caches`.
@@ -3211,41 +3198,32 @@ mod tests {
             // A specific installed family shapes into glyph runs without panicking.
             let mut scene = Scene::new();
             let named = FontChoice::Named(fams[0].clone());
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                20.0,
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                TextWeight::Regular,
-                false,
-                &named,
+                &TextStyle::new(20.0).with_family(named.clone()),
             );
 
             // Serif and Sans of the same string are distinct shape-cache entries.
             let _ = tr.take_shape_stats();
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                20.0,
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::Serif,
+                &TextStyle::new(20.0).with_family(FontChoice::Serif),
             );
-            tr.draw_text_font(
+            tr.draw_style(
                 &mut scene,
                 "Reading",
-                20.0,
                 Color::WHITE,
                 Affine::IDENTITY,
                 None,
-                TextWeight::Regular,
-                false,
-                &FontChoice::SansSerif,
+                &TextStyle::new(20.0).with_family(FontChoice::SansSerif),
             );
             let (h, m, _ns) = tr.take_shape_stats();
             assert_eq!(m, 0, "measure_font warms paint geometry for each family");
@@ -3760,30 +3738,24 @@ mod tests {
             let mut tr = crate::font_catalog::fixture_renderer();
 
             let plain_spans = [RichSpan::new("highlighted")];
-            let plain = RichTextLayout::shape(
+            let plain = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &plain_spans,
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
             let hl_spans = [RichSpan::new("highlighted").background(Some([255, 235, 59]))];
-            let highlighted = RichTextLayout::shape(
+            let highlighted = RichTextLayout::shape_styled(
                 &mut tr.font_system,
                 &hl_spans,
-                false,
-                16.0,
-                400.0,
+                &RichTextLayout::block_style(false, 16.0, FontFamily::Sans, 1.0),
+                Some(400.0),
                 TextAlign::Left,
-                FontFamily::Sans,
                 vec![],
                 vec![],
-                1.0,
             );
 
             let mut plain_scene = Scene::new();
@@ -4403,3 +4375,37 @@ mod tests {
 
 #[cfg(test)]
 mod renderer_regressions;
+
+#[cfg(test)]
+mod layout_renderer_pool {
+    use super::*;
+
+    #[test]
+    fn layout_passes_reuse_pooled_renderers_instead_of_reloading_fonts() {
+        let constructions = || FONT_SYSTEM_CONSTRUCTIONS.with(std::cell::Cell::get);
+        FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
+        for _ in 0..8 {
+            with_layout_renderer(1.0, |tr| {
+                tr.measure("Files", 14.0, None);
+            });
+        }
+        assert_eq!(
+            constructions(),
+            1,
+            "a repeated layout pass loads fonts once"
+        );
+
+        let scales = with_layout_renderer(2.0, |outer| {
+            let inner = with_layout_renderer(1.5, |inner| inner.text_scale());
+            (outer.text_scale(), inner)
+        });
+        assert_eq!(
+            scales,
+            (2.0, 1.5),
+            "a nested pass has its own renderer and scale"
+        );
+        assert_eq!(constructions(), 2, "nesting adds one renderer to the pool");
+        with_layout_renderer(1.0, |_| with_layout_renderer(1.0, |_| ()));
+        assert_eq!(constructions(), 2, "and later nested passes reuse it");
+    }
+}

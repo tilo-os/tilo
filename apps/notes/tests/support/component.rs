@@ -3,7 +3,7 @@
 pub mod canonical;
 pub use canonical::LegacyFixture;
 use std::rc::Rc;
-use ui::application::{AppComponent, HostContext, LaunchTarget, RestoreInput};
+use ui::application::{AppComponent, HostContext, HostContextInputs, LaunchTarget, RestoreInput};
 use ui::application_view::InstanceViewStore;
 use ui::record::RecordCheckout;
 
@@ -32,16 +32,18 @@ pub fn try_restored_component(
 ) -> Result<AppComponent, ui::launch::LaunchError> {
     let context = HostContext::prepare(
         notes::definition(),
-        f.records.clone(),
-        Rc::new(
-            InstanceViewStore::new(f.state_root.clone(), "fixture-device", canonical::ROOM)
-                .unwrap(),
-        ),
-        "fixture-device".into(),
-        instance,
-        f.authority.clone(),
-        f.author.clone(),
-        tilo_actions::ActionContext::default(),
+        HostContextInputs {
+            records: f.records.clone(),
+            views: Rc::new(
+                InstanceViewStore::new(f.state_root.clone(), "fixture-device", canonical::ROOM)
+                    .unwrap(),
+            ),
+            device_id: "fixture-device".into(),
+            instance_id: instance,
+            permissions: f.authority.clone(),
+            author: f.author.clone(),
+            action_context: tilo_actions::ActionContext::default(),
+        },
         &target,
     )
     .unwrap();
@@ -54,6 +56,38 @@ pub fn renderer() -> ui::TextRenderer {
         "en-US",
     );
     ui::TextRenderer::with_font_catalog(&catalog).unwrap()
+}
+/// Mount `editor` in the production frame host `width` wide at its content
+/// height, the way a scrolling page lays its body out, with its top-left
+/// corner at `(x, y)`, and run its first frame.
+pub fn framed_block_editor(
+    editor: ui::widget::BlockEditor,
+    width: f32,
+    (x, y): (f32, f32),
+    theme: ui::Theme,
+) -> ui::headless::Framed<ui::widget::BlockEditor> {
+    // Tall enough that the viewport cull never drops a fixture block.
+    const HEIGHT: f32 = 10_000.0;
+    ui::headless::Framed::with_options(
+        ui::State::new(),
+        editor,
+        ui::headless::viewport((x + width, HEIGHT)),
+        ui::headless::FrameOptions {
+            theme: Some(theme),
+            text: Some(renderer()),
+            host_style: Some(taffy::Style {
+                flex_direction: taffy::FlexDirection::Column,
+                padding: taffy::Rect {
+                    left: taffy::LengthPercentage::length(x),
+                    top: taffy::LengthPercentage::length(y),
+                    right: taffy::LengthPercentage::length(0.0),
+                    bottom: taffy::LengthPercentage::length(0.0),
+                },
+                ..Default::default()
+            }),
+            content_height: true,
+        },
+    )
 }
 pub fn runner_inputs() -> ui::application::ComponentRunnerInputs {
     ui::application::ComponentRunnerInputs {
@@ -85,7 +119,7 @@ pub fn assert_closed(report: &ui::application::ComponentCloseReport) {
     );
 }
 pub fn close_widget(widget: &mut dyn ui::Widget) {
-    let reports = widget.close_components();
+    let reports = ui::component_lifecycle::close_components(widget);
     assert!(!reports.is_empty());
     for report in &reports {
         assert_closed(report);

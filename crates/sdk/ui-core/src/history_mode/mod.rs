@@ -6,6 +6,7 @@
 
 pub mod adapter;
 mod assets;
+pub mod capability;
 pub mod checked_files;
 mod files_session;
 pub mod preview;
@@ -236,6 +237,17 @@ impl HistoryController {
 
     pub fn groups(&self) -> &[HistoryGroup] {
         &self.groups
+    }
+
+    /// Committed activity at `live`'s frontier, in causal order, leaving
+    /// this controller's projection and selection where they are.
+    #[cfg(any(feature = "native", test))]
+    pub(crate) fn entries_at(&self, live: &AutoCommit) -> Vec<HistoryEntry> {
+        let mut projection = committed_clone(live);
+        if self.projected_heads.as_ref() == Some(&sorted_heads(projection.get_heads())) {
+            return self.entries.clone();
+        }
+        self.source.entries(&mut projection)
     }
 
     /// Reproject factual activity from committed graph state. An existing

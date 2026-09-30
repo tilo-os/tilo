@@ -6,11 +6,10 @@
 //! where this modal sits in the global z-order.
 
 use crate::shell::state::WorkspaceAuthority as _;
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
+use taffy::TaffyTree;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
@@ -107,20 +106,13 @@ impl FilePickerOverlay {
     /// Routes an event to the active picker and reports whether the modal
     /// consumed the shell's input. An active picker always consumes input,
     /// even when its inner widget has no action for a particular event.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "file-picker routing adds viewport bounds to the Widget event, CRDT state and focus output parameters"
-    )]
+    /// The picker is dispatched on a tree of its own; `ctx.node_id` and
+    /// `ctx.taffy` are not forwarded.
     pub(crate) fn handle_event(
         &mut self,
         viewport: Rect,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) -> bool {
         let Some(active) = self.active.as_mut() else {
             return false;
@@ -135,16 +127,18 @@ impl FilePickerOverlay {
         };
         active.widget.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: ctx.modifiers,
+                state: &mut *ctx.state,
+                path: ctx.path,
+                handled: &mut *ctx.handled,
+                focus_target: &mut *ctx.focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
-        *handled = true;
+        *ctx.handled = true;
         true
     }
 }

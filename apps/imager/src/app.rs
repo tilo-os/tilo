@@ -29,6 +29,7 @@
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::percent;
@@ -38,13 +39,13 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::WindowEvent;
 
-use ui::paint::with_alpha;
+use ui::paint::{PaintCtx, with_alpha};
 use ui::permissions::PermissionContext;
 use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
 use ui::presence::PresenceCtx;
 use ui::surface;
 use ui::text_metrics::{centered_text_top, line_height_px, renderer_type_size};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::Metrics;
 use ui::tokens::colors::{NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST};
@@ -1478,92 +1479,116 @@ fn kind_color(theme: &Theme, kind: TargetKind) -> Color {
     }
 }
 
+/// A run of wizard text: the string, the style it is shaped with and its ink.
+pub(crate) struct TextRun<'a> {
+    text: &'a str,
+    style: TextStyle,
+    color: Color,
+}
+
+impl<'a> TextRun<'a> {
+    pub(crate) fn new(text: &'a str, style: TextStyle, color: Color) -> Self {
+        Self { text, style, color }
+    }
+
+    /// The run with its line box's top-left at `at`, wrapped at `max_w`.
+    pub(crate) fn draw(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        at: Point,
+        max_w: Option<f32>,
+    ) {
+        tr.draw_style(
+            scene,
+            self.text,
+            self.color,
+            Affine::translate(at.to_vec2()),
+            max_w,
+            &self.style,
+        );
+    }
+
+    fn width(&self, tr: &mut TextRenderer) -> f64 {
+        f64::from(tr.measure_style(self.text, None, &self.style).0)
+    }
+
+    fn draw_right(&self, scene: &mut Scene, tr: &mut TextRenderer, right: f64, top: f64) {
+        let w = self.width(tr);
+        self.draw(scene, tr, Point::new(right - w, top), None);
+    }
+
+    fn draw_center(&self, scene: &mut Scene, tr: &mut TextRenderer, cx: f64, top: f64) {
+        let w = self.width(tr);
+        self.draw(scene, tr, Point::new(cx - w / 2.0, top), None);
+    }
+
+    fn line_top(&self, tr: &mut TextRenderer, band_y0: f64, band_h: f64) -> f64 {
+        ImagerApp::line_top(
+            tr,
+            self.text,
+            self.style.size,
+            self.style.weight,
+            band_y0,
+            band_h,
+        )
+    }
+
+    /// Centred on `cx`, its line box centred in the band
+    /// `band_y0 ..= band_y0 + band_h`.
+    fn draw_center_v(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        cx: f64,
+        band_y0: f64,
+        band_h: f64,
+    ) {
+        let top = self.line_top(tr, band_y0, band_h);
+        self.draw_center(scene, tr, cx, top);
+    }
+
+    /// Right-aligned at `right`, its line box centred in the band
+    /// `band_y0 ..= band_y0 + band_h`.
+    fn draw_right_v(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        right: f64,
+        band_y0: f64,
+        band_h: f64,
+    ) {
+        let top = self.line_top(tr, band_y0, band_h);
+        self.draw_right(scene, tr, right, top);
+    }
+
+    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
+    /// left-aligned block of that width once it does not.
+    fn draw_para_centered(
+        &self,
+        scene: &mut Scene,
+        tr: &mut TextRenderer,
+        cx: f64,
+        top: f64,
+        max_w: f64,
+    ) {
+        if self.width(tr) <= max_w {
+            self.draw_center(scene, tr, cx, top);
+        } else {
+            self.draw(
+                scene,
+                tr,
+                Point::new(cx - max_w / 2.0, top),
+                Some(max_w as f32),
+            );
+        }
+    }
+}
+
 // =========================================================================
 // Drawing primitives
 // =========================================================================
 impl ImagerApp {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Text painting passes scene and renderer plus content, size, color, origin, wrapping width, and weight."
-    )]
-    fn txt(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        x: f64,
-        top: f64,
-        max_w: Option<f32>,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            s,
-            size,
-            color,
-            Affine::translate((x, top)),
-            max_w,
-            weight,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Right-aligned text needs scene and renderer, content and typography, and the right edge and line top."
-    )]
-    fn txt_right(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        right: f64,
-        top: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            right - f64::from(w),
-            top,
-            None,
-            weight,
-        );
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Centered text needs scene and renderer, content and typography, and the horizontal center and line top."
-    )]
-    fn txt_center(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        top: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        Self::txt(
-            scene,
-            tr,
-            s,
-            size,
-            color,
-            cx - f64::from(w) / 2.0,
-            top,
-            None,
-            weight,
-        );
-    }
-
     /// Wrap a terminal failure into a small, measured block. Error strings can
     /// contain long device paths or platform diagnostics, so character-count
     /// truncation is not enough: every returned line is measured in the same
@@ -1729,106 +1754,23 @@ impl ImagerApp {
         centered_text_top(band_y0, band_h, f64::from(h))
     }
 
-    /// `s` centred on `cx`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Band-centered text combines scene and renderer, content and typography, horizontal center, and vertical band bounds."
-    )]
-    fn txt_center_v(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        band_y0: f64,
-        band_h: f64,
-        weight: TextWeight,
-    ) {
-        let top = Self::line_top(tr, s, size, weight, band_y0, band_h);
-        Self::txt_center(scene, tr, s, size, color, cx, top, weight);
-    }
-
-    /// `s` right-aligned at `right`, its line box centred in the band
-    /// `band_y0 ..= band_y0 + band_h`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Right-aligned band text combines scene and renderer, content and typography, right edge, and vertical band bounds."
-    )]
-    fn txt_right_v(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        right: f64,
-        band_y0: f64,
-        band_h: f64,
-        weight: TextWeight,
-    ) {
-        let top = Self::line_top(tr, s, size, weight, band_y0, band_h);
-        Self::txt_right(scene, tr, s, size, color, right, top, weight);
-    }
-
     /// A kind badge (`Tilo`, `ISO`, `USB`): the toolkit [`Badge`], as wide as
-    /// its label needs, filling the band `top ..= top + band_h` from `x`.
+    /// its label needs, filling the band `at.y ..= at.y + band_h` from `at.x`.
     /// Returns the badge's rect so the text column can follow it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "A measured source-kind badge needs render context, its origin and band height, label, and semantic fill color."
-    )]
     fn kind_badge(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        x: f64,
-        top: f64,
+        ctx: &mut PaintCtx<'_>,
+        at: Point,
         band_h: f64,
         label: &str,
         fill: Color,
     ) -> Rect {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let (x, top) = (at.x, at.y);
         let size = renderer_type_size(tr, theme.tokens.typography.scale.xs);
         let (w, _) = tr.measure(label, size, None);
         let badge = Rect::new(x, top, x + f64::from(w) + 2.0 * RELATED, top + band_h);
         Badge::paint_at(scene, t, badge, label, fill, tr, theme);
         badge
-    }
-
-    /// A paragraph centred on `cx` while it fits `max_w`, wrapped as a
-    /// left-aligned block of that width once it does not.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Paragraph painting needs scene and renderer, content and typography, center/top coordinates, and the wrapping width."
-    )]
-    fn txt_para_centered(
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        s: &str,
-        size: f32,
-        color: Color,
-        cx: f64,
-        top: f64,
-        max_w: f64,
-        weight: TextWeight,
-    ) {
-        let (w, _) = tr.measure_weighted(s, size, None, weight);
-        if f64::from(w) <= max_w {
-            Self::txt_center(scene, tr, s, size, color, cx, top, weight);
-        } else {
-            Self::txt(
-                scene,
-                tr,
-                s,
-                size,
-                color,
-                cx - max_w / 2.0,
-                top,
-                Some(max_w as f32),
-                weight,
-            );
-        }
     }
 
     fn section_label(
@@ -1839,17 +1781,12 @@ impl ImagerApp {
         x: f64,
         y: f64,
     ) {
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             s,
-            11.0,
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
             theme.tokens.colors.text_dim,
-            x,
-            y,
-            None,
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(x, y), None);
     }
 }
 
@@ -2503,16 +2440,12 @@ impl ImagerApp {
                 JobPhase::Success => c.semantic.success,
                 _ => c.text_dim,
             };
-            Self::txt_right(
-                scene,
-                tr,
+            TextRun::new(
                 &self.status,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 col,
-                v.x1 - OUTER,
-                v.y0 + RELATED,
-                TextWeight::Medium,
-            );
+            )
+            .draw_right(scene, tr, v.x1 - OUTER, v.y0 + RELATED);
         }
 
         // ---- Step indicator ----
@@ -2558,16 +2491,17 @@ impl ImagerApp {
             } else {
                 let ring = if current { c.accent[5] } else { c.neutral[4] };
                 scene.fill(Fill::NonZero, t, ring, None, &Circle::new(disc_c, disc_r));
-                Self::txt_center_v(
+                TextRun::new(
+                    &format!("{}", s.index() + 1),
+                    TextStyle::new(12.0).with_weight(TextWeight::Bold),
+                    Self::ink_on(theme, ring),
+                )
+                .draw_center_v(
                     scene,
                     tr,
-                    &format!("{}", s.index() + 1),
-                    12.0,
-                    Self::ink_on(theme, ring),
                     disc_c.x,
                     disc_c.y - disc_r,
                     2.0 * disc_r,
-                    TextWeight::Bold,
                 );
             }
             if !lay.compact_crumbs {
@@ -2583,16 +2517,11 @@ impl ImagerApp {
                 };
                 let label_top =
                     Self::line_top(tr, s.title(), 13.5, weight, disc_c.y - disc_r, 2.0 * disc_r);
-                Self::txt(
+                TextRun::new(s.title(), TextStyle::new(13.5).with_weight(weight), label_c).draw(
                     scene,
                     tr,
-                    s.title(),
-                    13.5,
-                    label_c,
-                    disc_c.x + disc_r + RELATED,
-                    label_top,
+                    Point::new(disc_c.x + disc_r + RELATED, label_top),
                     None,
-                    weight,
                 );
             }
             // Connector to the next pill, inset a step from both stations.
@@ -2663,16 +2592,12 @@ impl ImagerApp {
         if !self.compact_content(lay.content)
             && let Some(hint) = self.footer_hint()
         {
-            Self::txt_center_v(
+            TextRun::new(&hint, TextStyle::new(12.0), c.text_dim).draw_center_v(
                 scene,
                 tr,
-                &hint,
-                12.0,
-                c.text_dim,
                 f64::midpoint(v.x0, v.x1),
                 fy,
                 FOOTER_H,
-                TextWeight::Regular,
             );
         }
     }
@@ -2781,28 +2706,18 @@ impl ImagerApp {
     ) {
         let c = &theme.tokens.colors;
         let (_, title_h) = tr.measure_weighted(title, 19.0, None, TextWeight::Bold);
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             title,
-            19.0,
+            TextStyle::new(19.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            content.x0,
-            content.y0,
-            None,
-            TextWeight::Bold,
-        );
+        )
+        .draw(scene, tr, Point::new(content.x0, content.y0), None);
         if let Some(sub) = sub {
-            Self::txt(
+            TextRun::new(sub, TextStyle::new(13.0), c.text_dim).draw(
                 scene,
                 tr,
-                sub,
-                13.0,
-                c.text_dim,
-                content.x0,
-                content.y0 + f64::from(title_h) + STEP_SUB_GAP,
+                Point::new(content.x0, content.y0 + f64::from(title_h) + STEP_SUB_GAP),
                 Some(content.width() as f32),
-                TextWeight::Regular,
             );
         }
     }
@@ -2897,31 +2812,31 @@ impl ImagerApp {
         // a `SECTION` after the icon.
         let text_x = gx + ICON / 2.0 + SECTION;
         let text_w = (browse.x1 - text_x - SECTION).max(0.0) as f32;
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             "Browse for an image…",
-            16.0,
+            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            text_x,
-            browse.y0 + m.dz_title_top,
-            Some(text_w),
-            TextWeight::Semibold,
-        );
-        Self::txt(
+        )
+        .draw(
             scene,
             tr,
+            Point::new(text_x, browse.y0 + m.dz_title_top),
+            Some(text_w),
+        );
+        TextRun::new(
             if compact {
                 "Choose an .iso, .img, or .raw file"
             } else {
                 "Opens the system file picker · .iso, .img, .raw"
             },
-            12.5,
+            TextStyle::new(12.5),
             c.text_dim,
-            text_x,
-            browse.y0 + m.dz_sub_top,
+        )
+        .draw(
+            scene,
+            tr,
+            Point::new(text_x, browse.y0 + m.dz_sub_top),
             Some(text_w),
-            TextWeight::Regular,
         );
         browse
     }
@@ -2980,12 +2895,8 @@ impl ImagerApp {
         );
         let badge_x = disc_x + CHECK_R + if compact { RELATED } else { SIBLING };
         let badge = Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            badge_x,
-            badge_top,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(badge_x, badge_top),
             badge_h,
             src.kind.tag(),
             source_color(theme, src.kind),
@@ -3013,17 +2924,12 @@ impl ImagerApp {
         } else {
             card.y0 + SECTION
         };
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &name,
-            15.5,
+            TextStyle::new(15.5).with_weight(TextWeight::Semibold),
             c.text_primary,
-            title_x,
-            title_top,
-            Some(title_max_w),
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(title_x, title_top), Some(title_max_w));
         // One line: a long image path elides against the card instead of
         // wrapping into the tag line beneath it.
         let summary = if compact {
@@ -3033,16 +2939,11 @@ impl ImagerApp {
         };
         let detail_max_w = (card.x1 - detail_x - SECTION).max(0.0) as f32;
         let summary = tr.elide_to_width(&summary, 12.0, detail_max_w);
-        Self::txt(
+        TextRun::new(&summary, TextStyle::new(12.0), c.text_dim).draw(
             scene,
             tr,
-            &summary,
-            12.0,
-            c.text_dim,
-            detail_x,
-            card.y0 + summary_top,
+            Point::new(detail_x, card.y0 + summary_top),
             Some(detail_max_w),
-            TextWeight::Regular,
         );
         let (tag, tag_c) = if self.source_is_official(src) {
             (
@@ -3052,16 +2953,16 @@ impl ImagerApp {
         } else {
             ("Local image · unverified · written as-is", c.text_dim)
         };
-        Self::txt(
+        TextRun::new(
+            tag,
+            TextStyle::new(11.5).with_weight(TextWeight::Medium),
+            tag_c,
+        )
+        .draw(
             scene,
             tr,
-            tag,
-            11.5,
-            tag_c,
-            detail_x,
-            card.y0 + tag_top,
+            Point::new(detail_x, card.y0 + tag_top),
             Some(detail_max_w),
-            TextWeight::Medium,
         );
         card.y1
     }
@@ -3095,7 +2996,13 @@ impl ImagerApp {
             if i > 0 {
                 y += SIBLING;
             }
-            y = self.draw_release_row(scene, tr, theme, t, content, y, i, rel);
+            let row = Rect::new(
+                content.x0,
+                y,
+                content.x1,
+                y + self.bands.source.release_row_h,
+            );
+            y = self.draw_release_row(&mut PaintCtx::new(scene, t, tr, theme), row, i, rel);
         }
         y
     }
@@ -3127,49 +3034,33 @@ impl ImagerApp {
         let sub_h = tr.line(12.0);
         let stack_h = title_h + RELATED + sub_h;
         let title_top = card.y0 + (card.height() - stack_h) / 2.0;
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             "No Tilo releases found",
-            14.0,
+            TextStyle::new(14.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            cx,
-            title_top,
-            TextWeight::Semibold,
-        );
-        Self::txt_center(
-            scene,
-            tr,
+        )
+        .draw_center(scene, tr, cx, title_top);
+        TextRun::new(
             "Releases stored on this machine appear here.",
-            12.0,
+            TextStyle::new(12.0),
             c.text_dim,
-            cx,
-            title_top + title_h + RELATED,
-            TextWeight::Regular,
-        );
+        )
+        .draw_center(scene, tr, cx, title_top + title_h + RELATED);
         card.y1
     }
 
     /// One release row: selection badge, name, channel/size/location, and the
     /// "installable" tag. Returns its bottom edge.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Release row painting combines render context, content bounds and row position, release data, and its selection index."
-    )]
     fn draw_release_row(
         &self,
-        scene: &mut Scene,
-        tr: &mut TextRenderer,
-        theme: &Theme,
-        t: Affine,
-        content: Rect,
-        y: f64,
+        ctx: &mut PaintCtx<'_>,
+        r: Rect,
         index: usize,
         rel: &TiloRelease,
     ) -> f64 {
+        let (scene, t, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let c = &theme.tokens.colors;
         let m = &self.bands.source;
-        let r = Rect::new(content.x0, y, content.x1, y + m.release_row_h);
         let selected = self
             .source
             .as_ref()
@@ -3185,12 +3076,8 @@ impl ImagerApp {
         // The kind badge on its band, centred in the row and as wide as its
         // label needs; the text column starts a `SIBLING` after it.
         let badge = Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            r.x0 + SECTION,
-            r.y0 + (r.height() - m.card_badge_h) / 2.0,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(r.x0 + SECTION, r.y0 + (r.height() - m.card_badge_h) / 2.0),
             m.card_badge_h,
             "Tilo",
             c.accent[5],
@@ -3201,16 +3088,16 @@ impl ImagerApp {
         let (inst_w, _) = tr.measure_weighted("installable", 11.0, None, TextWeight::Medium);
         let title_max_w = (r.x1 - SECTION - f64::from(inst_w) - SIBLING - text_x)
             .max(f64::from(title_w).min(72.0)) as f32;
-        Self::txt(
+        TextRun::new(
+            &rel.display_name(),
+            TextStyle::new(14.5).with_weight(TextWeight::Semibold),
+            c.text_primary,
+        )
+        .draw(
             scene,
             tr,
-            &rel.display_name(),
-            14.5,
-            c.text_primary,
-            text_x,
-            r.y0 + RELATED,
+            Point::new(text_x, r.y0 + RELATED),
             Some(title_max_w),
-            TextWeight::Semibold,
         );
         let downloading = self.release_download_index == Some(index);
         let where_ = if downloading {
@@ -3220,9 +3107,7 @@ impl ImagerApp {
         } else {
             "on disk"
         };
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &format!(
                 "{}  ·  {}  ·  {}  ·  {}",
                 rel.target_label(),
@@ -3230,33 +3115,30 @@ impl ImagerApp {
                 fmt_size(rel.size),
                 where_
             ),
-            11.5,
+            TextStyle::new(11.5),
             c.text_dim,
-            text_x,
-            r.y0 + m.release_detail_top,
-            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
-            TextWeight::Regular,
-        );
-        // The tag shares the title's centre line.
-        Self::txt_right_v(
+        )
+        .draw(
             scene,
             tr,
+            Point::new(text_x, r.y0 + m.release_detail_top),
+            Some((r.x1 - SECTION - text_x).max(0.0) as f32),
+        );
+        // The tag shares the title's centre line.
+        TextRun::new(
             if downloading {
                 "Cancel"
             } else {
                 "official · verified"
             },
-            11.0,
+            TextStyle::new(11.0).with_weight(TextWeight::Medium),
             if downloading {
                 c.semantic.danger
             } else {
                 c.semantic.success
             },
-            r.x1 - 16.0,
-            r.y0 + RELATED,
-            f64::from(title_h),
-            TextWeight::Medium,
-        );
+        )
+        .draw_right_v(scene, tr, r.x1 - 16.0, r.y0 + RELATED, f64::from(title_h));
         if downloading {
             let fraction = self
                 .release_download_progress
@@ -3280,7 +3162,7 @@ impl ImagerApp {
                 );
             }
         }
-        y + 54.0 + 10.0
+        r.y0 + 54.0 + 10.0
     }
 
     /// Draws the "Recent" section (up to the three most recent sources) a
@@ -3324,40 +3206,30 @@ impl ImagerApp {
             Self::fill_rr(scene, t, sw, LABEL / 2.0, source_color(theme, src.kind));
             let text_x = sw.x1 + SIBLING;
             let (tag_w, _) = tr.measure_weighted(src.kind.tag(), 10.5, None, TextWeight::Semibold);
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &src.name,
-                13.0,
+                TextStyle::new(13.0).with_weight(TextWeight::Medium),
                 c.text_primary,
-                text_x,
-                r.y0 + RELATED,
-                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
-                TextWeight::Medium,
-            );
-            Self::txt(
+            )
+            .draw(
                 scene,
                 tr,
-                &fmt_size(src.size),
-                11.0,
-                c.text_dim,
-                text_x,
-                r.y0 + m.recent_size_top,
+                Point::new(text_x, r.y0 + RELATED),
+                Some((r.x1 - SECTION - f64::from(tag_w) - SIBLING - text_x).max(0.0) as f32),
+            );
+            TextRun::new(&fmt_size(src.size), TextStyle::new(11.0), c.text_dim).draw(
+                scene,
+                tr,
+                Point::new(text_x, r.y0 + m.recent_size_top),
                 None,
-                TextWeight::Regular,
             );
             // The kind tag is centred on the row.
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 src.kind.tag(),
-                10.5,
+                TextStyle::new(10.5).with_weight(TextWeight::Semibold),
                 c.text_tertiary,
-                r.x1 - SECTION,
-                r.y0,
-                r.height(),
-                TextWeight::Semibold,
-            );
+            )
+            .draw_right_v(scene, tr, r.x1 - SECTION, r.y0, r.height());
             y = r.y1;
         }
     }
@@ -3400,29 +3272,19 @@ impl ImagerApp {
                 rescan.y0,
                 rescan.height(),
             );
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &detected,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 c.text_dim,
-                content.x0,
-                count_top,
-                None,
-                TextWeight::Medium,
-            );
+            )
+            .draw(scene, tr, Point::new(content.x0, count_top), None);
         } else {
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 &detected,
-                11.5,
+                TextStyle::new(11.5).with_weight(TextWeight::Medium),
                 c.text_dim,
-                rescan.x0 - SIBLING,
-                rescan.y0,
-                rescan.height(),
-                TextWeight::Medium,
-            );
+            )
+            .draw_right_v(scene, tr, rescan.x0 - SIBLING, rescan.y0, rescan.height());
         }
 
         let vis = self.visible_targets();
@@ -3478,45 +3340,29 @@ impl ImagerApp {
             theme.tokens.radii.sm.into(),
             c.text_tertiary,
         );
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             EMPTY_TITLE,
-            17.0,
+            TextStyle::new(17.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            cx,
-            card.y0 + m.empty_title_top,
-            TextWeight::Semibold,
-        );
+        )
+        .draw_center(scene, tr, cx, card.y0 + m.empty_title_top);
         let para_w = (card.width() - 2.0 * GROUP).max(0.0);
-        Self::txt_para_centered(
+        TextRun::new(EMPTY_LINE_1, TextStyle::new(13.0), c.text_dim).draw_para_centered(
             scene,
             tr,
-            EMPTY_LINE_1,
-            13.0,
-            c.text_dim,
             cx,
             card.y0 + m.empty_line_top,
             para_w,
-            TextWeight::Regular,
         );
-        Self::txt_para_centered(
+        TextRun::new(EMPTY_LINE_2, TextStyle::new(12.0), c.text_tertiary).draw_para_centered(
             scene,
             tr,
-            EMPTY_LINE_2,
-            12.0,
-            c.text_tertiary,
             cx,
             card.y0 + m.empty_line2_top,
             para_w,
-            TextWeight::Regular,
         );
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Drive card painting combines render context and card bounds with the drive data and selection/hover index."
-    )]
     fn draw_drive_card(
         &self,
         scene: &mut Scene,
@@ -3562,12 +3408,8 @@ impl ImagerApp {
 
         // Kind badge: as wide as its label needs, on the badge band.
         Self::kind_badge(
-            scene,
-            t,
-            tr,
-            theme,
-            left,
-            r.y0 + SECTION,
+            &mut PaintCtx::new(scene, t, tr, theme),
+            Point::new(left, r.y0 + SECTION),
             m.badge_h,
             drive.kind.tag(),
             kind_color(theme, drive.kind),
@@ -3578,10 +3420,6 @@ impl ImagerApp {
 
     /// Draws the removable/fixed/system chip, the model + capacity line, and
     /// the destructive-erase note for a drive card, each on its measured line.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "shares the (scene, tr, theme, t) render context plus per-card geometry with every draw_* helper in this file; bundling that context is a wider render-context refactor out of scope here"
-    )]
     fn draw_drive_card_details(
         &self,
         scene: &mut Scene,
@@ -3616,16 +3454,17 @@ impl ImagerApp {
             theme.tokens.radii.sm.into(),
             with_alpha(chip_c, 40),
         );
-        Self::txt_center_v(
+        TextRun::new(
+            chip_label,
+            TextStyle::new(10.5).with_weight(TextWeight::Bold),
+            chip_c,
+        )
+        .draw_center_v(
             scene,
             tr,
-            chip_label,
-            10.5,
-            chip_c,
             f64::midpoint(chip.x0, chip.x1),
             chip.y0,
             chip.height(),
-            TextWeight::Bold,
         );
 
         // Model + capacity, then the erase note: three single lines a `LABEL`
@@ -3634,33 +3473,23 @@ impl ImagerApp {
         // below it.
         let max_w = (r.x1 - SECTION - left).max(0.0) as f32;
         let model = tr.elide_to_width_weighted(&drive.model, 16.0, max_w, TextWeight::Semibold);
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &model,
-            16.0,
+            TextStyle::new(16.0).with_weight(TextWeight::Semibold),
             c.text_primary,
-            left,
-            r.y0 + m.model_top,
-            None,
-            TextWeight::Semibold,
-        );
+        )
+        .draw(scene, tr, Point::new(left, r.y0 + m.model_top), None);
         let device = tr.elide_to_width_weighted(
             &format!("{}  ·  {}", drive.dev_path(), fmt_size(drive.size)),
             12.5,
             max_w,
             TextWeight::Regular,
         );
-        Self::txt(
+        TextRun::new(&device, TextStyle::new(12.5), c.text_dim).draw(
             scene,
             tr,
-            &device,
-            12.5,
-            c.text_dim,
-            left,
-            r.y0 + m.dev_top,
+            Point::new(left, r.y0 + m.dev_top),
             None,
-            TextWeight::Regular,
         );
         let erase = tr.elide_to_width_weighted(
             &format!("⚠ Erases {}", drive.contents_summary()),
@@ -3668,17 +3497,12 @@ impl ImagerApp {
             max_w,
             TextWeight::Medium,
         );
-        Self::txt(
-            scene,
-            tr,
+        TextRun::new(
             &erase,
-            11.5,
+            TextStyle::new(11.5).with_weight(TextWeight::Medium),
             c.semantic.danger,
-            left,
-            r.y0 + m.erase_top,
-            None,
-            TextWeight::Medium,
-        );
+        )
+        .draw(scene, tr, Point::new(left, r.y0 + m.erase_top), None);
     }
 
     // ---- Customize --------------------------------------------------------
@@ -3702,42 +3526,25 @@ impl ImagerApp {
             surface::card(scene, t, card, theme.radius_standard, c.surfaces.raised);
             let cx = f64::midpoint(card.x0, card.x1);
             let title_h = tr.line(16.0);
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 PLAIN_TITLE,
-                16.0,
+                TextStyle::new(16.0).with_weight(TextWeight::Semibold),
                 c.text_primary,
-                cx,
-                card.y0 + SECTION,
-                TextWeight::Semibold,
-            );
-            Self::txt_para_centered(
+            )
+            .draw_center(scene, tr, cx, card.y0 + SECTION);
+            TextRun::new(PLAIN_BODY, TextStyle::new(13.0), c.text_dim).draw_para_centered(
                 scene,
                 tr,
-                PLAIN_BODY,
-                13.0,
-                c.text_dim,
                 cx,
                 card.y0 + SECTION + title_h + RELATED,
                 (card.width() - 2.0 * SECTION).max(0.0),
-                TextWeight::Regular,
             );
             return;
         }
 
         // The whole form is the shared guided-customization panel.
-        let removable = self.target().is_some_and(|d| d.removable);
-        self.customize.draw(
-            scene,
-            t,
-            tr,
-            theme,
-            presence,
-            content,
-            &self.profile,
-            removable,
-        );
+        self.customize
+            .draw(&mut PaintCtx::new(scene, t, tr, theme), presence, content);
     }
 
     // ---- Confirm ----------------------------------------------------------
@@ -3780,33 +3587,23 @@ impl ImagerApp {
             let (_, vh) = tr.measure_weighted(&row.value, row.size, Some(value_w), row.weight);
             let key_top = y + (f64::from(vh) - f64::from(kh)).max(0.0) / 2.0;
             let value_top = y + (f64::from(kh) - f64::from(vh)).max(0.0) / 2.0;
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 row.key,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
-                card.x0 + SECTION,
-                key_top,
-                None,
-                TextWeight::Semibold,
-            );
+            )
+            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
             let col = match row.tone {
                 RowTone::Primary => c.text_primary,
                 RowTone::Success => c.semantic.success,
                 RowTone::Danger => c.semantic.danger,
             };
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 &row.value,
-                row.size,
+                TextStyle::new(row.size).with_weight(row.weight),
                 col,
-                value_x,
-                value_top,
-                Some(value_w),
-                row.weight,
-            );
+            )
+            .draw(scene, tr, Point::new(value_x, value_top), Some(value_w));
         }
     }
 
@@ -3839,16 +3636,16 @@ impl ImagerApp {
             with_alpha(c.semantic.danger, if internal { 170 } else { 130 }),
             if internal { 1.4 } else { 1.0 },
         );
-        Self::txt(
+        TextRun::new(
+            self.confirm_warning(),
+            TextStyle::new(13.0).with_weight(TextWeight::Semibold),
+            c.semantic.danger,
+        )
+        .draw(
             scene,
             tr,
-            self.confirm_warning(),
-            13.0,
-            c.semantic.danger,
-            banner.x0 + SECTION,
-            banner.y0 + SIBLING,
+            Point::new(banner.x0 + SECTION, banner.y0 + SIBLING),
             Some((banner.width() - 2.0 * SECTION).max(0.0) as f32),
-            TextWeight::Semibold,
         );
     }
 
@@ -3868,16 +3665,16 @@ impl ImagerApp {
         let focused = self.confirm_input.is_focused();
         let matches = self.confirm_matches();
         let want = self.target().map(|d| d.name.clone()).unwrap_or_default();
-        Self::txt(
+        TextRun::new(
+            "CONFIRM THE TARGET DEVICE",
+            TextStyle::new(11.0).with_weight(TextWeight::Semibold),
+            c.text_dim,
+        )
+        .draw(
             scene,
             tr,
-            "CONFIRM THE TARGET DEVICE",
-            11.0,
-            c.text_dim,
-            field.x0,
-            field.y0 - LABEL - m.label_h,
+            Point::new(field.x0, field.y0 - LABEL - m.label_h),
             None,
-            TextWeight::Semibold,
         );
         // The field is the toolkit input's face — raised at rest, the active
         // tint while focused — under the gate's own semantic edge: danger
@@ -3925,28 +3722,18 @@ impl ImagerApp {
         self.confirm_input
             .draw(scene, t, tr, theme, &PresenceCtx::empty());
         if matches {
-            Self::txt_right_v(
-                scene,
-                tr,
+            TextRun::new(
                 "✓ armed",
-                12.5,
+                TextStyle::new(12.5).with_weight(TextWeight::Bold),
                 c.semantic.success,
-                field.x1 - SECTION,
-                field.y0,
-                field.height(),
-                TextWeight::Bold,
-            );
+            )
+            .draw_right_v(scene, tr, field.x1 - SECTION, field.y0, field.height());
         }
-        Self::txt(
+        TextRun::new(self.confirm_note(), TextStyle::new(11.0), c.text_tertiary).draw(
             scene,
             tr,
-            self.confirm_note(),
-            11.0,
-            c.text_tertiary,
-            field.x0,
-            field.y1 + RELATED,
+            Point::new(field.x0, field.y1 + RELATED),
             None,
-            TextWeight::Regular,
         );
     }
 
@@ -4014,31 +3801,23 @@ impl ImagerApp {
         }
         let stack_h = m.pct_h + LABEL + m.small_h;
         let pct_top = cyp - stack_h / 2.0;
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             &format!("{:.0}%", overall * 100.0),
-            30.0,
+            TextStyle::new(30.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            pct_top,
-            TextWeight::Bold,
-        );
+        )
+        .draw_center(scene, tr, cxp, pct_top);
         let caption = match (writing, self.action) {
             (true, Action::Install) => "installing",
             (true, Action::Flash) => "writing",
             (false, _) => "verifying",
         };
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             caption,
-            12.0,
+            TextStyle::new(12.0).with_weight(TextWeight::Medium),
             c.text_dim,
-            cxp,
-            pct_top + m.pct_h + LABEL,
-            TextWeight::Medium,
-        );
+        )
+        .draw_center(scene, tr, cxp, pct_top + m.pct_h + LABEL);
     }
 
     /// The rate + ETA line below the ring, when either is known.
@@ -4066,16 +3845,12 @@ impl ImagerApp {
             let _ = write!(meta, "~{} left", fmt_eta(eta));
         }
         if !meta.is_empty() {
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 &meta,
-                13.0,
+                TextStyle::new(13.0).with_weight(TextWeight::Medium),
                 c.text_dim,
-                cxp,
-                content.y0 + self.bands.write.meta_top(head),
-                TextWeight::Medium,
-            );
+            )
+            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.meta_top(head));
         }
     }
 
@@ -4101,27 +3876,18 @@ impl ImagerApp {
             ("Write", p.write_frac, writing, c.semantic.info),
             ("Verify", p.verify_frac, !writing, c.semantic.success),
         ] {
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 label,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 if active { c.text_primary } else { c.text_dim },
-                bx0,
-                yy,
-                None,
-                TextWeight::Semibold,
-            );
-            Self::txt_right(
-                scene,
-                tr,
+            )
+            .draw(scene, tr, Point::new(bx0, yy), None);
+            TextRun::new(
                 &format!("{:.0}%", frac * 100.0),
-                12.0,
+                TextStyle::new(12.0),
                 c.text_dim,
-                bx1,
-                yy,
-                TextWeight::Regular,
-            );
+            )
+            .draw_right(scene, tr, bx1, yy);
             let bar_top = yy + m.small_h + LABEL;
             let bar = Rect::new(bx0, bar_top, bx1, bar_top + BAR_H);
             Self::bar(scene, t, bar, frac, c.neutral[3], fill);
@@ -4141,16 +3907,12 @@ impl ImagerApp {
         let c = &theme.tokens.colors;
         let cxp = f64::midpoint(content.x0, content.x1);
         if let (Some(src), Some(tgt)) = (&self.source, self.target()) {
-            Self::txt_center(
-                scene,
-                tr,
+            TextRun::new(
                 &format!("{}  →  {}", src.name, tgt.dev_path()),
-                12.0,
+                TextStyle::new(12.0),
                 c.text_tertiary,
-                cxp,
-                content.y0 + self.bands.write.foot_top(head),
-                TextWeight::Regular,
-            );
+            )
+            .draw_center(scene, tr, cxp, content.y0 + self.bands.write.foot_top(head));
         }
     }
 
@@ -4231,26 +3993,18 @@ impl ImagerApp {
             Self::glyph_ink(theme, c.semantic.success),
         );
         let (headline, sub) = Self::done_ok_copy(install, compact);
-        Self::txt_center(
-            scene,
-            tr,
+        TextRun::new(
             headline,
-            26.0,
+            TextStyle::new(26.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            DoneMetrics::headline_top(content.y0),
-            TextWeight::Bold,
-        );
-        Self::txt_para_centered(
+        )
+        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
+        TextRun::new(sub, TextStyle::new(14.0), c.text_dim).draw_para_centered(
             scene,
             tr,
-            sub,
-            14.0,
-            c.text_dim,
             cxp,
             m.sub_top(content.y0),
             content.width(),
-            TextWeight::Regular,
         );
     }
 
@@ -4276,27 +4030,18 @@ impl ImagerApp {
             None,
             &Circle::new(Point::new(cxp, cyp), HERO_DISC_R),
         );
-        Self::txt_center_v(
-            scene,
-            tr,
+        TextRun::new(
             "!",
-            44.0,
+            TextStyle::new(44.0).with_weight(TextWeight::Bold),
             Self::glyph_ink(theme, c.semantic.danger),
-            cxp,
-            cyp - HERO_DISC_R,
-            2.0 * HERO_DISC_R,
-            TextWeight::Bold,
-        );
-        Self::txt_center(
-            scene,
-            tr,
+        )
+        .draw_center_v(scene, tr, cxp, cyp - HERO_DISC_R, 2.0 * HERO_DISC_R);
+        TextRun::new(
             copy.0,
-            26.0,
+            TextStyle::new(26.0).with_weight(TextWeight::Bold),
             c.text_primary,
-            cxp,
-            DoneMetrics::headline_top(content.y0),
-            TextWeight::Bold,
-        );
+        )
+        .draw_center(scene, tr, cxp, DoneMetrics::headline_top(content.y0));
         let max_width =
             (content.width() - if compact { SECTION } else { 2.0 * HERO }).max(40.0) as f32;
         let line_h = tr.line(13.5);
@@ -4305,15 +4050,11 @@ impl ImagerApp {
             .iter()
             .enumerate()
         {
-            Self::txt_center(
+            TextRun::new(line, TextStyle::new(13.5), c.text_dim).draw_center(
                 scene,
                 tr,
-                line,
-                13.5,
-                c.text_dim,
                 cxp,
                 sub_top + index as f64 * line_h,
-                TextWeight::Regular,
             );
         }
     }
@@ -4354,41 +4095,31 @@ impl ImagerApp {
         {
             let row_top = card.y0 + SECTION + i as f64 * (m.row_h + SIBLING);
             let key_top = Self::line_top(tr, key, 12.0, TextWeight::Semibold, row_top, m.row_h);
-            Self::txt(
-                scene,
-                tr,
+            TextRun::new(
                 key,
-                12.0,
+                TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                 c.text_dim,
-                card.x0 + SECTION,
-                key_top,
-                None,
-                TextWeight::Semibold,
-            );
+            )
+            .draw(scene, tr, Point::new(card.x0 + SECTION, key_top), None);
             let value_top = Self::line_top(tr, &value, 13.5, TextWeight::Medium, row_top, m.row_h);
-            Self::txt(
+            TextRun::new(
+                &value,
+                TextStyle::new(13.5).with_weight(TextWeight::Medium),
+                c.text_primary,
+            )
+            .draw(
                 scene,
                 tr,
-                &value,
-                13.5,
-                c.text_primary,
-                value_x,
-                value_top,
+                Point::new(value_x, value_top),
                 Some((card.x1 - SECTION - reserve - value_x).max(0.0) as f32),
-                TextWeight::Medium,
             );
             if ok && i == 0 {
-                Self::txt_right_v(
-                    scene,
-                    tr,
+                TextRun::new(
                     "✓ verified",
-                    12.5,
+                    TextStyle::new(12.5).with_weight(TextWeight::Bold),
                     c.semantic.success,
-                    card.x1 - SECTION,
-                    row_top,
-                    m.row_h,
-                    TextWeight::Bold,
-                );
+                )
+                .draw_right_v(scene, tr, card.x1 - SECTION, row_top, m.row_h);
             }
         }
     }
@@ -5004,11 +4735,17 @@ impl ImagerApp {
 // Widget impl
 // =========================================================================
 impl Widget for ImagerApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::IMAGER_OPERATION_TYPE]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         if !self.seeded {
             if ImagerDoc::is_empty(state) {
                 // Start genuinely blank. In the live app a real `lsblk` probe
@@ -5224,35 +4961,27 @@ impl Widget for ImagerApp {
         clippy::too_many_lines,
         reason = "the canvas wizard routes modal, text-field, profile-panel, pointer, scroll and keyboard capture in one explicitly ordered event transaction"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use winit::event::{ElementState, KeyEvent, MouseButton};
 
         let lay = self.compute_layout();
 
         // The detached shared modal owns capture and dismissal before any
         // wizard field or shortcut sees the event.
-        if self
-            .export_dialog
-            .handle_detached(event, scale_factor, *modifiers, state, path)
-        {
-            *handled = true;
+        if self.export_dialog.handle_detached(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.path,
+        ) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
-        if self.handle_tab_event(event, *modifiers, &lay) {
-            *handled = true;
+        if self.handle_tab_event(event, *ctx.modifiers, &lay) {
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
@@ -5264,14 +4993,11 @@ impl Widget for ImagerApp {
             let mut focus_target = None;
             self.confirm_input.handle_event(
                 event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                &mut input_handled,
-                &mut focus_target,
-                node_id,
-                taffy,
+                &mut ui::widget::EventCtx {
+                    handled: &mut input_handled,
+                    focus_target: &mut focus_target,
+                    ..ctx.reborrow(ctx.path, ctx.node_id)
+                },
             );
             if focus_target.is_some() {
                 self.confirm_input.set_focus(true);
@@ -5281,15 +5007,15 @@ impl Widget for ImagerApp {
             }
             if self.confirm_input.take_submit() {
                 if self.can_advance(Step::Confirm) {
-                    self.start_write(state);
+                    self.start_write(ctx.state);
                 }
                 self.confirm_input.set_focus(false);
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
             if input_handled {
-                *handled = true;
+                *ctx.handled = true;
                 self.dirty = true;
                 return;
             }
@@ -5299,32 +5025,23 @@ impl Widget for ImagerApp {
         // panel, which owns its fields, toggles and export affordance. Only
         // events it does not consume (footer clicks, global keys) fall through
         // to the wizard chrome below.
-        let consumed = self.handle_customize_event(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            &lay,
-            node_id,
-            taffy,
-        );
+        let consumed = self.handle_customize_event(event, ctx, &lay);
         if consumed {
-            *handled = true;
+            *ctx.handled = true;
             self.dirty = true;
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.handle_cursor_moved(position.x, position.y, scale_factor, &lay);
+                self.handle_cursor_moved(position.x, position.y, ctx.scale_factor, &lay);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_click(state, &lay, handled);
+                self.handle_left_click(ctx.state, &lay, ctx.handled);
             }
             WindowEvent::MouseWheel { delta, .. }
                 if lay.viewport_content.contains(self.last_mouse) =>
@@ -5332,14 +5049,14 @@ impl Widget for ImagerApp {
                 use winit::event::MouseScrollDelta;
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 52.0,
-                    MouseScrollDelta::PixelDelta(point) => point.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(point) => point.y / ctx.scale_factor,
                 };
                 let next = (self.scroll_y - dy).clamp(0.0, self.max_scroll());
                 if (next - self.scroll_y).abs() > f64::EPSILON {
                     self.scroll_y = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -5350,125 +5067,33 @@ impl Widget for ImagerApp {
                     },
                 ..
             } => {
-                self.handle_key_pressed(logical_key, state, handled);
+                self.handle_key_pressed(logical_key, ctx.state, ctx.handled);
             }
             _ => {}
         }
     }
 
-    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        let available = self.source.is_some() && self.target().is_some();
-        let mut job = crate::actions::operation_resource(
-            self.target().map(TargetDrive::dev_path).as_deref(),
-            available,
-            !self.startup_write_state_reconciled || self.job_rx.is_some(),
-            crate::write::write_available(),
-        );
-        job.actions.push(
-            crate::actions::operation_spec(
-                "export-config",
-                "Export headless configuration",
-                tilo_actions::OperationKind::View,
-                crate::actions::ImagerOperation::ExportConfig,
-            )
-            .with_contract(tilo_actions::ActionContract {
-                availability: if available {
-                    tilo_actions::Availability::Available
-                } else {
-                    tilo_actions::Availability::Unavailable {
-                        code: "incomplete_plan".into(),
-                        reason: "Select an image source and target drive first".into(),
-                    }
-                },
-                result: tilo_actions::ResultSpec::Json {
-                    schema: serde_json::json!({ "type": "string" }),
-                },
-                discovery: tilo_actions::DiscoveryScope::Launchable,
-                ..tilo_actions::ActionContract::view()
-            }),
-        );
-        resources.push(job);
-        resources
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        let expected_kind = match operation {
-            crate::actions::ImagerOperation::Status
-            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
-            _ => tilo_actions::OperationKind::Effect,
-        };
-        if kind != expected_kind {
-            return Err("Imager operation kind does not match its contract".into());
-        }
-        let mut local_doc = doc.clone();
-        self.perform_operation(&operation, &mut local_doc)?;
-        Ok(true)
-    }
-
-    fn invoke_resource_operation_v2(
-        &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
-    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
-        match crate::actions::decode_operation(type_id, payload)? {
-            Some(crate::actions::ImagerOperation::Status) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager status is a view operation".into());
-                }
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::json!({
-                        "phase": self.progress.phase.key(),
-                        "progress": self.progress.overall(),
-                        "message": self.status,
-                    })),
-                    resources: Vec::new(),
-                }));
-            }
-            Some(crate::actions::ImagerOperation::ExportConfig) => {
-                if kind != tilo_actions::OperationKind::View {
-                    return Err("Imager config export is a view operation".into());
-                }
-                if self.source.is_none() || self.target().is_none() {
-                    return Err("Select an image source and target drive first".into());
-                }
-                let text = self
-                    .profile
-                    .to_headless_config(self.source.as_ref(), self.target());
-                self.export_dialog.show(text.clone());
-                self.dirty = true;
-                return Ok(Some(tilo_actions::ActionOutput {
-                    value: Some(serde_json::Value::String(text)),
-                    resources: Vec::new(),
-                }));
-            }
-            _ => {}
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        self.invoke_resource_operation(kind, type_id, payload, doc, path)
-            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
-    }
-
-    /// The framework host drains the undo boundary an on-screen profile control
-    /// dispatched, so it records exactly one boundary bracketing it — the same
-    /// path a Ctrl+K palette dispatch takes.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
+        Ok(self
+            .answer_resource_operation_v2(
+                request.kind,
+                request.type_id,
+                request.payload,
+                doc,
+                path,
+            )?
+            .map(ui::widget::ResourceOperationStart::Completed))
     }
 
     fn name(&self) -> &'static str {
@@ -5493,10 +5118,11 @@ impl Widget for ImagerApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as AccessAction;
+        let (state, _) = ui::doc::document(state, path);
 
         if self.export_dialog.is_open() {
             return false;
@@ -5655,24 +5281,136 @@ impl Widget for ImagerApp {
     }
 }
 
+impl ui::resources::PublishesResources for ImagerApp {
+    /// The resource tree the shell's Ctrl+K palette walks — delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`]. Empty unless an installable Tilo image is selected.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        let available = self.source.is_some() && self.target().is_some();
+        let mut job = crate::actions::operation_resource(
+            self.target().map(TargetDrive::dev_path).as_deref(),
+            available,
+            !self.startup_write_state_reconciled || self.job_rx.is_some(),
+            crate::write::write_available(),
+        );
+        job.actions.push(
+            crate::actions::operation_spec(
+                "export-config",
+                "Export headless configuration",
+                tilo_actions::OperationKind::View,
+                crate::actions::ImagerOperation::ExportConfig,
+            )
+            .with_contract(tilo_actions::ActionContract {
+                availability: if available {
+                    tilo_actions::Availability::Available
+                } else {
+                    tilo_actions::Availability::Unavailable {
+                        code: "incomplete_plan".into(),
+                        reason: "Select an image source and target drive first".into(),
+                    }
+                },
+                result: tilo_actions::ResultSpec::Json {
+                    schema: serde_json::json!({ "type": "string" }),
+                },
+                discovery: tilo_actions::DiscoveryScope::Launchable,
+                ..tilo_actions::ActionContract::view()
+            }),
+        );
+        resources.push(job);
+        resources
+    }
+}
+
+impl ui::undo::CommittedActions for ImagerApp {
+    /// The framework host drains the undo boundary an on-screen profile control
+    /// dispatched, so it records exactly one boundary bracketing it — the same
+    /// path a Ctrl+K palette dispatch takes.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl ImagerApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        let expected_kind = match operation {
+            crate::actions::ImagerOperation::Status
+            | crate::actions::ImagerOperation::ExportConfig => tilo_actions::OperationKind::View,
+            _ => tilo_actions::OperationKind::Effect,
+        };
+        if kind != expected_kind {
+            return Err("Imager operation kind does not match its contract".into());
+        }
+        let mut local_doc = doc.clone();
+        self.perform_operation(&operation, &mut local_doc)?;
+        Ok(true)
+    }
+
+    fn answer_resource_operation_v2(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        match crate::actions::decode_operation(type_id, payload)? {
+            Some(crate::actions::ImagerOperation::Status) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager status is a view operation".into());
+                }
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({
+                        "phase": self.progress.phase.key(),
+                        "progress": self.progress.overall(),
+                        "message": self.status,
+                    })),
+                    resources: Vec::new(),
+                }));
+            }
+            Some(crate::actions::ImagerOperation::ExportConfig) => {
+                if kind != tilo_actions::OperationKind::View {
+                    return Err("Imager config export is a view operation".into());
+                }
+                if self.source.is_none() || self.target().is_none() {
+                    return Err("Select an image source and target drive first".into());
+                }
+                let text = self
+                    .profile
+                    .to_headless_config(self.source.as_ref(), self.target());
+                self.export_dialog.show(text.clone());
+                self.dirty = true;
+                return Ok(Some(tilo_actions::ActionOutput {
+                    value: Some(serde_json::Value::String(text)),
+                    resources: Vec::new(),
+                }));
+            }
+            _ => {}
+        }
+        self.answer_resource_operation(kind, type_id, payload, doc, path)
+            .map(|handled| handled.then(tilo_actions::ActionOutput::default))
+    }
+}
+
 impl ImagerApp {
     /// The Customize step's delegated handling. Returns `true` when the panel
     /// consumed the event, so the caller stops before the wizard chrome below
     /// ever sees it.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Customize routing forwards input, CRDT state, wizard layout, and the widget node/tree to the shared panel."
-    )]
     fn handle_customize_event(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        ctx: &mut ui::widget::EventCtx<'_>,
         lay: &Layout,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
     ) -> bool {
         if !(self.step == Step::Customize && self.customizable() && !self.export_dialog.is_open()) {
             return false;
@@ -5681,19 +5419,14 @@ impl ImagerApp {
         let profile = self.profile.clone();
         let resp = self.customize.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
+            ctx,
             &mut self.actions,
             &profile,
             removable,
             lay.content,
-            node_id,
-            taffy,
         );
         if resp.export_requested {
-            self.export_config(state);
+            self.export_config(ctx.state);
         }
         resp.handled
     }
@@ -5995,7 +5728,7 @@ mod tests {
                 .expect_err("unreconciled startup must not expose a write");
             assert!(error.contains("Restoring the previous image-write state"));
 
-            let job = <ImagerApp as Widget>::resources(&app, &doc)
+            let job = ui::resources::resources(&app, &doc)
                 .into_iter()
                 .find(|resource| resource.kind == "imager.write-plan")
                 .expect("write operation resource");
@@ -6121,14 +5854,16 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            doc,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: doc,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 

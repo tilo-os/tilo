@@ -199,6 +199,12 @@ pub struct Relay {
     mesh_profile: Arc<crate::mesh::DeviceMeshProfile>,
     /// Atomic filesystem completeness proof shared with the headless replica.
     full_replica_status: PathBuf,
+    /// What the browser carriers need to serve sessions of this relay.
+    #[cfg_attr(
+        not(feature = "web"),
+        allow(dead_code, reason = "read by the web listener")
+    )]
+    web: Box<WebContext>,
     /// Live proof that the owned signed-package compute worker completed all
     /// health checks and still owns its authenticated session.
     compute_ready: Arc<AtomicBool>,
@@ -209,6 +215,24 @@ pub struct Relay {
     /// certified host retains the existing dynamic multi-workspace behavior.
     interactive_workspace_id: Option<u64>,
     interactive_owner_trust: Option<tilo_delivery_protocol::workspace_join::InteractiveOwnerTrust>,
+}
+
+/// The relay state the browser carriers serve sessions with.
+#[derive(Clone)]
+#[cfg_attr(
+    not(feature = "web"),
+    allow(dead_code, reason = "read by the web listener")
+)]
+pub(crate) struct WebContext {
+    pub(crate) relay: RelayProtocol,
+    pub(crate) certification: crate::certification::CertificationProtocol,
+}
+
+impl Relay {
+    #[cfg(feature = "web")]
+    pub(crate) fn web_context(&self) -> &WebContext {
+        &self.web
+    }
 }
 
 /// A tokio `JoinHandle` that aborts on drop — used so that dropping
@@ -569,6 +593,12 @@ impl Relay {
                 state_root: cfg.state_root.clone(),
             }),
             app_serving,
+            live_bridge: Arc::default(),
+            agents: Arc::default(),
+            compactor: crate::compaction::Compactor::new(
+                identity.device_signing_key.clone(),
+                identity.device_cert.clone(),
+            ),
         };
         let discovery = DiscoveryProtocol {
             workspaces: workspaces.clone(),
@@ -605,6 +635,16 @@ impl Relay {
             identity.device_signing_key.clone(),
             revocations.clone(),
         );
+        let certification = crate::certification::CertificationProtocol::new(
+            identity.user_public_key,
+            identity.device_cert.clone(),
+            identity.device_signing_key.clone(),
+            revocations.clone(),
+        );
+        let web = Box::new(WebContext {
+            relay: handler.clone(),
+            certification: certification.clone(),
+        });
         let mut router = Router::builder(endpoint.clone())
             .accept(
                 tilo_delivery_protocol::transport_v2::ALPN_AGENT_READS_V1,
@@ -614,7 +654,8 @@ impl Relay {
                     ..handler.clone()
                 },
             )
-            .accept(ALPN, handler);
+            .accept(ALPN, handler)
+            .accept(crate::certify::CERTIFY_ALPN, certification);
         if startup_mode == RelayStartupMode::CertifiedHost {
             router = router
                 .accept(DISCOVERY_ALPN, discovery)
@@ -689,6 +730,7 @@ impl Relay {
             peer_relay_tasks,
             mesh_profile,
             full_replica_status: cfg.full_replica_status.clone(),
+            web,
             compute_ready,
             handshake_trust,
             governed_access_update: Arc::new(AsyncMutex::new(())),
@@ -779,18 +821,16 @@ impl Relay {
     /// that already know the target's iroh addresses, and for
     /// pinned-address deployments.
     pub fn add_peer_relay_at(&self, addr: EndpointAddr, label: String, priority: i32) {
-        let task = spawn_peer_relay_dial_at(
-            addr,
-            label,
-            priority,
-            self.endpoint.clone(),
-            self.own_user_public_key,
-            self.own_cert.clone(),
-            self.own_signing_key.clone(),
-            self.live_revocations.clone(),
-            self.workspaces.clone(),
-            self.metrics.clone(),
-        );
+        let task = PeerRelayDialer {
+            endpoint: self.endpoint.clone(),
+            own_user_pk: self.own_user_public_key,
+            own_cert: self.own_cert.clone(),
+            own_sk: self.own_signing_key.clone(),
+            revocations: self.live_revocations.clone(),
+            workspaces: self.workspaces.clone(),
+            metrics: self.metrics.clone(),
+        }
+        .spawn_at(addr, label, priority);
         push_peer_relay_task(&self.peer_relay_tasks, task);
     }
 
@@ -805,10 +845,54 @@ impl Relay {
         }
     }
 
+    /// Tell the host that a device is an agent: verify its root-signed
+    /// delegation against this relay's user and confine the device to the
+    /// delegated rooms from its next envelope on. Replaces an earlier
+    /// delegation of the same device.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the delegation is not usable now.
+    pub fn register_agent(
+        &self,
+        delegation: tilo_relay_protocol::agents::AgentDelegation,
+    ) -> Result<(), tilo_relay_protocol::agents::DelegationError> {
+        delegation.verify(&self.web.relay.own_user_pk, tilo_clock::unix_now_ns())?;
+        self.web
+            .relay
+            .agents
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(delegation.agent_device_public_key, Some(delegation));
+        Ok(())
+    }
+
+    /// Withdraw an agent device: its sessions end within the access audit
+    /// interval and it is refused from then on.
+    pub fn withdraw_agent(&self, agent_device_public_key: [u8; 32]) {
+        self.web
+            .relay
+            .agents
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(agent_device_public_key, None);
+    }
+
     /// The iroh endpoint address (node id + reachable addresses) —
     /// what a peer needs to dial this relay.
     pub fn node_addr(&self) -> EndpointAddr {
         self.endpoint.addr()
+    }
+
+    /// The compactor keeping this relay's retained document channels short.
+    pub fn compactor(&self) -> &crate::compaction::Compactor {
+        &self.web.relay.compactor
+    }
+
+    /// The local sockets the relay's endpoint is bound to.
+    #[must_use]
+    pub fn bound_sockets(&self) -> Vec<std::net::SocketAddr> {
+        self.endpoint.bound_sockets()
     }
 
     /// Bind (or re-bind) a workspace's membership set. Called by
@@ -936,6 +1020,18 @@ impl Relay {
     /// Own user identity — for tests.
     pub fn own_user_public_key(&self) -> [u8; 32] {
         self.own_user_public_key
+    }
+
+    /// In-process access to the records of the workspaces this relay hosts,
+    /// for a service embedded in the host process.
+    #[must_use]
+    pub fn room_records(&self) -> crate::room_records::RoomRecords {
+        crate::room_records::RoomRecords::new(
+            self.workspaces.clone(),
+            self.own_cert.device_public_key,
+            self.own_user_public_key,
+            self.own_signing_key.clone(),
+        )
     }
 }
 
@@ -1735,18 +1831,45 @@ fn validate_native_interactive_workspace_identity(
 
 /// The `ProtocolHandler` iroh wires to the ALPN.
 #[derive(Clone)]
-struct RelayProtocol {
-    v2: bool,
-    agent_reads_v1: bool,
-    workspaces: WorkspaceRegistry,
-    trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    metrics: Arc<Metrics>,
-    autobind: Option<WorkspaceAutobind>,
-    app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+pub(crate) struct RelayProtocol {
+    pub(crate) v2: bool,
+    pub(crate) agent_reads_v1: bool,
+    pub(crate) workspaces: WorkspaceRegistry,
+    pub(crate) trust_policy: Arc<std::sync::RwLock<TrustPolicy>>,
+    pub(crate) revocations: Arc<std::sync::RwLock<RevocationList>>,
+    pub(crate) own_user_pk: [u8; 32],
+    pub(crate) own_cert: DeviceCert,
+    pub(crate) own_sk: ed25519_dalek::SigningKey,
+    pub(crate) metrics: Arc<Metrics>,
+    pub(crate) autobind: Option<WorkspaceAutobind>,
+    pub(crate) app_serving: Option<Arc<dyn crate::app_serving::AppServingPlane>>,
+    /// Set once when the host starts serving browsers.
+    pub(crate) live_bridge: Arc<std::sync::OnceLock<crate::peer::LiveBridge>>,
+    pub(crate) agents: crate::peer::AgentRegistry,
+    pub(crate) compactor: crate::compaction::Compactor,
+}
+
+impl RelayProtocol {
+    /// The peer context a session of this relay runs with.
+    pub(crate) fn peer_context(&self) -> PeerContext {
+        PeerContext {
+            workspaces: self.workspaces.clone(),
+            autobind: self.autobind.clone(),
+            revocations: self.revocations.clone(),
+            trust_policy: self.trust_policy.clone(),
+            own_user_public_key: self.own_user_pk,
+            own_device_cert: self.own_cert.clone(),
+            metrics: self.metrics.clone(),
+            own_device_public_key: self.own_cert.device_public_key,
+            app_serving: self.app_serving.clone(),
+            live_bridge: self.live_bridge.get().cloned(),
+            agents: self.agents.clone(),
+            positions: Some(crate::position::PositionIssuer::new(
+                &self.own_sk.to_bytes(),
+            )),
+            compactor: Some(self.compactor.clone()),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -2174,17 +2297,7 @@ async fn handle_conn(
         connection.clone(),
         recv,
         send,
-        PeerContext {
-            workspaces: ctx.workspaces.clone(),
-            autobind: ctx.autobind,
-            revocations: ctx.revocations,
-            trust_policy: ctx.trust_policy,
-            own_user_public_key: ctx.own_user_pk,
-            own_device_cert: ctx.own_cert.clone(),
-            metrics: ctx.metrics,
-            own_device_public_key: ctx.own_cert.device_public_key,
-            app_serving: ctx.app_serving,
-        },
+        ctx.peer_context(),
         ctx.v2,
         ctx.agent_reads_v1,
     ))
@@ -2201,7 +2314,7 @@ pub use crate::frame::{read_frame, write_frame};
 
 /// Spawn the outbound reconnect-with-backoff task for one peer
 /// relay identified by its config entry. Parses the iroh id and
-/// hands off to [`spawn_peer_relay_dial_at`].
+/// hands off to [`PeerRelayDialer::spawn_at`]'s dial loop.
 fn spawn_peer_relay_dial(
     peer_cfg: PeerRelayConfig,
     endpoint: Endpoint,
@@ -2219,36 +2332,25 @@ fn spawn_peer_relay_dial(
             return;
         };
         let addr = EndpointAddr::new(node_id);
-        peer_relay_dial_loop(
-            addr,
-            label,
-            priority,
+        PeerRelayDialer {
             endpoint,
-            identity.user_public_key,
-            identity.device_cert,
-            identity.device_signing_key,
+            own_user_pk: identity.user_public_key,
+            own_cert: identity.device_cert,
+            own_sk: identity.device_signing_key,
             revocations,
             workspaces,
             metrics,
-        )
+        }
+        .dial_loop(addr, label, priority)
         .await;
     })
 }
 
-/// Spawn the outbound reconnect-with-backoff task for one peer
-/// relay, with a fully-resolved endpoint address. The task loops
-/// forever (until the returned join handle is aborted) — reconnect
-/// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
-/// holds a `RelayClient` session and admits inbound deltas through the
-/// same ordered persistence owner used by device peers.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "The relay task receives its complete endpoint, enrollment and persistence context at spawn."
-)]
-fn spawn_peer_relay_dial_at(
-    addr: EndpointAddr,
-    label: String,
-    priority: i32,
+/// What an outbound peer-relay dial carries: the local endpoint, this
+/// relay's own user key, device certificate and signing key, the live
+/// revocation list (read afresh for every dial and session), the hosted
+/// workspaces and metrics.
+struct PeerRelayDialer {
     endpoint: Endpoint,
     own_user_pk: [u8; 32],
     own_cert: DeviceCert,
@@ -2256,12 +2358,21 @@ fn spawn_peer_relay_dial_at(
     revocations: Arc<std::sync::RwLock<RevocationList>>,
     workspaces: WorkspaceRegistry,
     metrics: Arc<Metrics>,
-) -> JoinHandle<()> {
-    tokio::spawn(async move {
-        peer_relay_dial_loop(
-            addr,
-            label,
-            priority,
+}
+
+impl PeerRelayDialer {
+    /// Spawn the outbound reconnect-with-backoff task for one peer
+    /// relay, with a fully-resolved endpoint address. The task loops
+    /// forever (until the returned join handle is aborted) — reconnect
+    /// gap is `1s, 2s, 4s, 8s, …, capped at 60s`. While connected it
+    /// holds a `RelayClient` session and admits inbound deltas through the
+    /// same ordered persistence owner used by device peers.
+    fn spawn_at(self, addr: EndpointAddr, label: String, priority: i32) -> JoinHandle<()> {
+        tokio::spawn(self.dial_loop(addr, label, priority))
+    }
+
+    async fn dial_loop(self, addr: EndpointAddr, label: String, _priority: i32) {
+        let PeerRelayDialer {
             endpoint,
             own_user_pk,
             own_cert,
@@ -2269,65 +2380,46 @@ fn spawn_peer_relay_dial_at(
             revocations,
             workspaces,
             metrics,
-        )
-        .await;
-    })
-}
-
-#[allow(
-    clippy::too_many_arguments,
-    reason = "Reconnect attempts retain the same endpoint, enrollment and persistence context for the task lifetime."
-)]
-async fn peer_relay_dial_loop(
-    addr: EndpointAddr,
-    label: String,
-    _priority: i32,
-    endpoint: Endpoint,
-    own_user_pk: [u8; 32],
-    own_cert: DeviceCert,
-    own_sk: ed25519_dalek::SigningKey,
-    revocations: Arc<std::sync::RwLock<RevocationList>>,
-    workspaces: WorkspaceRegistry,
-    metrics: Arc<Metrics>,
-) {
-    let mut backoff_ms: u64 = 1_000;
-    loop {
-        let ep = endpoint.clone();
-        let current_revocations = revocations
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone();
-        match RelayClient::connect(
-            ep,
-            addr.clone(),
-            own_user_pk,
-            own_cert.clone(),
-            own_sk.clone(),
-            current_revocations,
-        )
-        .await
-        {
-            Ok(client) => {
-                tracing::info!(%label, "peer relay federated");
-                backoff_ms = 1_000;
-                if let Err(e) = run_peer_relay_session(
-                    &client,
-                    &workspaces,
-                    revocations.clone(),
-                    own_user_pk,
-                    metrics.clone(),
-                )
-                .await
-                {
-                    tracing::debug!(%label, "peer relay session ended: {e}");
+        } = self;
+        let mut backoff_ms: u64 = 1_000;
+        loop {
+            let ep = endpoint.clone();
+            let current_revocations = revocations
+                .read()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .clone();
+            match RelayClient::connect(
+                ep,
+                addr.clone(),
+                own_user_pk,
+                own_cert.clone(),
+                own_sk.clone(),
+                current_revocations,
+            )
+            .await
+            {
+                Ok(client) => {
+                    tracing::info!(%label, "peer relay federated");
+                    backoff_ms = 1_000;
+                    if let Err(e) = run_peer_relay_session(
+                        &client,
+                        &workspaces,
+                        revocations.clone(),
+                        own_user_pk,
+                        metrics.clone(),
+                    )
+                    .await
+                    {
+                        tracing::debug!(%label, "peer relay session ended: {e}");
+                    }
+                }
+                Err(e) => {
+                    tracing::debug!(%label, "peer relay dial failed: {e}");
                 }
             }
-            Err(e) => {
-                tracing::debug!(%label, "peer relay dial failed: {e}");
-            }
+            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+            backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
         }
-        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-        backoff_ms = backoff_ms.saturating_mul(2).min(60_000);
     }
 }
 
@@ -2846,13 +2938,13 @@ mod tests {
 
     impl StatusHeartbeat {
         fn start(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) -> Self {
-            fs::full_replica::save_status(path, status).unwrap();
+            publish_status(path, status);
             let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
             let (path, status, stopped) = (path.to_path_buf(), status.clone(), Arc::clone(&stop));
             let beat = std::thread::spawn(move || {
                 while !stopped.load(Ordering::Acquire) {
                     std::thread::sleep(Duration::from_millis(250));
-                    fs::full_replica::save_status(&path, &status).unwrap();
+                    publish_status(&path, &status);
                 }
             });
             Self {
@@ -2860,6 +2952,17 @@ mod tests {
                 beat: Some(beat),
             }
         }
+    }
+
+    /// Replace the status file with a freshly stamped record. Not fsynced: a
+    /// durable write stalled on a slow disk would age the record past the
+    /// relay's 5 s freshness bound, and these tests only read it.
+    fn publish_status(path: &std::path::Path, status: &fs::full_replica::FullReplicaStatus) {
+        let mut status = status.clone();
+        status.updated_at_ms = tilo_clock::unix_now_ms();
+        let staged = path.with_extension("staged");
+        std::fs::write(&staged, serde_json::to_vec(&status).unwrap()).unwrap();
+        std::fs::rename(&staged, path).unwrap();
     }
 
     impl Drop for StatusHeartbeat {

@@ -11,6 +11,10 @@
 //! still the same process, is attested to the broker.
 
 use crate::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET};
+
+/// Where the profile keeps the person's camera and microphone decisions.
+#[cfg(target_os = "macos")]
+const DEVICE_GRANTS: &str = "state/device-grants";
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -47,6 +51,10 @@ pub struct Apps {
     )]
     launcher_candidates: Vec<PathBuf>,
     launched: Arc<Launched>,
+    /// Who may capture from which device, in `state/device-grants` of the
+    /// profile; opened on the first macOS launch.
+    #[cfg(target_os = "macos")]
+    device_grants: std::sync::OnceLock<Arc<tilo_capture::grants::DeviceGrants>>,
 }
 
 impl Apps {
@@ -80,7 +88,25 @@ impl Apps {
             data_home,
             launcher_candidates,
             launched: Arc::default(),
+            #[cfg(target_os = "macos")]
+            device_grants: std::sync::OnceLock::new(),
         }
+    }
+
+    /// This profile's device grants.
+    ///
+    /// # Errors
+    ///
+    /// The grants file cannot be read; no capture is brokered then.
+    #[cfg(target_os = "macos")]
+    pub(crate) fn device_grants(&self) -> std::io::Result<Arc<tilo_capture::grants::DeviceGrants>> {
+        if let Some(grants) = self.device_grants.get() {
+            return Ok(Arc::clone(grants));
+        }
+        let grants = Arc::new(tilo_capture::grants::DeviceGrants::open(
+            &self.root.join(DEVICE_GRANTS),
+        )?);
+        Ok(Arc::clone(self.device_grants.get_or_init(|| grants)))
     }
 
     /// Every installed package, GUI or not; empty without an app store or
@@ -106,6 +132,16 @@ impl Apps {
                 }
             })
             .unwrap_or_default()
+    }
+
+    /// The resource kinds the installed package `app_id` declared its
+    /// records hold; `None` when it is not installed.
+    #[must_use]
+    pub fn declared_resource_kinds(&self, app_id: &str) -> Option<Vec<String>> {
+        self.installed()
+            .into_iter()
+            .find(|app| app.package_id == app_id)
+            .map(|app| app.declared_resource_kinds())
     }
 
     /// [`Self::declared_access`] as the broker asks it.
@@ -187,6 +223,7 @@ impl LauncherServices for Apps {
             .map(|app| LaunchableApplication {
                 package_id: app.package_id,
                 display_name: app.display_name,
+                unconfined: false,
             })
             .collect()
     }

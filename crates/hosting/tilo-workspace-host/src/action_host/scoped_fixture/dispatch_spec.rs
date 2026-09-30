@@ -71,59 +71,8 @@ fn factory(
     ))
 }
 impl Widget for Probe {
-    fn action_directory_invocation_domain(
-        &self,
-        _: &AutoCommit,
-    ) -> ui::widget::ActionDirectoryInvocationDomain {
-        // Every lookup/page result below is freshly materialized by resources().
-        // There is no additional lazy target or hidden dispatch declaration.
-        ui::widget::ActionDirectoryInvocationDomain::MaterializedOnly
-    }
-    fn action_directory_revision(&self, _: &AutoCommit) -> Option<String> {
-        Some(format!("probe:{}", self.changed.load(Ordering::SeqCst)))
-    }
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut contract = tilo_actions::ActionContract::view();
-        contract.permission = if self.changed.load(Ordering::SeqCst) {
-            tilo_actions::PermissionRequirement::Write
-        } else {
-            tilo_actions::PermissionRequirement::Read
-        };
-        vec![
-            tilo_actions::Resource::new("spec:probe", "probe", "Dispatch spec probe").with_action(
-                tilo_actions::ActionSpec::operation(
-                    "run",
-                    "Run",
-                    tilo_actions::OperationKind::Effect,
-                    "probe.effect",
-                    &(),
-                )
-                .unwrap()
-                .with_contract(contract),
-            ),
-        ]
-    }
-    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
-        self.resources(doc)
-            .into_iter()
-            .find(|resource| resource.id.as_str() == id)
-    }
-    fn action_directory_resource_page(
-        &self,
-        doc: &AutoCommit,
-        cursor: &[u8],
-        max_results: usize,
-    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
-        Some(ui::widget::ActionDirectoryResourcePage {
-            resources: if cursor.is_empty() && max_results > 0 {
-                self.resources(doc)
-            } else {
-                vec![]
-            },
-            next_cursor: vec![],
-            exhausted: true,
-        })
-    }
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &["probe.effect"]
     }
@@ -148,7 +97,6 @@ impl Widget for Probe {
             tilo_actions::ActionOutput::default(),
         )))
     }
-    fn sync(&mut self, _: &mut AutoCommit, _: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut ui::taffy::TaffyTree<()>,
@@ -175,24 +123,67 @@ impl Widget for Probe {
         _: &ui::PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _: &ui::winit::event::WindowEvent,
-        _: f64,
-        _: &ui::winit::event::Modifiers,
-        _: &mut AutoCommit,
-        _: &ObjId,
-        _: &mut bool,
-        _: &mut Option<ui::taffy::NodeId>,
-        _: ui::taffy::NodeId,
-        _: &ui::taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "DispatchSpecProbe"
     }
     fn get_rect(&self) -> ui::kurbo::Rect {
         ui::kurbo::Rect::ZERO
+    }
+}
+
+impl ui::resources::PublishesResources for Probe {
+    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut contract = tilo_actions::ActionContract::view();
+        contract.permission = if self.changed.load(Ordering::SeqCst) {
+            tilo_actions::PermissionRequirement::Write
+        } else {
+            tilo_actions::PermissionRequirement::Read
+        };
+        vec![
+            tilo_actions::Resource::new("spec:probe", "probe", "Dispatch spec probe").with_action(
+                tilo_actions::ActionSpec::operation(
+                    "run",
+                    "Run",
+                    tilo_actions::OperationKind::Effect,
+                    "probe.effect",
+                    &(),
+                )
+                .unwrap()
+                .with_contract(contract),
+            ),
+        ]
+    }
+    fn action_directory_resource_page(
+        &self,
+        doc: &AutoCommit,
+        cursor: &[u8],
+        max_results: usize,
+    ) -> Option<ui::widget::ActionDirectoryResourcePage> {
+        Some(ui::widget::ActionDirectoryResourcePage {
+            resources: if cursor.is_empty() && max_results > 0 {
+                self.resources(doc)
+            } else {
+                vec![]
+            },
+            next_cursor: vec![],
+            exhausted: true,
+        })
+    }
+    fn action_directory_revision(&self, _: &AutoCommit) -> Option<String> {
+        Some(format!("probe:{}", self.changed.load(Ordering::SeqCst)))
+    }
+    fn action_directory_invocation_domain(
+        &self,
+        _: &AutoCommit,
+    ) -> ui::widget::ActionDirectoryInvocationDomain {
+        // Every lookup/page result below is freshly materialized by resources().
+        // There is no additional lazy target or hidden dispatch declaration.
+        ui::widget::ActionDirectoryInvocationDomain::MaterializedOnly
+    }
+    fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
+        self.resources(doc)
+            .into_iter()
+            .find(|resource| resource.id.as_str() == id)
     }
 }
 impl AppWidget for Probe {

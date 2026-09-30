@@ -5,7 +5,7 @@ import type {CertifiedActionsV1,PrivateInvocation} from './peer';
  * What a mount runs: the id of any installed application
  * (`so.tilo.word-processor`, `so.tilo.ebook`, …; see `applications()`), the
  * Cloud frontend's aliases `writer` and `chat`, or `desktop` for the canonical
- * desktop, which requires an admitted certified peer. An id neither installed
+ * desktop, which requires an admitted certified peer or `MountOptions.local`. An id neither installed
  * nor resolvable (see `AppResolver`) rejects the mount with
  * `application "…" is not available`.
  */
@@ -62,9 +62,61 @@ export interface ResolvedApp {
   assets?: Map<string, string>;
 }
 export type AppResolver = (appId: string, options: {signal?: AbortSignal}) => ResolvedApp | Promise<ResolvedApp>;
+/** A window of a local desktop: one app in its own window group. */
+export interface LocalDesktopWindow {
+  /** An app id or alias, linked through the resolver when the core lacks it. */
+  app: Application;
+  /**
+   * An existing record of the app in the mount's room, such as the `record`
+   * of a standalone mount with the same profile and device: the window shows
+   * that document, live with the other mount. Without it the app creates a
+   * new record when the window first mounts.
+   */
+  record?: string;
+  /** The tab's title (`label` is accepted too); defaults to the app's. */
+  title?: string;
+  /** Select this window when the desktop first presents. */
+  focused?: boolean;
+}
+/**
+ * The page's own desktop (`app: 'desktop'` without a peer): room documents
+ * the page seeds and only this mount holds, one per workspace, the first
+ * being the mount's `room`. The mount is their topology owner: the commands
+ * the shell binds (open, close, reorder, move, split, strips, renames) apply
+ * at once. Nothing is replicated; the rooms last as long as the mount.
+ * Unknown fields are refused.
+ */
+export type LocalDesktopAccess = 'read' | 'comment' | 'write' | 'invite' | 'admin';
+export interface LocalDesktopWorkspace {
+  /** The workspace's name (`label` is accepted too); defaults to `Workspace <n>`. */
+  title?: string;
+  /** Each strip's windows, left to right; a workspace without strips shows the launcher. */
+  strips?: Array<{title?: string; windows?: LocalDesktopWindow[]}>;
+  /**
+   * Room membership the owner (the mount's `author`) granted, as the
+   * workspace settings' People, Agents and Privacy tabs show it. Default
+   * access `write`. Presentation only: the page's own permissions stay the owner's.
+   */
+  members?: Array<{name: string; access?: LocalDesktopAccess; agent?: boolean}>;
+  /** Capabilities granted to an app: over another app's artifacts (`over`), else the whole workspace. */
+  grants?: Array<{app: string; access?: LocalDesktopAccess; over?: string}>;
+}
+export interface LocalDesktop {
+  /** Defaults to one empty workspace. At most 16 workspaces, 64 windows, and 64 members and grants a workspace. */
+  workspaces?: LocalDesktopWorkspace[];
+  /** More apps to link before mounting, so the launcher, search and palette offer them. */
+  apps?: string[];
+}
 export interface RuntimeStatus {
   /** `resolving`/`linking`/`linked` report an app installed from a side module (`app`). */
-  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed';
+  /**
+   * `crashed`: an application panicked and the runtime stopped. With
+   * `crashedWindow` (its tab id) the window is kept out of the room's next
+   * load, which shows `error` in it; `restarting` says the page reloads.
+   */
+  phase?: 'resolving' | 'linking' | 'linked' | 'gpu-pending' | 'presented' | 'failed' | 'closed' | 'crashed';
+  crashedWindow?: string | null;
+  restarting?: boolean;
   app?: string;
   error?: string;
   persistence?: 'committed' | 'failed';
@@ -88,13 +140,32 @@ export interface MountOptions {
   profile?: string;
   device?: string;
   room?: string;
+  /**
+   * Who the mount's edits and actions are attributed to. With `agent`, an
+   * agent task participant: `agent-task:<task>` (printable ASCII, no spaces).
+   */
   author?: string;
+  /**
+   * The mount acts as an agent with this display name (1 to 64 bytes): the
+   * app admits `author` as an agent task participant, as a host admits a
+   * delivered task. Chat then posts as that agent (`Name · agent` beside its
+   * messages, on every mount) and lets it record its work on its own
+   * messages (`set-work`). A mount whose `author` is not
+   * `agent-task:<task>` is refused.
+   */
+  agent?: string;
   instance?: number;
   record?: string;
   newDocument?: boolean;
   mac?: boolean;
   signal?: AbortSignal;
   onStatus?: (status: RuntimeStatus) => void;
+  /**
+   * Reload the page after an application crashed the runtime (default
+   * true), which starts the desktop again without that window; `false`
+   * leaves it to the caller after the `crashed` status.
+   */
+  restartOnCrash?: boolean;
   loadAsset?: (url: string, signal: AbortSignal) => Promise<Uint8Array>;
   /**
    * A file for the app to open, as it would open one the user chose. The
@@ -110,8 +181,17 @@ export interface MountOptions {
   /**
    * Resolves `app` when the core does not contain it; defaults to the one
    * `setAppResolver` set. Resolution starts alongside the core's download.
+   * A local desktop resolves its windows' apps, its `apps`, and every app
+   * `openApp` or `{kind: 'open'}` names through it.
    */
   resolveApp?: AppResolver;
+  /** With `app: 'desktop'`: mount the page's own desktop, seeded thus. */
+  local?: LocalDesktop;
+}
+/** Which window of a desktop an action call addresses. */
+export interface WindowOption {
+  /** The window's tab id (a navigation route's `tab`); defaults to the focused window. */
+  window?: string;
 }
 /** One published action, as `tilo-control actions list` describes it. */
 export interface ActionDescriptor {
@@ -148,17 +228,30 @@ export interface DesktopMount {
   /**
    * The actions the mounted application publishes now, with its permissions
    * applied. `resource` narrows to one resource and its children, including
-   * one the application resolves only on request. Throws for the canonical desktop.
+   * one the application resolves only on request; the application's own
+   * resolution wins over what the full listing shows (a Chat channel asked
+   * for by name lists its latest messages). On a desktop, those of one
+   * window's app (`window`, else the focused window).
    */
-  actions(resource?: string): ActionDescriptor[];
+  actions(resource?: string, options?: WindowOption): ActionDescriptor[];
   /**
    * Invoke one published action through the application's action door, the
    * one the palette, agents and assistive technology use. Throws
    * `code: reason` when the address is not published now, the permissions
    * refuse it, the arguments do not bind, or its contract requires
-   * confirmation and `confirm` is not set.
+   * confirmation and `confirm` is not set. On a desktop it addresses one
+   * window's app, as `actions` does. Through a certified peer the action
+   * claims the mount's live presence only if it moved the mount's caret.
    */
-  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean}): ActionResult;
+  invokeAction(resource: string, action: string, args?: Record<string, unknown>, options?: {confirm?: boolean} & WindowOption): ActionResult;
+  /**
+   * A desktop's `navigation.dispatch({kind: 'open', app})` for the current
+   * generation: link `app` if the core lacks it, then open it in a new window
+   * of the active workspace, which a local desktop selects. With `record`, on
+   * that existing record (a local desktop only). The window, its app and
+   * record are then among `navigation.getSnapshot().entries`.
+   */
+  openApp(app: Application, options?: {record?: string}): Promise<void>;
   cleanup(): Promise<void>;
   flush(): Promise<void>;
   state(): RuntimeStatus | undefined;

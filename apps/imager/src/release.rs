@@ -7,7 +7,7 @@
 //! expanded disk image are SHA-256 checked before the image becomes selectable.
 
 use std::fs::{self, File, OpenOptions};
-use std::io::{Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -460,10 +460,7 @@ fn validate_digest(digest: &str) -> Result<(), String> {
 }
 
 fn cache_root() -> PathBuf {
-    std::env::var_os("XDG_CACHE_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("LOCALAPPDATA").map(PathBuf::from))
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".cache")))
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-imager")
 }
@@ -777,8 +774,7 @@ fn verified_image_observed(
 
     let compressed = File::open(&archive_part)
         .map_err(|error| format!("Could not open the verified installer: {error}"))?;
-    let mut decoder = zstd::stream::read::Decoder::new(compressed)
-        .map_err(|error| format!("Could not unpack the Tilo installer: {error}"))?;
+    let mut decoder = ZstdFrames::new(BufReader::new(compressed));
     let mut expanded = File::create(&image_part)
         .map_err(|error| format!("Could not create the expanded installer: {error}"))?;
     let mut expanded_size = 0_u64;
@@ -861,6 +857,56 @@ pub fn spawn_download(release: TiloRelease) -> DownloadJob {
     DownloadJob {
         events: rx,
         control,
+    }
+}
+
+/// Zstandard frames back to back, decoded as `zstd --decompress` reads them.
+struct ZstdFrames<R> {
+    source: R,
+    frame: ruzstd::decoding::FrameDecoder,
+    open: bool,
+}
+
+impl<R: BufRead> ZstdFrames<R> {
+    fn new(source: R) -> Self {
+        Self {
+            source,
+            frame: ruzstd::decoding::FrameDecoder::new(),
+            open: false,
+        }
+    }
+}
+
+impl<R: BufRead> Read for ZstdFrames<R> {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        if buf.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if !self.open {
+                if self.source.fill_buf()?.is_empty() {
+                    return Ok(0);
+                }
+                self.frame
+                    .reset(&mut self.source)
+                    .map_err(io::Error::other)?;
+                self.open = true;
+            }
+            while self.frame.can_collect() < buf.len() && !self.frame.is_finished() {
+                let wanted = buf.len() - self.frame.can_collect();
+                self.frame
+                    .decode_blocks(
+                        &mut self.source,
+                        ruzstd::decoding::BlockDecodingStrategy::UptoBytes(wanted),
+                    )
+                    .map_err(io::Error::other)?;
+            }
+            let read = self.frame.read(buf)?;
+            if read > 0 {
+                return Ok(read);
+            }
+            self.open = false;
+        }
     }
 }
 
@@ -1728,5 +1774,34 @@ mod internal_catalog_tests {
                 assert!(parse_catalog(&changed).is_err());
             }
         }
+    }
+
+    #[test]
+    fn zstd_frames_decode_back_to_back_frames_in_small_reads() {
+        use ruzstd::encoding::{CompressionLevel, compress_to_vec};
+        let first: Vec<u8> = (0..300_000_u32).map(|i| (i % 251) as u8).collect();
+        let second = b"second frame".repeat(1000);
+        let mut archive = compress_to_vec(first.as_slice(), CompressionLevel::Fastest);
+        archive.extend(compress_to_vec(
+            second.as_slice(),
+            CompressionLevel::Fastest,
+        ));
+        let mut frames = ZstdFrames::new(BufReader::new(archive.as_slice()));
+        let mut expanded = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = frames.read(&mut chunk).unwrap();
+            if read == 0 {
+                break;
+            }
+            expanded.extend_from_slice(&chunk[..read]);
+        }
+        assert_eq!(expanded.len(), first.len() + second.len());
+        assert!(expanded.starts_with(&first) && expanded.ends_with(&second));
+        assert!(
+            ZstdFrames::new(BufReader::new(&b"not zstd"[..]))
+                .read(&mut chunk)
+                .is_err()
+        );
     }
 }

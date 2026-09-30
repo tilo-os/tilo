@@ -10,6 +10,7 @@ use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
 use std::rc::Rc;
+use ui::widget::{AppModel, ModelPath};
 
 use serde_json::{Value, json};
 use tilo_automation::{
@@ -797,7 +798,7 @@ impl<K: PartialEq + 'static> ui::widget::Decorator for Keyed<K> {
         self.part.as_mut()
     }
 
-    fn sync(&mut self, state: &mut ui::automerge::AutoCommit, path: &ui::automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let next = (self.key)();
         if self.current.as_ref() != Some(&next) {
             self.part = (self.build)();
@@ -837,7 +838,7 @@ impl ui::widget::Decorator for Sheet {
         &mut self.dialog
     }
 
-    fn sync(&mut self, state: &mut ui::automerge::AutoCommit, path: &ui::automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let open = self.open.get();
         if open != self.dialog.is_open() {
             self.dialog.set_open(open);
@@ -1223,6 +1224,13 @@ fn step_card(
     path: &str,
     depth: usize,
 ) -> Element {
+    let at = StepEditor {
+        ui,
+        input,
+        draft_id,
+        draft,
+        path,
+    };
     let title = Text::new(&editor::title(step, &input.catalog)).with_role(TextRole::Label);
     let problems = {
         let key = path.to_owned();
@@ -1293,21 +1301,11 @@ fn step_card(
                 Condition::Truthy(binding) => Some(binding),
                 _ => None,
             };
-            let row = value_row(
-                ui,
-                input,
-                draft,
-                path,
-                "condition",
-                "shortcuts-condition",
-                current,
-                {
-                    let then = then.clone();
-                    let otherwise = otherwise.clone();
-                    move |binding| json!({"step": "if", "cond": {"truthy": binding}, "then": then, "else": otherwise})
-                },
-                draft_id,
-            );
+            let row = value_row(&at, "condition", "shortcuts-condition", current, {
+                let then = then.clone();
+                let otherwise = otherwise.clone();
+                move |binding| json!({"step": "if", "cond": {"truthy": binding}, "then": then, "else": otherwise})
+            });
             card.push(row)
                 .push(Box::new(caption("shortcuts-then")))
                 .push(block(
@@ -1329,21 +1327,11 @@ fn step_card(
                 ))
         }
         StepKind::ForEach { items, item, body } => {
-            let row = value_row(
-                ui,
-                input,
-                draft,
-                path,
-                "items",
-                "shortcuts-items",
-                Some(items),
-                {
-                    let item = item.clone();
-                    let body = body.clone();
-                    move |binding| json!({"step": "for_each", "items": binding, "item": item, "body": body})
-                },
-                draft_id,
-            );
+            let row = value_row(&at, "items", "shortcuts-items", Some(items), {
+                let item = item.clone();
+                let body = body.clone();
+                move |binding| json!({"step": "for_each", "items": binding, "item": item, "body": body})
+            });
             card.push(row)
                 .push(Box::new(caption(&format!(
                     "Each item is the variable {item}"
@@ -1358,51 +1346,25 @@ fn step_card(
                 ))
         }
         StepKind::SetVar { name, value } => {
-            let name_field = step_text(
-                ui,
-                draft_id,
-                path,
-                "variable-name",
-                "shortcuts-variable",
-                name,
-                {
-                    let value = value.clone();
-                    move |text| json!({"step": "set_var", "name": text, "value": value})
-                },
-            );
-            let row = value_row(
-                ui,
-                input,
-                draft,
-                path,
-                "value",
-                "shortcuts-value",
-                Some(value),
-                {
-                    let name = name.clone();
-                    move |binding| json!({"step": "set_var", "name": name, "value": binding})
-                },
-                draft_id,
-            );
+            let name_field = step_text(&at, "variable-name", "shortcuts-variable", name, {
+                let value = value.clone();
+                move |text| json!({"step": "set_var", "name": text, "value": value})
+            });
+            let row = value_row(&at, "value", "shortcuts-value", Some(value), {
+                let name = name.clone();
+                move |binding| json!({"step": "set_var", "name": name, "value": binding})
+            });
             card.push(name_field).push(row)
         }
         StepKind::Ask { param } => {
-            let question = step_text(
-                ui,
-                draft_id,
-                path,
-                "question",
-                "shortcuts-question",
-                &param.description,
-                {
-                    let param = param.clone();
-                    move |text| {
-                        let mut param = param.clone();
-                        param.description = text.into();
-                        json!({"step": "ask", "param": param})
-                    }
-                },
-            );
+            let question = step_text(&at, "question", "shortcuts-question", &param.description, {
+                let param = param.clone();
+                move |text| {
+                    let mut param = param.clone();
+                    param.description = text.into();
+                    json!({"step": "ask", "param": param})
+                }
+            });
             card.push(question)
         }
         StepKind::Ai {
@@ -1410,23 +1372,13 @@ fn step_card(
             input: source,
         } => {
             let mut card = card;
-            let row = value_row(
-                ui,
-                input,
-                draft,
-                path,
-                "ai-input",
-                "shortcuts-ai-input",
-                Some(source),
-                {
-                    let transform = transform.clone();
-                    move |binding| json!({"step": "ai", "transform": transform, "input": binding})
-                },
-                draft_id,
-            );
+            let row = value_row(&at, "ai-input", "shortcuts-ai-input", Some(source), {
+                let transform = transform.clone();
+                move |binding| json!({"step": "ai", "transform": transform, "input": binding})
+            });
             card = card.push(row);
             if let AiTransform::Freeform { prompt } = transform {
-                card = card.push(step_text(ui, draft_id, path, "ai-prompt", "shortcuts-ai-prompt", prompt, {
+                card = card.push(step_text(&at, "ai-prompt", "shortcuts-ai-prompt", prompt, {
                     let source = source.clone();
                     move |text| json!({"step": "ai", "transform": {"freeform": {"prompt": text}}, "input": source})
                 }));
@@ -1437,16 +1389,26 @@ fn step_card(
     Box::new(card.push(Box::new(actions)))
 }
 
-/// A text field that rewrites what the step at `path` does from its value.
+/// The step at `path` of the draft being edited, and what its controls read.
+struct StepEditor<'a> {
+    ui: &'a Ui,
+    input: &'a EditorInput,
+    draft_id: &'a Id,
+    draft: &'a Draft,
+    path: &'a str,
+}
+
+/// A text field that rewrites what the step does from its value.
 fn step_text(
-    ui: &Ui,
-    draft_id: &Id,
-    path: &str,
+    at: &StepEditor<'_>,
     suffix: &str,
     label: &str,
     current: &str,
     rewrite: impl Fn(String) -> Value + Send + Sync + 'static,
 ) -> Element {
+    let StepEditor {
+        ui, draft_id, path, ..
+    } = *at;
     let field = ui.bind(
         TextInput::local()
             .with_id(&format!("step-{suffix}-{path}"))
@@ -1464,21 +1426,20 @@ fn step_text(
 /// A dropdown choosing where a block value (a condition, the items of a
 /// repeat, a variable's value, an AI step's input) comes from, rewriting the
 /// step with `rewrite`.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "one row, described once for every block kind"
-)]
 fn value_row(
-    ui: &Ui,
-    input: &EditorInput,
-    draft: &Draft,
-    path: &str,
+    at: &StepEditor<'_>,
     suffix: &str,
     label: &str,
     current: Option<&Binding>,
     rewrite: impl Fn(Value) -> Value + Send + Sync + 'static,
-    draft_id: &Id,
 ) -> Element {
+    let StepEditor {
+        ui,
+        input,
+        draft_id,
+        draft,
+        path,
+    } = *at;
     let shortcut = editor::candidate(draft, &input.catalog);
     let choices: Vec<Choice> = values_at(&shortcut, &input.catalog, &editor::step_path(path))
         .into_iter()

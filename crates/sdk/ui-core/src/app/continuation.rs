@@ -311,7 +311,10 @@ impl App {
         let Some(route) = self.private_continuity_route() else {
             return;
         };
-        let semantic = self.root_widget.continuable().and_then(|continuable| {
+        let semantic = crate::widget::capability::capability::<dyn crate::widget::Continuable>(
+            &*self.root_widget,
+        )
+        .and_then(|continuable| {
             continuable.continuation_metadata(&self.state.doc, &self.state.root)
         });
         let view = <Self as crate::view::FreezeThaw>::capture_view(self);
@@ -354,7 +357,10 @@ impl App {
                             schema_version: semantic.schema_version,
                             bytes: semantic.bytes,
                         };
-                        if let Some(continuable) = self.root_widget.continuable_mut() {
+                        if let Some(continuable) = crate::widget::capability::capability_mut::<
+                            dyn crate::widget::Continuable,
+                        >(&mut *self.root_widget)
+                        {
                             let _ = continuable.restore_continuation_metadata(
                                 &metadata,
                                 &mut self.state.doc,
@@ -374,7 +380,10 @@ impl App {
                 return;
             }
             let root = self.state.root.clone();
-            if let Some(continuable) = self.root_widget.continuable_mut() {
+            if let Some(continuable) = crate::widget::capability::capability_mut::<
+                dyn crate::widget::Continuable,
+            >(&mut *self.root_widget)
+            {
                 let _ = continuable.restore_continuation_metadata(
                     &metadata,
                     &mut self.state.doc,

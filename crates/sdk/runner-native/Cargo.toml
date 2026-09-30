@@ -1,0 +1,38 @@
+[package]
+name = "tilo-runner-native"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license.workspace = true
+description = "The native desktop runner of the Tilo app SDK: the winit event loop, host services and daemon clients. `tilo-app` selects it on Linux and macOS."
+repository.workspace = true
+homepage.workspace = true
+
+[features]
+default = ["broker-transport"]
+broker-transport = ["ui-core/broker-transport"]
+# Kept for compatibility; Linux builds always use the portals (below).
+portal = []
+mpris = ["ui-core/mpris"]
+# Kept for compatibility; `tilo-notify` selects each target's notifications.
+notifications = []
+gpu-video = ["ui-core/gpu-video"]
+dmabuf-import = ["ui-core/dmabuf-import"]
+webview-wpe = ["ui-core/webview-wpe"]
+webview-adblock = ["ui-core/webview-adblock"]
+presentation-feedback = ["ui-core/presentation-feedback"]
+dx12-shader-cache = ["ui-core/dx12-shader-cache"]
+priority-contacts = ["ui-core/priority-contacts"]
+
+[dependencies]
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false, features = ["native"] }
+workspace-hack = { version = "0.1" }
+
+# Location and screen capture through the XDG Desktop Portal exist only on
+# Linux; this is the one place the SDK turns them on, so no app selects a
+# portal and no macOS build reaches for D-Bus.
+[target.'cfg(target_os = "linux")'.dependencies]
+ui-core = { version = "0.1.0", package = "tilo-ui", path = "../ui-core", default-features = false, features = ["native", "portal"] }
+
+[lints]
+workspace = true

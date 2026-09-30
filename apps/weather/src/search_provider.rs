@@ -214,7 +214,7 @@ mod tests {
 
             // Find Tokyo (not the default index-0 selection) through the real hook.
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(!providers.is_empty(), "weather publishes a search provider");
                 let hit = providers[0]
                     .search("tokyo")
@@ -231,7 +231,7 @@ mod tests {
             };
             assert_ne!(app.selected_city(), Some(id), "not already selected");
 
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = tilo_actions::door::resolve(&resources, &address)
                 .expect("search address resolves against the live resource tree");
             let encoded = match &spec.input {
@@ -242,17 +242,21 @@ mod tests {
                 }
             };
             assert_eq!(spec.kind, tilo_actions::OperationKind::View);
-            assert!(
-                Widget::invoke_resource_operation(
+            assert!(matches!(
+                Widget::start_operation(
                     &mut app,
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("brokered open succeeds")
-            );
+                .expect("brokered open succeeds"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.selected_city(),
                 Some(id),
@@ -287,17 +291,20 @@ mod tests {
             .unwrap();
             doc.commit();
             app.sync(&mut doc, &ROOT);
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert!(tilo_actions::door::resolve(&resources, &address).is_none());
             let payload = serde_json::to_vec(&city.id.to_string()).unwrap();
             assert!(
-                Widget::invoke_resource_operation(
+                Widget::start_operation(
                     &mut app,
-                    tilo_actions::OperationKind::View,
-                    crate::actions::OPEN_LOCATION_OPERATION,
-                    &payload,
-                    &doc,
-                    &ROOT,
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        crate::actions::OPEN_LOCATION_OPERATION,
+                        &payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
                 .is_err()
             );

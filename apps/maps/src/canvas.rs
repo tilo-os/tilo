@@ -9,7 +9,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Color};
 
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::paint::PaintCtx;
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 
 use crate::draw;
@@ -67,7 +68,7 @@ impl MapPalette {
     /// and dark tiles (the reported light-centre/dark-edge bug). The style
     /// decision is the *same* one the raster layer uses
     /// ([`crate::tiles::TileStyle::from_theme`]), so the drawn colours and the
-    /// fetched CARTO tiles always agree.
+    /// tone the tiles are decoded in always agree.
     pub fn from_theme(theme: &Theme) -> Self {
         use crate::tiles::TileStyle;
         if TileStyle::from_theme(theme) == TileStyle::Dark {
@@ -77,8 +78,8 @@ impl MapPalette {
         }
     }
 
-    /// The light cartography: a warm near-white paper land, matching the CARTO
-    /// `light_nolabels` basemap it underlays. Hues track the theme (water = info,
+    /// The light cartography: a warm near-white paper land, matching the OSM
+    /// Standard raster it underlays. Hues track the theme (water = info,
     /// parks = success); the route/markers track the accent.
     fn light(theme: &Theme) -> Self {
         let sem = &theme.tokens.colors.semantic;
@@ -112,8 +113,8 @@ impl MapPalette {
         }
     }
 
-    /// The dark cartography: a deep neutral land matching the CARTO
-    /// `dark_nolabels` basemap, with light-grey road ribbons and dark-tinted
+    /// The dark cartography: a deep neutral land matching the dark re-tone of
+    /// the OSM raster, with light-grey road ribbons and dark-tinted
     /// water/parks so the map reads coherently dark — not a light map dimmed.
     fn dark(theme: &Theme) -> Self {
         let sem = &theme.tokens.colors.semantic;
@@ -686,13 +687,16 @@ fn draw_dashed(
     }
 }
 
+/// What a map overlay layer paints against: the viewport projection, the
+/// themed map palette, and the visible map area it stays inside.
+#[derive(Clone, Copy)]
+pub struct MapView<'a> {
+    pub proj: &'a Projection,
+    pub pal: &'a MapPalette,
+    pub clip: Rect,
+}
+
 /// Draw all place markers; the selected one is enlarged and labelled.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "shares the standard (scene, t, tr, theme) drawing-context params with every \
-              other draw_* function in this module; bundling them into a context struct is a \
-              file-wide refactor out of scope here"
-)]
 pub fn draw_markers(
     scene: &mut Scene,
     t: Affine,
@@ -768,16 +772,12 @@ pub fn draw_markers(
             // fragment. The pin still shows; the drawer already names the place.
             if rect.x0 >= clip.x0 && rect.x1 <= clip.x1 {
                 draw::card(scene, t, rect, 6.0, theme.tokens.colors.surfaces.raised);
-                draw::text_w(
-                    scene,
-                    tr,
-                    t,
+                PaintCtx::new(scene, t, tr, theme).text(
                     label,
-                    lx + pad,
-                    ly + 4.0,
-                    12.0,
+                    &TextStyle::new(12.0).with_weight(TextWeight::Semibold),
                     theme.text_primary,
-                    TextWeight::Semibold,
+                    Point::new(lx + pad, ly + 4.0),
+                    None,
                 );
             }
         }
@@ -794,29 +794,19 @@ pub fn draw_markers(
 /// a larger disc bearing a white category pictogram and (past the label
 /// threshold) a name plate. The selected POI is enlarged with an accent halo and
 /// always labelled.
-#[allow(
-    clippy::too_many_arguments,
-    reason = "POI painting combines render context, map projection, visible records, selection, palette and clipping bounds"
-)]
 pub fn draw_pois(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    proj: &Projection,
+    ctx: &mut PaintCtx<'_>,
+    view: MapView<'_>,
     pois: &[Poi],
     visible: &[usize],
     selected: Option<&str>,
-    theme: &Theme,
-    pal: &MapPalette,
-    clip: Rect,
 ) {
-    let icons = proj.zoom() >= POI_ICON_ZOOM;
-    let show_labels = proj.zoom() >= 16.5;
-    scene.push_layer(
+    let MapView { proj, clip, .. } = view;
+    ctx.scene.push_layer(
         vello::peniko::Fill::NonZero,
         BlendMode::default(),
         1.0,
-        t,
+        ctx.transform,
         &clip,
     );
     for &i in visible {
@@ -826,52 +816,29 @@ pub fn draw_pois(
         if selected == Some(poi.id.as_str()) {
             continue; // draw the selected POI last, on top
         }
-        let p = proj.project(poi.pos);
-        if !clip.contains(p) {
+        if !clip.contains(proj.project(poi.pos)) {
             continue;
         }
-        draw_poi_dot(
-            scene,
-            t,
-            tr,
-            p,
-            poi,
-            theme,
-            pal,
-            false,
-            show_labels,
-            icons,
-            clip,
-        );
+        draw_poi_dot(ctx, view, poi, false);
     }
     if let Some(sel) = selected
         && let Some(poi) = pois.iter().find(|p| p.id == sel)
+        && clip.contains(proj.project(poi.pos))
     {
-        let p = proj.project(poi.pos);
-        if clip.contains(p) {
-            draw_poi_dot(scene, t, tr, p, poi, theme, pal, true, true, icons, clip);
-        }
+        draw_poi_dot(ctx, view, poi, true);
     }
-    scene.pop_layer();
+    ctx.scene.pop_layer();
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "POI marker painting needs render context, projected position, record, palette, display flags and clipping bounds"
-)]
-fn draw_poi_dot(
-    scene: &mut Scene,
-    t: Affine,
-    tr: &mut TextRenderer,
-    p: Point,
-    poi: &Poi,
-    theme: &Theme,
-    pal: &MapPalette,
-    selected: bool,
-    label: bool,
-    icons: bool,
-    clip: Rect,
-) {
+/// One POI marker at its projected position: a category dot, or past
+/// [`POI_ICON_ZOOM`] a pictogram disc, with a name plate when zoomed in far
+/// enough or `selected`.
+fn draw_poi_dot(ctx: &mut PaintCtx<'_>, view: MapView<'_>, poi: &Poi, selected: bool) {
+    let MapView { proj, pal, clip } = view;
+    let (scene, t, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
+    let p = proj.project(poi.pos);
+    let icons = proj.zoom() >= POI_ICON_ZOOM;
+    let label = selected || proj.zoom() >= 16.5;
     let col = category_color(theme, poi.category);
     let r = match (icons, selected) {
         (true, true) => 13.0,
@@ -905,7 +872,7 @@ fn draw_poi_dot(
     }
     if label {
         let size = if selected { 12.0 } else { 11.0 };
-        let tw = draw::measure_w(tr, &poi.name, size);
+        let tw = draw::measure_w(ctx.text, &poi.name, size);
         let lx = p.x + r + 6.0;
         let ly = p.y - f64::from(size) * 0.72;
         let plate = Rect::new(
@@ -919,22 +886,18 @@ fn draw_poi_dot(
         // marker still shows; the info card / list already carries the name.
         if plate.x0 >= clip.x0 && plate.x1 <= clip.x1 && plate.y0 >= clip.y0 {
             draw::fill_round(
-                scene,
+                ctx.scene,
                 t,
                 plate,
                 4.0,
                 draw::alpha(theme.tokens.colors.surfaces.base, 0.74),
             );
-            draw::text_w(
-                scene,
-                tr,
-                t,
+            ctx.text(
                 &poi.name,
-                lx,
-                ly,
-                size,
+                &TextStyle::new(size).with_weight(TextWeight::Medium),
                 theme.text_primary,
-                TextWeight::Medium,
+                Point::new(lx, ly),
+                None,
             );
         }
     }
@@ -1265,10 +1228,8 @@ fn draw_pin(
 }
 
 /// Draw the bottom-right scale bar into `clip`, its right end at `right_x`
-/// (kept left of the ⋯ overflow button). Attribution + licenses now live behind
-/// that overflow menu — OSM's attribution requirement is met by being reachable,
-/// not by pasting a permanent copyright line across the scale bar — so the scale
-/// bar no longer shares its row with a fixed credit that overlapped it.
+/// (kept left of the ⋯ overflow button). Returns the left edge of its backing
+/// pill, where [`draw_attribution`] ends.
 pub fn draw_scale_bar(
     scene: &mut Scene,
     t: Affine,
@@ -1277,7 +1238,7 @@ pub fn draw_scale_bar(
     right_x: f64,
     model: &MapModel,
     theme: &Theme,
-) {
+) -> f64 {
     let (label, px) = geo::scale_bar(model.center, model.zoom, 110.0);
     let y = clip.y1 - 26.0;
     let x1 = right_x;
@@ -1314,7 +1275,56 @@ pub fn draw_scale_bar(
         2.0,
         theme.text_primary,
     );
-    draw::text_center(scene, tr, t, &label, x0, x1, y + 2.0, 10.0, theme.text_dim);
+    draw::text_center(
+        &mut PaintCtx::new(scene, t, tr, theme),
+        &label,
+        Point::new((x0 + x1) / 2.0, y + 2.0),
+        10.0,
+        theme.text_dim,
+    );
+    x0 - 8.0
+}
+
+/// Draw the tile licence credit on the map: left of the scale bar on its row
+/// (the bar spans `scale_x0..scale_x1`), or right-aligned above the bar when
+/// the map is too narrow for both. The OSM tile policy requires it visible on
+/// the map itself, not behind a menu.
+pub fn draw_attribution(
+    scene: &mut Scene,
+    t: Affine,
+    tr: &mut TextRenderer,
+    clip: Rect,
+    scale_x0: f64,
+    scale_x1: f64,
+    theme: &Theme,
+) {
+    let size = theme.tokens.typography.scale.xs;
+    let w = draw::measure_w(tr, crate::tiles::TILE_ATTRIBUTION, size);
+    let row_y = clip.y1 - 26.0;
+    let beside = scale_x0 - 14.0;
+    let (x1, y) = if beside - w - 8.0 >= clip.x0 + 8.0 {
+        (beside, row_y)
+    } else {
+        (scale_x1, row_y - 24.0)
+    };
+    let x0 = x1 - w;
+    draw::fill_round(
+        scene,
+        t,
+        Rect::new(x0 - 8.0, y - 4.0, x1 + 8.0, y + 14.0),
+        4.0,
+        draw::alpha(theme.tokens.colors.surfaces.base, 0.7),
+    );
+    draw::text_right(
+        scene,
+        tr,
+        t,
+        crate::tiles::TILE_ATTRIBUTION,
+        x1,
+        y + 1.0,
+        size,
+        theme.text_dim,
+    );
 }
 
 #[cfg(test)]
@@ -1397,7 +1407,7 @@ mod tests {
         // The cartography follows the theme: a light map under a light theme, a
         // dark map under a dark theme — never a light map forced under dark chrome
         // (which read as a mixed light/dark view). This is the fix for the tile-tone
-        // bug: the drawn colours agree with the CARTO style the raster layer fetches.
+        // bug: the drawn colours agree with the tone the raster layer decodes in.
         {
             let lum = |c: Color| {
                 let c = c.to_rgba8();
@@ -1596,7 +1606,7 @@ mod tests {
             let view_center = clip.center();
 
             let mut scene = Scene::new();
-            let t0 = std::time::Instant::now();
+            let t0 = ui::time::now();
             let painted_exact = draw_tiles(
                 &mut scene,
                 Affine::IDENTITY,

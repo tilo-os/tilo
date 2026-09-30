@@ -2,9 +2,11 @@
 name = "tilo-seal"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "The one reviewed home for Tilo's public-key sealing (HPKE) and at-rest envelopes"
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "tilo_seal"
@@ -26,7 +28,6 @@ argon2.workspace = true
 # Key identifiers and the HKDF steps of formats this crate still reads.
 hkdf = "0.13"
 sha2.workspace = true
-blake3.workspace = true
 getrandom.workspace = true
 subtle = "2.6"
 zeroize.workspace = true

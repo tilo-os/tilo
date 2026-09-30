@@ -39,6 +39,7 @@
 //! - [`ENROLLMENT_PREIMAGE_TAG`] — `tilo-enrollment-v2\0`
 //! - [`APPROVAL_REQUEST_TAG`] — `tilo-device-approval-request-v1\0`
 //! - [`APPROVAL_RESPONSE_TAG`] — `tilo-device-approval-response-v1\0`
+//! - [`CERTIFICATION_REQUEST_TAG`] — `tilo-device-certification-request-v1\0`
 //!
 //! The tag terminator (`\0`) plus a version marker (`v1`) inside the
 //! literal ensure two things: (a) prefix ambiguity is impossible
@@ -78,11 +79,18 @@
 pub mod approval;
 pub mod canonical;
 pub mod cert;
+pub mod certification;
 pub mod cloud_enrollment;
 pub mod directory;
 pub mod enrollment;
 pub mod image;
+#[cfg(target_os = "macos")]
+mod keychain;
 pub mod machine_mesh;
+#[cfg(target_os = "linux")]
+pub mod nofollow;
+// Identity files need an owner-checked filesystem; the browser keeps its
+// device key in host custody instead.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod persist;
 pub mod projection;
@@ -96,6 +104,11 @@ pub use canonical::CanonicalError;
 pub use cert::{
     DEVCERT_PREIMAGE_TAG, DEVCERT_V2_PREIMAGE_TAG, DeviceCapabilities, DeviceCert, DeviceCertError,
     device_cert_signing_digest, sign_device_cert, verify_device_cert, verify_device_cert_at,
+};
+pub use certification::{
+    CERTIFICATION_REQUEST_TAG, CERTIFICATION_SCHEMA_VERSION, CertificationError,
+    CertificationPolicy, CertificationRequest, MAX_CERTIFICATION_REQUEST_LIFETIME_NS,
+    issue_device_cert, prepare_device_cert, verify_issued_cert,
 };
 pub use directory::{
     DirectoryError, DirectoryUpdate, WorkspaceDirectory, WorkspaceId, WorkspaceMeta,

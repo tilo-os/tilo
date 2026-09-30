@@ -11,10 +11,10 @@
 )]
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
@@ -1725,10 +1725,6 @@ impl CartesianPlot {
         .filter(|point| plot.contains(*point))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "axis paint needs the shared scene, text, theme and two resolved domains"
-    )]
     fn draw_axes(
         &self,
         scene: &mut Scene,
@@ -2920,7 +2916,6 @@ fn format_bytes(value: f64, places: u8) -> String {
 }
 
 impl Widget for CartesianPlot {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -3024,22 +3019,11 @@ impl Widget for CartesianPlot {
         self.draw_tooltip(scene, transform, tr, theme);
         self.draw_annotation_tooltip(scene, transform, tr, theme);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        if let Some(action) = self.touch.handle(event, scale_factor) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        if let Some(action) = self.touch.handle(event, ctx.scale_factor) {
             if self.handle_touch_action(action) {
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             return;
         }
@@ -3049,15 +3033,16 @@ impl Widget for CartesianPlot {
             } else {
                 self.move_keyboard_inspection(action);
             }
-            *handled = true;
-            *focus_target = Some(node_id);
+            *ctx.handled = true;
+            *ctx.focus_target = Some(ctx.node_id);
             return;
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.update_pointer(point) {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorLeft { .. } if !self.keyboard_inspection => {
@@ -3073,8 +3058,8 @@ impl Widget for CartesianPlot {
             WindowEvent::MouseWheel { delta, .. }
                 if self.style.zoom != CartesianZoom::Disabled
                     && (!self.style.gestures.zoom_modifier_required
-                        || modifiers.state().control_key()
-                        || modifiers.state().super_key()) =>
+                        || ctx.modifiers.state().control_key()
+                        || ctx.modifiers.state().super_key()) =>
             {
                 let amount = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y),
@@ -3082,8 +3067,8 @@ impl Widget for CartesianPlot {
                 };
                 if self.plot_rect().contains(self.pointer) && amount != 0.0 {
                     self.zoom_at_pointer(amount);
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::PinchGesture { delta, .. }
@@ -3093,37 +3078,37 @@ impl Widget for CartesianPlot {
                 // A positive delta means magnification. Pinch is already an
                 // unambiguous zoom gesture, so it never requires a modifier.
                 self.zoom_at_pointer(*delta);
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             WindowEvent::PanGesture { delta, .. }
                 if self.style.pan != CartesianPan::Disabled
                     && self.plot_rect().contains(self.pointer)
                     && (!self.style.gestures.pan_modifier_required
-                        || modifiers.state().alt_key()) =>
+                        || ctx.modifiers.state().alt_key()) =>
             {
                 if self.pan_view_pixels(f64::from(delta.x), f64::from(delta.y), self.plot_rect()) {
                     self.hovered = None;
                     self.hovered_annotation = None;
-                    *handled = true;
-                    *focus_target = Some(node_id);
+                    *ctx.handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } if self.begin_pointer_gesture(*modifiers) => {
-                *handled = true;
-                *focus_target = Some(node_id);
+            } if self.begin_pointer_gesture(*ctx.modifiers) => {
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
                 button: MouseButton::Left,
                 ..
             } if self.finish_pointer_gesture() => {
-                *handled = true;
-                *focus_target = Some(node_id);
+                *ctx.handled = true;
+                *ctx.focus_target = Some(ctx.node_id);
             }
             _ => {}
         }
@@ -3214,8 +3199,8 @@ impl Widget for CartesianPlot {
         &mut self,
         action: &crate::a11y::Action,
         key_path: &[u64],
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(action, crate::a11y::Action::Activate) {
             return false;

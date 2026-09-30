@@ -811,7 +811,7 @@ mod tests {
 
             // Find a real message through the app's own provider.
             let (address, id) = {
-                let providers = app.search_providers();
+                let providers = ui::search::capability::search_providers(&app);
                 assert!(!providers.is_empty(), "mail publishes a search provider");
                 // Query a subject word that exists in the sample corpus.
                 let mb = crate::sample::sample_mailbox();
@@ -842,13 +842,15 @@ mod tests {
             .expect("search address resolves lazily");
             let encoded = tilo_actions::door::encode(&[resource], &address, None).unwrap();
             assert!(matches!(
-                app.start_resource_operation_with_document(
-                    tilo_actions::InvocationId::default(),
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        tilo_actions::InvocationId::default(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
                     &mut doc,
-                    &ROOT,
+                    &ROOT
                 )
                 .unwrap(),
                 Some(ui::widget::ResourceOperationStart::Completed(_))
@@ -864,7 +866,7 @@ mod tests {
                 "search activation follows the same explicit Open → SetRead action"
             );
 
-            let folder_hit = app.search_providers()[0]
+            let folder_hit = ui::search::capability::search_providers(&app)[0]
                 .search("Archive")
                 .into_iter()
                 .find(|hit| hit.kind == FOLDER_KIND)
@@ -872,20 +874,24 @@ mod tests {
             let folder_address = folder_hit
                 .action_address()
                 .expect("canonical folder address");
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let encoded = tilo_actions::door::encode(&resources, &folder_address, None)
                 .expect("folder address resolves against Mail's exported tree");
             let heads_before_folder_navigation = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.mail_resource_ctx(&doc).current_folder, Folder::Archive);
             assert_eq!(doc.get_heads(), heads_before_folder_navigation);
         }

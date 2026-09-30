@@ -5,10 +5,8 @@
 //! content inset). Calendar-specific header controls stay here; lists and
 //! tasks remain in `CalendarApp`; the mini-month is its own footer component.
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use ui::paint::PaintCtx;
 use ui::widget::{SidebarDrawer, SplitLayout};
-use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use crate::app::{
@@ -55,6 +53,23 @@ pub(crate) enum Action {
 pub(crate) struct Chrome {
     pub(crate) body_y: f64,
     pub(crate) hits: Vec<(Rect, Action)>,
+}
+
+/// The window and the panes beside the sidebar: the overlay drawer dims
+/// whichever of `content` and `detail` is showing.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Panes {
+    pub(crate) window: Rect,
+    pub(crate) content: Rect,
+    pub(crate) detail: Rect,
+}
+
+/// One chrome paint pass: the pointer driving hover, and the hit rects the
+/// header controls push.
+struct ChromePaint<'a> {
+    ctx: PaintCtx<'a>,
+    pointer: Point,
+    hits: Vec<(Rect, Action)>,
 }
 
 pub(crate) struct Sidebar {
@@ -156,26 +171,25 @@ impl Sidebar {
         self.toggle_open();
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "sidebar chrome combines paint context, window/content/detail bounds, view-switcher placement and pointer hover"
-    )]
+    /// Paint the sidebar ground and header controls. `switcher` is the
+    /// active view when the view switcher is the sidebar's to show (it is not
+    /// in the top bar).
     pub(crate) fn draw_chrome(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        window: Rect,
-        content: Rect,
-        detail: Rect,
-        switcher_in_topbar: bool,
-        view: View,
+        ctx: &mut PaintCtx<'_>,
+        panes: Panes,
+        switcher: Option<View>,
         pointer: Point,
     ) -> Option<Chrome> {
         if !self.visible() {
             return None;
         }
+        let Panes {
+            window,
+            content,
+            detail,
+        } = panes;
+        let (scene, transform, theme) = (&mut *ctx.scene, ctx.transform, ctx.theme);
         let colors = &theme.tokens.colors;
         let mut hits = Vec::new();
         let overlay = self.mode() == Mode::Overlay;
@@ -204,26 +218,24 @@ impl Sidebar {
             Point::new(rect.x1, rect.y1),
         );
 
-        let pad = 18.0;
+        let mut paint = ChromePaint {
+            ctx: ctx.reborrow(),
+            pointer,
+            hits,
+        };
         let mut y = rect.y0 + 22.0;
-        Self::draw_chrome_collapse_or_dismiss(
-            scene, transform, theme, rect, window, overlay, pointer, pad, y, &mut hits,
-        );
+        self.draw_chrome_collapse_or_dismiss(&mut paint, window, y);
         y += 30.0;
 
-        if overlay && !switcher_in_topbar {
-            y += Self::draw_chrome_view_switcher(
-                scene, transform, text, theme, rect, view, pointer, y, &mut hits,
-            );
+        if overlay && let Some(view) = switcher {
+            y += self.draw_chrome_view_switcher(&mut paint, view, y);
         }
 
-        Self::draw_chrome_footer_buttons(
-            scene, transform, text, theme, rect, y, pointer, &mut hits,
-        );
+        self.draw_chrome_footer_buttons(&mut paint, y);
 
         Some(Chrome {
             body_y: y + 46.0,
-            hits,
+            hits: paint.hits,
         })
     }
 
@@ -231,22 +243,13 @@ impl Sidebar {
     /// drawer covers the full window) button, top-right of the sidebar
     /// header. Split out of [`Self::draw_chrome`] to keep that under the
     /// line cap.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the header button combines paint context, sidebar/window bounds, overlay mode, pointer, flow geometry and hit output"
-    )]
-    fn draw_chrome_collapse_or_dismiss(
-        scene: &mut Scene,
-        transform: Affine,
-        theme: &Theme,
-        rect: Rect,
-        window: Rect,
-        overlay: bool,
-        pointer: Point,
-        pad: f64,
-        y: f64,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
+    fn draw_chrome_collapse_or_dismiss(&self, paint: &mut ChromePaint<'_>, window: Rect, y: f64) {
+        let (scene, transform, theme) =
+            (&mut *paint.ctx.scene, paint.ctx.transform, paint.ctx.theme);
+        let (pointer, hits) = (paint.pointer, &mut paint.hits);
+        let rect = self.rect();
+        let overlay = self.mode() == Mode::Overlay;
+        let pad = 18.0;
         let colors = &theme.tokens.colors;
         if !overlay {
             let button = Rect::new(rect.x1 - pad - 24.0, y - 3.0, rect.x1 - pad, y + 21.0);
@@ -267,21 +270,16 @@ impl Sidebar {
     /// when the switcher doesn't already live in the top bar. Returns the
     /// vertical space it consumed (`0.0` if not drawn). Split out of
     /// [`Self::draw_chrome`] to keep that under the line cap.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the switcher combines paint context, sidebar bounds, active view, pointer, flow geometry and hit output"
-    )]
-    fn draw_chrome_view_switcher(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        view: View,
-        pointer: Point,
-        y: f64,
-        hits: &mut Vec<(Rect, Action)>,
-    ) -> f64 {
+    fn draw_chrome_view_switcher(&self, paint: &mut ChromePaint<'_>, view: View, y: f64) -> f64 {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = &mut paint.ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (pointer, hits) = (paint.pointer, &mut paint.hits);
+        let rect = self.rect();
         let colors = &theme.tokens.colors;
         let inset = f64::from(theme.tokens.spacing.s3);
         let segmented = Rect::new(rect.x0 + inset, y, rect.x1 - inset, y + 36.0);
@@ -335,20 +333,16 @@ impl Sidebar {
     /// The Export/Import footer buttons, side by side at the bottom of the
     /// sidebar header. Split out of [`Self::draw_chrome`] to keep that under
     /// the line cap.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the footer buttons combine paint context, sidebar bounds, flow geometry, pointer and hit output"
-    )]
-    fn draw_chrome_footer_buttons(
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        rect: Rect,
-        y: f64,
-        pointer: Point,
-        hits: &mut Vec<(Rect, Action)>,
-    ) {
+    fn draw_chrome_footer_buttons(&self, paint: &mut ChromePaint<'_>, y: f64) {
+        let PaintCtx {
+            scene,
+            transform,
+            text,
+            theme,
+        } = &mut paint.ctx;
+        let (transform, theme) = (*transform, *theme);
+        let (pointer, hits) = (paint.pointer, &mut paint.hits);
+        let rect = self.rect();
         let colors = &theme.tokens.colors;
         let button_width = (rect.width() - 24.0 - 8.0) / 2.0;
         let export = Rect::new(rect.x0 + 12.0, y, rect.x0 + 12.0 + button_width, y + 32.0);

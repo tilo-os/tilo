@@ -35,15 +35,28 @@ use std::sync::Arc;
 mod device;
 #[cfg(feature = "dir")]
 mod dir;
+#[cfg(feature = "dir")]
+mod files;
 mod memory;
 mod sniff;
 
 #[cfg(all(unix, feature = "device"))]
-pub use device::{DeviceBackend, LegacyImport};
+pub use device::DeviceBackend;
 #[cfg(feature = "dir")]
 pub use dir::DirBackend;
+#[cfg(feature = "dir")]
+pub use files::FilesBackend;
 pub use memory::MemoryBackend;
 pub use sniff::sniff;
+
+/// The app-files owner of a page's content store (see [`ContentStore::for_app`]).
+#[cfg(feature = "dir")]
+const PAGE_STORE_OWNER: &str = "so.tilo.content";
+/// A page's largest content item and whole store: the page holds its app files in memory.
+#[cfg(feature = "dir")]
+const PAGE_MAX_ITEM_BYTES: usize = 32 * 1024 * 1024;
+#[cfg(feature = "dir")]
+const PAGE_MAX_TOTAL_BYTES: usize = 256 * 1024 * 1024;
 
 /// The environment variable naming a content directory shared by every app of one session (the
 /// shell sets it for the apps it hosts), so content one app stores another can open.
@@ -252,8 +265,9 @@ impl ContentStore {
 
     /// The store an app uses unless it is handed another: the device content store when the
     /// launcher handed this process its capability ([`ContentStore::device`]), otherwise the
-    /// session's shared directory when the host names one ([`SHARED_STORE_ENV`]), otherwise
-    /// `tilo/content` in the user's data directory. Content an earlier version kept in the cache
+    /// session's shared directory when the host names one ([`SHARED_STORE_ENV`]), otherwise, where
+    /// files have no native path (a browser page), the profile's app files ([`FilesBackend`]),
+    /// otherwise `tilo/content` in the user's data directory. Content an earlier version kept in the cache
     /// directory (`tilo/blobs`) still reads. With no usable directory at all, content is kept in
     /// memory.
     #[cfg(feature = "dir")]
@@ -270,6 +284,12 @@ impl ContentStore {
         if let Some(shared) = env(SHARED_STORE_ENV).filter(|value| !value.is_empty()) {
             return Self::in_dir(PathBuf::from(shared));
         }
+        if !matches!(
+            tilo_files::availability(tilo_files::Feature::NativePaths),
+            tilo_files::Availability::Available
+        ) {
+            return Self::in_page_files();
+        }
         let Some(data) = xdg_paths::data_dir() else {
             tracing::warn!("no data directory; binary content is kept in memory only");
             return Self::memory();
@@ -279,6 +299,28 @@ impl ContentStore {
             backend = backend.reading_also(cache.join("tilo").join("blobs"));
         }
         Self::new(backend)
+    }
+
+    /// Where files have no native path (a browser page): content in the profile's app files,
+    /// which outlive the page. Every app of the profile shares the one store, as native apps
+    /// share `tilo/content`. The page holds those files in memory, so the store is kept
+    /// smaller than a native one.
+    #[cfg(feature = "dir")]
+    fn in_page_files() -> Self {
+        let Ok(content) = tilo_files::VPath::new("content") else {
+            return Self::memory();
+        };
+        let location = tilo_paths::AppPaths::for_app(PAGE_STORE_OWNER)
+            .data()
+            .join(&content);
+        Self::new(FilesBackend::new(
+            location,
+            ContentLimits {
+                max_item_bytes: PAGE_MAX_ITEM_BYTES,
+                max_total_bytes: PAGE_MAX_TOTAL_BYTES,
+                ..ContentLimits::default()
+            },
+        ))
     }
 
     /// Store `bytes`, returning their address. The media type is sniffed from the content.

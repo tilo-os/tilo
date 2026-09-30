@@ -23,8 +23,8 @@
 //! (that lives in the app's top strip).
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -178,6 +178,9 @@ impl RowGeometry {
 )]
 pub struct SidebarRow {
     category: Category,
+    /// The category's label in the active locale: painted, measured, spoken
+    /// and used as the row's `test_id`.
+    label: String,
     /// Whether this row is the currently-selected category — drives the active
     /// highlight. Passed in at build time from the app's selection.
     active: bool,
@@ -208,6 +211,7 @@ impl SidebarRow {
     ) -> Self {
         Self {
             category,
+            label: category.label(),
             active,
             selection_request,
             rect: Rect::ZERO,
@@ -247,11 +251,8 @@ impl SidebarRow {
     /// bottom — never below [`ROW_HEIGHT`], so 1× rows stay exactly that.
     fn measured_height(&self, text_renderer: &mut TextRenderer, row_w: f64) -> f32 {
         let size = self.renderer_label_size(text_renderer);
-        let (_, line_height) = text_renderer.measure(
-            self.category.label(),
-            size,
-            Some(Self::label_max_width(row_w)),
-        );
+        let (_, line_height) =
+            text_renderer.measure(&self.label, size, Some(Self::label_max_width(row_w)));
         (line_height + 4.0 * spacing().s1).max(ROW_HEIGHT)
     }
 
@@ -264,7 +265,7 @@ impl SidebarRow {
 }
 
 impl Widget for SidebarRow {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    ui::provides!(dyn ui::undo::UndoPoints);
 
     fn build_layout(
         &mut self,
@@ -358,7 +359,7 @@ impl Widget for SidebarRow {
         // were laid out with — the default toolkit scale, because the sidebar
         // tree is composed before a theme is resolved. Reading a theme-retuned
         // `s2` here would detach the pill from the search field it aligns to.
-        let label = self.category.label();
+        let label = self.label.as_str();
         let label_size = self.renderer_label_size(text_renderer);
         // Shaped against the same width `measure` used, so a label that wraps
         // under large text is centred as the two-line box the row grew for.
@@ -453,25 +454,15 @@ impl Widget for SidebarRow {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let logical = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let logical =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hover = self.rect.contains(logical);
                 if hover != self.is_hovered {
                     self.is_hovered = hover;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -483,18 +474,18 @@ impl Widget for SidebarRow {
                     let pressed = *element_state == ElementState::Pressed;
                     if pressed != self.is_pressed {
                         self.is_pressed = pressed;
-                        *handled = true;
+                        *ctx.handled = true;
                         // Fire selection on release (matches Button semantics).
                         if !pressed {
                             self.activate();
                         }
                         if pressed {
-                            *focus_target = Some(node_id);
+                            *ctx.focus_target = Some(ctx.node_id);
                         }
                     }
                 } else if self.is_pressed {
                     self.is_pressed = false;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -506,7 +497,7 @@ impl Widget for SidebarRow {
                     ) =>
             {
                 self.activate();
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
@@ -519,13 +510,13 @@ impl Widget for SidebarRow {
     /// Addressable by the category's display label so interaction tests can
     /// resolve a row's on-screen rect and click it.
     fn test_id(&self) -> Option<&str> {
-        Some(self.category.label())
+        Some(&self.label)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
-                .with_name(self.category.label())
+                .with_name(&self.label)
                 .with_action_target(crate::actions::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
@@ -535,18 +526,6 @@ impl Widget for SidebarRow {
                     ..Default::default()
                 }),
         )
-    }
-
-    /// Expose the active state so a rebuilt tree can be inspected — used by
-    /// the interaction tests to confirm the highlight followed the click. The
-    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
-    /// place for this read-only snapshot.
-    fn get_state(&self) -> Option<String> {
-        Some(if self.active {
-            "active".into()
-        } else {
-            "inactive".into()
-        })
     }
 
     fn get_rect(&self) -> Rect {
@@ -574,8 +553,8 @@ impl Widget for SidebarRow {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action {
             ui::a11y::Action::Activate => {
@@ -584,6 +563,20 @@ impl Widget for SidebarRow {
             }
             _ => false,
         }
+    }
+}
+
+impl ui::undo::UndoPoints for SidebarRow {
+    /// Expose the active state so a rebuilt tree can be inspected — used by
+    /// the interaction tests to confirm the highlight followed the click. The
+    /// `Widget::get_state` channel (ephemeral, non-persisted) is the natural
+    /// place for this read-only snapshot.
+    fn get_state(&self) -> Option<String> {
+        Some(if self.active {
+            "active".into()
+        } else {
+            "inactive".into()
+        })
     }
 }
 
@@ -635,7 +628,7 @@ pub fn build(
     if trimmed.is_empty() {
         for section in Section::ALL.iter().copied() {
             let rows: Vec<El> = Category::in_section(section).map(row).collect();
-            col = col.push(section_block(section.label(), rows));
+            col = col.push(section_block(&section.label(), rows));
         }
     } else {
         // Filtered results — a flat list of matching categories under a
@@ -710,6 +703,7 @@ fn section_block(label: &str, rows: Vec<El>) -> El {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     fn count_rows(w: &dyn Widget) -> usize {
         let mut n = usize::from(w.name() == "SidebarRow");
@@ -911,14 +905,16 @@ mod tests {
                 let mut focus = None;
                 row.handle_event(
                     ev,
-                    1.0,
-                    &mods,
-                    &mut doc,
-                    &root,
-                    &mut handled,
-                    &mut focus,
-                    node,
-                    &taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &mods,
+                        state: &mut doc,
+                        path: &root,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: node,
+                        taffy: &taffy,
+                    },
                 );
             }
 
@@ -970,7 +966,7 @@ mod incoming_large_text_tests {
         let rect = Rect::new(0.0, 0.0, width, height);
         let size = row.renderer_label_size(&tr);
         let (_, line_box) = tr.measure(
-            row.category.label(),
+            &row.category.label(),
             size,
             Some(SidebarRow::label_max_width(width)),
         );

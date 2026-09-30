@@ -379,14 +379,16 @@ fn send_left_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -405,14 +407,16 @@ fn send_left_release(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -431,14 +435,16 @@ fn send_cursor_move(widget: &mut TerminalWidget, doc: &mut AutoCommit, x: f64, y
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -467,14 +473,16 @@ fn send_mouse_button_mods(
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -486,14 +494,16 @@ fn send_focus(widget: &mut TerminalWidget, doc: &mut AutoCommit, focused: bool) 
     let taffy = taffy::TaffyTree::<()>::new();
     widget.handle_event(
         &WindowEvent::Focused(focused),
-        1.0,
-        &Modifiers::default(),
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        taffy::NodeId::new(0),
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: taffy::NodeId::new(0),
+            taffy: &taffy,
+        },
     );
 }
 
@@ -570,14 +580,102 @@ fn send_key_with_modifiers(
     };
     widget.handle_event(
         &win_ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
+    );
+}
+
+/// Same as [`send_key_with_modifiers`], but leave `KeyEvent::text` empty.
+/// Hardware Space and control-socket keys often arrive that way; the PTY
+/// must still see the glyphs or App/Frame steal Space/Enter as Activate.
+fn send_key_without_text(
+    widget: &mut TerminalWidget,
+    doc: &mut AutoCommit,
+    key: winit::keyboard::Key,
+) -> bool {
+    use ui::widget::Widget;
+    use winit::event::{ElementState, KeyEvent, Modifiers, WindowEvent};
+    use winit::keyboard::{KeyLocation, PhysicalKey};
+
+    let modifiers = Modifiers::default();
+    let mut handled = false;
+    let mut focus = None;
+    let taffy = taffy::TaffyTree::<()>::new();
+    let node = taffy::NodeId::new(0);
+    let mut ev: KeyEvent = unsafe { std::mem::zeroed() };
+    ev.logical_key = key;
+    ev.physical_key = PhysicalKey::Unidentified(winit::keyboard::NativeKeyCode::Unidentified);
+    ev.location = KeyLocation::Standard;
+    ev.state = ElementState::Pressed;
+    ev.repeat = false;
+    ev.text = None;
+    widget.handle_event(
+        &WindowEvent::KeyboardInput {
+            device_id: fake_device_id(),
+            event: ev,
+            is_synthetic: false,
+        },
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
+    );
+    handled
+}
+
+/// Typed letters, Space and Enter must reach the PTY even when winit omits
+/// `KeyEvent::text` — the production hardware and control-socket shapes.
+#[test]
+fn typed_text_reaches_the_pty_without_keyevent_text() {
+    use winit::keyboard::{Key, NamedKey, SmolStr};
+
+    let (mut widget, writes) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+
+    assert!(
+        send_key_without_text(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static("e")),
+        ),
+        "a character key without text must be consumed"
+    );
+    assert!(
+        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Space)),
+        "Named Space without text must be consumed, not left for Activate"
+    );
+    assert!(
+        send_key_without_text(
+            &mut widget,
+            &mut doc,
+            Key::Character(SmolStr::new_static(" ")),
+        ),
+        "Character Space without text must be consumed"
+    );
+    assert!(
+        send_key_without_text(&mut widget, &mut doc, Key::Named(NamedKey::Enter)),
+        "Enter must be consumed as a carriage return"
+    );
+
+    assert_eq!(
+        drain_writes(&writes),
+        b"e  \r",
+        "letters, both Space spellings, and Enter reach the PTY",
     );
 }
 
@@ -813,8 +911,8 @@ fn terminal_draw_and_disconnected_state_follow_theme_and_text_scale() {
         let mut widget = TerminalWidget::spawn_command(shell_command("true", "exit /b 0"))
             .expect("spawn short-lived pty command");
         let mut doc = AutoCommit::new();
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             widget.sync(&mut doc, &ROOT);
             if widget.is_disconnected() {
                 break;
@@ -1307,11 +1405,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             /*shift=*/ true,
         );
 
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("copy shortcut queues a canonical action");
         assert_eq!(intent.address.action, "copy-selection");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -1319,7 +1416,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             ui::tilo_actions::ConfirmationPolicy::Confirm
         );
         assert!(
-            widget.take_control_invocation().is_none(),
+            ui::widget::controls::take_control_invocation(&mut widget).is_none(),
             "the gesture queues exactly one intent"
         );
     }
@@ -1344,11 +1441,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
                 drain_writes(&writes).is_empty(),
                 "shortcut cannot write before host admission"
             );
-            let intent = widget
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut widget)
                 .expect("paste shortcut queues a canonical action");
             assert_eq!(intent.address.action, "paste");
-            let resources = widget.resources(&doc);
+            let resources = ui::resources::resources(&widget, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
             assert_eq!(spec.params().len(), 1);
             assert_eq!(spec.params()[0].name.as_ref(), "text");
@@ -1375,7 +1471,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
             anchor: GridPos { row: 0, col: 0 },
             cursor: GridPos { row: 0, col: 11 },
         }));
-        widget.refresh_control_action_availability(&std::collections::HashSet::new());
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::new(),
+        );
 
         send_key(
             &mut widget,
@@ -1394,7 +1493,7 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         send_cursor_move(&mut widget, &mut doc, 100.0, 100.0);
         send_middle_press(&mut widget, &mut doc);
 
-        assert!(widget.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
         assert!(
             drain_writes(&writes).is_empty(),
             "denied gestures produce neither an invocation nor a PTY effect"
@@ -1414,11 +1513,10 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         send_cursor_move(&mut w, &mut doc, 100.0, 100.0);
         send_middle_press(&mut w, &mut doc);
         assert!(drain_writes(&write_rx).is_empty());
-        let intent = w
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut w)
             .expect("middle-click queues a canonical action");
         assert_eq!(intent.address.action, "paste-primary");
-        let resources = w.resources(&doc);
+        let resources = ui::resources::resources(&w, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(
             spec.contract.confirmation,
@@ -1427,8 +1525,18 @@ fn clipboard_gestures_route_through_confirmed_actions() {
         ui::clipboard_copy_primary("SUBSTITUTED");
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
-            w.invoke_resource_operation(spec.kind, &encoded.type_id, &encoded.payload, &doc, &ROOT)
-                .unwrap()
+            w.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    spec.kind,
+                    &encoded.type_id,
+                    &encoded.payload
+                ),
+                &mut doc,
+                &ROOT
+            )
+            .map(|started| started.is_some())
+            .unwrap()
         );
         assert_eq!(
             drain_writes(&write_rx),
@@ -1965,7 +2073,7 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             );
             assert!(widget.find_test_state().0);
             assert!(
-                widget.take_control_invocation().is_none(),
+                ui::widget::controls::take_control_invocation(&mut widget).is_none(),
                 "Find is local presentation"
             );
             assert!(drain_writes(&writes).is_empty());
@@ -2029,16 +2137,16 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
             widget.selection().is_none(),
             "menu selection waits for host admission"
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("canonical select-all intent");
         assert_eq!(intent.address.action, "select-all");
         // Grant selection without clipboard publication: this keyboard test must
         // never write the real desktop clipboard on any platform.
-        widget.refresh_control_action_availability(&std::collections::HashSet::from([intent
-            .address
-            .clone()]));
-        let resources = widget.resources(&doc);
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::from([intent.address.clone()]),
+        );
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         assert_eq!(spec.kind, ui::tilo_actions::OperationKind::Effect);
         assert_eq!(
@@ -2051,13 +2159,17 @@ fn context_menu_is_keyboard_navigable_and_laid_out_in_view() {
         // tests cover denial, confirmation and live role revocation.
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -2189,7 +2301,8 @@ fn menu_and_paste_actions_recheck_live_permissions() {
     {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
+            LaunchTarget, RestoreInput,
         };
         use ui::permissions::{Actor, PermissionContext, Role, UserId};
         const APP_ID: &str = "so.tilo.terminal";
@@ -2234,21 +2347,22 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             &mut AutoCommit::new(),
             &ROOT,
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("menu queues a canonical intent");
         assert_eq!(intent.address.action, "clear");
         assert!(drain_writes(&writes).is_empty());
         MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
         let context = HostContext::prepare(
             &definition,
-            records,
-            views,
-            "terminal-menu-device".into(),
-            17,
-            permissions.clone(),
-            UserId("terminal-menu-user".into()),
-            ui::tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "terminal-menu-device".into(),
+                instance_id: 17,
+                permissions: permissions.clone(),
+                author: UserId("terminal-menu-user".into()),
+                action_context: ui::tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -2319,7 +2433,8 @@ fn menu_and_paste_actions_recheck_live_permissions() {
     {
         use std::{cell::RefCell, rc::Rc};
         use ui::application::{
-            ApplicationDefinition, ComponentRunnerInputs, HostContext, LaunchTarget, RestoreInput,
+            ApplicationDefinition, ComponentRunnerInputs, HostContext, HostContextInputs,
+            LaunchTarget, RestoreInput,
         };
         use ui::permissions::{Actor, PermissionContext, Role, UserId};
         use winit::keyboard::{Key, SmolStr};
@@ -2340,8 +2455,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             true,
             true,
         );
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("shortcut queues the canonical paste action");
         assert_eq!(intent.address.action, "paste");
         assert!(drain_writes(&writes).is_empty());
@@ -2377,13 +2491,15 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         MENU_COMPONENT_WIDGET.with_borrow_mut(|slot| *slot = Some(widget));
         let context = HostContext::prepare(
             &definition,
-            records,
-            views,
-            "terminal-shortcut-device".into(),
-            18,
-            permissions.clone(),
-            UserId("terminal-shortcut-user".into()),
-            ui::tilo_actions::ActionContext::default(),
+            HostContextInputs {
+                records,
+                views,
+                device_id: "terminal-shortcut-device".into(),
+                instance_id: 18,
+                permissions: permissions.clone(),
+                author: UserId("terminal-shortcut-user".into()),
+                action_context: ui::tilo_actions::ActionContext::default(),
+            },
             &LaunchTarget::New,
         )
         .unwrap();
@@ -2456,7 +2572,10 @@ fn menu_and_paste_actions_recheck_live_permissions() {
         let (mut widget, writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         widget.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
-        widget.refresh_control_action_availability(&std::collections::HashSet::new());
+        ui::widget::controls::refresh_control_action_availability(
+            &mut widget,
+            &std::collections::HashSet::new(),
+        );
         widget.open_context_menu_at(vello::kurbo::Point::new(20.0, 20.0));
 
         let menu = widget
@@ -2499,7 +2618,7 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             widget.find_test_state().0,
             "keyboard navigation skips denied effects and reaches local Find"
         );
-        assert!(widget.take_control_invocation().is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut widget).is_none());
         assert!(drain_writes(&writes).is_empty());
     }
 
@@ -2526,23 +2645,26 @@ fn menu_and_paste_actions_recheck_live_permissions() {
             .and_then(|node| node.action_target)
             .unwrap();
         assert!(widget.perform_semantic_action(&paste_target, &Action::Activate, &mut doc, &ROOT,));
-        let intent = widget
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(&mut widget)
             .expect("menu paste queues its captured canonical intent");
 
         ui::clipboard_copy("menu substitution");
-        let resources = widget.resources(&doc);
+        let resources = ui::resources::resources(&widget, &doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address).unwrap();
         let encoded = spec.build_json(&intent.arguments).unwrap();
         assert!(
             widget
-                .invoke_resource_operation(
-                    spec.kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        spec.kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .unwrap()
         );
         assert_eq!(
@@ -2604,7 +2726,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
     // `feed` path must produce correct content and finish well under a bound the
     // quadratic path could never meet.
     {
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
         let (mut w, _write_rx, _out_tx) = build_test_widget_io();
         let mut doc = AutoCommit::new();
         // 129 cols × ~38 rows — the same shape a maximized terminal reflows to,
@@ -2621,7 +2743,7 @@ fn grid_mirror_stays_linear_aligned_and_reports_changes() {
         );
         }
 
-        let start = Instant::now();
+        let start = ui::time::now();
         w.feed(&mut doc, &automerge::ROOT, &payload);
         w.sync(&mut doc, &automerge::ROOT);
         let elapsed = start.elapsed();
@@ -3042,14 +3164,16 @@ fn ime_and_accessibility_expose_terminal_semantics() {
         let taffy = taffy::TaffyTree::<()>::new();
         w.handle_event(
             &WindowEvent::Ime(winit::event::Ime::Commit("漢字".into())),
-            1.0,
-            &Modifiers::default(),
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            taffy::NodeId::new(0),
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: taffy::NodeId::new(0),
+                taffy: &taffy,
+            },
         );
 
         assert!(handled, "focused terminal consumes an IME commit");
@@ -3195,12 +3319,10 @@ fn ime_and_accessibility_expose_terminal_semantics() {
 fn terminal_resource_identity_convergence_and_presence() {
     // Case `terminal_resource_uses_the_shared_pane_identity`.
     {
-        use ui::widget::Widget;
-
         let (mut w, _writes) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.init_crdt(&mut doc, &automerge::ROOT);
-        let resource = Widget::resources(&w, &doc)
+        let resource = ui::resources::resources(&w, &doc)
             .into_iter()
             .next()
             .expect("terminal session resource");
@@ -3208,13 +3330,13 @@ fn terminal_resource_identity_convergence_and_presence() {
         let mut peer_doc = AutoCommit::load(&saved).expect("load collaborator replica");
         let (mut peer, _writes) = build_test_widget();
         peer.init_crdt(&mut peer_doc, &automerge::ROOT);
-        let peer_resource = Widget::resources(&peer, &peer_doc)
+        let peer_resource = ui::resources::resources(&peer, &peer_doc)
             .into_iter()
             .next()
             .expect("peer terminal session resource");
         assert_eq!(resource.id, peer_resource.id);
         assert_eq!(
-            Widget::control_action_bindings(&w).len(),
+            ui::widget::controls::control_action_bindings(&w).len(),
             0,
             "resource actions are command-palette/agent operations, not phantom controls"
         );
@@ -3227,7 +3349,6 @@ fn terminal_resource_identity_convergence_and_presence() {
     // presence addresses would split despite the document converging.
     {
         use automerge::ActorId;
-        use ui::widget::Widget;
 
         let mut base = AutoCommit::new();
         let mut left_doc = base.fork().with_actor(ActorId::random());
@@ -3260,12 +3381,12 @@ fn terminal_resource_identity_convergence_and_presence() {
         // replicas without a conflict-cleanup write.
         left.init_crdt(&mut left_doc, &ROOT);
         right.init_crdt(&mut right_doc, &ROOT);
-        let left_id = Widget::resources(&left, &left_doc)
+        let left_id = ui::resources::resources(&left, &left_doc)
             .into_iter()
             .next()
             .expect("left terminal resource")
             .id;
-        let right_id = Widget::resources(&right, &right_doc)
+        let right_id = ui::resources::resources(&right, &right_doc)
             .into_iter()
             .next()
             .expect("right terminal resource")
@@ -3291,7 +3412,7 @@ fn terminal_resource_identity_convergence_and_presence() {
         );
         widget.sync(&mut doc, &ROOT);
 
-        let root = Widget::resources(&widget, &doc)
+        let root = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .expect("session root");
@@ -3307,7 +3428,7 @@ fn terminal_resource_identity_convergence_and_presence() {
             .find(|resource| resource.kind == "terminal.link")
             .expect("visible OSC link child");
         assert_eq!(link.label, "https://example.test/docs");
-        assert!(Widget::resource(&widget, &doc, link.id.as_str()).is_some());
+        assert!(ui::resources::resource(&widget, &doc, link.id.as_str()).is_some());
         let semantics = Widget::accessibility(&widget).expect("terminal semantics");
         assert!(semantics.children.iter().any(|child| {
             child.role == ui::a11y::Role::Link
@@ -3315,8 +3436,8 @@ fn terminal_resource_identity_convergence_and_presence() {
                 && child.action_target.as_deref() == Some(link.id.as_str())
                 && child.state.focusable
         }));
-        let initial_revision =
-            Widget::action_directory_revision(&widget, &doc).expect("terminal directory revision");
+        let initial_revision = ui::resources::action_directory_revision(&widget, &doc)
+            .expect("terminal directory revision");
 
         let mut link_burst = Vec::new();
         for index in 0..40 {
@@ -3327,11 +3448,11 @@ fn terminal_resource_identity_convergence_and_presence() {
         widget.feed(&mut doc, &ROOT, &link_burst);
         widget.sync(&mut doc, &ROOT);
         assert_ne!(
-            Widget::action_directory_revision(&widget, &doc).as_deref(),
+            ui::resources::action_directory_revision(&widget, &doc).as_deref(),
             Some(initial_revision.as_str()),
             "new visible link resources invalidate the directory snapshot"
         );
-        let bounded = Widget::resources(&widget, &doc)
+        let bounded = ui::resources::resources(&widget, &doc)
             .into_iter()
             .next()
             .and_then(|root| {
@@ -3352,15 +3473,15 @@ fn terminal_resource_identity_convergence_and_presence() {
             .map(|(prefix, _)| prefix)
             .expect("link id suffix");
         assert!(
-            Widget::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
+            ui::resources::resource(&widget, &doc, &format!("{prefix}:41")).is_some(),
             "a link omitted from the contextual cap resolves lazily"
         );
 
-        let page = Widget::action_directory_resource_page(&widget, &doc, b"", 1)
+        let page = ui::resources::action_directory_resource_page(&widget, &doc, b"", 1)
             .expect("bounded directory page");
         assert_eq!(page.resources.len(), 1);
         assert!(page.exhausted && page.next_cursor.is_empty());
-        let exhausted = Widget::action_directory_resource_page(&widget, &doc, b"done", 1)
+        let exhausted = ui::resources::action_directory_resource_page(&widget, &doc, b"done", 1)
             .expect("terminal owns its empty tail page");
         assert!(exhausted.resources.is_empty() && exhausted.exhausted);
     }
@@ -3432,8 +3553,8 @@ fn terminal_resource_identity_convergence_and_presence() {
         let (mut b, _rx_b) = build_test_widget();
         b.sync(&mut doc_b, &automerge::ROOT);
 
-        let ka = a.presence_key().expect("A presence key");
-        let kb = b.presence_key().expect("B presence key");
+        let ka = ui::presence::capability::presence_key(&a).expect("A presence key");
+        let kb = ui::presence::capability::presence_key(&b).expect("B presence key");
         assert_eq!(
             ka, kb,
             "both peers scope presence under the same shared pane id"
@@ -3449,7 +3570,7 @@ fn terminal_resource_identity_convergence_and_presence() {
     // Case `presence_payload_reports_selection_then_cursor`.
     {
         use ui::collaboration::PresencePayload;
-        use ui::widget::Widget as _;
+
         let (mut w, _) = build_test_widget();
         let mut doc = AutoCommit::new();
         w.init_crdt(&mut doc, &automerge::ROOT);
@@ -3460,7 +3581,8 @@ fn terminal_resource_identity_convergence_and_presence() {
             anchor: GridPos { row: 0, col: 2 },
             cursor: GridPos { row: 0, col: 5 },
         }));
-        let (_key, payload) = w.presence_payload().expect("payload with selection");
+        let (_key, payload) =
+            ui::presence::capability::presence_payload(&w).expect("payload with selection");
         match payload {
             // width defaults to 80, so row 0 linearises to the column itself.
             PresencePayload::Selection { start, end } => {
@@ -3471,7 +3593,8 @@ fn terminal_resource_identity_convergence_and_presence() {
 
         // Without a selection, the payload is a Caret at the cursor.
         w.force_selection(None);
-        let (_key, payload) = w.presence_payload().expect("payload with cursor");
+        let (_key, payload) =
+            ui::presence::capability::presence_payload(&w).expect("payload with cursor");
         assert!(
             matches!(payload, PresencePayload::Caret { .. }),
             "cursor payload"
@@ -3653,8 +3776,8 @@ fn sgr_and_graphics_escapes_parse_into_cells_and_placements() {
 /// replays bytes through vte into the CRDT grid) until the grid contains
 /// `needle` or `tries` elapse. Returns whether it appeared.
 fn pump_until_contains(w: &mut TerminalWidget, doc: &mut AutoCommit, needle: &str) -> bool {
-    let deadline = std::time::Instant::now() + HANG_BOUND;
-    while std::time::Instant::now() < deadline {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         w.sync(doc, &ROOT);
         if w.grid_text().contains(needle) {
             return true;
@@ -3734,8 +3857,8 @@ fn spawned_pty_sessions_run_commands_in_a_fresh_grid() {
         command.arg("-c");
         command.arg("printf new-session-output");
         let mut fresh = TerminalWidget::spawn_command(command).expect("new local terminal");
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             fresh.sync(&mut doc, &automerge::ROOT);
             if fresh.grid_text().contains("new-session-output") {
                 break;
@@ -4086,14 +4209,16 @@ fn send_left_press_mods(widget: &mut TerminalWidget, doc: &mut AutoCommit, shift
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4113,14 +4238,16 @@ fn send_middle_press(widget: &mut TerminalWidget, doc: &mut AutoCommit) {
     };
     widget.handle_event(
         &ev,
-        1.0,
-        &modifiers,
-        doc,
-        &automerge::ROOT,
-        &mut handled,
-        &mut focus,
-        node,
-        &taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &modifiers,
+            state: doc,
+            path: &automerge::ROOT,
+            handled: &mut handled,
+            focus_target: &mut focus,
+            node_id: node,
+            taffy: &taffy,
+        },
     );
 }
 
@@ -4312,14 +4439,16 @@ fn mouse_selection_gestures_select_extend_and_stay_anchored() {
         };
         widget.handle_event(
             &ev,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &automerge::ROOT,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
 
         // The highlight span exists in the SAME event that moved the pointer —
@@ -4923,14 +5052,18 @@ fn windows_native_and_hosted_terminal_paths() {
         let command = r#"powershell.exe -NoProfile -Command "$s=$Host.UI.RawUI.WindowSize; 'NATIVE_SIZE={0}x{1}' -f $s.Width,$s.Height""#;
         let arguments = serde_json::to_vec(command).unwrap();
         assert!(
-            ui::Widget::invoke_resource_operation(
+            ui::Widget::start_operation(
                 &mut widget,
-                ui::tilo_actions::OperationKind::Effect,
-                "terminal.run",
-                &arguments,
-                &document,
-                &ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    ui::tilo_actions::OperationKind::Effect,
+                    "terminal.run",
+                    &arguments
+                ),
+                &mut document,
+                &ROOT
             )
+            .map(|started| started.is_some())
             .expect("invoke native command through action API")
         );
         let expected = format!("NATIVE_SIZE={columns}x{rows}");
@@ -4981,5 +5114,48 @@ fn a_desktop_entry_command_reaches_the_terminal_through_the_launch_context() {
     assert_eq!(
         exec_script(&["printf".into(), "it's %s".into()]),
         "exec 'printf' 'it'\\''s %s'"
+    );
+}
+
+#[test]
+fn a_fish_prompt_after_its_startup_queries_is_on_screen() {
+    let (mut w, _rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    let batches: [&[u8]; 3] = [
+        b"\x1b[?u\x1b[>0q\x1b]11;?\x1b\\\x1b[?1049h\x1bP+q696e646e\x1b\\\x1bP+q71756572792d6f732d6e616d65\x1b\\\x1b[?1049l\x1b[0c",
+        b"\rWillkommen in fish\r\nType \x1b[32mhelp\x1b[m for instructions\r\n\x1b]7;file://ush/var/tmp\x07\x1b]0;/v/tmp\x07\x1b[m\x1b]11;?\x1b\\\x1b[6n\x1b[0c",
+        b"\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\x1b]133;A;click_events=1\x1b\\\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[K\r\x1b[17C\x1b[?2004l\x1b[?2031l\x1b[>4;0m\x1b>\x1b]0;/v/tmp\x07\x1b[m\x1b[?2004h\x1b[?2031h\x1b[>4;1m\x1b=\r\x1b]133;A;click_events=1\x07\x1b[92mroot\x1b[m@\x1b[mush\x1b[m \x1b[31m/v/tmp\x1b[m\x1b[m# \x1b]133;B\x07\x1b[J\r\x1b[17Cab",
+    ];
+    for batch in batches {
+        w.feed(&mut doc, &ROOT, batch);
+        w.sync(&mut doc, &ROOT);
+    }
+    assert!(
+        w.grid_row(2).starts_with("root@ush /v/tmp# ab"),
+        "prompt row: {:?}\n{}",
+        w.grid_row(2),
+        w.grid_text()
+    );
+}
+
+#[test]
+fn erasing_below_the_cursor_keeps_what_is_left_of_it() {
+    let (mut w, _rx) = build_test_widget();
+    let mut doc = AutoCommit::new();
+    w.force_geometry(Rect::new(0.0, 0.0, 800.0, 480.0), 10.0, 20.0);
+    w.feed(&mut doc, &ROOT, b"above\r\nP# tail\r\nbelow\x1b[2;4H\x1b[J");
+    w.sync(&mut doc, &ROOT);
+    assert_eq!(w.grid_row(0).trim_end(), "above");
+    assert_eq!(w.grid_row(1).trim_end(), "P#");
+    assert_eq!(w.grid_row(2).trim_end(), "");
+
+    w.feed(&mut doc, &ROOT, b"\x1b[2;3H\x1b[1J");
+    w.sync(&mut doc, &ROOT);
+    assert_eq!(w.grid_row(0).trim_end(), "");
+    assert!(
+        w.grid_row(1).starts_with("  "),
+        "row 1: {:?}",
+        w.grid_row(1)
     );
 }

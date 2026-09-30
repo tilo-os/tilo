@@ -37,7 +37,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
+use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
 mod lsp_workflow;
@@ -135,7 +136,9 @@ impl BottomPanelToggle {
 }
 
 impl Widget for BottomPanelToggle {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    ui::provides!(dyn ui::widget::controls::ActionControls);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         self.button.sync(state, path);
     }
 
@@ -209,18 +212,7 @@ impl Widget for BottomPanelToggle {
         icon.draw(scene, transform, icon_rect, theme.text_primary);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.is_focused()
             && matches!(
                 event,
@@ -237,22 +229,12 @@ impl Widget for BottomPanelToggle {
             )
             && self
                 .button
-                .perform_action(&ui::a11y::Action::Activate, state, path)
+                .perform_action(&ui::a11y::Action::Activate, ctx.state, ctx.path)
         {
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
-        self.button.handle_event(
-            event,
-            scale_factor,
-            modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.button.handle_event(event, ctx);
     }
 
     fn name(&self) -> &'static str {
@@ -318,25 +300,10 @@ impl Widget for BottomPanelToggle {
     fn perform_action(
         &mut self,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         self.button.perform_action(action, state, path)
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.button.take_control_invocation()
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        self.button.control_action_bindings()
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &HashSet<tilo_actions::ActionAddress>,
-    ) {
-        self.button.refresh_control_action_availability(allowed);
     }
 
     fn set_interaction_environment(
@@ -353,6 +320,21 @@ impl Widget for BottomPanelToggle {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.button.mark_drawn();
+    }
+}
+
+impl ui::widget::controls::ActionControls for BottomPanelToggle {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.button.take_control_invocation()
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        self.button.control_action_bindings()
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &HashSet<tilo_actions::ActionAddress>,
+    ) {
+        self.button.refresh_control_action_availability(allowed);
     }
 }
 
@@ -926,7 +908,7 @@ impl CodeApp {
             next_new_file_id,
             next_new_folder_id,
             flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            flap_tick: ui::time::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
             // 1280px) docks the sidebar; corrected from the real width once
             // `apply_layout` measures the window.
@@ -1062,7 +1044,7 @@ impl CodeApp {
     /// still animating (so the host keeps pumping frames). Called once per
     /// draw, mirroring the proven weather/chat pattern.
     fn tick_flap(&mut self) -> bool {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.flap_tick).as_secs_f64().min(0.1);
         self.flap_tick = now;
         self.flap.reconcile(self.sidebar_layout());
@@ -1611,7 +1593,7 @@ impl CodeApp {
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
         // every frame, so poking unconditionally would pin the bubble open.
         if changed {
-            self.status_bubble.poke(Instant::now());
+            self.status_bubble.poke(ui::time::now());
         }
     }
 
@@ -1621,7 +1603,7 @@ impl CodeApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.refresh_status();
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
@@ -1635,7 +1617,7 @@ impl CodeApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status.bubble_text();
         if label.is_empty() {
             return;
@@ -2734,8 +2716,8 @@ impl CodeApp {
     /// frame shows genuine hits from the genuine walk rather than canned rows.
     pub fn shots_project_search(&mut self, needle: &str) {
         self.start_project_search(search::Query::new(needle));
-        let deadline = Instant::now() + std::time::Duration::from_secs(20);
-        while self.search_job.is_some() && Instant::now() < deadline {
+        let deadline = ui::time::now() + std::time::Duration::from_secs(20);
+        while self.search_job.is_some() && ui::time::now() < deadline {
             self.poll_search();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -3246,41 +3228,18 @@ impl CodeApp {
     /// The find bar takes keyboard input while it is open (its fields own
     /// typing; Enter and Escape are its transport). Returns `true` when the
     /// find bar newly consumed the event (the caller should stop routing).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's already-decoded fields to the find bar's own Widget::handle_event, whose signature this crate does not own"
-    )]
-    fn handle_find_bar(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn handle_find_bar(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         if !self.find.is_visible() {
             return false;
         }
         let Some(n) = self.find_node else {
             return false;
         };
-        let before = *handled;
-        self.find.handle_event(
-            event,
-            scale_factor,
-            &modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            n,
-            taffy,
-        );
-        self.drain_find_events(state);
-        *handled && !before
+        let before = *ctx.handled;
+        self.find
+            .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+        self.drain_find_events(ctx.state);
+        *ctx.handled && !before
     }
 
     /// While the Terminal dock tab shows a live terminal, a click in its
@@ -3316,14 +3275,16 @@ impl CodeApp {
             let mut tf = None;
             t.handle_event(
                 event,
-                scale_factor,
-                &modifiers,
-                state,
-                &tr,
-                &mut th,
-                &mut tf,
-                NodeId::new(0),
-                taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor,
+                    modifiers: &modifiers,
+                    state,
+                    path: &tr,
+                    handled: &mut th,
+                    focus_target: &mut tf,
+                    node_id: NodeId::new(0),
+                    taffy,
+                },
             );
             if th {
                 *handled = true;
@@ -3348,20 +3309,10 @@ impl CodeApp {
     ///    hit-tests against its taffy-derived column rect.
     ///  * Overlay: route only while the flap is open. The tree hit-tests
     ///    against the off-flow overlay rect set in `draw` via `place_at`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards one WindowEvent's already-decoded fields to each child widget's own Widget::handle_event, whose signature this crate does not own"
-    )]
     fn route_to_children(
         &mut self,
         event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
         overlay: bool,
     ) {
         let sidebar_active = match self.sidebar_layout() {
@@ -3369,17 +3320,8 @@ impl CodeApp {
             SplitLayout::Overlay => self.sidebar_open(),
         };
         if sidebar_active && let Some(n) = self.sidebar_node {
-            self.sidebar.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.sidebar
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
 
         // While the overlay sidebar is open, it captures pointer presses over
@@ -3395,63 +3337,29 @@ impl CodeApp {
             } = event
             && self.overlay_sidebar_rect.contains(self.last_cursor)
         {
-            *handled = true;
+            *ctx.handled = true;
         }
 
         if let Some(n) = self.panel_toggle_node {
-            self.panel_toggle.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.panel_toggle
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
-        if !*handled && let Some(n) = self.tabs_node {
-            self.tabs.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+        if !*ctx.handled
+            && let Some(n) = self.tabs_node
+        {
+            self.tabs
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if self.panel_visible
             && let Some(n) = self.panel_node
         {
-            self.panel.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.panel
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
         if let Some(n) = self.editor_node {
-            self.editor.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            self.dispatch_editor_text_edits(state);
+            self.editor
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            self.dispatch_editor_text_edits(ctx.state);
         }
     }
 }
@@ -3518,10 +3426,18 @@ fn find_char_span(text: &str, needle: &str) -> Option<(usize, usize, usize)> {
 }
 
 impl Widget for CodeApp {
-    fn native_input_snapshot(&self, doc: &AutoCommit, _path: &ObjId) -> Option<serde_json::Value> {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
+    fn native_input_snapshot(&self, doc: &AppModel, path: &ModelPath) -> Option<serde_json::Value> {
         fn rect(rect: Rect) -> [f64; 4] {
             [rect.x0, rect.y0, rect.x1, rect.y1]
         }
+        let (doc, _) = ui::doc::document_ref(doc, path);
         // Read authoritative text, never the editor's optimistic render cache.
         // Only the opt-in native input observer invokes this O(buffer length) read.
         let buffer_id = self.active_file_node().map(|node| self.buffer_key(node));
@@ -3563,7 +3479,8 @@ impl Widget for CodeApp {
         clippy::too_many_lines,
         reason = "the widget lifecycle deliberately sequences every asynchronous projection in one auditable frame boundary"
     )]
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = ui::doc::document(state, path);
         if let Some((id, argument)) = self.pending_resource_command.take()
             && let Some(command) = Command::from_id(&id)
         {
@@ -3969,19 +3886,14 @@ impl Widget for CodeApp {
         self.draw(scene, transform, text_renderer, theme, presence);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.handle_palette_and_prompt_cursor(event, scale_factor, *modifiers, state, handled) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        if self.handle_palette_and_prompt_cursor(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+        ) {
             return;
         }
 
@@ -3989,17 +3901,23 @@ impl Widget for CodeApp {
         // because closing the tab either way changes which of two versions of
         // the file survives.
         if self.close_prompt.is_some() {
-            self.handle_close_prompt(event, state, handled);
+            self.handle_close_prompt(event, ctx.state, ctx.handled);
             return;
         }
 
         let overlay = self.sidebar_layout() == SplitLayout::Overlay;
 
-        if self.handle_overlay_shortcuts(event, overlay, handled) {
+        if self.handle_overlay_shortcuts(event, overlay, ctx.handled) {
             return;
         }
 
-        if self.handle_global_shortcuts(event, *modifiers, state, handled, focus_target) {
+        if self.handle_global_shortcuts(
+            event,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.handled,
+            ctx.focus_target,
+        ) {
             return;
         }
 
@@ -4007,22 +3925,13 @@ impl Widget for CodeApp {
         // is "which of these two versions of your file survives", and letting
         // keystrokes fall through to the buffer underneath it would be wrong.
         if self.conflict.is_some() {
-            self.handle_conflict_prompt(event, state, handled);
+            self.handle_conflict_prompt(event, ctx.state, ctx.handled);
             return;
         }
 
         // The find bar takes keyboard input while it is open (its fields own
         // typing; Enter and Escape are its transport).
-        if self.handle_find_bar(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-        ) {
+        if self.handle_find_bar(event, ctx) {
             return;
         }
 
@@ -4043,8 +3952,8 @@ impl Widget for CodeApp {
             )
         {
             self.close_bottom_panel();
-            *focus_target = self.panel_toggle_node;
-            *handled = true;
+            *ctx.focus_target = self.panel_toggle_node;
+            *ctx.handled = true;
             return;
         }
 
@@ -4052,22 +3961,19 @@ impl Widget for CodeApp {
         // terminal, a click in its content region focuses the shell and routes
         // keyboard + pointer input to it (like clicking into any terminal); a
         // press elsewhere returns focus to the editor.
-        if self.handle_terminal_input(event, scale_factor, *modifiers, state, taffy, handled) {
+        if self.handle_terminal_input(
+            event,
+            ctx.scale_factor,
+            *ctx.modifiers,
+            ctx.state,
+            ctx.taffy,
+            ctx.handled,
+        ) {
             return;
         }
 
         // Route to child widgets.
-        self.route_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            taffy,
-            overlay,
-        );
+        self.route_to_children(event, ctx, overlay);
 
         // If the editor asked for a language-server action (Ctrl+Space, F1,
         // F12), issue it now with the caret position.
@@ -4082,8 +3988,8 @@ impl Widget for CodeApp {
         }
 
         // Drain whatever the children produced, then refresh derived views.
-        self.drain_child_events(state);
-        self.refresh_diagnostics(state);
+        self.drain_child_events(ctx.state);
+        self.refresh_diagnostics(ctx.state);
         self.refresh_status();
         // Mirror panel tab changes into focus, if the panel switched itself.
         let _ = self.panel.take_tab_changed();
@@ -4150,26 +4056,6 @@ impl Widget for CodeApp {
         )
     }
 
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.palette.take_control_invocation().or_else(|| {
-            self.children_mut()
-                .into_iter()
-                .find_map(Widget::take_control_invocation)
-        })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
-        let mut bindings = self
-            .children()
-            .into_iter()
-            .flat_map(Widget::control_action_bindings)
-            .collect::<Vec<_>>();
-        if self.palette.is_visible() {
-            bindings.extend(self.palette.control_action_bindings());
-        }
-        bindings
-    }
-
     /// Expose the panes so headless driving can address them by name. Without
     /// this the whole editor is one opaque rect and `--headless-drive` can only
     /// click at raw coordinates.
@@ -4198,6 +4084,150 @@ impl Widget for CodeApp {
         out
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if cancellation_requested
+            && self
+                .pending_resource_file
+                .as_ref()
+                .is_some_and(|(id, _)| *id == invocation)
+        {
+            self.pending_resource_file = None;
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("cancelled before file I/O".into()),
+            });
+        }
+        if cancellation_requested && self.resource_invocation == Some(invocation) {
+            self.resource_invocation = None;
+            self.portal = None;
+            self.portal_intent = None;
+            return Some(tilo_actions::InvocationUpdate::Cancelled {
+                invocation,
+                message: Some("file selection cancelled".into()),
+            });
+        }
+        self.resource_result
+            .as_ref()
+            .is_some_and(|u| u.invocation() == invocation)
+            .then(|| self.resource_result.take())
+            .flatten()
+    }
+
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        self.sidebar.needs_redraw()
+            || self.tabs.needs_redraw()
+            || self.panel_toggle.needs_redraw()
+            || self.editor.needs_redraw()
+            || self.panel.needs_redraw()
+            || self.find.needs_redraw()
+            || self.palette.is_visible()
+            || self.conflict.is_some()
+            || self.close_prompt.is_some()
+            || self.flap.is_animating(self.sidebar_layout())
+            // A live terminal repaints continuously while visible.
+            || self.terminal_visible()
+    }
+
+    /// The explorer eases wheel scrolling and row transitions on its own
+    /// clock; it is the one child whose per-frame update this root runs.
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
+        self.sidebar.update(state, path)
+    }
+
+    fn needs_animation_frame(&self) -> bool {
+        // Keep the event loop pumping frames while the sidebar flap is
+        // mid-transition (so the slide + scrim fade play out) OR while a live
+        // terminal is visible — its PTY is drained from `sync`, which the App
+        // only re-runs while an animation frame is requested.
+        //
+        // A running search or an in-flight file picker also needs frames: both
+        // deliver over a channel drained in `sync`, so without a frame their
+        // results would sit unread until the user happened to move the mouse.
+        // A language server that is still working needs them too, so the
+        // indexing readout actually advances.
+        self.flap.is_animating(self.sidebar_layout())
+            || self.sidebar.needs_animation_frame()
+            || self.terminal_visible()
+            || self.search_job.is_some()
+            || self.portal.is_some()
+            || self.lsp_status.is_working()
+            // Keep frames coming while the floating status bubble is lingering
+            // / fading, so it hides itself without needing a stray pointer event.
+            || self.status_bubble.needs_frame(ui::time::now())
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        // While the flap eases in DOCKED mode the sidebar column's width is
+        // taffy-driven (set from `reveal` in `build_layout`), so the tree must
+        // be rebuilt each animating frame to widen/collapse smoothly. Overlay
+        // mode computes its geometry in `draw` and needs no rebuild.
+        self.sidebar_layout() == SplitLayout::Docked
+            && self.flap.is_animating(self.sidebar_layout())
+    }
+
+    fn mark_drawn(&mut self) {
+        self.sidebar.mark_drawn();
+        self.tabs.mark_drawn();
+        self.panel_toggle.mark_drawn();
+        self.editor.mark_drawn();
+        self.panel.mark_drawn();
+        self.find.mark_drawn();
+    }
+}
+
+impl ui::search::capability::SearchSource for CodeApp {
+    /// Publish canonical file, symbol and live project-result search rows. Each
+    /// row points at an exported resource action, so there is no callback-only
+    /// path with weaker semantics than the palette/agent door.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(
+            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
+        )]
+    }
+}
+
+impl ui::resources::PublishesResources for CodeApp {
     /// Publish a bounded contextual project snapshot for the shell's Ctrl+K
     /// palette. Any omitted file/symbol/result resolves lazily below through
     /// its canonical address. Delegates to the
@@ -4206,7 +4236,6 @@ impl Widget for CodeApp {
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
-
     fn action_directory_resource_page(
         &self,
         _doc: &AutoCommit,
@@ -4224,22 +4253,46 @@ impl Widget for CodeApp {
             exhausted: true,
         })
     }
-
     /// Resolve a searched file, symbol, or result through the current widget
     /// state. This is deliberately lazy: a palette row carries only an inert
     /// canonical address until activation.
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
+}
 
+impl ui::widget::controls::ActionControls for CodeApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.palette.take_control_invocation().or_else(|| {
+            self.children_mut()
+                .into_iter()
+                .find_map(ui::widget::controls::take_control_invocation)
+        })
+    }
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
+        let mut bindings = self
+            .children()
+            .into_iter()
+            .flat_map(ui::widget::controls::control_action_bindings)
+            .collect::<Vec<_>>();
+        if self.palette.is_visible() {
+            bindings.extend(self.palette.control_action_bindings());
+        }
+        bindings
+    }
+}
+
+impl ui::undo::CommittedActions for CodeApp {
     /// Hand the host the heads captured before an on-screen affordance dispatched
     /// its action, so it records one undo boundary bracketing it (see
     /// `Self::apply_command`). Rising-edge: cleared on read.
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
     }
+}
 
-    fn invoke_resource_operation(
+impl CodeApp {
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -4320,7 +4373,7 @@ impl Widget for CodeApp {
         Ok(true)
     }
 
-    fn start_resource_operation(
+    fn admit_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -4389,13 +4442,14 @@ impl Widget for CodeApp {
             }
             other => {
                 return self
-                    .invoke_resource_operation_v2(
+                    .answer_resource_operation(
                         kind,
                         type_id,
                         &serde_json::to_vec(&other).map_err(|e| e.to_string())?,
                         doc,
                         path,
                     )
+                    .map(|handled| handled.then(ui::tilo_actions::ActionOutput::default))
                     .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
             }
         };
@@ -4406,115 +4460,6 @@ impl Widget for CodeApp {
             self.resource_invocation = Some(invocation);
         }
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-    }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if cancellation_requested
-            && self
-                .pending_resource_file
-                .as_ref()
-                .is_some_and(|(id, _)| *id == invocation)
-        {
-            self.pending_resource_file = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("cancelled before file I/O".into()),
-            });
-        }
-        if cancellation_requested && self.resource_invocation == Some(invocation) {
-            self.resource_invocation = None;
-            self.portal = None;
-            self.portal_intent = None;
-            return Some(tilo_actions::InvocationUpdate::Cancelled {
-                invocation,
-                message: Some("file selection cancelled".into()),
-            });
-        }
-        self.resource_result
-            .as_ref()
-            .is_some_and(|u| u.invocation() == invocation)
-            .then(|| self.resource_result.take())
-            .flatten()
-    }
-
-    /// Publish canonical file, symbol and live project-result search rows. Each
-    /// row points at an exported resource action, so there is no callback-only
-    /// path with weaker semantics than the palette/agent door.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(
-            crate::search_provider::FileSearchProvider::from_catalog(self.search_catalog.clone()),
-        )]
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        self.sidebar.needs_redraw()
-            || self.tabs.needs_redraw()
-            || self.panel_toggle.needs_redraw()
-            || self.editor.needs_redraw()
-            || self.panel.needs_redraw()
-            || self.find.needs_redraw()
-            || self.palette.is_visible()
-            || self.conflict.is_some()
-            || self.close_prompt.is_some()
-            || self.flap.is_animating(self.sidebar_layout())
-            // A live terminal repaints continuously while visible.
-            || self.terminal_visible()
-    }
-
-    /// The explorer eases wheel scrolling and row transitions on its own
-    /// clock; it is the one child whose per-frame update this root runs.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
-        self.sidebar.update(state, path)
-    }
-
-    fn needs_animation_frame(&self) -> bool {
-        // Keep the event loop pumping frames while the sidebar flap is
-        // mid-transition (so the slide + scrim fade play out) OR while a live
-        // terminal is visible — its PTY is drained from `sync`, which the App
-        // only re-runs while an animation frame is requested.
-        //
-        // A running search or an in-flight file picker also needs frames: both
-        // deliver over a channel drained in `sync`, so without a frame their
-        // results would sit unread until the user happened to move the mouse.
-        // A language server that is still working needs them too, so the
-        // indexing readout actually advances.
-        self.flap.is_animating(self.sidebar_layout())
-            || self.sidebar.needs_animation_frame()
-            || self.terminal_visible()
-            || self.search_job.is_some()
-            || self.portal.is_some()
-            || self.lsp_status.is_working()
-            // Keep frames coming while the floating status bubble is lingering
-            // / fading, so it hides itself without needing a stray pointer event.
-            || self.status_bubble.needs_frame(Instant::now())
-    }
-
-    fn take_structure_dirty(&mut self) -> bool {
-        // While the flap eases in DOCKED mode the sidebar column's width is
-        // taffy-driven (set from `reveal` in `build_layout`), so the tree must
-        // be rebuilt each animating frame to widen/collapse smoothly. Overlay
-        // mode computes its geometry in `draw` and needs no rebuild.
-        self.sidebar_layout() == SplitLayout::Docked
-            && self.flap.is_animating(self.sidebar_layout())
-    }
-
-    fn mark_drawn(&mut self) {
-        self.sidebar.mark_drawn();
-        self.tabs.mark_drawn();
-        self.panel_toggle.mark_drawn();
-        self.editor.mark_drawn();
-        self.panel.mark_drawn();
-        self.find.mark_drawn();
     }
 }
 

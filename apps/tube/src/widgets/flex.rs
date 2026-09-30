@@ -17,8 +17,8 @@
 //! the live `Theme`, so theming stays OS-controlled.
 
 use std::collections::HashMap;
+use ui::widget::{AppModel, ModelPath};
 
-use automerge::{AutoCommit, ObjId};
 use taffy::style_helpers::{fr, length, minmax, percent, repeat};
 use taffy::{Dimension, NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -31,7 +31,7 @@ use ui::permissions::PermissionContext;
 use ui::presence::PresenceCtx;
 use ui::text_render::TextRenderer;
 use ui::theme::Theme;
-use ui::widget::{ActionEmitter, ControlBindingMetadata, Widget};
+use ui::widget::{ActionEmitter, ControlBindingMetadata, EventCtx, Widget};
 
 use crate::action::{self, Action, ActionBus};
 
@@ -442,8 +442,8 @@ impl Flex {
         }
     }
 
-    fn dispatch_child_event(&mut self, dispatch: &mut EventDispatch<'_>, node_id: NodeId) -> bool {
-        let Ok(child_nodes) = dispatch.taffy.children(node_id) else {
+    fn dispatch_child_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) -> bool {
+        let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return false;
         };
         if let Some(index) = self
@@ -453,22 +453,12 @@ impl Flex {
             && let (Some(&child_node), Some(child)) =
                 (child_nodes.get(index), self.children.get_mut(index))
         {
-            child.handle_event(
-                dispatch.event,
-                dispatch.scale_factor,
-                dispatch.modifiers,
-                dispatch.state,
-                dispatch.path,
-                dispatch.handled,
-                dispatch.focus_target,
-                child_node,
-                dispatch.taffy,
-            );
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
             return true;
         }
-        self.dispatch_children_by_layer(true, dispatch, &child_nodes);
-        if !*dispatch.handled {
-            self.dispatch_children_by_layer(false, dispatch, &child_nodes);
+        self.dispatch_children_by_layer(true, event, ctx, &child_nodes);
+        if !*ctx.handled {
+            self.dispatch_children_by_layer(false, event, ctx, &child_nodes);
         }
         false
     }
@@ -476,48 +466,24 @@ impl Flex {
     fn dispatch_children_by_layer(
         &mut self,
         floating: bool,
-        dispatch: &mut EventDispatch<'_>,
+        event: &WindowEvent,
+        ctx: &mut EventCtx<'_>,
         child_nodes: &[NodeId],
     ) {
         for (child, &child_node) in self.children.iter_mut().zip(child_nodes) {
             if child.is_floating() != floating {
                 continue;
             }
-            child.handle_event(
-                dispatch.event,
-                dispatch.scale_factor,
-                dispatch.modifiers,
-                dispatch.state,
-                dispatch.path,
-                dispatch.handled,
-                dispatch.focus_target,
-                child_node,
-                dispatch.taffy,
-            );
-            if *dispatch.handled {
+            child.handle_event(event, &mut ctx.reborrow(ctx.path, child_node));
+            if *ctx.handled {
                 break;
             }
         }
     }
 }
 
-struct EventDispatch<'a> {
-    event: &'a WindowEvent,
-    scale_factor: f64,
-    modifiers: &'a winit::event::Modifiers,
-    state: &'a mut AutoCommit,
-    path: &'a ObjId,
-    handled: &'a mut bool,
-    focus_target: &'a mut Option<NodeId>,
-    taffy: &'a TaffyTree<()>,
-}
-
 impl Widget for Flex {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        for c in &mut self.children {
-            c.sync(state, path);
-        }
-    }
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     #[allow(
         clippy::too_many_lines,
@@ -761,32 +727,9 @@ impl Widget for Flex {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        {
-            let mut dispatch = EventDispatch {
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                taffy,
-            };
-            if self.dispatch_child_event(&mut dispatch, node_id) {
-                return;
-            }
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut EventCtx<'_>) {
+        if self.dispatch_child_event(event, ctx) {
+            return;
         }
 
         if !self.is_actionable() {
@@ -801,13 +744,13 @@ impl Widget for Flex {
                         ..
                     },
                 ..
-            } if self.focused && !*handled => {
+            } if self.focused && !*ctx.handled => {
                 if self.activate() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 let hov = self.rect.contains(p);
                 if hov != self.hovered {
                     self.hovered = hov;
@@ -819,7 +762,7 @@ impl Widget for Flex {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.hovered && !*handled {
+                if self.hovered && !*ctx.handled {
                     self.pressed = true;
                     self.dirty = true;
                 }
@@ -829,8 +772,8 @@ impl Widget for Flex {
                 button: MouseButton::Left,
                 ..
             } => {
-                if self.pressed && self.hovered && !*handled {
-                    *handled = self.activate();
+                if self.pressed && self.hovered && !*ctx.handled {
+                    *ctx.handled = self.activate();
                 }
                 self.pressed = false;
                 self.dirty = true;
@@ -887,8 +830,8 @@ impl Widget for Flex {
     fn perform_action(
         &mut self,
         action_kind: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         match action_kind {
             ui::a11y::Action::Focus if self.is_actionable() => {
@@ -908,44 +851,6 @@ impl Widget for Flex {
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
         (self.is_actionable() && self.rect.contains(point))
             .then_some(winit::window::CursorIcon::Pointer)
-    }
-
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.action_emitter
-            .as_mut()
-            .and_then(ActionEmitter::take)
-            .or_else(|| {
-                self.children
-                    .iter_mut()
-                    .find_map(|child| child.take_control_invocation())
-            })
-    }
-
-    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
-        let mut bindings = self
-            .action_emitter
-            .as_ref()
-            .map(|emitter| {
-                emitter.metadata(self.test_id.as_deref().unwrap_or("tube.custom-control"))
-            })
-            .into_iter()
-            .collect::<Vec<_>>();
-        for child in &self.children {
-            bindings.extend(child.control_action_bindings());
-        }
-        bindings
-    }
-
-    fn refresh_control_action_availability(
-        &mut self,
-        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
-    ) {
-        if let Some(emitter) = &mut self.action_emitter {
-            emitter.refresh_availability(allowed);
-        }
-        for child in &mut self.children {
-            child.refresh_control_action_availability(allowed);
-        }
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -993,9 +898,50 @@ impl Widget for Flex {
     }
 }
 
+impl ui::widget::controls::ActionControls for Flex {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.action_emitter
+            .as_mut()
+            .and_then(ActionEmitter::take)
+            .or_else(|| {
+                self.children
+                    .iter_mut()
+                    .find_map(|child| ui::widget::controls::take_control_invocation(child.as_mut()))
+            })
+    }
+    fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
+        let mut bindings = self
+            .action_emitter
+            .as_ref()
+            .map(|emitter| {
+                emitter.metadata(self.test_id.as_deref().unwrap_or("tube.custom-control"))
+            })
+            .into_iter()
+            .collect::<Vec<_>>();
+        for child in &self.children {
+            bindings.extend(ui::widget::controls::control_action_bindings(
+                child.as_ref(),
+            ));
+        }
+        bindings
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        if let Some(emitter) = &mut self.action_emitter {
+            emitter.refresh_availability(allowed);
+        }
+        for child in &mut self.children {
+            ui::widget::controls::refresh_control_action_availability(child.as_mut(), allowed);
+        }
+    }
+}
+
 #[cfg(test)]
 mod accessibility_tests {
     use super::*;
+    use automerge::AutoCommit;
 
     #[test]
     fn clickable_surface_is_a_named_keyboard_focusable_button() {

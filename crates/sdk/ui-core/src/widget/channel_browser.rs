@@ -13,7 +13,6 @@ use crate::time::SystemTime;
 use std::collections::HashMap;
 use tilo_search::FieldWeight;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
@@ -23,9 +22,9 @@ use winit::keyboard::{Key, NamedKey};
 
 use collab_types::ChannelId;
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_metrics::renderer_type_size;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -425,19 +424,20 @@ impl ChannelBrowser {
         }
         let text_size = theme.tokens.typography.scale.sm;
         self.query_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.query,
-            &self.query_selection,
-            "Search channels",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.query,
+                selection: &self.query_selection,
+                placeholder: "Search channels",
+                show_caret: self.is_focused,
+            },
             Rect::new(row.x0 + 12.0, row.y0, row.x1 - 12.0, row.y1),
             &TextStyle::new(text_size),
-            theme.tokens.colors.text_primary,
-            theme.tokens.colors.text_dim,
-            theme.tokens.colors.accent[5].with_alpha_factor(0.3),
-            theme.tokens.colors.accent[5],
-            self.is_focused,
+            QueryInk::accented(
+                theme.tokens.colors.text_primary,
+                theme.tokens.colors.text_dim,
+                theme.tokens.colors.accent[5],
+            ),
         );
     }
 
@@ -525,10 +525,6 @@ impl ChannelBrowser {
     /// row's identity. Role chip and time/badge are split into their own
     /// helpers below to keep this under clippy's line budget; neither
     /// reads `self`, so both are associated functions.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Channel rows combine render context with row bounds, channel metadata, selection state, and time for their activity display."
-    )]
     fn draw_row(
         scene: &mut Scene,
         transform: Affine,
@@ -824,11 +820,12 @@ impl ChannelBrowser {
         let cy = f64::midpoint(footer.y0, footer.y1);
 
         let mut x = footer.x0 + 4.0;
-        for (key, label) in [
-            ("\u{2191}\u{2193}", "Navigate"),
-            ("Enter", "Select"),
-            ("Esc", "Close"),
-        ] {
+        let hints = [
+            ("\u{2191}\u{2193}", crate::i18n!("palette-hint-navigate")),
+            ("\u{21b5}", crate::i18n!("palette-hint-select")),
+            ("Esc", crate::i18n!("palette-hint-close")),
+        ];
+        for (key, label) in &hints {
             let (kw, kh) = text_renderer.measure(key, chip_text_size, None);
             let chip_w = f64::from(kw) + 10.0;
             let chip_rect = Rect::new(x, cy - chip_h / 2.0, x + chip_w, cy + chip_h / 2.0);
@@ -1084,8 +1081,6 @@ fn px(v: f64) -> f32 {
 }
 
 impl Widget for ChannelBrowser {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -1221,21 +1216,10 @@ impl Widget for ChannelBrowser {
         self.dirty = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse branches go first so click-to-select on pills/rows
         // works even when the input has focus.
-        self.handle_pointer_event(event, scale_factor, handled);
+        self.handle_pointer_event(event, ctx.scale_factor, ctx.handled);
 
         if !self.is_focused {
             return;
@@ -1253,7 +1237,7 @@ impl Widget for ChannelBrowser {
             } else {
                 self.dirty = true;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         let WindowEvent::KeyboardInput {
@@ -1271,10 +1255,10 @@ impl Widget for ChannelBrowser {
         if *element_state != ElementState::Pressed {
             return;
         }
-        let mods = modifiers.state();
+        let mods = ctx.modifiers.state();
         let shift = mods.shift_key();
         let ctrl = mods.control_key() || mods.super_key();
-        self.handle_key_press(event, logical_key, shift, ctrl, handled);
+        self.handle_key_press(event, logical_key, shift, ctrl, ctx.handled);
     }
 
     fn name(&self) -> &'static str {
@@ -1336,6 +1320,7 @@ impl Widget for ChannelBrowser {
 mod tests {
     use super::*;
     use crate::time::Duration;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::Modifiers;
@@ -1613,14 +1598,16 @@ mod tests {
         let root = automerge::ROOT;
         b.handle_event(
             event,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

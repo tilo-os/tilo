@@ -1,6 +1,6 @@
 //! A measured command strip with a shared `ContextMenu` for overflow.
 //! The extent cache is the sole source for intrinsic sizing, fitting and placement.
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -10,6 +10,7 @@ use winit::keyboard::{Key, NamedKey};
 
 use super::context_menu::{ContextMenu, MenuItem};
 use crate::a11y::{AccessNode, AccessState, Action, Role};
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::{TextRenderer, TextStyle};
 use crate::theme::Theme;
@@ -569,16 +570,7 @@ fn count_to_f64(n: usize) -> f64 {
 fn to_f32(value: f64) -> f32 {
     value as f32
 }
-#[allow(
-    clippy::arithmetic_side_effects,
-    reason = "affine composition is non-panicking float math"
-)]
-fn translated(transform: Affine, x: f64, y: f64) -> Affine {
-    transform * Affine::translate((x, y))
-}
-
 impl Widget for Toolbar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -699,13 +691,9 @@ impl Widget for Toolbar {
             };
             match item {
                 ToolbarItem::Button { label, .. } => self.draw_button(
-                    scene,
-                    transform,
-                    text,
-                    theme,
+                    &mut PaintCtx::new(scene, transform, text, theme),
                     &style,
                     Target::Item(index),
-                    rect,
                     label,
                 ),
                 ToolbarItem::Separator => {
@@ -737,13 +725,9 @@ impl Widget for Toolbar {
         }
         if self.has_overflow() {
             self.draw_button(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 &style,
                 Target::Overflow,
-                self.overflow_rect,
                 "…",
             );
         }
@@ -759,33 +743,16 @@ impl Widget for Toolbar {
     ) {
         self.menu.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.pointer = Some(Point::new(position.x / scale, position.y / scale));
+            self.pointer = Some(Point::new(
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
+            ));
         }
         if self.menu.is_open() {
-            self.menu.handle_event(
-                event,
-                scale,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                node,
-                tree,
-            );
+            self.menu
+                .handle_event(event, &mut ctx.reborrow(ctx.path, ctx.node_id));
             if matches!(
                 event,
                 WindowEvent::MouseInput {
@@ -801,7 +768,7 @@ impl Widget for Toolbar {
         }
         match event {
             WindowEvent::CursorMoved { .. } => {
-                *handled |= self.refresh_hover();
+                *ctx.handled |= self.refresh_hover();
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -812,8 +779,8 @@ impl Widget for Toolbar {
                 self.pressed = self.hovered;
                 if let Some(target) = self.pressed {
                     self.focus_target(target);
-                    *focus_target = Some(node);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -825,7 +792,7 @@ impl Widget for Toolbar {
                 if self.swallow_release {
                     self.swallow_release = false;
                     self.pressed = None;
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if let Some(target) = self
@@ -834,13 +801,13 @@ impl Widget for Toolbar {
                     .filter(|target| Some(*target) == self.hovered)
                 {
                     self.activate(target);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
                 if self.focused && event.state == ElementState::Pressed =>
             {
-                self.handle_key(&event.logical_key, handled);
+                self.handle_key(&event.logical_key, ctx.handled);
             }
             _ => {}
         }
@@ -975,8 +942,8 @@ impl Widget for Toolbar {
         &mut self,
         target: &str,
         action: &Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         let target = if target == "toolbar.overflow" && self.has_overflow() {
             Target::Overflow
@@ -1018,24 +985,11 @@ impl Widget for Toolbar {
 }
 
 impl Toolbar {
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "paint inputs and an immediate-mode button's geometry"
-    )]
-    fn draw_button(
-        &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
-        style: &TextStyle,
-        target: Target,
-        rect: Rect,
-        label: &str,
-    ) {
-        if rect.is_zero_area() {
+    fn draw_button(&self, ctx: &mut PaintCtx<'_>, style: &TextStyle, target: Target, label: &str) {
+        let Some(rect) = self.target_rect(target).filter(|rect| !rect.is_zero_area()) else {
             return;
-        }
+        };
+        let theme = ctx.theme;
         let radius = f64::from(theme.tokens.radii.sm);
         let shape = RoundedRect::from_rect(rect, radius);
         let color = if self.hovered == Some(target) {
@@ -1046,28 +1000,26 @@ impl Toolbar {
         // Neutral button face with its derived rest edge (HIG §9.5): on a
         // raised card the bare fill is invisible and the buttons read as
         // loose labels.
-        crate::surface::card(scene, transform, rect, radius, color);
+        crate::surface::card(ctx.scene, ctx.transform, rect, radius, color);
         if self.focused && self.focus == Some(target) && !self.menu.is_open() {
-            scene.stroke(
+            ctx.scene.stroke(
                 &Stroke::new(2.0),
-                transform,
+                ctx.transform,
                 theme.tokens.colors.border_focus,
                 None,
                 &shape,
             );
         }
-        let (width, height) = text.measure_style(label, None, style);
-        text.draw_style(
-            scene,
+        let (width, height) = ctx.text.measure_style(label, None, style);
+        ctx.text(
             label,
+            style,
             theme.tokens.colors.text_primary,
-            translated(
-                transform,
+            Point::new(
                 rect.center().x - f64::from(width) / 2.0,
                 rect.center().y - f64::from(height) / 2.0,
             ),
             None,
-            style,
         );
     }
 }
@@ -1372,6 +1324,7 @@ mod tests {
 #[cfg(test)]
 mod lifecycle_tests {
     use super::*;
+    use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
     use winit::event::{DeviceId, KeyEvent};
@@ -1420,14 +1373,16 @@ mod lifecycle_tests {
         let mut handled = false;
         tb.handle_event(
             &event,
-            1.0,
-            &Default::default(),
-            &mut AutoCommit::new(),
-            &automerge::ROOT,
-            &mut handled,
-            &mut None,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Default::default(),
+                state: &mut AutoCommit::new(),
+                path: &automerge::ROOT,
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: node,
+                taffy: &tree,
+            },
         );
         handled
     }
@@ -1879,14 +1834,16 @@ mod lifecycle_tests {
                 let send = |host: &mut crate::widget::Row, event: WindowEvent| {
                     host.handle_event(
                         &event,
-                        1.0,
-                        &Default::default(),
-                        &mut AutoCommit::new(),
-                        &automerge::ROOT,
-                        &mut false,
-                        &mut None,
-                        node,
-                        &tree,
+                        &mut crate::widget::EventCtx {
+                            scale_factor: 1.0,
+                            modifiers: &Default::default(),
+                            state: &mut AutoCommit::new(),
+                            path: &automerge::ROOT,
+                            handled: &mut false,
+                            focus_target: &mut None,
+                            node_id: node,
+                            taffy: &tree,
+                        },
                     );
                 };
                 let mouse_event = |button, state| WindowEvent::MouseInput {
@@ -1930,9 +1887,9 @@ mod lifecycle_tests {
     }
 
     #[test]
-    #[ignore = "manual offscreen evidence; set QUICK_UI_SCREENSHOT_DIR"]
+    #[ignore = "manual offscreen evidence; set TILO_UI_SCREENSHOT_DIR"]
     fn rendered_toolbar_overflow_fixtures() {
-        let dir = std::env::var("QUICK_UI_SCREENSHOT_DIR").unwrap();
+        let dir = crate::env::var("TILO_UI_SCREENSHOT_DIR").unwrap();
         std::fs::create_dir_all(&dir).unwrap();
         for (name, width, height, scale, toolbar_width) in [
             ("toolbar-ordinary-100", 720u32, 340u32, 1.0, 530.0),

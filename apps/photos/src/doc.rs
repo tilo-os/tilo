@@ -21,7 +21,7 @@
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
-use ui::doc::{read_bool, read_i64_coerced, read_str};
+use ui::doc::read_str;
 
 use crate::model::{Edits, ImageAnalysis, LibraryPhoto, OpenImage, PhotoLibrary, PhotoLocation};
 
@@ -47,9 +47,9 @@ pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<
     if let Some(content) = &open.content {
         return crate::pixels::read_bounded(store.open(content)?, crate::pixels::MAX_ENCODED_BYTES);
     }
-    crate::pixels::read_bounded(
-        std::fs::File::open(&open.path).ok()?,
-        crate::pixels::MAX_ENCODED_BYTES,
+    crate::files::read_native(
+        std::path::Path::new(&open.path),
+        crate::pixels::MAX_ENCODED_BYTES as u64,
     )
 }
 
@@ -101,11 +101,10 @@ struct VisionAnalysisComponent {
 const PHOTO_ANALYSIS_OCR_KEY: &str = "photo_analysis_ocr";
 const PHOTO_ANALYSIS_VISION_KEY: &str = "photo_analysis_vision";
 
-/// Structured library projection. The former `library` JSON scalar is read
-/// only long enough to migrate old documents; all new library writes use
-/// independently mergeable maps and lists below this key.
+/// Structured library projection: independently mergeable maps and lists
+/// below this key.
 const LIBRARY_KEY: &str = "photos_library";
-/// Field-granular replacement for the legacy `edits` JSON scalar. A crop is
+/// Field-granular edits. A crop is
 /// one coherent rectangle, while rotation is a separate user decision; the
 /// two fields therefore merge independently without pretending that the four
 /// coordinates of a single crop can safely be composed.
@@ -120,13 +119,47 @@ fn metadata_resource_id(prefix: &str, label: &str) -> String {
     format!("{prefix}{}", tilo_content::hash_bytes(label.as_bytes()))
 }
 
+/// The per-field column maps a photo's metadata is split across, one map
+/// per field keyed by photo id.
+struct PhotoColumns {
+    core: ObjId,
+    favorite: ObjId,
+    folder: ObjId,
+    people: ObjId,
+    tags: ObjId,
+    captured: ObjId,
+    analysis: ObjId,
+    analysis_ocr: ObjId,
+    analysis_vision: ObjId,
+    location: ObjId,
+}
+
+impl PhotoColumns {
+    /// Open (creating as needed) every column map under `root`, in schema
+    /// order.
+    fn open(doc: &mut AutoCommit, root: &ObjId) -> Option<Self> {
+        Some(Self {
+            core: PhotosDoc::map_or_make(doc, root, "photo_core")?,
+            favorite: PhotosDoc::map_or_make(doc, root, "photo_favorite")?,
+            folder: PhotosDoc::map_or_make(doc, root, "photo_folder")?,
+            people: PhotosDoc::map_or_make(doc, root, "photo_people")?,
+            tags: PhotosDoc::map_or_make(doc, root, "photo_tags")?,
+            captured: PhotosDoc::map_or_make(doc, root, "photo_captured_at")?,
+            analysis: PhotosDoc::map_or_make(doc, root, "photo_analysis")?,
+            analysis_ocr: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY)?,
+            analysis_vision: PhotosDoc::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)?,
+            location: PhotosDoc::map_or_make(doc, root, "photo_location")?,
+        })
+    }
+}
+
 impl PhotosDoc {
     /// True when the document has never been written to.
     pub fn is_empty(doc: &AutoCommit) -> bool {
         !matches!(
             doc.get(&ROOT, EDITS_KEY),
             Ok(Some((Value::Object(ObjType::Map), _)))
-        ) && !matches!(doc.get(&ROOT, "edits"), Ok(Some((Value::Scalar(_), _))))
+        )
     }
 
     /// Seed default state: **no image open** and no edits. An app with nothing
@@ -177,10 +210,7 @@ impl PhotosDoc {
     pub fn edits(doc: &AutoCommit) -> Edits {
         let roots = Self::edits_roots(doc);
         if roots.is_empty() {
-            return Self::conflicting::<Edits>(doc, "edits")
-                .into_iter()
-                .find(|edits| !edits.is_identity())
-                .unwrap_or_default();
+            return Edits::default();
         }
         // Two just-created replicas can concurrently make the map itself.
         // Read every root-map conflict so their independently written fields
@@ -220,15 +250,10 @@ impl PhotosDoc {
         }
     }
 
-    /// Migrate the legacy whole-edits scalar exactly once, then remove it so
-    /// future documents never emit a blob that could make crop and rotation
-    /// overwrite one another.
+    /// The one edits map, created on first write.
     fn ensure_structured_edits(doc: &mut AutoCommit) -> Option<ObjId> {
         let roots = Self::edits_roots(doc);
         if let [root] = roots.as_slice() {
-            if read_str(doc, &ROOT, "edits").is_some() {
-                let _ = doc.delete(&ROOT, "edits");
-            }
             return Some(root.clone());
         }
         // Concurrent first-run replicas can each create this map. Once an
@@ -240,17 +265,10 @@ impl PhotosDoc {
         if !roots.is_empty() {
             let _ = doc.delete(&ROOT, EDITS_KEY);
         }
-        let legacy = Self::conflicting::<Edits>(doc, "edits")
-            .into_iter()
-            .find(|edits| !edits.is_identity())
-            .or(inherited)
-            .unwrap_or_default();
+        let edits = inherited.unwrap_or_default();
         let root = doc.put_object(&ROOT, EDITS_KEY, ObjType::Map).ok()?;
-        Self::write_json_at(doc, &root, "crop", &legacy.crop);
-        Self::write_json_at(doc, &root, "rotate_quarters", &legacy.rotate_quarters);
-        if read_str(doc, &ROOT, "edits").is_some() {
-            let _ = doc.delete(&ROOT, "edits");
-        }
+        Self::write_json_at(doc, &root, "crop", &edits.crop);
+        Self::write_json_at(doc, &root, "rotate_quarters", &edits.rotate_quarters);
         Some(root)
     }
 
@@ -268,9 +286,9 @@ impl PhotosDoc {
     }
 
     /// Complete durable library metadata, materialized from per-record CRDT
-    /// maps. The legacy JSON scalar is a read-only migration input.
+    /// maps.
     pub fn library(doc: &AutoCommit) -> PhotoLibrary {
-        Self::structured_library(doc).unwrap_or_else(|| Self::legacy_library(doc))
+        Self::structured_library(doc).unwrap_or_default()
     }
 
     /// Resolve one photograph by its stable id without materialising the
@@ -280,7 +298,7 @@ impl PhotosDoc {
     pub fn photo(doc: &AutoCommit, id: &str) -> Option<LibraryPhoto> {
         let roots = Self::library_roots(doc);
         if roots.is_empty() {
-            return Self::legacy_library(doc).photo(id).cloned();
+            return None;
         }
         if roots.iter().any(|root| {
             Self::map_at(doc, root, "removed_photos")
@@ -290,10 +308,8 @@ impl PhotosDoc {
             return None;
         }
         let mut matches = roots.iter().filter_map(|root| {
-            let photos = Self::map_at(doc, root, "photos")?;
             Self::map_at(doc, root, "photo_core")
                 .and_then(|core| Self::read_columnar_photo(doc, root, &core, id))
-                .or_else(|| Self::read_photo(doc, &photos, id))
         });
         let mut photo = matches.next()?;
         for next in matches {
@@ -327,7 +343,7 @@ impl PhotosDoc {
     pub fn album(doc: &AutoCommit, id: &str) -> Option<crate::model::Album> {
         let roots = Self::library_roots(doc);
         if roots.is_empty() {
-            return Self::legacy_library(doc).album(id).cloned();
+            return None;
         }
         if roots.iter().any(|root| {
             Self::map_at(doc, root, "removed_albums")
@@ -419,44 +435,13 @@ impl PhotosDoc {
         Self::sync_library(doc, &root, &before, &library.portable());
     }
 
-    fn legacy_library(doc: &AutoCommit) -> PhotoLibrary {
-        Self::conflicting::<PhotoLibrary>(doc, "library")
-            .into_iter()
-            .next()
-            .unwrap_or_default()
-    }
-
-    /// Create the structured root once, importing then removing a legacy
-    /// scalar. Removing the scalar matters: after migration future edits never
-    /// rewrite or compete with a whole-library JSON blob.
+    /// The one structured library root, created on first write.
     fn ensure_structured_library(doc: &mut AutoCommit) -> Option<ObjId> {
         let roots = Self::library_roots(doc);
         if let [root] = roots.as_slice() {
-            // Upgrade an existing structured library once. New documents
-            // create these maps below; old structured documents need the
-            // compact index populated before a stateless exact resource
-            // lookup can avoid the legacy whole-library fallback.
-            let metadata_index_missing = [
-                METADATA_FOLDERS_KEY,
-                METADATA_PEOPLE_KEY,
-                METADATA_TAGS_KEY,
-                METADATA_OBJECTS_KEY,
-                METADATA_PETS_KEY,
-            ]
-            .into_iter()
-            .any(|key| Self::map_at(doc, root, key).is_none());
-            if metadata_index_missing {
-                let library = Self::structured_library_at(doc, root).unwrap_or_default();
-                Self::sync_metadata_index(doc, root, &library);
-            }
-            let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY);
-            let _ = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY);
-            if read_str(doc, &ROOT, "library").is_some() {
-                let _ = doc.delete(&ROOT, "library");
-            }
             return Some(root.clone());
         }
-        // As with edits, concurrent first-run/migration roots are folded as
+        // As with edits, concurrent first-run roots are folded as
         // soon as an editor observes them. Until then `structured_library`
         // reads their additive projection, so no independently imported
         // record is stranded behind Automerge's single-value map lookup.
@@ -466,9 +451,8 @@ impl PhotosDoc {
         if !roots.is_empty() {
             let _ = doc.delete(&ROOT, LIBRARY_KEY);
         }
-        let library = inherited.unwrap_or_else(|| Self::legacy_library(doc));
+        let library = inherited.unwrap_or_default();
         let root = doc.put_object(&ROOT, LIBRARY_KEY, ObjType::Map).ok()?;
-        let _ = Self::map_or_make(doc, &root, "photos");
         let _ = Self::map_or_make(doc, &root, "photo_core");
         let _ = Self::map_or_make(doc, &root, "photo_favorite");
         let _ = Self::map_or_make(doc, &root, "photo_folder");
@@ -491,12 +475,6 @@ impl PhotosDoc {
         let _ = Self::list_or_make(doc, &root, "album_order");
         if !library.photos.is_empty() || !library.albums.is_empty() {
             Self::sync_library(doc, &root, &PhotoLibrary::default(), &library.portable());
-        }
-        // A non-empty legacy value has now been copied fieldwise. Delete an
-        // empty scalar too, so a newly seeded document has exactly one library
-        // representation and no later code can accidentally write the blob.
-        if read_str(doc, &ROOT, "library").is_some() {
-            let _ = doc.delete(&ROOT, "library");
         }
         Some(root)
     }
@@ -565,8 +543,7 @@ impl PhotosDoc {
     }
 
     fn structured_library_at(doc: &AutoCommit, root: &ObjId) -> Option<PhotoLibrary> {
-        let photos = Self::map_at(doc, root, "photos")?;
-        let photo_core = Self::map_at(doc, root, "photo_core");
+        let photo_core = Self::map_at(doc, root, "photo_core")?;
         let albums = Self::map_at(doc, root, "albums")?;
         let removed_photos = Self::map_at(doc, root, "removed_photos");
         let removed_albums = Self::map_at(doc, root, "removed_albums");
@@ -574,19 +551,11 @@ impl PhotosDoc {
         let album_order = Self::string_list(doc, root, "album_order");
 
         let mut library = PhotoLibrary::default();
-        let photo_ids = photo_core.as_ref().map_or_else(
-            || Self::ordered_keys(doc, &photos, photo_order.clone()),
-            |core| Self::ordered_keys(doc, core, photo_order.clone()),
-        );
-        for id in photo_ids {
+        for id in Self::ordered_keys(doc, &photo_core, photo_order) {
             if Self::marked_removed(doc, removed_photos.as_ref(), &id) {
                 continue;
             }
-            if let Some(photo) = photo_core
-                .as_ref()
-                .and_then(|core| Self::read_columnar_photo(doc, root, core, &id))
-                .or_else(|| Self::read_photo(doc, &photos, &id))
-            {
+            if let Some(photo) = Self::read_columnar_photo(doc, root, &photo_core, &id) {
                 library.photos.push(photo);
             }
         }
@@ -606,7 +575,7 @@ impl PhotosDoc {
 
     /// Merge projections from concurrently-created top-level maps. The normal
     /// path never needs this (record maps merge directly); it exists solely
-    /// for a first-run or legacy migration race before either participant has
+    /// for a first-run race before either participant has
     /// observed the other's root. Additive metadata is retained, and the
     /// following consolidating write returns the document to one normal root.
     fn merge_library_projection(into: &mut PhotoLibrary, from: PhotoLibrary) {
@@ -693,34 +662,6 @@ impl PhotosDoc {
                     matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
                 })
             })
-        })
-    }
-
-    fn read_photo(doc: &AutoCommit, photos: &ObjId, id: &str) -> Option<LibraryPhoto> {
-        let row = Self::map_at(doc, photos, id)?;
-        let name = read_str(doc, &row, "name")?;
-        let width = read_i64_coerced(doc, &row, "width").unwrap_or(0).max(0) as u32;
-        let height = read_i64_coerced(doc, &row, "height").unwrap_or(0).max(0) as u32;
-        Some(LibraryPhoto {
-            id: id.to_owned(),
-            image: OpenImage {
-                path: read_str(doc, &row, "path").unwrap_or_else(|| name.clone()),
-                name,
-                width,
-                height,
-                content: read_str(doc, &row, "content"),
-            },
-            favorite: read_bool(doc, &row, "favorite").unwrap_or(false),
-            folder: read_str(doc, &row, "folder"),
-            people: Self::string_list(doc, &row, "people"),
-            tags: Self::string_list(doc, &row, "tags"),
-            captured_at: read_str(doc, &row, "captured_at"),
-            analysis: Self::conflicting_at::<ImageAnalysis>(doc, &row, "analysis")
-                .into_iter()
-                .next(),
-            location: Self::conflicting_at::<PhotoLocation>(doc, &row, "location")
-                .into_iter()
-                .next(),
         })
     }
 
@@ -897,15 +838,13 @@ impl PhotosDoc {
         Some(crate::model::Album {
             id: id.to_owned(),
             name: read_str(doc, &row, "name")?,
-            // Current documents store the complete absolute membership as a
-            // scalar. Concurrent replacements therefore resolve to one
-            // deterministic authored set instead of Automerge interleaving
-            // two independently rewritten lists. Read the former list shape
-            // as a migration fallback and replace it on the next edit.
+            // The complete absolute membership is one scalar, so concurrent
+            // replacements resolve to one deterministic authored set instead
+            // of Automerge interleaving two independently rewritten lists.
             photo_ids: Self::conflicting_at::<Vec<String>>(doc, &row, "photo_ids")
                 .into_iter()
                 .next()
-                .unwrap_or_else(|| Self::string_list(doc, &row, "photo_ids")),
+                .unwrap_or_default(),
         })
     }
 
@@ -921,9 +860,7 @@ impl PhotosDoc {
             .collect()
     }
 
-    /// Read one labels field.  New documents store each membership under its
-    /// own CRDT key; the scalar-vector branch keeps old shared libraries
-    /// readable until their next metadata edit migrates them.
+    /// Read one labels field: each membership is its own CRDT key.
     fn label_membership(doc: &AutoCommit, parent: &ObjId, photo_id: &str) -> Vec<String> {
         let rows: Vec<_> = doc
             .get_all(parent, photo_id)
@@ -931,12 +868,6 @@ impl PhotosDoc {
             .into_iter()
             .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
             .collect();
-        if rows.is_empty() {
-            return Self::conflicting_at::<Vec<String>>(doc, parent, photo_id)
-                .into_iter()
-                .next()
-                .unwrap_or_default();
-        }
         let mut candidates = std::collections::BTreeSet::new();
         for row in &rows {
             candidates.extend(doc.keys(row));
@@ -947,8 +878,8 @@ impl PhotosDoc {
                 rows.iter().any(|row| {
                     doc.get_all(row, label).is_ok_and(|values| {
                         // Add wins a concurrent removal, including across
-                        // conflicting map objects created while two legacy
-                        // replicas migrate the same scalar list.
+                        // conflicting map objects two replicas created for
+                        // the same photo.
                         values.into_iter().any(|(value, _)| {
                             matches!(value, Value::Scalar(value) if matches!(value.as_ref(), ScalarValue::Boolean(true)))
                         })
@@ -975,9 +906,7 @@ impl PhotosDoc {
             .into_iter()
             .filter_map(|(value, id)| matches!(value, Value::Object(ObjType::Map)).then_some(id))
             .collect();
-        let migrated = rows.is_empty();
-        if migrated {
-            let _ = doc.delete(parent, photo_id);
+        if rows.is_empty() {
             let labels = after
                 .iter()
                 .cloned()
@@ -1019,38 +948,7 @@ impl PhotosDoc {
         before: &PhotoLibrary,
         after: &PhotoLibrary,
     ) {
-        let Some(photos) = Self::map_or_make(doc, root, "photos") else {
-            return;
-        };
-        let Some(photo_core) = Self::map_or_make(doc, root, "photo_core") else {
-            return;
-        };
-        let Some(photo_favorite) = Self::map_or_make(doc, root, "photo_favorite") else {
-            return;
-        };
-        let Some(photo_folder) = Self::map_or_make(doc, root, "photo_folder") else {
-            return;
-        };
-        let Some(photo_people) = Self::map_or_make(doc, root, "photo_people") else {
-            return;
-        };
-        let Some(photo_tags) = Self::map_or_make(doc, root, "photo_tags") else {
-            return;
-        };
-        let Some(photo_captured_at) = Self::map_or_make(doc, root, "photo_captured_at") else {
-            return;
-        };
-        let Some(photo_analysis) = Self::map_or_make(doc, root, "photo_analysis") else {
-            return;
-        };
-        let Some(photo_analysis_ocr) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_OCR_KEY) else {
-            return;
-        };
-        let Some(photo_analysis_vision) = Self::map_or_make(doc, root, PHOTO_ANALYSIS_VISION_KEY)
-        else {
-            return;
-        };
-        let Some(photo_location) = Self::map_or_make(doc, root, "photo_location") else {
+        let Some(columns) = PhotoColumns::open(doc, root) else {
             return;
         };
         let Some(albums) = Self::map_or_make(doc, root, "albums") else {
@@ -1072,24 +970,9 @@ impl PhotosDoc {
         // Write that snapshot in one AutoCommit transaction without a read
         // between every row; otherwise each `map_or_make` closes the implicit
         // transaction and turns a 3k import into thousands of commits.
-        if before.photos.is_empty() && after.albums.is_empty() && doc.keys(&photos).next().is_none()
-        {
+        if before.photos.is_empty() && after.albums.is_empty() {
             for photo in &after.photos {
-                Self::write_columnar_photo_delta(
-                    doc,
-                    &photo_core,
-                    &photo_favorite,
-                    &photo_folder,
-                    &photo_people,
-                    &photo_tags,
-                    &photo_captured_at,
-                    &photo_analysis,
-                    &photo_analysis_ocr,
-                    &photo_analysis_vision,
-                    &photo_location,
-                    None,
-                    photo,
-                );
+                Self::write_columnar_photo_delta(doc, &columns, None, photo);
             }
             let order_values: Vec<_> = after
                 .photos
@@ -1100,7 +983,7 @@ impl PhotosDoc {
             Self::sync_metadata_index(doc, root, after);
             return;
         }
-        // Materialize lookup/order sets once. Bulk import and migration must
+        // Materialize lookup/order sets once. Bulk import must
         // be linear in the bounded metadata count, not repeatedly scan the
         // entire library while adding each record.
         let before_photos: std::collections::HashMap<_, _> = before
@@ -1118,21 +1001,7 @@ impl PhotosDoc {
             if old.is_none() {
                 let _ = doc.delete(&removed_photos, &photo.id);
             }
-            Self::write_columnar_photo_delta(
-                doc,
-                &photo_core,
-                &photo_favorite,
-                &photo_folder,
-                &photo_people,
-                &photo_tags,
-                &photo_captured_at,
-                &photo_analysis,
-                &photo_analysis_ocr,
-                &photo_analysis_vision,
-                &photo_location,
-                old,
-                photo,
-            );
+            Self::write_columnar_photo_delta(doc, &columns, old, photo);
             if ordered_photos.insert(photo.id.clone()) {
                 let _ = doc.insert(&photo_order, doc.length(&photo_order), &photo.id);
             }
@@ -1237,74 +1106,24 @@ impl PhotosDoc {
         }
     }
 
-    #[allow(
-        dead_code,
-        reason = "kept temporarily as the nested-schema migration reference"
-    )]
-    fn write_photo_delta(
-        doc: &mut AutoCommit,
-        photos: &ObjId,
-        old: Option<&LibraryPhoto>,
-        photo: &LibraryPhoto,
-    ) {
-        let Some(row) = Self::map_or_make(doc, photos, &photo.id) else {
-            return;
-        };
-        let old_image = old.map(|old| &old.image);
-        if old_image.is_none_or(|image| image.path != photo.image.path) {
-            let _ = doc.put(&row, "path", &photo.image.path);
-        }
-        if old_image.is_none_or(|image| image.name != photo.image.name) {
-            let _ = doc.put(&row, "name", &photo.image.name);
-        }
-        if old_image.is_none_or(|image| image.width != photo.image.width) {
-            let _ = doc.put(&row, "width", i64::from(photo.image.width));
-        }
-        if old_image.is_none_or(|image| image.height != photo.image.height) {
-            let _ = doc.put(&row, "height", i64::from(photo.image.height));
-        }
-        if old_image.and_then(|image| image.content.as_ref()) != photo.image.content.as_ref() {
-            Self::put_optional_string(doc, &row, "content", photo.image.content.as_deref());
-        }
-        if old.is_none_or(|value| value.favorite != photo.favorite) {
-            let _ = doc.put(&row, "favorite", photo.favorite);
-        }
-        if old.and_then(|value| value.folder.as_ref()) != photo.folder.as_ref() {
-            Self::put_optional_string(doc, &row, "folder", photo.folder.as_deref());
-        }
-        if old.map(|value| &value.people) != Some(&photo.people) {
-            Self::replace_string_list(doc, &row, "people", &photo.people);
-        }
-        if old.map(|value| &value.tags) != Some(&photo.tags) {
-            Self::replace_string_list(doc, &row, "tags", &photo.tags);
-        }
-        if old.and_then(|value| value.captured_at.as_ref()) != photo.captured_at.as_ref() {
-            Self::put_optional_string(doc, &row, "captured_at", photo.captured_at.as_deref());
-        }
-        if old.and_then(|value| value.location.as_ref()) != photo.location.as_ref() {
-            Self::write_json_at(doc, &row, "location", &photo.location);
-        }
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "one delta writes every columnar map of a photo row; each is a separate CRDT object"
-    )]
     fn write_columnar_photo_delta(
         doc: &mut AutoCommit,
-        core: &ObjId,
-        favorite: &ObjId,
-        folder: &ObjId,
-        people: &ObjId,
-        tags: &ObjId,
-        captured: &ObjId,
-        analysis: &ObjId,
-        analysis_ocr: &ObjId,
-        analysis_vision: &ObjId,
-        location: &ObjId,
+        columns: &PhotoColumns,
         old: Option<&LibraryPhoto>,
         photo: &LibraryPhoto,
     ) {
+        let PhotoColumns {
+            core,
+            favorite,
+            folder,
+            people,
+            tags,
+            captured,
+            analysis,
+            analysis_ocr,
+            analysis_vision,
+            location,
+        } = columns;
         if old.is_none_or(|value| value.image != photo.image) {
             Self::write_json_at(doc, core, &photo.id, &photo.image);
         }
@@ -1393,27 +1212,6 @@ impl PhotosDoc {
         }
         if old.map(|value| &value.photo_ids) != Some(&album.photo_ids) {
             Self::write_json_at(doc, &row, "photo_ids", &album.photo_ids);
-        }
-    }
-
-    #[allow(dead_code, reason = "used by the nested-schema migration reference")]
-    fn put_optional_string(doc: &mut AutoCommit, parent: &ObjId, key: &str, value: Option<&str>) {
-        if let Some(value) = value {
-            let _ = doc.put(parent, key, value);
-        } else {
-            let _ = doc.delete(parent, key);
-        }
-    }
-
-    fn replace_string_list(doc: &mut AutoCommit, parent: &ObjId, key: &str, values: &[String]) {
-        let Some(list) = Self::list_or_make(doc, parent, key) else {
-            return;
-        };
-        while doc.length(&list) > 0 {
-            let _ = doc.delete(&list, 0);
-        }
-        for value in values {
-            let _ = doc.insert(&list, doc.length(&list), value);
         }
     }
 
@@ -1571,7 +1369,7 @@ mod tests {
     }
 
     #[test]
-    fn edits_round_trip_migrate_and_merge_at_separate_fields() {
+    fn edits_round_trip_and_merge_at_separate_fields() {
         let mut doc = AutoCommit::new();
         PhotosDoc::seed(&mut doc);
         let e = Edits {
@@ -1587,31 +1385,6 @@ mod tests {
         assert_eq!(PhotosDoc::edits(&doc), e);
         assert!(read_str(&doc, &ROOT, "edits").is_none());
         assert!(!PhotosDoc::edits_roots(&doc).is_empty());
-
-        {
-            let mut doc = AutoCommit::new();
-            let legacy = Edits {
-                crop: Rect01 {
-                    x: 0.125,
-                    y: 0.25,
-                    w: 0.5,
-                    h: 0.625,
-                },
-                rotate_quarters: 3,
-            };
-            PhotosDoc::write_json(&mut doc, "edits", &legacy);
-
-            PhotosDoc::seed(&mut doc);
-
-            let restored = PhotosDoc::edits(&doc);
-            assert!((restored.crop.x - legacy.crop.x).abs() <= f64::EPSILON);
-            assert!((restored.crop.y - legacy.crop.y).abs() <= f64::EPSILON);
-            assert!((restored.crop.w - legacy.crop.w).abs() <= f64::EPSILON);
-            assert!((restored.crop.h - legacy.crop.h).abs() <= f64::EPSILON);
-            assert_eq!(restored.rotate_quarters, legacy.rotate_quarters);
-            assert!(read_str(&doc, &ROOT, "edits").is_none());
-            assert!(!PhotosDoc::edits_roots(&doc).is_empty());
-        }
 
         {
             let mut cropper = replica(1);
@@ -1674,61 +1447,25 @@ mod tests {
 
     #[allow(clippy::too_many_lines, reason = "merged cases, one per section")]
     #[test]
-    fn library_records_migrate_and_merge_independent_photo_fields() {
-        let mut doc = AutoCommit::new();
-        let legacy_photo = LibraryPhoto::from_image(
-            OpenImage::from_path("/legacy/harbour.png", 800, 600).with_content("b".repeat(64)),
-        );
-        let photo_id = legacy_photo.id.clone();
-        let library = PhotoLibrary {
-            photos: vec![legacy_photo],
-            albums: vec![crate::model::Album {
-                id: "photos.album:legacy".into(),
-                name: "Legacy".into(),
-                photo_ids: vec![photo_id],
-            }],
-        };
-        PhotosDoc::write_json(&mut doc, "library", &library);
-
-        PhotosDoc::seed(&mut doc);
-
-        assert!(read_str(&doc, &ROOT, "library").is_none());
-        let root = PhotosDoc::library_roots(&doc)
-            .into_iter()
-            .next()
-            .expect("structured library root");
-        assert!(PhotosDoc::map_at(&doc, &root, "photos").is_some());
-        assert_eq!(PhotosDoc::library(&doc).portable(), library.portable());
-
+    fn library_records_merge_independent_photo_fields() {
         {
             use crate::actions::{MetadataLabelsPatch, MetadataPatch};
 
+            // Two offline replicas add the same photograph, each creating
+            // its own membership map for it, and then tag it differently.
             let mut base = replica(1);
-            let mut item = photo("legacy-labels");
-            item.tags = vec!["original".into()];
-            PhotosDoc::set_library(
-                &mut base,
-                &PhotoLibrary {
-                    photos: vec![item.clone()],
-                    ..Default::default()
-                },
-            );
-
-            // Recreate the pre-membership-map wire shape so both offline replicas
-            // independently perform the migration while adding a different tag.
-            let root = PhotosDoc::library_roots(&base)
-                .into_iter()
-                .next()
-                .expect("library root");
-            let tags = PhotosDoc::map_at(&base, &root, "photo_tags").expect("tags map");
-            base.delete(&tags, &item.id).expect("remove membership map");
-            PhotosDoc::write_json_at(&mut base, &tags, &item.id, &item.tags);
-
-            let bytes = base.save();
-            let mut left = AutoCommit::load(&bytes).expect("left replica");
-            left.set_actor(automerge::ActorId::from([2; 16].as_slice()));
-            let mut right = AutoCommit::load(&bytes).expect("right replica");
-            right.set_actor(automerge::ActorId::from([3; 16].as_slice()));
+            let item = photo("concurrent-labels");
+            let mut left = fork(&mut base, 2u8);
+            let mut right = fork(&mut base, 3u8);
+            for doc in [&mut left, &mut right] {
+                PhotosDoc::set_library(
+                    doc,
+                    &PhotoLibrary {
+                        photos: vec![item.clone()],
+                        ..Default::default()
+                    },
+                );
+            }
             for (doc, tag) in [(&mut left, "left"), (&mut right, "right")] {
                 PhotosAction::SetMetadataBatch {
                     photo_ids: vec![item.id.clone()],
@@ -1739,7 +1476,7 @@ mod tests {
                     location: MetadataPatch::Keep,
                 }
                 .apply(doc)
-                .expect("offline migration applies");
+                .expect("offline tagging applies");
             }
 
             let mut left_first = copy(&mut left);
@@ -1751,8 +1488,8 @@ mod tests {
             for library in [left_result, right_result] {
                 assert_eq!(
                     library.photo(&item.id).expect("photo").tags,
-                    ["left", "original", "right"],
-                    "conflicting migration maps must be unioned in either merge order"
+                    ["left", "right"],
+                    "conflicting membership maps must be unioned in either merge order"
                 );
             }
         }

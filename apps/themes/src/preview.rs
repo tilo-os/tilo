@@ -12,17 +12,16 @@
 
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::color_compat::ColorCompat;
+use ui::paint::PaintCtx;
 use ui::presence::PresenceCtx;
-use ui::text_render::{FontChoice, TextRenderer, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Stroke};
 use vello::peniko::Color;
-use winit::event::WindowEvent;
 
 use crate::draw;
 use crate::model::{self, ThemeSpec};
@@ -199,6 +198,16 @@ impl<'t> SpecimenLayout<'t> {
     }
 }
 
+/// One specimen person in the "LIST" section.
+#[derive(Clone, Copy)]
+struct ListPerson {
+    name: &'static str,
+    sub: &'static str,
+    color: Color,
+    /// Unread count; `0` paints no badge.
+    badge: u32,
+}
+
 /// Section label ("TYPOGRAPHY", "BUTTONS", ...) drawn at the top of each
 /// specimen section (part of [`Widget::draw`]).
 fn draw_section_label(
@@ -210,16 +219,12 @@ fn draw_section_label(
     label: &str,
     th: &Theme,
 ) {
-    draw::text_w(
-        tr,
-        scene,
-        t,
+    PaintCtx::new(scene, t, tr, th).text(
         label,
-        11.0,
+        &TextStyle::new(11.0).with_weight(TextWeight::Semibold),
         th.text_dim,
-        cx,
-        y,
-        TextWeight::Semibold,
+        Point::new(cx, y),
+        None,
     );
 }
 
@@ -350,8 +355,6 @@ impl PreviewPane {
 }
 
 impl Widget for PreviewPane {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -403,24 +406,6 @@ impl Widget for PreviewPane {
     }
     fn test_id(&self) -> Option<&str> {
         Some("preview_pane")
-    }
-
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The read-only preview implements the full Widget event contract even though it consumes no input."
-    )]
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _s: f64,
-        _m: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _p: &ObjId,
-        _h: &mut bool,
-        _f: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
-    ) {
     }
 }
 
@@ -550,17 +535,11 @@ impl PreviewPane {
             .as_ref()
             .map_or_else(|| th.name.clone(), |s| s.name.clone());
         draw::text_center(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, th),
             &title,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             th.text_dim,
-            card.x0,
-            card.x1,
-            card.y0,
-            card.y0 + tb_h,
-            TextWeight::Medium,
+            Rect::new(card.x0, card.y0, card.x1, card.y0 + tb_h),
         );
     }
 
@@ -577,30 +556,22 @@ impl PreviewPane {
         let th = layout.th;
         draw_section_label(tr, scene, t, layout.cx, y, "TYPOGRAPHY", th);
         y += layout.label_h;
-        draw::text_font(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, th).text(
             "The quick brown fox",
-            24.0,
+            &TextStyle::new(24.0)
+                .with_weight(TextWeight::Bold)
+                .with_family(self.font_choice.clone()),
             th.text_primary,
-            layout.cx,
-            y,
-            TextWeight::Bold,
-            &self.font_choice,
+            Point::new(layout.cx, y),
+            None,
         );
         y += layout.scaled(32.0);
-        draw::text_font(
-            tr,
-            scene,
-            t,
+        PaintCtx::new(scene, t, tr, th).text(
             &format!("Aa Bb Cc · 0123456789 · {}", self.font()),
-            13.0,
+            &TextStyle::new(13.0).with_family(self.font_choice.clone()),
             th.text_dim,
-            layout.cx,
-            y,
-            TextWeight::Regular,
-            &self.font_choice,
+            Point::new(layout.cx, y),
+            None,
         );
     }
 
@@ -627,49 +598,31 @@ impl PreviewPane {
                 0 => {
                     draw::fill_rrect(scene, t, r, layout.radius, th.accent_primary);
                     draw::text_center(
-                        tr,
-                        scene,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, th),
                         lab,
-                        12.5,
+                        &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
                         self.on_accent(),
-                        r.x0,
-                        r.x1,
-                        r.y0,
-                        r.y1,
-                        TextWeight::Semibold,
+                        r,
                     );
                 }
                 1 => {
                     // Neutral button: rest face with its derived edge.
                     ui::surface::card(scene, t, r, layout.radius, th.bg_app);
                     draw::text_center(
-                        tr,
-                        scene,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, th),
                         lab,
-                        12.5,
+                        &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
                         th.text_primary,
-                        r.x0,
-                        r.x1,
-                        r.y0,
-                        r.y1,
-                        TextWeight::Semibold,
+                        r,
                     );
                 }
                 2 => {
                     draw::text_center(
-                        tr,
-                        scene,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, th),
                         lab,
-                        12.5,
+                        &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
                         th.accent_primary,
-                        r.x0,
-                        r.x1,
-                        r.y0,
-                        r.y1,
-                        TextWeight::Semibold,
+                        r,
                     );
                 }
                 _ => {
@@ -688,17 +641,11 @@ impl PreviewPane {
                         1.0,
                     );
                     draw::text_center(
-                        tr,
-                        scene,
-                        t,
+                        &mut PaintCtx::new(scene, t, tr, th),
                         lab,
-                        12.5,
+                        &TextStyle::new(12.5).with_weight(TextWeight::Semibold),
                         Self::alpha(th.text_dim, disabled),
-                        r.x0,
-                        r.x1,
-                        r.y0,
-                        r.y1,
-                        TextWeight::Semibold,
+                        r,
                     );
                 }
             }
@@ -825,29 +772,24 @@ impl PreviewPane {
     /// One "LIST" row: selection highlight, avatar initial, name/subtitle,
     /// optional unread badge, and the row separator (part of
     /// [`Self::draw_list_section`]).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "each argument is an independently-meaningful draw input; a params struct would just be destructured back apart immediately"
-    )]
     fn draw_list_row(
-        scene: &mut Scene,
-        t: Affine,
-        tr: &mut TextRenderer,
-        th: &Theme,
-        list_rect: Rect,
-        radius: f64,
-        rowh: f64,
-        i: usize,
-        name: &str,
-        sub: &str,
-        col: Color,
-        badge: u32,
-        total: usize,
+        ctx: &mut PaintCtx<'_>,
+        layout: &SpecimenLayout<'_>,
+        rr: Rect,
+        person: &ListPerson,
+        selected: bool,
+        rule_below: bool,
     ) {
+        let th = ctx.theme;
         let sem = &th.tokens.colors.semantic;
-        let ry0 = list_rect.y0 + i as f64 * rowh;
-        let rr = Rect::new(list_rect.x0, ry0, list_rect.x1, ry0 + rowh);
-        if i == 1 {
+        let (radius, rowh) = (layout.radius, layout.list_row_h);
+        let ListPerson {
+            name,
+            sub,
+            color: col,
+            badge,
+        } = *person;
+        if selected {
             // The chosen row is a lift, not an accent wash (HIG §9.3): the
             // specimen demonstrates the selection language the OS uses, so a
             // theme designer sees how *their* palette lifts a row. The tier
@@ -857,12 +799,12 @@ impl PreviewPane {
             // One `s1` of air keeps the lifted row off the list's own edge and
             // off the rules above and below it (nothing touches).
             let sel = rr.inset(-f64::from(ui::tokens::Spacing::BASE.s1));
-            draw::fill_rrect(scene, t, sel, row_radius, tier.fill);
+            draw::fill_rrect(ctx.scene, ctx.transform, sel, row_radius, tier.fill);
             if let Some(border) = tier.border {
                 // The toolkit's crisp 1 px outline, half a pixel inside.
-                scene.stroke(
+                ctx.scene.stroke(
                     &Stroke::new(1.0),
-                    t,
+                    ctx.transform,
                     border,
                     None,
                     &ui::surface::edge_outline(sel, row_radius),
@@ -870,8 +812,8 @@ impl PreviewPane {
             }
             if let Some(glow) = tier.inner_glow {
                 draw::stroke_rrect(
-                    scene,
-                    t,
+                    ctx.scene,
+                    ctx.transform,
                     sel.inset(-1.5),
                     (row_radius - 1.5).max(0.0),
                     glow,
@@ -886,36 +828,31 @@ impl PreviewPane {
         // avatar
         let avatar_r = 12.0 * s;
         let ac = Point::new(rr.x0 + 22.0 * s, rr.center().y);
-        draw::circle(scene, t, ac, avatar_r, col);
+        draw::circle(ctx.scene, ctx.transform, ac, avatar_r, col);
         let initial = name.chars().next().unwrap_or('?').to_string();
         draw::text_center(
-            tr,
-            scene,
-            t,
+            ctx,
             &initial,
-            12.0,
+            &TextStyle::new(12.0).with_weight(TextWeight::Bold),
             th.on_surface(col).ink,
-            ac.x - avatar_r,
-            ac.x + avatar_r,
-            ac.y - avatar_r,
-            ac.y + avatar_r,
-            TextWeight::Bold,
+            Rect::new(
+                ac.x - avatar_r,
+                ac.y - avatar_r,
+                ac.x + avatar_r,
+                ac.y + avatar_r,
+            ),
         );
-        draw::text_w(
-            tr,
-            scene,
-            t,
+        ctx.text(
             name,
-            13.0,
+            &TextStyle::new(13.0).with_weight(TextWeight::Medium),
             th.text_primary,
-            rr.x0 + 44.0 * s,
-            rr.y0 + 7.0 * s,
-            TextWeight::Medium,
+            Point::new(rr.x0 + 44.0 * s, rr.y0 + 7.0 * s),
+            None,
         );
         draw::text(
-            tr,
-            scene,
-            t,
+            ctx.text,
+            ctx.scene,
+            ctx.transform,
             sub,
             11.0,
             th.text_dim,
@@ -931,29 +868,23 @@ impl PreviewPane {
                 rr.x1 - 10.0,
                 rr.center().y + 9.0 * s,
             );
-            draw::fill_rrect(scene, t, br, 9.0 * s, sem.danger);
+            draw::fill_rrect(ctx.scene, ctx.transform, br, 9.0 * s, sem.danger);
             draw::text_center(
-                tr,
-                scene,
-                t,
+                ctx,
                 &badge.to_string(),
-                10.0,
+                &TextStyle::new(10.0).with_weight(TextWeight::Bold),
                 // Ink measured against the badge fill by the previewed
                 // theme's own contrast policy, not a literal white.
                 th.on_surface(sem.danger).ink,
-                br.x0,
-                br.x1,
-                br.y0,
-                br.y1,
-                TextWeight::Bold,
+                br,
             );
         }
-        if i + 1 < total {
+        if rule_below {
             // Row rule: derived against the list's fill, inset from the
             // panel's corner radius on both ends (HIG §9.5, never full-bleed).
             draw::line(
-                scene,
-                t,
+                ctx.scene,
+                ctx.transform,
                 Point::new(rr.x0 + 44.0 * s, rr.y1),
                 Point::new(rr.x1 - 10.0, rr.y1),
                 ui::surface::edge_on(th.bg_app),
@@ -981,27 +912,36 @@ impl PreviewPane {
         y += layout.label_h;
         let rowh = layout.list_row_h;
         let people = [
-            ("Ada Lovelace", "Online", sem.success, 3u32),
-            ("Alan Turing", "Editing themes", th.accent_primary, 0),
-            ("Grace Hopper", "Away", sem.warning, 12),
+            ListPerson {
+                name: "Ada Lovelace",
+                sub: "Online",
+                color: sem.success,
+                badge: 3,
+            },
+            ListPerson {
+                name: "Alan Turing",
+                sub: "Editing themes",
+                color: th.accent_primary,
+                badge: 0,
+            },
+            ListPerson {
+                name: "Grace Hopper",
+                sub: "Away",
+                color: sem.warning,
+                badge: 12,
+            },
         ];
         let list_rect = Rect::new(cx, y, cx + cw, y + rowh * people.len() as f64);
         ui::surface::card(scene, t, list_rect, radius, th.bg_app);
-        for (i, (name, sub, col, badge)) in people.iter().enumerate() {
+        for (i, person) in people.iter().enumerate() {
+            let ry0 = list_rect.y0 + i as f64 * rowh;
             Self::draw_list_row(
-                scene,
-                t,
-                tr,
-                th,
-                list_rect,
-                radius,
-                rowh,
-                i,
-                name,
-                sub,
-                *col,
-                *badge,
-                people.len(),
+                &mut PaintCtx::new(scene, t, tr, th),
+                layout,
+                Rect::new(list_rect.x0, ry0, list_rect.x1, ry0 + rowh),
+                person,
+                i == 1,
+                i + 1 < people.len(),
             );
         }
     }
@@ -1059,17 +999,11 @@ impl PreviewPane {
         let cr = Rect::new(bx, y, bx + 30.0, y + layout.scaled(BADGES_BODY_H));
         draw::fill_rrect(scene, t, cr, 11.0, th.accent_primary);
         draw::text_center(
-            tr,
-            scene,
-            t,
+            &mut PaintCtx::new(scene, t, tr, th),
             "12",
-            11.0,
+            &TextStyle::new(11.0).with_weight(TextWeight::Bold),
             self.on_accent(),
-            cr.x0,
-            cr.x1,
-            cr.y0,
-            cr.y1,
-            TextWeight::Bold,
+            cr,
         );
     }
 

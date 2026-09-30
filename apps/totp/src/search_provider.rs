@@ -167,11 +167,11 @@ mod tests {
             let mut app = crate::app::AuthenticatorApp::demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let hits = app.search_providers()[0].search("");
+            let hits = ui::search::capability::search_providers(&app)[0].search("");
             assert!(!hits.is_empty());
             assert!(hits.iter().all(|hit| {
                 hit.action_address().is_some_and(|address| {
-                    Widget::resource(&app, &doc, &address.resource).is_some_and(|resource| {
+                    ui::resources::resource(&app, &doc, &address.resource).is_some_and(|resource| {
                         tilo_actions::door::resolve(&[resource], &address).is_some_and(|spec| {
                             spec.kind == tilo_actions::OperationKind::View
                                 && spec.contract == tilo_actions::ActionContract::view()
@@ -189,7 +189,7 @@ mod tests {
             let mut app = crate::app::AuthenticatorApp::demo();
             let mut doc = AutoCommit::new();
             app.sync(&mut doc, &ROOT);
-            let target = app.search_providers()[0]
+            let target = ui::search::capability::search_providers(&app)[0]
                 .search("")
                 .into_iter()
                 .nth(1)
@@ -201,14 +201,14 @@ mod tests {
                 .expect("account resource")
                 .parse()
                 .expect("account uuid");
-            let mut resources = app.resources(&doc);
+            let mut resources = ui::resources::resources(&app, &doc);
             resources.push(
-                Widget::resource(&app, &doc, &address.resource)
+                ui::resources::resource(&app, &doc, &address.resource)
                     .expect("canonical result lazily resolves"),
             );
             let mut palette = ui::ActionPalette::new();
             palette.load_open_resources(&resources);
-            palette.set_providers(app.search_providers());
+            palette.set_providers(ui::search::capability::search_providers(&app));
             palette.open();
             palette.set_query(&target.title);
             let index = palette
@@ -223,19 +223,23 @@ mod tests {
             assert_eq!(operation.kind, tilo_actions::OperationKind::View);
             assert!(palette.take_navigation().is_none());
             assert!(
-                app.invoke_resource_operation(
-                    operation.kind,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .type_id,
-                    &operation
-                        .encoded()
-                        .expect("test requires prepared encoding")
-                        .payload,
-                    &doc,
-                    &ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        operation.kind,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .type_id,
+                        &operation
+                            .encoded()
+                            .expect("test requires prepared encoding")
+                            .payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
+                .map(|started| started.is_some())
                 .expect("Authenticator handles its exported operation")
             );
             assert_eq!(app.selected_account(), Some(id));

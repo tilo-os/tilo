@@ -112,7 +112,8 @@ pub fn download_tapp(url: &str, dest: &Path, expected_size: u64) -> Result<u64, 
     if let Some(parent) = dest.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {e}"))?;
     }
-    atomic_file::write(dest, &bytes).map_err(|e| format!("write {}: {e}", dest.display()))?;
+    tilo_files::native::atomic::write(dest, &bytes)
+        .map_err(|e| format!("write {}: {e}", dest.display()))?;
     Ok(bytes.len() as u64)
 }
 

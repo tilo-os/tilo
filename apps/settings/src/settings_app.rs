@@ -35,6 +35,7 @@
 use crate::categories::Category;
 use crate::panes;
 use crate::sidebar;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{AppShell, Column, Container, NarrowScreen, Scrollable, TextInput, Widget};
 use ui::{AppKind, AppWidget, IconDescriptor};
 
@@ -369,7 +370,7 @@ impl SettingsApp {
             TextInput::from_state(&self.search_state)
                 .with_kind(ui::widget::TextInputKind::Search)
                 .with_id("settings.search")
-                .with_placeholder("Search settings")
+                .with_placeholder(&crate::i18n::t("settings-search-placeholder"))
                 .with_font_size(13.0),
         )
     }
@@ -395,8 +396,8 @@ impl SettingsApp {
             .with_intrinsic_height()
             .with_gap(ui::tokens::Spacing::BASE.s4)
             .push(crate::widgets::page_heading(
-                self.selected.label(),
-                self.selected.subtitle(),
+                &self.selected.label(),
+                &self.selected.subtitle(),
             ))
             .push(body);
         // Account forms and cards are more legible as a column on large
@@ -510,6 +511,9 @@ impl SettingsApp {
             ),
             Category::Appearance => panes::appearance::build(),
             Category::Accessibility => panes::accessibility::build(),
+            Category::Notifications if self.deterministic_hardware_for_shot => {
+                Box::new(panes::notifications::NotificationsPane::for_shot())
+            }
             Category::Notifications => panes::notifications::build(),
             Category::DefaultApps => panes::personal_apps::build(),
             Category::Storage => Box::new(
@@ -1699,10 +1703,16 @@ fn valid_input_fraction(value: f64) -> Result<f64, String> {
 }
 
 impl Widget for SettingsApp {
+    ui::provides!(
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
     fn native_input_snapshot(
         &self,
-        state: &automerge::AutoCommit,
-        path: &automerge::ObjId,
+        state: &AppModel,
+        path: &ModelPath,
     ) -> Option<serde_json::Value> {
         use automerge::transaction::Transactable;
         fn rect(value: vello::kurbo::Rect) -> [f64; 4] {
@@ -1725,12 +1735,13 @@ impl Widget for SettingsApp {
             if widget.name() == "SidebarRow"
                 && let Some(category) = Category::ALL
                     .iter()
-                    .find(|category| widget.test_id() == Some(category.label()))
+                    .find(|category| widget.test_id() == Some(category.label().as_str()))
             {
                 categories.push(category.slug());
             }
             widget.for_each_child(&mut |child| inspect(child, search, categories));
         }
+        let (state, path) = ui::doc::document_ref(state, path);
         let mut search = None;
         let mut categories = Vec::new();
         inspect(self, &mut search, &mut categories);
@@ -1802,7 +1813,7 @@ impl Widget for SettingsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         // Sidebar selection and search are local presentation state. They do
         // not create CRDT click flags, draft text, collaboration traffic or
         // undo entries. The canonical resource `settings.section:<slug>/open`
@@ -1929,29 +1940,12 @@ impl Widget for SettingsApp {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<taffy::NodeId>,
-        node_id: taffy::NodeId,
-        taffy: &taffy::TaffyTree<()>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
-        if let (Ok(children), Some(shell)) = (taffy.children(node_id), &mut self.shell)
+        if let (Ok(children), Some(shell)) = (ctx.taffy.children(ctx.node_id), &mut self.shell)
             && let Some(&shell_node) = children.first()
         {
-            shell.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                shell_node,
-                taffy,
-            );
+            shell.handle_event(event, &mut ctx.reborrow(ctx.path, shell_node));
         }
     }
 
@@ -2018,6 +2012,139 @@ impl Widget for SettingsApp {
             .is_some_and(ui::Widget::layout_needs_measure)
     }
 
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = self.admit_resource_operation_with_document(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
+        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn poll_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        cancellation_requested: bool,
+        doc: &automerge::AutoCommit,
+        path: &automerge::ObjId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        if self.local_operation == Some(invocation) {
+            // These contracts explicitly advertise `cancellable: false`.
+            // Once the pane has admitted a system command it may be touching
+            // firmware, boot configuration, or durable input preferences, so
+            // a cancellation request cannot honestly stop or cancel history.
+            let _ = cancellation_requested;
+            let terminal = self.local_operation_status.get();
+            match terminal {
+                crate::actions::LocalOperationStatus::Succeeded { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    });
+                }
+                crate::actions::LocalOperationStatus::Failed { token, message }
+                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
+                {
+                    self.local_operation = None;
+                    self.local_operation_token = None;
+                    self.local_operation_status
+                        .set(crate::actions::LocalOperationStatus::Idle);
+                    return Some(tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "device_local_operation_failed".into(),
+                            message,
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+                _ => return None,
+            }
+        }
+        if self
+            .account_probe
+            .as_ref()
+            .is_some_and(|(id, _)| *id == invocation)
+        {
+            if cancellation_requested {
+                self.account_probe = None;
+                return Some(tilo_actions::InvocationUpdate::Cancelled {
+                    invocation,
+                    message: Some("connection check cancelled".into()),
+                });
+            }
+            let result = self
+                .account_probe
+                .as_ref()
+                .and_then(|(_, receiver)| receiver.try_recv().ok());
+            if let Some(result) = result {
+                self.account_probe = None;
+                return Some(match result {
+                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
+                        invocation,
+                        output: tilo_actions::ActionOutput {
+                            value: Some(serde_json::Value::String(message)),
+                            resources: Vec::new(),
+                        },
+                    },
+                    Err(message) => tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "account_connection_failed".into(),
+                            message,
+                            details: None,
+                            retryable: true,
+                        },
+                    },
+                });
+            }
+            return None;
+        }
+        self.shell.as_mut().and_then(|shell| {
+            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
+        })
+    }
+}
+
+impl ui::search::capability::SearchSource for SettingsApp {
+    /// Fold the settings panes into the unified Ctrl+K palette. Every result
+    /// addresses the pane resource's exported `open` View operation, alongside
+    /// the collaborative setting-change actions those resources own.
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_provider.clone())]
+    }
+}
+
+impl ui::resources::PublishesResources for SettingsApp {
     /// Publish the settings resource tree to the shell's one Ctrl+K palette,
     /// delegating to the [`ResourceProvider`](tilo_actions::ResourceProvider) impl
     /// in [`crate::actions`]. Level-triggered: recomputed each frame from the
@@ -2025,7 +2152,6 @@ impl Widget for SettingsApp {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
-
     /// Resolve canonical Settings resources at activation time as well as
     /// publishing the eager palette snapshot above.  Search results retain
     /// only stable action addresses, so this is the authoritative path that
@@ -2034,12 +2160,42 @@ impl Widget for SettingsApp {
     fn resource(&self, doc: &automerge::AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
+}
 
+impl ui::undo::CommittedActions for SettingsApp {
+    /// Bubble an on-screen control's dispatched-action undo bracket up from
+    /// whichever pane produced it. A settings control lives deep under the shell
+    /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
+    /// containers don't forward this rising-edge signal, so the root walks its
+    /// subtree and returns the first pane's captured heads. The host records one
+    /// undo boundary from it, so Ctrl+Z reverts the setting change.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
+            if let Some(heads) = ui::undo::take_committed_action(w) {
+                return Some(heads);
+            }
+            for child in w.children_mut() {
+                if let Some(heads) = walk(child) {
+                    return Some(heads);
+                }
+            }
+            None
+        }
+        for child in self.children_mut() {
+            if let Some(heads) = walk(child) {
+                return Some(heads);
+            }
+        }
+        None
+    }
+}
+
+impl SettingsApp {
     #[allow(
         clippy::too_many_lines,
         reason = "local account and presentation operation routing stays auditable in one dispatch point"
     )]
-    fn invoke_resource_operation(
+    fn answer_resource_operation(
         &mut self,
         kind: tilo_actions::OperationKind,
         type_id: &str,
@@ -2243,7 +2399,7 @@ impl Widget for SettingsApp {
         clippy::too_many_lines,
         reason = "central router keeps validation beside dispatch"
     )]
-    fn start_resource_operation_with_document(
+    fn admit_resource_operation_with_document(
         &mut self,
         invocation: tilo_actions::InvocationId,
         kind: tilo_actions::OperationKind,
@@ -2277,7 +2433,19 @@ impl Widget for SettingsApp {
             return Ok(start);
         }
         if type_id != crate::actions::ACCOUNT_OPERATION_TYPE {
-            return self.start_resource_operation(invocation, kind, type_id, payload, doc, path);
+            let op = ui::widget::ResourceOperation::local(invocation, kind, type_id, payload);
+            if let Some(started) = ui::widget::start_in_children(self, &op, doc, path)? {
+                return Ok(Some(started));
+            }
+            return self
+                .answer_resource_operation(kind, type_id, payload, doc, path)
+                .map(|handled| {
+                    handled.then(|| {
+                        ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )
+                    })
+                });
         }
         let operation: crate::actions::AccountOperation =
             serde_json::from_slice(payload).map_err(|error| error.to_string())?;
@@ -2292,7 +2460,7 @@ impl Widget for SettingsApp {
                 | crate::actions::AccountOperation::CancelForm
                 | crate::actions::AccountOperation::CancelReauthentication),
             ) => {
-                self.invoke_resource_operation(
+                self.answer_resource_operation(
                     kind,
                     type_id,
                     &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
@@ -2305,7 +2473,7 @@ impl Widget for SettingsApp {
                 operation @ (crate::actions::AccountOperation::SubmitForm
                 | crate::actions::AccountOperation::SubmitReauthentication),
             ) => {
-                self.invoke_resource_operation(
+                self.answer_resource_operation(
                     kind,
                     type_id,
                     &serde_json::to_vec(&operation).map_err(|error| error.to_string())?,
@@ -2382,133 +2550,6 @@ impl Widget for SettingsApp {
             tilo_actions::ActionOutput::default(),
         )))
     }
-
-    fn poll_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        cancellation_requested: bool,
-        doc: &automerge::AutoCommit,
-        path: &automerge::ObjId,
-    ) -> Option<tilo_actions::InvocationUpdate> {
-        if self.local_operation == Some(invocation) {
-            // These contracts explicitly advertise `cancellable: false`.
-            // Once the pane has admitted a system command it may be touching
-            // firmware, boot configuration, or durable input preferences, so
-            // a cancellation request cannot honestly stop or cancel history.
-            let _ = cancellation_requested;
-            let terminal = self.local_operation_status.get();
-            match terminal {
-                crate::actions::LocalOperationStatus::Succeeded { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    });
-                }
-                crate::actions::LocalOperationStatus::Failed { token, message }
-                    if self.local_operation_token.as_deref() == Some(token.as_str()) =>
-                {
-                    self.local_operation = None;
-                    self.local_operation_token = None;
-                    self.local_operation_status
-                        .set(crate::actions::LocalOperationStatus::Idle);
-                    return Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "device_local_operation_failed".into(),
-                            message,
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
-                _ => return None,
-            }
-        }
-        if self
-            .account_probe
-            .as_ref()
-            .is_some_and(|(id, _)| *id == invocation)
-        {
-            if cancellation_requested {
-                self.account_probe = None;
-                return Some(tilo_actions::InvocationUpdate::Cancelled {
-                    invocation,
-                    message: Some("connection check cancelled".into()),
-                });
-            }
-            let result = self
-                .account_probe
-                .as_ref()
-                .and_then(|(_, receiver)| receiver.try_recv().ok());
-            if let Some(result) = result {
-                self.account_probe = None;
-                return Some(match result {
-                    Ok(message) => tilo_actions::InvocationUpdate::Succeeded {
-                        invocation,
-                        output: tilo_actions::ActionOutput {
-                            value: Some(serde_json::Value::String(message)),
-                            resources: Vec::new(),
-                        },
-                    },
-                    Err(message) => tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "account_connection_failed".into(),
-                            message,
-                            details: None,
-                            retryable: true,
-                        },
-                    },
-                });
-            }
-            return None;
-        }
-        self.shell.as_mut().and_then(|shell| {
-            shell.poll_resource_operation(invocation, cancellation_requested, doc, path)
-        })
-    }
-
-    /// Fold the settings panes into the unified Ctrl+K palette. Every result
-    /// addresses the pane resource's exported `open` View operation, alongside
-    /// the collaborative setting-change actions those resources own.
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_provider.clone())]
-    }
-
-    /// Bubble an on-screen control's dispatched-action undo bracket up from
-    /// whichever pane produced it. A settings control lives deep under the shell
-    /// (`AppShell → content → Scrollable → … → pane`), and the intermediate
-    /// containers don't forward this rising-edge signal, so the root walks its
-    /// subtree and returns the first pane's captured heads. The host records one
-    /// undo boundary from it, so Ctrl+Z reverts the setting change.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        fn walk(w: &mut dyn Widget) -> Option<Vec<automerge::ChangeHash>> {
-            if let Some(heads) = w.take_committed_action() {
-                return Some(heads);
-            }
-            for child in w.children_mut() {
-                if let Some(heads) = walk(child) {
-                    return Some(heads);
-                }
-            }
-            None
-        }
-        for child in self.children_mut() {
-            if let Some(heads) = walk(child) {
-                return Some(heads);
-            }
-        }
-        None
-    }
 }
 
 impl AppWidget for SettingsApp {
@@ -2532,8 +2573,7 @@ impl AppWidget for SettingsApp {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
-    use taffy::{NodeId, TaffyTree};
+    use ui::headless::Framed;
 
     #[test]
     #[allow(
@@ -2724,45 +2764,22 @@ mod tests {
         }
     }
 
-    fn layout_at(app: &mut SettingsApp, w: f32, h: f32) {
-        layout_at_with_theme(app, w, h, &ui::Theme::dark());
+    fn layout_at(app: SettingsApp, w: f32, h: f32) -> Framed<SettingsApp> {
+        layout_at_with_theme(app, w, h, &ui::Theme::dark())
     }
 
-    fn layout_at_with_theme(app: &mut SettingsApp, w: f32, h: f32, theme: &ui::Theme) {
-        let mut taffy: TaffyTree<()> = TaffyTree::new();
-        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let node = app.build_layout(&mut taffy, theme, &mut node_map);
-        let root = taffy
-            .new_with_children(
-                taffy::Style {
-                    size: taffy::Size {
-                        width: taffy::Dimension::length(w),
-                        height: taffy::Dimension::length(h),
-                    },
-                    ..Default::default()
-                },
-                &[node],
-            )
-            .unwrap();
-        let measure_map = node_map.clone();
-        let mut tr = ui::text_render::TextRenderer::new();
-        taffy
-            .compute_layout_with_measure(
-                root,
-                taffy::Size {
-                    width: taffy::AvailableSpace::Definite(w),
-                    height: taffy::AvailableSpace::Definite(h),
-                },
-                |known, available, node_id, _, _| {
-                    if let Some(&ptr) = measure_map.get(&node_id) {
-                        unsafe { (*ptr).measure(known, available, &mut tr) }
-                    } else {
-                        taffy::Size::ZERO
-                    }
-                },
-            )
-            .unwrap();
-        app.apply_layout(&taffy, node, vello::kurbo::Point::ORIGIN);
+    fn layout_at_with_theme(
+        app: SettingsApp,
+        w: f32,
+        h: f32,
+        theme: &ui::Theme,
+    ) -> Framed<SettingsApp> {
+        Framed::new(
+            ui::State::new(),
+            app,
+            ui::headless::viewport((w, h)),
+            theme.clone(),
+        )
     }
 
     /// The app opens on the default category unless told otherwise; a real
@@ -2779,8 +2796,8 @@ mod tests {
         );
 
         let config = crate::prefs::test_env::ScratchConfig::new();
-        let mut app = config.app();
-        layout_at(&mut app, 1200.0, 760.0);
+        let app = config.app();
+        let mut app = layout_at(app, 1200.0, 760.0);
         app.select(Category::Users);
         assert_eq!(app.selected(), Category::Users);
         assert!(
@@ -2809,11 +2826,13 @@ mod tests {
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::UPDATE_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::UPDATE_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -2866,11 +2885,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2902,11 +2923,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2948,11 +2971,13 @@ mod tests {
                 schedule: "Daily".into(),
             };
             let payload = serde_json::to_vec(&daily).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -2994,11 +3019,13 @@ mod tests {
             let root = automerge::ROOT;
             let invocation = tilo_actions::InvocationId::new();
             let payload = serde_json::to_vec(&crate::actions::UpdateOperation::Check).unwrap();
-            app.start_resource_operation_with_document(
-                invocation,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::UPDATE_OPERATION_TYPE,
-                &payload,
+            app.start_operation(
+                &ui::widget::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::UPDATE_OPERATION_TYPE,
+                    &payload,
+                ),
                 &mut doc,
                 &root,
             )
@@ -3176,33 +3203,41 @@ mod tests {
             }
 
             let heads = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::ACCOUNT_OPERATION_TYPE,
-                    &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap(),
-                    &doc,
-                    &root,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::ACCOUNT_OPERATION_TYPE,
+                        &serde_json::to_vec(&crate::actions::AccountOperation::SubmitForm).unwrap()
+                    ),
+                    &mut doc,
+                    &root
                 )
-                .expect("account form command is admitted")
-            );
+                .expect("account form command is admitted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(doc.get_heads(), heads, "account command touched Automerge");
             covered.insert(crate::actions::ACCOUNT_OPERATION_TYPE);
 
             let heads = doc.get_heads();
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
-                    &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
-                        protocol: "anthropic".into(),
-                    })
-                    .unwrap(),
-                    &doc,
-                    &root,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::AGENT_PROVIDER_OPERATION_TYPE,
+                        &serde_json::to_vec(&crate::actions::AgentProviderOperation::Add {
+                            protocol: "anthropic".into(),
+                        })
+                        .unwrap()
+                    ),
+                    &mut doc,
+                    &root
                 )
-                .expect("provider command is admitted")
-            );
+                .expect("provider command is admitted"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(doc.get_heads(), heads, "provider command touched Automerge");
             covered.insert(crate::actions::AGENT_PROVIDER_OPERATION_TYPE);
 
@@ -3227,11 +3262,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("network operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::NETWORK_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::NETWORK_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -3281,11 +3318,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::INPUT_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::INPUT_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -3318,11 +3357,13 @@ mod tests {
             let payload = serde_json::to_vec(&operation).expect("Bluetooth operation serializes");
             let invocation = tilo_actions::InvocationId::new();
             let start = app
-                .start_resource_operation_with_document(
-                    invocation,
-                    tilo_actions::OperationKind::Effect,
-                    crate::actions::BLUETOOTH_OPERATION_TYPE,
-                    &payload,
+                .start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        invocation,
+                        tilo_actions::OperationKind::Effect,
+                        crate::actions::BLUETOOTH_OPERATION_TYPE,
+                        &payload,
+                    ),
                     &mut doc,
                     &root,
                 )
@@ -3375,8 +3416,8 @@ mod tests {
     fn assert_responsive_layouts(cases: Vec<ResponsiveCase<'_>>) {
         for (case, build, (w, h), narrow, sidebar_open, back) in cases {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = build(&config);
-            layout_at(&mut app, w, h);
+            let app = build(&config);
+            let app = layout_at(app, w, h);
             assert!(app.get_rect().width() > 0.0, "case {case}: lays out");
             if let Some(narrow) = narrow {
                 assert_eq!(app.is_narrow(), narrow, "case {case}: narrow");
@@ -3497,15 +3538,15 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let mut app = config
+            let app = config
                 .app()
                 .with_category(selected)
                 .with_width_hint(440.0)
                 .with_narrow_content_shot();
-            layout_at(&mut app, 440.0, 820.0);
+            let app = layout_at(app, 440.0, 820.0);
 
             let mut heading = None;
-            named_rect(&app, selected.label(), &mut heading);
+            named_rect(&*app, &selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             let back = app.back_button_rect();
             assert!(
@@ -3529,20 +3570,16 @@ mod tests {
             let config = crate::prefs::test_env::ScratchConfig::new();
 
             let selected = Category::RegionFormats;
-            let mut app = config
+            let app = config
                 .app()
                 .with_category(selected)
                 .with_width_hint(390.0)
                 .with_narrow_content_shot();
-            layout_at_with_theme(
-                &mut app,
-                390.0,
-                844.0,
-                &ui::Theme::dark().with_text_scale(1.5),
-            );
+            let app =
+                layout_at_with_theme(app, 390.0, 844.0, &ui::Theme::dark().with_text_scale(1.5));
 
             let mut heading = None;
-            named_rect(&app, selected.label(), &mut heading);
+            named_rect(&*app, &selected.label(), &mut heading);
             let heading = heading.expect("the content page names the selected destination");
             assert!(
                 heading.y0 < 844.0,
@@ -3554,16 +3591,12 @@ mod tests {
         // Case `wide_large_text_reserves_a_readable_sidebar_before_layout`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config
+            let app = config
                 .app()
                 .with_width_hint(1440.0)
                 .with_narrow_content_shot();
-            layout_at_with_theme(
-                &mut app,
-                1440.0,
-                900.0,
-                &ui::Theme::dark().with_text_scale(2.0),
-            );
+            let app =
+                layout_at_with_theme(app, 1440.0, 900.0, &ui::Theme::dark().with_text_scale(2.0));
             assert!(
                 !app.is_narrow(),
                 "1440px still admits a readable split at 200% text"
@@ -3577,9 +3610,9 @@ mod tests {
                 (sidebar.width() - sidebar::width_for_text_scale(2.0)).abs() < 0.5,
                 "sidebar tracks the same scale as its custom-painted rows: {sidebar:?}"
             );
-            let mut compact = config.app().with_width_hint(900.0);
-            layout_at_with_theme(
-                &mut compact,
+            let compact = config.app().with_width_hint(900.0);
+            let compact = layout_at_with_theme(
+                compact,
                 900.0,
                 844.0,
                 &ui::Theme::dark().with_text_scale(2.0),
@@ -3594,13 +3627,15 @@ mod tests {
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
             // Start on the list screen — the reachable back-tap state.
-            let mut app = config.app().with_width_hint(440.0).with_narrow_list_shot();
-            layout_at(&mut app, 440.0, 820.0);
+            let app = config.app().with_width_hint(440.0).with_narrow_list_shot();
+            let mut app = layout_at(app, 440.0, 820.0);
             assert!(app.sidebar_open(), "starts on the list screen");
             // Picking a category drills into its content screen.
             app.select(Category::Users);
             assert!(app.take_structure_dirty(), "the pick requests a rebuild");
-            layout_at(&mut app, 440.0, 820.0);
+            Framed::harness_mut(&mut app)
+                .relayout_at((440, 820))
+                .expect("layout settles");
             assert!(
                 !app.sidebar_open(),
                 "the pick navigated to the content screen"
@@ -3620,8 +3655,8 @@ mod tests {
             use automerge::ReadDoc;
             let config = crate::prefs::test_env::ScratchConfig::new();
 
-            let mut app = config.app();
-            layout_at(&mut app, 1200.0, 760.0);
+            let app = config.app();
+            let mut app = layout_at(app, 1200.0, 760.0);
             assert_eq!(app.search_query(), "", "starts with no query");
 
             let mut doc = automerge::AutoCommit::new();
@@ -3660,7 +3695,7 @@ mod tests {
             );
             assert_eq!(app.search_state.with(Clone::clone), "light");
             assert!(doc.get_heads().is_empty());
-            layout_at(&mut app, 1200.0, 760.0);
+            let _app = layout_at(app, 1200.0, 760.0);
         }
     }
 
@@ -3674,8 +3709,8 @@ mod tests {
         // real composed tree: the shell's children are those three, in order.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app();
-            layout_at(&mut app, 1200.0, 760.0);
+            let app = config.app();
+            let app = layout_at(app, 1200.0, 760.0);
             let shell = app.shell.as_ref().expect("shell built");
             let names: Vec<&str> = shell.children().iter().map(|c| c.name()).collect();
             assert_eq!(
@@ -3690,14 +3725,14 @@ mod tests {
         // Case `root_landmark_is_retained_across_responsive_shell_rebuilds`.
         {
             let config = crate::prefs::test_env::ScratchConfig::new();
-            let mut app = config.app().with_category(Category::Appearance);
+            let app = config.app().with_category(Category::Appearance);
             let wide = Widget::accessibility(&app).expect("Settings landmark");
             assert_eq!(wide.name.as_deref(), Some("Settings"));
             assert_eq!(wide.semantic_key.as_deref(), Some("settings.app"));
 
-            layout_at(&mut app, 440.0, 820.0);
+            let app = layout_at(app, 440.0, 820.0);
             let narrow =
-                Widget::accessibility(&app).expect("Settings landmark survives narrow shell");
+                Widget::accessibility(&*app).expect("Settings landmark survives narrow shell");
             assert_eq!(narrow.semantic_key, wide.semantic_key);
         }
     }

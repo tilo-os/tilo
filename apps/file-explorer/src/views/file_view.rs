@@ -28,7 +28,6 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
@@ -1336,12 +1335,7 @@ thread_local! {
 }
 
 impl Widget for FileView {
-    fn has_action_control_bindings(&self) -> bool {
-        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
-        false
-    }
-
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    ui::provides!(dyn ui::widget::controls::ActionControls);
 
     fn is_layout_dirty(&self) -> bool {
         // Entries, mode and zoom are construction inputs: the host replaces
@@ -1480,18 +1474,7 @@ impl Widget for FileView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         match event {
             // A list's up/down movement is linear and remains app-level. An
             // icon grid, however, must use its *live measured* columns or a
@@ -1511,14 +1494,14 @@ impl Widget for FileView {
                         &self.sink,
                         FileCommand::MoveSelection {
                             index,
-                            extend: modifiers.state().shift_key(),
+                            extend: ctx.modifiers.state().shift_key(),
                         },
                     );
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_cursor = pt;
                 let new_hover = self.item_at(pt);
                 if new_hover != self.hover {
@@ -1542,17 +1525,18 @@ impl Widget for FileView {
                 // Header click → sort.
                 if let Some(col) = self.header_sort_at(self.last_cursor) {
                     push(&self.sink, FileCommand::SortColumn(col));
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 if let Some(i) = self.item_at(self.last_cursor) {
-                    let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-                    let shift = modifiers.state().shift_key();
+                    let ctrl =
+                        ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+                    let shift = ctx.modifiers.state().shift_key();
                     // Reflect the click locally so this frame paints selected,
                     // and let the app own the authoritative selection + the
                     // single/double-click distinction.
                     self.selection.apply_click(i, ctrl, shift);
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                     push(
                         &self.sink,
                         FileCommand::Click {
@@ -1581,7 +1565,7 @@ impl Widget for FileView {
                             },
                         );
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -1605,7 +1589,7 @@ impl Widget for FileView {
                     if !self.selection.is_selected(i) {
                         self.selection.select_only(i);
                     }
-                    *focus_target = Some(node_id);
+                    *ctx.focus_target = Some(ctx.node_id);
                 }
                 push(&self.sink, FileCommand::ContextSelect(target));
                 // Not marked handled: the app still needs to see the right-press
@@ -1698,6 +1682,13 @@ impl Widget for FileView {
             node = node.with_position(i + 1, self.entries.len());
         }
         Some(node)
+    }
+}
+
+impl ui::widget::controls::ActionControls for FileView {
+    fn has_action_control_bindings(&self) -> bool {
+        // This custom-painted leaf exposes semantic actions, not ActionEmitters.
+        false
     }
 }
 
@@ -1975,14 +1966,16 @@ mod tests {
         let mods = winit::event::Modifiers::default();
         v.handle_event(
             ev,
-            1.0,
-            &mods,
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus,
-            node,
-            tree,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: tree,
+            },
         );
     }
 
@@ -2162,22 +2155,12 @@ mod tests {
     fn nested_navigation_layout_preserves_large_text_file_row_geometry() {
         let sink = new_sink();
         let view = FileView::new(&items(2), &SelectionModel::new(), &sink);
-        let mut nav = ui::widget::NavShell::sidebar_over_content(
+        let nav = ui::widget::NavShell::sidebar_over_content(
             Box::new(ui::widget::Text::new("Places")),
             Box::new(view),
         );
         let theme = Theme::dark().with_text_scale(2.0);
-        let mut tree = TaffyTree::new();
-        let root = nav.build_layout(&mut tree, &theme, &mut HashMap::new());
-        tree.compute_layout(
-            root,
-            taffy::Size {
-                width: taffy::AvailableSpace::Definite(1000.0),
-                height: taffy::AvailableSpace::Definite(700.0),
-            },
-        )
-        .unwrap();
-        nav.apply_layout(&tree, root, Point::ZERO);
+        let nav = ui::headless::Framed::new(ui::State::new(), nav, (1000, 700), theme.clone());
         let row = nav
             .children()
             .iter()
@@ -2190,16 +2173,7 @@ mod tests {
             bounds.y1 - bounds.y0 >= 68.0,
             "nested rows must receive200% layout scale: {bounds:?}"
         );
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(2.0);
-        let mut scene = Scene::new();
-        nav.draw(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &PresenceCtx::default(),
-        );
+        let scene = ui::headless::Framed::harness(&nav).scene();
         assert!(
             scene
                 .encoding()

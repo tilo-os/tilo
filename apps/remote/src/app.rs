@@ -18,6 +18,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{SyncSender, TrySendError, sync_channel};
 use std::sync::{Mutex, PoisonError};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use iroh_base::{EndpointId, SecretKey};
@@ -734,7 +735,7 @@ pub struct RemoteApp {
     rail_snap: Option<bool>,
     /// Wall-clock of the last rail animation advance, so the eased slide is
     /// frame-rate independent regardless of how often the host repaints.
-    last_tick: std::time::Instant,
+    last_tick: ui::time::Instant,
     /// System motion preference. The rail keeps the same spatial model, but
     /// snaps between endpoints when motion is reduced.
     motion_reduced: bool,
@@ -1002,7 +1003,7 @@ impl RemoteApp {
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
-            last_tick: std::time::Instant::now(),
+            last_tick: ui::time::now(),
             motion_reduced: false,
             tooltips: TooltipHost::new(),
         }
@@ -1566,7 +1567,7 @@ impl RemoteApp {
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
                 let user = if c.user.is_empty() {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
                     c.user.clone()
                 };
@@ -1980,14 +1981,16 @@ impl RemoteApp {
         let (mut handled, mut focus_target) = (false, None);
         input.handle_event(
             event,
-            ctx.scale_factor,
-            &ctx.modifiers,
-            state,
-            ctx.path,
-            &mut handled,
-            &mut focus_target,
-            ctx.node_id,
-            ctx.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: ctx.scale_factor,
+                modifiers: &ctx.modifiers,
+                state,
+                path: ctx.path,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: ctx.node_id,
+                taffy: ctx.taffy,
+            },
         );
         if self.inputs.get(f).value() != before {
             self.commit_field(f);
@@ -2351,251 +2354,45 @@ impl Collaborative for RemoteApp {
 }
 
 impl Widget for RemoteApp {
-    fn collaborative_mut(&mut self) -> Option<&mut dyn Collaborative> {
-        Some(self)
-    }
+    ui::provides!(
+        dyn ui::widget::Collaborative,
+        dyn ui::undo::CommittedActions,
+        dyn ui::resources::PublishesResources
+    );
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::REMOTE_OPERATION_TYPE]
     }
 
-    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
-    /// delete) so the shell's one action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
-        if let Some(id) = self.session_for
-            && let Some(connection) = self.workspace.get(id)
-        {
-            let can_send_text = matches!(
-                &self.live,
-                Some(LiveSession::Ssh(session))
-                    if session.status() == SessionStatus::Connected
-            );
-            if let Some(workspace) = resources.first_mut() {
-                let host_key_issue = self.ssh_host_key_issue(id);
-                workspace.children.push(crate::actions::session_resource(
-                    connection,
-                    can_send_text,
-                    host_key_issue.as_ref(),
-                ));
-            }
-        }
-        resources
-    }
-
-    /// Hand the host the heads captured before an on-screen affordance dispatched
-    /// its Remote action, so it records one undo boundary bracketing it.
-    /// Rising-edge: cleared on read.
-    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        self.actions.take_committed()
-    }
-
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        if kind != crate::actions::operation_kind(&operation) {
-            return Err("remote operation kind does not match its declared contract".into());
-        }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections => {
-                self.apply(Action::GoList, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::NewConnectionForm => {
-                self.apply(Action::NewConnection, &mut AutoCommit::new());
-            }
-            crate::actions::RemoteOperation::EditConnection { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".into());
-                }
-                self.apply(
-                    Action::EditConnection(connection_id),
-                    &mut AutoCommit::new(),
-                );
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                if self.workspace.get(connection_id).is_none() {
-                    return Err("saved connection no longer exists".to_string());
-                }
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::Disconnect { connection_id } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                self.disconnect_session();
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".to_string());
-                }
-                match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input(text.into_bytes())?;
-                        self.dirty = true;
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".to_string()),
-                }
-            }
-            crate::actions::RemoteOperation::TrustSshHostKey {
-                connection_id,
-                observed,
-            } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
-                {
-                    return Err(
-                        "the observed SSH host key is stale; reconnect to inspect the current key"
-                            .into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
-                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
-                self.open_session(connection_id);
-            }
-            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
-                let connection = self
-                    .workspace
-                    .get(connection_id)
-                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
-                if !matches!(
-                    self.ssh_host_key_issue(connection_id),
-                    Some(crate::ssh::HostKeyIssue::Changed { .. })
-                ) {
-                    return Err(
-                        "only the currently observed changed SSH host key can be forgotten".into(),
-                    );
-                }
-                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
-                    format!("private SSH host-key storage is unavailable: {error}")
-                })?;
-                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
-                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
-                self.disconnect_session();
-            }
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        if self.pending_resource_operation.is_some() {
-            return Err("another remote operation is still running".into());
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        match operation {
-            crate::actions::RemoteOperation::ShowConnections
-            | crate::actions::RemoteOperation::NewConnectionForm
-            | crate::actions::RemoteOperation::EditConnection { .. } => {
-                Err("view operations do not start background work".into())
-            }
-            crate::actions::RemoteOperation::Connect { connection_id } => {
-                let Some(connection) = self.workspace.get(connection_id) else {
-                    return Err("saved connection no longer exists".into());
-                };
-                let readiness = connection_readiness(connection);
-                if !readiness.can_connect() {
-                    let reason = if readiness == TransportReadiness::InvalidProfile {
-                        connection
-                            .profile_issue()
-                            .unwrap_or_else(|| readiness.detail(connection.kind))
-                    } else {
-                        readiness.detail(connection.kind)
-                    };
-                    return Err(reason.to_string());
-                }
-                self.open_session(connection_id);
-                match self.live.as_ref().map(LiveSession::status) {
-                    Some(SessionStatus::Connecting) => {
-                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
-                            invocation,
-                            connection_id,
-                            session_generation: self.session_generation,
-                        });
-                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-                    }
-                    Some(SessionStatus::Connected) => {
-                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                            tilo_actions::ActionOutput::default(),
-                        )))
-                    }
-                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
-                        Err(message)
-                    }
-                    Some(SessionStatus::Closed) | None => {
-                        Err("remote transport did not start".into())
-                    }
-                }
-            }
-            crate::actions::RemoteOperation::SendText {
-                connection_id,
-                text,
-            } => {
-                if self.session_for != Some(connection_id) {
-                    return Err("that remote session is no longer active".into());
-                }
-                let acknowledgement = match &self.live {
-                    Some(LiveSession::Ssh(session))
-                        if session.status() == SessionStatus::Connected =>
-                    {
-                        session.send_input_ack(text.into_bytes())?
-                    }
-                    _ => return Err("text input requires a connected SSH terminal".into()),
-                };
-                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
-                    invocation,
-                    connection_id,
-                    session_generation: self.session_generation,
-                    acknowledgement,
-                });
-                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-            }
-            crate::actions::RemoteOperation::Disconnect { .. }
-            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
-            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
-                if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-                    return Ok(None);
-                }
-                Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                    tilo_actions::ActionOutput::default(),
-                )))
-            }
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     #[allow(
@@ -2754,7 +2551,8 @@ impl Widget for RemoteApp {
         Some(update)
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         // Publish our own connection list into the shared document the first
         // time we run, then adopt any remote additions. The live app's list
         // is empty on a fresh machine, so nothing fabricated is ever written
@@ -2870,7 +2668,7 @@ impl Widget for RemoteApp {
         // settling, keep the repaint gate open so the host pumps the next
         // frame; the dt is real elapsed time so the slide is frame-rate
         // independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         if self.motion_reduced {
@@ -3010,31 +2808,24 @@ impl Widget for RemoteApp {
         clippy::too_many_lines,
         reason = "the widget trait requires one exhaustive event router so pointer, keyboard, IME, and accessibility routing share one ordering contract"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, event_ctx: &mut ui::widget::EventCtx<'_>) {
+        let state = &mut *event_ctx.state;
         if !matches!(event, WindowEvent::CursorMoved { .. }) && self.tooltips.dismiss() {
             self.dirty = true;
         }
         let ctx = EventRouteCtx {
-            scale_factor,
-            modifiers: *modifiers,
-            path,
-            node_id,
-            taffy,
+            scale_factor: event_ctx.scale_factor,
+            modifiers: *event_ctx.modifiers,
+            path: event_ctx.path,
+            node_id: event_ctx.node_id,
+            taffy: event_ctx.taffy,
         };
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(
+                    position.x / event_ctx.scale_factor,
+                    position.y / event_ctx.scale_factor,
+                );
                 self.handle_cursor_moved_pos(p, event, state, &ctx);
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -3042,14 +2833,14 @@ impl Widget for RemoteApp {
             {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / event_ctx.scale_factor,
                 };
                 let next = (self.list_scroll + dy).clamp(0.0, self.list_scroll_max);
                 if (next - self.list_scroll).abs() > f64::EPSILON {
                     self.list_scroll = next;
                     self.dirty = true;
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput { state, button, .. }
                 if self.pending_confirmation.is_none()
@@ -3072,7 +2863,7 @@ impl Widget for RemoteApp {
                         pressed: *state == ElementState::Pressed,
                     });
                 }
-                *handled = true;
+                *event_ctx.handled = true;
             }
             // A press/release over the live VNC canvas is injected into the
             // remote desktop rather than hit-testing the local chrome.
@@ -3081,14 +2872,14 @@ impl Widget for RemoteApp {
                     && self.vnc_pointer_target(self.pointer).is_some() =>
             {
                 self.handle_vnc_mouse_input(*state, *button);
-                *handled = true;
+                *event_ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_left_press_event(event, state, handled, &ctx);
+                self.handle_left_press_event(event, state, event_ctx.handled, &ctx);
             }
             // Ending a drag has to reach the field that started it, or the
             // selection keeps extending after the button is up.
@@ -3116,7 +2907,7 @@ impl Widget for RemoteApp {
                         pressed: *key_state == ElementState::Pressed,
                         modifiers: 0,
                     });
-                    *handled = true;
+                    *event_ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
@@ -3134,7 +2925,7 @@ impl Widget for RemoteApp {
                     logical_key,
                     text.as_ref().map(winit::keyboard::SmolStr::as_str),
                     state,
-                    handled,
+                    event_ctx.handled,
                     &ctx,
                 );
             }
@@ -3633,10 +3424,11 @@ impl Widget for RemoteApp {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
         use ui::a11y::Action as A11yAction;
+        let (state, _) = ui::doc::document(state, path);
         if self.pending_confirmation.is_some() {
             let routed = match (target, action) {
                 ("remote.confirmation.cancel", A11yAction::Activate) => Action::CancelPending,
@@ -3767,6 +3559,251 @@ impl Widget for RemoteApp {
     }
 }
 
+impl ui::resources::PublishesResources for RemoteApp {
+    /// Publish each saved connection as a Ctrl+K resource (rename / favourite /
+    /// delete) so the shell's one action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = <Self as tilo_actions::ResourceProvider>::resources(self, doc);
+        if let Some(id) = self.session_for
+            && let Some(connection) = self.workspace.get(id)
+        {
+            let can_send_text = matches!(
+                &self.live,
+                Some(LiveSession::Ssh(session))
+                    if session.status() == SessionStatus::Connected
+            );
+            if let Some(workspace) = resources.first_mut() {
+                let host_key_issue = self.ssh_host_key_issue(id);
+                workspace.children.push(crate::actions::session_resource(
+                    connection,
+                    can_send_text,
+                    host_key_issue.as_ref(),
+                ));
+            }
+        }
+        resources
+    }
+}
+
+impl ui::undo::CommittedActions for RemoteApp {
+    /// Hand the host the heads captured before an on-screen affordance dispatched
+    /// its Remote action, so it records one undo boundary bracketing it.
+    /// Rising-edge: cleared on read.
+    fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
+        self.actions.take_committed()
+    }
+}
+
+impl RemoteApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        if kind != crate::actions::operation_kind(&operation) {
+            return Err("remote operation kind does not match its declared contract".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections => {
+                self.apply(Action::GoList, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::NewConnectionForm => {
+                self.apply(Action::NewConnection, &mut AutoCommit::new());
+            }
+            crate::actions::RemoteOperation::EditConnection { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".into());
+                }
+                self.apply(
+                    Action::EditConnection(connection_id),
+                    &mut AutoCommit::new(),
+                );
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                if self.workspace.get(connection_id).is_none() {
+                    return Err("saved connection no longer exists".to_string());
+                }
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::Disconnect { connection_id } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                self.disconnect_session();
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".to_string());
+                }
+                match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input(text.into_bytes())?;
+                        self.dirty = true;
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".to_string()),
+                }
+            }
+            crate::actions::RemoteOperation::TrustSshHostKey {
+                connection_id,
+                observed,
+            } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(self.ssh_host_key_issue(connection_id), Some(crate::ssh::HostKeyIssue::FirstContact { observed: ref current }) if current == &observed)
+                {
+                    return Err(
+                        "the observed SSH host key is stale; reconnect to inspect the current key"
+                            .into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::trust_host_key(&path, &connection.host, connection.port, &observed)
+                    .map_err(|error| format!("could not save SSH host-key trust: {error}"))?;
+                self.open_session(connection_id);
+            }
+            crate::actions::RemoteOperation::ForgetSshHostKey { connection_id } => {
+                let connection = self
+                    .workspace
+                    .get(connection_id)
+                    .ok_or_else(|| "saved connection no longer exists".to_string())?;
+                if !matches!(
+                    self.ssh_host_key_issue(connection_id),
+                    Some(crate::ssh::HostKeyIssue::Changed { .. })
+                ) {
+                    return Err(
+                        "only the currently observed changed SSH host key can be forgotten".into(),
+                    );
+                }
+                let path = crate::ssh::default_known_hosts_path().map_err(|error| {
+                    format!("private SSH host-key storage is unavailable: {error}")
+                })?;
+                crate::ssh::forget_host_key(&path, &connection.host, connection.port)
+                    .map_err(|error| format!("could not forget SSH host-key trust: {error}"))?;
+                self.disconnect_session();
+            }
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        if self.pending_resource_operation.is_some() {
+            return Err("another remote operation is still running".into());
+        }
+        match operation {
+            crate::actions::RemoteOperation::ShowConnections
+            | crate::actions::RemoteOperation::NewConnectionForm
+            | crate::actions::RemoteOperation::EditConnection { .. } => {
+                Err("view operations do not start background work".into())
+            }
+            crate::actions::RemoteOperation::Connect { connection_id } => {
+                let Some(connection) = self.workspace.get(connection_id) else {
+                    return Err("saved connection no longer exists".into());
+                };
+                let readiness = connection_readiness(connection);
+                if !readiness.can_connect() {
+                    let reason = if readiness == TransportReadiness::InvalidProfile {
+                        connection
+                            .profile_issue()
+                            .unwrap_or_else(|| readiness.detail(connection.kind))
+                    } else {
+                        readiness.detail(connection.kind)
+                    };
+                    return Err(reason.to_string());
+                }
+                self.open_session(connection_id);
+                match self.live.as_ref().map(LiveSession::status) {
+                    Some(SessionStatus::Connecting) => {
+                        self.pending_resource_operation = Some(PendingResourceOperation::Connect {
+                            invocation,
+                            connection_id,
+                            session_generation: self.session_generation,
+                        });
+                        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+                    }
+                    Some(SessionStatus::Connected) => {
+                        Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                            tilo_actions::ActionOutput::default(),
+                        )))
+                    }
+                    Some(SessionStatus::Failed(message) | SessionStatus::Unavailable(message)) => {
+                        Err(message)
+                    }
+                    Some(SessionStatus::Closed) | None => {
+                        Err("remote transport did not start".into())
+                    }
+                }
+            }
+            crate::actions::RemoteOperation::SendText {
+                connection_id,
+                text,
+            } => {
+                if self.session_for != Some(connection_id) {
+                    return Err("that remote session is no longer active".into());
+                }
+                let acknowledgement = match &self.live {
+                    Some(LiveSession::Ssh(session))
+                        if session.status() == SessionStatus::Connected =>
+                    {
+                        session.send_input_ack(text.into_bytes())?
+                    }
+                    _ => return Err("text input requires a connected SSH terminal".into()),
+                };
+                self.pending_resource_operation = Some(PendingResourceOperation::SshInput {
+                    invocation,
+                    connection_id,
+                    session_generation: self.session_generation,
+                    acknowledgement,
+                });
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            }
+            crate::actions::RemoteOperation::Disconnect { .. }
+            | crate::actions::RemoteOperation::TrustSshHostKey { .. }
+            | crate::actions::RemoteOperation::ForgetSshHostKey { .. } => {
+                if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+                    return Ok(None);
+                }
+                Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                )))
+            }
+        }
+    }
+}
+
 impl RemoteApp {
     /// `WindowEvent::CursorMoved`'s share of `handle_event`: track hover,
     /// stream motion to a live remote desktop, and let a focused field's drag
@@ -3822,7 +3859,7 @@ impl RemoteApp {
                 }),
                 _ => None,
             });
-        if self.tooltips.on_pointer(tip, std::time::Instant::now()) {
+        if self.tooltips.on_pointer(tip, ui::time::now()) {
             self.dirty = true;
         }
         // A focused field tracks the pointer so a drag extends its
@@ -5685,10 +5722,6 @@ impl RemoteApp {
     /// Paint one segmented control over rects the caller already pushed as
     /// hits: the shared face owns selection, hover, separators and measured
     /// label centring, so this canvas keeps only its pointer routing.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The segmented-control painter forwards render context, precomputed hit rectangles, labels, and the optional selected index."
-    )]
     fn draw_segments(
         &self,
         scene: &mut Scene,
@@ -6733,14 +6766,16 @@ mod tests {
         let (mut h, mut ft) = (false, None);
         app.handle_event(
             ev,
-            1.0,
-            &m,
-            state,
-            &automerge::ROOT,
-            &mut h,
-            &mut ft,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state,
+                path: &automerge::ROOT,
+                handled: &mut h,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -7363,25 +7398,32 @@ mod tests {
                 &crate::actions::RemoteOperation::EditConnection { connection_id: id },
             )
             .expect("serializable view operation");
-            assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::View,
-                    &edit.type_id,
-                    &edit.payload,
-                    &doc(),
-                    &automerge::ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::View,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
                 )
-                .expect("view routed")
-            );
+                .expect("view routed"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(app.screen, Screen::Form { editing: Some(id) });
 
             assert!(
-                app.invoke_resource_operation(
-                    tilo_actions::OperationKind::Effect,
-                    &edit.type_id,
-                    &edit.payload,
-                    &doc(),
-                    &automerge::ROOT,
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        tilo_actions::OperationKind::Effect,
+                        &edit.type_id,
+                        &edit.payload
+                    ),
+                    &mut doc(),
+                    &automerge::ROOT
                 )
                 .is_err()
             );
@@ -7963,7 +8005,7 @@ mod tests {
                 "the star and the Ctrl+K row build the byte-identical action",
             );
             assert!(
-                app.take_committed_action().is_some(),
+                ui::undo::take_committed_action(&mut app).is_some(),
                 "the dispatch armed exactly one undo boundary for the host to record",
             );
         }

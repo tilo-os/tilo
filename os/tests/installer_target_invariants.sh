@@ -327,7 +327,7 @@ if [ -x "$prediction_signer" ] \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=1' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq "echo 'TILO_REQUIRE_PCR_PREDICTION=0' >> \"\$GITHUB_ENV\"" "$os_image_workflow" \
    && grep -Fq 'PROTECTED_PCR_PREDICTION_SIGNER:' "$os_image_workflow" \
-   && grep -Fq "github.event.inputs.publish == 'true'" "$os_image_workflow" \
+   && grep -Fq "github.event.inputs.release == 'true'" "$os_image_workflow" \
    && ! grep -Fq 'TILO_PCR_PREDICTION_SIGNER: ${{ vars.TILO_PCR_PREDICTION_SIGNER }}' "$os_image_workflow" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-image.sh" \
    && grep -Fq 'TILO_ALLOW_LOCAL_PCR_SIGNING' "$repo_root/os/dev/build-custom-installer.sh" \
@@ -353,7 +353,8 @@ fi
 if grep -Fq 'tilo-rollback "${rollback_args[@]}" enroll --device "$dev"' "$encryptor" \
    && grep -Fq -- '--require-tpm-prediction' "$encryptor" \
    && grep -Fq 'install -d -m 0755 /usr/share/tilo/pcr-predictions' "$production_containerfile" \
-   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$production_containerfile" \
+   && grep -Fq 'bash /run/tilo-build-initramfs.sh "$kver"' "$production_containerfile" \
+   && grep -Fq -- '--add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback"' "$repo_root/os/scripts/build-initramfs.sh" \
    && grep -Fq 'tilo-rollback-initrd-unlock' "$production_containerfile" \
    && grep -Fq 'tilo-root-discover' "$production_containerfile" \
    && grep -Fq 'tilo-root-generator' "$production_containerfile" \

@@ -107,6 +107,8 @@ pub struct WorkspaceOperationPolicy<'a, W: WorkspacePolicy> {
     pub workspace: &'a W,
     pub room: &'a str,
     pub now: u64,
+    /// The invoking device is held to the foreign-device cap in this room.
+    pub capped: bool,
 }
 impl<W: WorkspacePolicy> WorkspaceOperationPolicy<'_, W> {
     fn resource(&self, object: PolicyObject<'_>) -> ResourceRef {
@@ -133,16 +135,19 @@ impl<W: WorkspacePolicy> OperationPolicy for WorkspaceOperationPolicy<'_, W> {
         let Some(verb) = verb(level) else {
             return true;
         };
-        let actor = self
-            .workspace
-            .actor_for_person_at(&person.to_string(), self.now);
+        let actor = self.workspace.actor_for_person_on_device_at(
+            &person.to_string(),
+            self.capped,
+            self.now,
+        );
         self.workspace
             .decide_at(&actor, &self.resource(object), verb, self.now)
             == CapDecision::Allow
     }
     fn person_ceiling(&self, person: &str) -> Option<PermissionLevel> {
         self.workspace
-            .role_of_at(&person.to_string(), self.now)
+            .actor_for_person_on_device_at(&person.to_string(), self.capped, self.now)
+            .role
             .and_then(ceiling_of)
     }
     fn agent_standing(&self, agent: &str) -> AgentStanding {
@@ -238,7 +243,9 @@ pub fn task_effective_scopes(
 
 /// The one per-step authorization for a live published operation. `grant`
 /// is `Some(scopes)` exactly when `actor` is an agent; agents on this path
-/// always run unattended against a host worker.
+/// always run unattended against a host worker. `capped` holds the person
+/// (or an agent's delegator) to the foreign-device cap of the device they
+/// invoke from.
 ///
 /// # Errors
 ///
@@ -247,6 +254,7 @@ pub fn authorize_published<W: WorkspacePolicy>(
     workspace: &W,
     now: u64,
     actor: InvokingActor<'_>,
+    capped: bool,
     scopes: Option<&[GrantScope]>,
     surface: &PublishedSurface,
     action: &PublishedAction,
@@ -257,6 +265,7 @@ pub fn authorize_published<W: WorkspacePolicy>(
         workspace,
         room: &surface.route.cluster_id,
         now,
+        capped,
     };
     let digest = |app: &str| schema_digest(app);
     let grant = scopes.map(|scopes| AgentGrant {
@@ -490,11 +499,23 @@ mod tests {
         let s = surface("rec-1", vec![typing.clone()]);
         let scopes = [edit_scope("rec-1")];
         // No agent membership: least-privilege delegated role, owner allows.
-        assert!(authorize_published(&w, 10, AGENT_ACTOR, Some(&scopes), &s, &typing, None).is_ok());
+        assert!(
+            authorize_published(&w, 10, AGENT_ACTOR, false, Some(&scopes), &s, &typing, None)
+                .is_ok()
+        );
         // Another record's route.
         let other = surface("rec-2", vec![typing.clone()]);
         assert_eq!(
-            authorize_published(&w, 10, AGENT_ACTOR, Some(&scopes), &other, &typing, None),
+            authorize_published(
+                &w,
+                10,
+                AGENT_ACTOR,
+                false,
+                Some(&scopes),
+                &other,
+                &typing,
+                None
+            ),
             Err(Refusal::OutsideScope)
         );
         // Agent set to Commenter by an admin → typing refused.
@@ -509,6 +530,7 @@ mod tests {
                 &commenter,
                 10,
                 AGENT_ACTOR,
+                false,
                 Some(&scopes),
                 &s,
                 &typing,
@@ -521,14 +543,39 @@ mod tests {
             agent: AGENT,
             delegator: "stranger",
         };
-        assert!(authorize_published(&w, 10, stranger, Some(&scopes), &s, &typing, None).is_err());
+        assert!(
+            authorize_published(&w, 10, stranger, false, Some(&scopes), &s, &typing, None).is_err()
+        );
         // Surface republished under another app id.
         let mut forged = s;
         forged.app_id = "so.tilo.chat".into();
         assert_eq!(
-            authorize_published(&w, 10, AGENT_ACTOR, Some(&scopes), &forged, &typing, None),
+            authorize_published(
+                &w,
+                10,
+                AGENT_ACTOR,
+                false,
+                Some(&scopes),
+                &forged,
+                &typing,
+                None
+            ),
             Err(Refusal::InvalidRoute)
         );
+    }
+
+    #[test]
+    fn a_capped_device_holds_the_person_to_the_foreign_device_cap() {
+        let w = workspace();
+        let owner = InvokingActor::Person { id: OWNER };
+        let mut rename = action("rename", tilo_actions::OperationKind::Document);
+        rename.contract.permission = tilo_actions::PermissionRequirement::Admin;
+        let typing = action("type-text", tilo_actions::OperationKind::Document);
+        let s = surface("rec-1", vec![rename.clone(), typing.clone()]);
+
+        assert!(authorize_published(&w, 10, owner, false, None, &s, &rename, None).is_ok());
+        assert!(authorize_published(&w, 10, owner, true, None, &s, &rename, None).is_err());
+        assert!(authorize_published(&w, 10, owner, true, None, &s, &typing, None).is_ok());
     }
 
     #[test]
@@ -543,7 +590,7 @@ mod tests {
         let typing = action("type-text", tilo_actions::OperationKind::Document);
         let s = surface("rec-1", vec![typing.clone()]);
         let person = InvokingActor::Person { id: member };
-        assert!(authorize_published(&w, 10, person, None, &s, &typing, None).is_ok());
+        assert!(authorize_published(&w, 10, person, false, None, &s, &typing, None).is_ok());
         // Restrict the member on this record's artifact only.
         w.grant_capability(CapOverride::new(
             Subject::person(member),
@@ -555,9 +602,9 @@ mod tests {
             Effect::Restrict,
             Verb::Read,
         ));
-        assert!(authorize_published(&w, 10, person, None, &s, &typing, None).is_err());
+        assert!(authorize_published(&w, 10, person, false, None, &s, &typing, None).is_err());
         let s2 = surface("rec-2", vec![typing.clone()]);
-        assert!(authorize_published(&w, 10, person, None, &s2, &typing, None).is_ok());
+        assert!(authorize_published(&w, 10, person, false, None, &s2, &typing, None).is_ok());
     }
 
     #[test]

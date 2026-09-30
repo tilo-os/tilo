@@ -5,7 +5,7 @@
 //! Within-group reorder still lives in `TabBar` / `WindowGroup`.
 
 use crate::time::{Duration, Instant};
-use automerge::{AutoCommit, ObjId};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Position, Size, Style,
@@ -13,8 +13,9 @@ use taffy::{
 };
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::{ElementState, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
+use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
 use crate::text_render::TextRenderer;
 use crate::theme::Theme;
@@ -29,10 +30,11 @@ use crate::widget::{
 const SNAP_IDLE_MS: u32 = 200;
 /// Snap-animation duration (cubic-out).
 const SNAP_ANIM_MS: u32 = 200;
-/// "Make space" slide duration for groups a new insertion pushes along —
-/// matches `window_group.rs`'s spawn fade (420ms cubic-out), which runs
-/// at the same moment, so the two read as one event.
-const MAKE_SPACE_ANIM_MS: u32 = 420;
+/// A group this close to its laid-out x, and this slow, has arrived.
+const MOVE_SETTLED_PX: f64 = 0.25;
+const MOVE_SETTLED_PX_PER_S: f64 = 4.0; // rest velocity in px/s, not a Theme gap
+/// Two pan targets closer than this are the same place on screen.
+const SNAP_SETTLED_PX: f64 = 0.5;
 
 /// A tab dragged over a window body gets a generous before/after target at
 /// each outer edge. The target follows the window size, but stays useful on a
@@ -60,6 +62,11 @@ const TRAILING_REVEAL_FRAC: f64 = 0.20;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
+/// How far a group's shadow sprites paint past its rect: `bloom_pad`
+/// (120 px) in `TileHost::draw_steady_state`, with the clip's margin.
+/// Not a Theme spacing token: it must match the compositor shadow draw,
+/// not layout padding a theme can resize.
+const GROUP_SPRITE_REACH_PX: f64 = 160.0;
 
 /// Touchpad px per wheel detent for the discrete jump gestures; also the
 /// scale for hi-res wheel notches reported as pixel deltas.
@@ -107,13 +114,37 @@ pub fn wheel_jump_detents(delta: &MouseScrollDelta) -> f64 {
     }
 }
 
-/// In-flight "make space" motion: `offsets` is how far *left* of its new
-/// home each group started (by group id), so eased paint is
-/// `new_x + offset * (1 - t)`.
-#[derive(Clone, Debug)]
-struct ShiftAnim {
+/// One group's drawn x relative to its laid-out x, springing to 0 on the
+/// critically damped `motion.springs.heavy`. `from` and `velocity` are the
+/// offset (px, negative = left of home) and its rate at `started`. Closed
+/// form rather than a stepped integrator: a held capture and every frame
+/// rate read the same curve, and a retarget restarts from the exact drawn
+/// position and velocity.
+#[derive(Clone, Copy, Debug)]
+struct GroupMove {
+    from: f64,
+    velocity: f64,
     started: Instant,
-    offsets: Vec<(u64, f64)>,
+}
+
+impl GroupMove {
+    /// Offset and velocity `elapsed` after `started`, for natural
+    /// frequency `omega` (rad/s).
+    fn at(self, elapsed: Duration, omega: f64) -> (f64, f64) {
+        let t = elapsed.as_secs_f64();
+        let decay = (-omega * t).exp();
+        let b = self.velocity + omega * self.from;
+        (
+            (self.from + b * t) * decay,
+            (self.velocity - omega * b * t) * decay,
+        )
+    }
+}
+
+/// Natural frequency of a critically damped spring; `motion.springs.heavy`
+/// is pinned to ζ = 1 by its token test.
+fn spring_omega(params: crate::tokens::SpringParams) -> f64 {
+    (f64::from(params.stiffness) / f64::from(params.mass.max(0.0001))).sqrt()
 }
 
 /// In-flight snap animation; cleared when the curve settles or the user
@@ -128,6 +159,16 @@ struct SnapAnim {
 /// Press displacement (px) before a tab-bar-background press becomes a
 /// whole-group reorder drag instead of a focus click.
 const GROUP_DRAG_THRESHOLD: f64 = 6.0;
+
+/// One-finger swipe that is following the strip. Distinct from
+/// [`GroupDrag`]: a horizontal swipe pans; a grab that goes mostly
+/// vertical, or a pointer drag, still reorders.
+#[derive(Clone, Copy, Debug)]
+struct TouchPan {
+    id: u64,
+    start: Point,
+    engaged: bool,
+}
 
 /// In-flight whole-group reorder drag, set on a tab-bar-background press
 /// or touch (see [`WindowGroup::bar_grab_hit`]) and cleared on release.
@@ -240,12 +281,17 @@ pub struct GroupRow {
     /// group; if it belongs to another strip, [`Self::hidden`] is set
     /// instead.
     fullscreen_group: Option<u64>,
+    /// Transient: the promoted group leaves its lane's leading gutter to the
+    /// workspace wheel, as a user maximize does; a client fullscreen covers it.
+    promotion_keeps_gutter: bool,
     /// Transient (not persisted): true on every strip that doesn't own
     /// the current fullscreen group; collapses the row via `Display::None`.
     hidden: bool,
     /// In-flight whole-group reorder drag (distinct from a tab-detach
     /// drag inside a child `TabBar`, and from an inter-group resize drag).
     group_drag: Option<GroupDrag>,
+    /// One-finger swipe on the tab bar that is panning the strip.
+    touch_pan: Option<TouchPan>,
     /// Insertion gap index targeted by an in-progress reorder drag;
     /// `draw` paints the indicator here. Cleared on release.
     group_reorder_target: Option<usize>,
@@ -264,17 +310,24 @@ pub struct GroupRow {
     /// desktop — otherwise a full-width window could span two monitors.
     /// Empty in a bare `ui` host, see [`Self::usable_at`].
     output_spans: Vec<OutputSpan>,
-    /// Each group's taffy-local x from the last layout, keyed by id — the
-    /// make-space slide's "where it used to be".
-    last_local_x: HashMap<u64, f64>,
-    /// Set by [`Self::insert_group`] when insertion pushes groups along;
-    /// the next layout turns prior positions into travel offsets and
-    /// clears this.
+    /// Each group's on-screen x from the last layout, after the pan,
+    /// keyed by id — a move's "where it used to be".
+    last_laid_x: HashMap<u64, f64>,
+    /// Set when an insert, close or reorder moves groups along; the next
+    /// layout turns prior positions into [`GroupMove`]s and clears this.
     shift_armed: bool,
-    shift_anim: Option<ShiftAnim>,
-    /// Test-only clock override for [`Self::shift_anim_t`] (capture
-    /// harness); always `None` in a running shell.
+    moves: Vec<(u64, GroupMove)>,
+    /// `motion.springs.heavy` as last laid out, as a natural frequency.
+    move_omega: f64,
+    /// Capture-harness clock override for every move's elapsed time;
+    /// always `None` in a running shell.
     shift_hold: Option<Duration>,
+    /// `theme.reduce_motion` as last laid out or drawn: the strip's snaps
+    /// and make-space slides jump to where they were going.
+    reduce_motion: bool,
+    /// Groups the last draw skipped as outside the row. They keep their
+    /// dirty state, so cached scenes rebuild once they are painted again.
+    culled_groups: Vec<u64>,
 }
 
 /// One display's horizontal extent in the compositor's combined
@@ -464,7 +517,19 @@ impl Pan {
         self.last_wheel_at = None;
     }
 
+    /// Restarting an ease that already heads for `sx` would begin its curve
+    /// again from here, and a caller asking every frame would chase the
+    /// target for seconds; nor is a sub-pixel move worth a frame.
     fn ease_to(&mut self, sx: f64, now: Instant) {
+        if let Some(anim) = self.snap_anim
+            && (anim.to - sx).abs() <= SNAP_SETTLED_PX
+        {
+            return;
+        }
+        if self.snap_anim.is_none() && (sx - self.scroll_x).abs() <= SNAP_SETTLED_PX {
+            self.jump_to(sx);
+            return;
+        }
         self.snap_anim = Some(SnapAnim {
             from: self.scroll_x,
             to: sx,
@@ -619,8 +684,9 @@ impl Pan {
         best
     }
 
-    /// Advance the snap state to `now`. Returns whether `scroll_x` moved.
-    fn tick_snap_at(&mut self, now: Instant) -> bool {
+    /// Advance the snap state to `now`; under `reduce_motion` a snap lands
+    /// on the tick it starts. Returns whether `scroll_x` moved.
+    fn tick_snap_at(&mut self, now: Instant, reduce_motion: bool) -> bool {
         let before = self.scroll_x;
         // Kicking a fresh snap off here, before the curve-advance branch
         // below, lets this same call both start it and apply its first
@@ -661,7 +727,7 @@ impl Pan {
         if let Some(anim) = self.snap_anim {
             let elapsed = now.saturating_duration_since(anim.started);
             let total = Duration::from_millis(u64::from(SNAP_ANIM_MS));
-            if elapsed >= total {
+            if reduce_motion || elapsed >= total {
                 self.scroll_x = anim.to;
                 self.snap_anim = None;
                 self.last_wheel_at = None;
@@ -673,6 +739,17 @@ impl Pan {
             }
         }
         (self.scroll_x - before).abs() > f64::EPSILON
+    }
+
+    /// Ease on the snap curve from `from` to where the pan now is, rather
+    /// than cutting there.
+    fn ease_scroll_from(&mut self, from: f64, now: Instant) {
+        self.snap_anim = Some(SnapAnim {
+            from,
+            to: self.scroll_x,
+            started: now,
+        });
+        self.scroll_x = from;
     }
 
     /// Re-frame when the run's geometry moved under the pan (resize,
@@ -725,21 +802,23 @@ impl GroupRow {
     /// layout and pixels. This method deliberately calls the owning group
     /// directly, preserving its real app draw path and geometry while omitting
     /// only the output clip.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "capture painting mirrors the Widget draw context plus target selection"
-    )]
     pub fn draw_capture_targets(
         &mut self,
-        target_ids: &[String],
-        extent: crate::widget::CaptureExtent,
-        complete_semantic_content: bool,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
+        capture: &crate::widget::LiveCapture<'_>,
+        ctx: &mut PaintCtx<'_>,
         presence: &PresenceCtx,
     ) -> Vec<Rect> {
+        let crate::widget::LiveCapture {
+            target_ids,
+            extent,
+            complete_semantic_content,
+        } = *capture;
+        let PaintCtx {
+            scene,
+            transform,
+            text: text_renderer,
+            theme,
+        } = ctx.reborrow();
         let mut rects = Vec::new();
         for group in &mut self.groups {
             let active = group.active_tab_id();
@@ -794,18 +873,30 @@ impl GroupRow {
             scroll_dirty: false,
             leading_inset: 0.0,
             fullscreen_group: None,
+            promotion_keeps_gutter: false,
             hidden: false,
             group_drag: None,
+            touch_pan: None,
             group_reorder_target: None,
             group_reorder_lane: None,
             pending_group_reorder: None,
             pending_topology_change: false,
             output_spans: Vec::new(),
-            last_local_x: HashMap::new(),
+            last_laid_x: HashMap::new(),
             shift_armed: false,
-            shift_anim: None,
+            moves: Vec::new(),
+            move_omega: spring_omega(crate::tokens::SpringPresets::default().heavy),
             shift_hold: None,
+            reduce_motion: false,
+            culled_groups: Vec::new(),
         }
+    }
+
+    /// Whether a group at `rect`, shifted by `dx`, paints anything inside
+    /// the row, including its shadow sprites.
+    fn paints_within_row(&self, rect: Rect, dx: f64) -> bool {
+        let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
+        reach.x1 + dx > self.rect.x0 && reach.x0 + dx < self.rect.x1
     }
 
     /// Group to promote fullscreen, if `fullscreen_group` belongs to this
@@ -837,6 +928,16 @@ impl GroupRow {
 
     pub fn is_fullscreen(&self) -> bool {
         self.fullscreen_idx().is_some()
+    }
+
+    /// Whether the group promoted by [`Self::set_fullscreen`] stops at its
+    /// lane's leading gutter (a maximize, beside the wheel) or covers it (a
+    /// client fullscreen).
+    pub fn set_promotion_keeps_gutter(&mut self, keeps: bool) {
+        if self.promotion_keeps_gutter != keeps {
+            self.promotion_keeps_gutter = keeps;
+            self.structure_dirty = true;
+        }
     }
 
     /// Reserve a canvas-x gutter before the first group so it pans with
@@ -1280,7 +1381,7 @@ impl GroupRow {
 
     /// Inserting anywhere but the end pushes later groups along; the
     /// motion is armed here and measured by the next layout pass, see
-    /// [`Self::shift_offset_for`].
+    /// [`Self::shift_offset_for`]. Closing and reordering arm it too.
     pub fn insert_group(&mut self, group: WindowGroup, idx: usize) {
         let clamped = idx.min(self.groups.len());
         if clamped < self.groups.len() {
@@ -1305,40 +1406,44 @@ impl GroupRow {
         }
         let group = self.groups.remove(from);
         self.groups.insert(to, group);
+        self.shift_armed = true;
         self.structure_dirty = true;
         true
     }
 
-    pub fn shift_anim_t(&self) -> f64 {
-        let Some(anim) = &self.shift_anim else {
-            return 1.0;
-        };
-        let elapsed = self.shift_hold.unwrap_or_else(|| anim.started.elapsed());
-        if elapsed >= Duration::from_millis(u64::from(MAKE_SPACE_ANIM_MS)) {
-            return 1.0;
-        }
-        let raw =
-            (elapsed.as_secs_f64() / (f64::from(MAKE_SPACE_ANIM_MS) / 1000.0)).clamp(0.0, 1.0);
-        1.0 - (1.0 - raw).powi(3)
+    fn move_elapsed(&self, m: GroupMove, now: Instant) -> Duration {
+        self.shift_hold
+            .unwrap_or_else(|| now.saturating_duration_since(m.started))
     }
 
-    /// How far left of its laid-out position `group_id` should be
-    /// *painted* this frame. The stored rect is always the final one, so
-    /// hit-testing and the app's configure size are never mid-flight —
-    /// same choice the per-group spawn fade makes.
+    /// `group_id`'s drawn offset from its laid-out x and that offset's
+    /// velocity (px/s) at `now`; `(0, 0)` for a group at rest.
+    fn move_state_at(&self, group_id: u64, now: Instant) -> (f64, f64) {
+        self.moves
+            .iter()
+            .find(|(id, _)| *id == group_id)
+            .map_or((0.0, 0.0), |&(_, m)| {
+                m.at(self.move_elapsed(m, now), self.move_omega)
+            })
+    }
+
+    fn move_settled(&self, m: GroupMove, now: Instant) -> bool {
+        let (x, v) = m.at(self.move_elapsed(m, now), self.move_omega);
+        x.abs() < MOVE_SETTLED_PX && v.abs() < MOVE_SETTLED_PX_PER_S
+    }
+
+    /// How far right of its laid-out position `group_id` should be
+    /// *painted* this frame (negative = left). The stored rect is always
+    /// the final one, so hit-testing and the app's configure size are
+    /// never mid-flight — same choice the per-group spawn fade makes.
     pub fn shift_offset_for(&self, group_id: u64) -> f64 {
-        let Some(anim) = &self.shift_anim else {
-            return 0.0;
-        };
-        let Some((_, from)) = anim.offsets.iter().find(|(id, _)| *id == group_id) else {
-            return 0.0;
-        };
-        from * (1.0 - self.shift_anim_t())
+        self.move_state_at(group_id, crate::time::now()).0
     }
 
     /// True while any group is still travelling.
     fn shift_in_flight(&self) -> bool {
-        self.shift_anim.is_some() && self.shift_anim_t() < 1.0
+        let now = crate::time::now();
+        self.moves.iter().any(|&(_, m)| !self.move_settled(m, now))
     }
 
     /// Freeze the in-flight slide at `elapsed`, reporting whether there
@@ -1349,7 +1454,7 @@ impl GroupRow {
     /// not a reconstruction). Not gated on `debug_assertions`: `shots`
     /// walks scenario timelines through this and ships in release.
     pub fn hold_shift_at(&mut self, elapsed: Duration) -> bool {
-        if self.shift_anim.is_none() {
+        if self.moves.is_empty() {
             return false;
         }
         self.shift_hold = Some(elapsed);
@@ -1359,11 +1464,13 @@ impl GroupRow {
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
         let before = self.groups.len();
         if let Some(group) = self.groups.iter_mut().find(|g| g.id == id) {
-            self.close_reports.extend(group.close_components());
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(group));
         }
         self.groups.retain(|g| g.id != id);
         let removed = self.groups.len() != before;
         if removed {
+            self.shift_armed = true;
             self.structure_dirty = true;
         }
         removed
@@ -1612,11 +1719,12 @@ impl GroupRow {
     /// tree. Advances every run's snap.
     pub fn tick_snap_at(&mut self, now: Instant) {
         let mut moved = false;
+        let reduce_motion = self.reduce_motion;
         if self.lanes.is_empty() {
-            moved = self.pan.tick_snap_at(now);
+            moved = self.pan.tick_snap_at(now, reduce_motion);
         }
         for lane in &mut self.lanes {
-            moved |= lane.pan.tick_snap_at(now);
+            moved |= lane.pan.tick_snap_at(now, reduce_motion);
         }
         // Must invalidate the parent's subtree cache or needs_redraw()
         // stays false and it re-emits the pre-snap cached scene.
@@ -1629,7 +1737,7 @@ impl GroupRow {
         self.pans().iter().any(|pan| pan.snap_in_flight())
     }
 
-    #[cfg(any(test, debug_assertions))]
+    #[cfg(any(test, debug_assertions, feature = "test-support"))]
     pub fn set_scroll_x_for_test(&mut self, x: f64) {
         self.pan.scroll_x = x;
     }
@@ -2206,11 +2314,66 @@ impl GroupRow {
         claimed
     }
 
+    /// A finger on the tab bar (pills or ground) may become a strip pan.
+    fn begin_touch_pan_candidate(&mut self, id: u64, at: Point) {
+        if self.touch_pan.is_none()
+            && self
+                .groups
+                .iter()
+                .any(|group| group.bar_rect().contains(at))
+        {
+            self.touch_pan = Some(TouchPan {
+                id,
+                start: at,
+                engaged: false,
+            });
+        }
+    }
+
+    /// Horizontal travel past the grab threshold pans 1:1; a reorder
+    /// that already claimed the finger is left alone.
+    fn update_touch_pan(&mut self, id: u64, at: Point) -> bool {
+        let Some(mut pan) = self.touch_pan.filter(|pan| pan.id == id) else {
+            return false;
+        };
+        let travel = pan.start.x - at.x;
+        let dy = at.y - pan.start.y;
+        if !pan.engaged {
+            if self.group_drag.is_some_and(|drag| drag.moved)
+                || travel.abs() <= GROUP_DRAG_THRESHOLD
+                || travel.abs() <= dy.abs()
+            {
+                return false;
+            }
+            let _ = self.end_group_drag(false);
+            self.begin_strip_pan();
+            pan.engaged = true;
+        }
+        let _ = self.update_strip_pan(travel);
+        self.touch_pan = Some(pan);
+        true
+    }
+
+    fn end_touch_pan(&mut self, id: u64) -> bool {
+        let Some(pan) = self.touch_pan.take() else {
+            return false;
+        };
+        if pan.id != id {
+            self.touch_pan = Some(pan);
+            return false;
+        }
+        if !pan.engaged {
+            return false;
+        }
+        let _ = self.end_strip_pan(crate::time::now());
+        true
+    }
+
     /// Returns `true` when the event is claimed by an in-flight group
-    /// drag (so the caller skips resize-handle + per-child dispatch). A
-    /// press records a *candidate* drag but does not claim it, so a
-    /// plain click still falls through to the child for focus — only
-    /// once past [`GROUP_DRAG_THRESHOLD`] does the row claim motion.
+    /// drag or a one-finger strip pan, so the caller skips resize-handle
+    /// and per-child dispatch. A press records a *candidate* but does not
+    /// claim it, so a tap still reaches the child for focus — only once
+    /// past [`GROUP_DRAG_THRESHOLD`] does the row claim motion.
     fn update_group_drag(&mut self, event: &WindowEvent, scale_factor: f64) -> bool {
         let pointer_drag = self.group_drag.is_none_or(|drag| drag.touch.is_none());
         match event {
@@ -2229,12 +2392,13 @@ impl GroupRow {
                 button: MouseButton::Left,
                 ..
             } if pointer_drag => self.end_group_drag(true),
-            // A finger on a group's bar drags it exactly as the pointer
-            // does; the first finger down carries the drag.
+            // A finger on the tab bar pans the strip when the swipe is
+            // horizontal; a mostly-vertical grab still reorders the group.
             WindowEvent::Touch(touch) => {
                 let carries = self
                     .group_drag
                     .is_some_and(|drag| drag.touch == Some(touch.id));
+                let ours = self.touch_pan.is_some_and(|pan| pan.id == touch.id);
                 let at = Point::new(
                     touch.location.x / scale_factor,
                     touch.location.y / scale_factor,
@@ -2243,17 +2407,34 @@ impl GroupRow {
                     winit::event::TouchPhase::Started => {
                         self.last_cursor = at;
                         self.begin_group_drag(Some(touch.id));
+                        self.begin_touch_pan_candidate(touch.id, at);
                         false
                     }
-                    winit::event::TouchPhase::Moved if carries => {
+                    winit::event::TouchPhase::Moved if ours || carries => {
                         self.last_cursor = at;
-                        self.move_group_drag()
+                        if self.update_touch_pan(touch.id, at) {
+                            true
+                        } else if carries {
+                            self.move_group_drag()
+                        } else {
+                            false
+                        }
                     }
-                    winit::event::TouchPhase::Ended if carries => {
+                    winit::event::TouchPhase::Ended if ours || carries => {
                         self.last_cursor = at;
-                        self.end_group_drag(true)
+                        if self.end_touch_pan(touch.id) {
+                            true
+                        } else {
+                            self.end_group_drag(true)
+                        }
                     }
-                    winit::event::TouchPhase::Cancelled if carries => self.end_group_drag(false),
+                    winit::event::TouchPhase::Cancelled if ours || carries => {
+                        if self.end_touch_pan(touch.id) {
+                            true
+                        } else {
+                            self.end_group_drag(false)
+                        }
+                    }
                     _ => false,
                 }
             }
@@ -2402,6 +2583,12 @@ impl FloatingSurfaceProvider for GroupRow {
 }
 
 impl Widget for GroupRow {
+    crate::provides!(
+        dyn crate::widget::FloatingSurfaceProvider,
+        dyn crate::collaboration::participants::CollaborationTopology,
+        dyn crate::component_lifecycle::ComponentLifecycle
+    );
+
     // Modal capture and presentation polling follow visible content, never inactive tabs.
     fn modal_capture(&self) -> Option<Rect> {
         self.children().into_iter().find_map(Widget::modal_capture)
@@ -2495,25 +2682,6 @@ impl Widget for GroupRow {
         }
         Ok(())
     }
-    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        for child in &mut self.groups {
-            self.close_reports.extend(child.close_components());
-        }
-        self.take_component_close_reports()
-    }
-    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
-        let mut reports = std::mem::take(&mut self.close_reports);
-        for child in &mut self.groups {
-            reports.extend(child.take_component_close_reports());
-        }
-        reports
-    }
-    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
-        self.groups
-            .iter_mut()
-            .map(|group| group as &mut dyn Widget)
-            .collect()
-    }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -2521,13 +2689,13 @@ impl Widget for GroupRow {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         for g in &mut self.groups {
             g.sync(state, root);
         }
     }
 
-    fn update(&mut self, state: &mut AutoCommit, root: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, root: &ModelPath) -> bool {
         // Animation needs one layout refresh per host frame, not an endless
         // structural invalidation inside bounded composition settlement.
         self.structure_dirty |= self.snap_in_flight();
@@ -2550,6 +2718,8 @@ impl Widget for GroupRow {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
+        self.reduce_motion = theme.reduce_motion;
+        self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
             // Retained groups remain lifecycle owners, but none of their
@@ -2644,6 +2814,13 @@ impl Widget for GroupRow {
                     style.size.width = Dimension::auto();
                     style.flex_grow = 1.0e6;
                     style.flex_basis = Dimension::length(0.0);
+                    if self.promotion_keeps_gutter
+                        && self.fullscreen_group.is_some()
+                        && self.fullscreen_idx() == Some(i)
+                    {
+                        style.margin.left =
+                            LengthPercentageAuto::length(f64_to_f32(self.pan_of_lane(lane).inset));
+                    }
                 } else {
                     style.display = Display::None;
                 }
@@ -2818,7 +2995,6 @@ impl Widget for GroupRow {
         let insets: Vec<f64> = (0..runs).map(|k| self.pan_of_lane(k).inset).collect();
         let mut content_w: Vec<f64> = insets.clone();
         let mut edges: Vec<Vec<f64>> = vec![Vec::new(); runs];
-        let mut local_x: Vec<f64> = Vec::with_capacity(self.node_ids.len());
         // Only trustworthy when taffy has a node per group — a pass
         // landing between a splice and the rebuild would otherwise pair
         // widths with the wrong ids.
@@ -2837,7 +3013,6 @@ impl Widget for GroupRow {
             if let Some(e) = edges.get_mut(k) {
                 e.push(left);
             }
-            local_x.push(f64::from(cl.location.x));
             if spans_aligned
                 && let Some(g) = self.groups.get(i)
                 && let Some(s) = spans.get_mut(k)
@@ -2850,22 +3025,17 @@ impl Widget for GroupRow {
                 *w = right;
             }
         }
-        // First pass that knows how far each group actually moved; only
-        // trust it when taffy has a node per group.
-        if spans_aligned {
-            self.record_shift_anim(&local_x);
-        }
-        if self.shift_hold.is_none() && self.shift_anim.is_some() && self.shift_anim_t() >= 1.0 {
-            self.shift_anim = None;
-        }
         let steady = !self.group_drag_active()
             && !self
                 .handles
                 .iter()
                 .any(super::resize_handle::ResizeHandle::is_dragging);
         let mut moved = false;
+        let ease_reframe = self.shift_armed && !self.reduce_motion;
+        let now = crate::time::now();
         for (k, ((w, e), s)) in content_w.into_iter().zip(edges).zip(spans).enumerate() {
             let pan = self.pan_of_lane_mut(k);
+            let before = pan.scroll_x;
             pan.content_w = w;
             pan.group_left_edges = e;
             // Preserve transient rubber-band travel while fingers are down
@@ -2878,13 +3048,28 @@ impl Widget for GroupRow {
             if spans_aligned {
                 moved |= pan.reframe_on_geometry_change(s, steady);
             }
+            // An insert, close or reorder that moves the pan eases it there,
+            // carrying the wheel and every group together; the groups'
+            // own moves are measured on screen against this eased pan.
+            if ease_reframe
+                && pan.strip_pan_origin.is_none()
+                && pan.snap_anim.is_none()
+                && (pan.scroll_x - before).abs() > 0.5
+            {
+                pan.ease_scroll_from(before, now);
+            }
         }
         if moved {
             self.scroll_dirty = true;
         }
         // Done AFTER the clamp so a structural mutation that snapped
-        // scroll_x to max doesn't get re-eased.
-        self.tick_snap_at(crate::time::now());
+        // scroll_x to max doesn't get re-eased. A capture hold freezes the
+        // re-frame with the moves it started alongside.
+        let snap_now = match (self.shift_hold, self.moves.first()) {
+            (Some(hold), Some(&(_, m))) => m.started.checked_add(hold).unwrap_or(now),
+            _ => now,
+        };
+        self.tick_snap_at(snap_now);
         // Panning stays in lock-step with the wheel-disc's own
         // `-scroll_x` shift in `ShellOverlayHost::apply_layout`. A
         // maximized or fullscreen-promoted group drops the leading gutter
@@ -2913,6 +3098,12 @@ impl Widget for GroupRow {
             let origin = origins.get(k).copied().unwrap_or(Point::ORIGIN);
             g.apply_layout(taffy, *child_id, origin);
         }
+        // Measured on screen, after the pan: a close or insert re-frames
+        // the pan in this same pass, and only the drawn position is what
+        // must not jump. Only trusted when taffy has a node per group.
+        if spans_aligned {
+            self.record_shift_anim(now);
+        }
         self.sync_handle_neighbours();
     }
 
@@ -2924,6 +3115,7 @@ impl Widget for GroupRow {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.reduce_motion = theme.reduce_motion;
         if self.external_navigation && self.hidden {
             return;
         }
@@ -2998,25 +3190,15 @@ impl Widget for GroupRow {
         self.draw_reorder_capsule(scene, transform, theme);
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         if self.external_navigation && self.hidden {
             return;
         }
         // Track the cursor so our post-dispatch detach sweep can hit-test
         // sibling bars even after a child has swallowed the event.
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.last_cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+            self.last_cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             self.refresh_tab_drop_preview();
         }
 
@@ -3024,8 +3206,8 @@ impl Widget for GroupRow {
         // threshold, it claims the motion/release they'd otherwise
         // contend for. A press records a candidate without claiming, so
         // a plain click still reaches the child for focus.
-        if self.update_group_drag(event, scale_factor) {
-            *handled = true;
+        if self.update_group_drag(event, ctx.scale_factor) {
+            *ctx.handled = true;
             return;
         }
 
@@ -3062,47 +3244,20 @@ impl Widget for GroupRow {
             .find(|group| group.new_tab_hit(cursor))
             .is_some_and(|group| group.request_new_tab_if_hit(cursor));
         if direct_new_tab {
-            *handled = true;
+            *ctx.handled = true;
         }
         if new_tab_owned && !direct_new_tab {
-            self.dispatch_to_groups(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.dispatch_to_groups(event, ctx);
         }
-        if !*handled {
-            self.dispatch_to_handles(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+        if !*ctx.handled {
+            self.dispatch_to_handles(event, ctx);
         }
         self.apply_pending_handle_resizes();
         if !new_tab_owned {
-            self.dispatch_to_groups(
-                event,
-                scale_factor,
-                *modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                taffy,
-            );
+            self.dispatch_to_groups(event, ctx);
         }
         self.prune_closed_groups();
-        self.resolve_tab_detaches(handled);
+        self.resolve_tab_detaches(ctx.handled);
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -3127,14 +3282,6 @@ impl Widget for GroupRow {
 
     fn get_rect(&self) -> Rect {
         self.rect
-    }
-
-    fn floating_surface_provider(&self) -> Option<&dyn FloatingSurfaceProvider> {
-        Some(self)
-    }
-
-    fn floating_surface_provider_mut(&mut self) -> Option<&mut dyn FloatingSurfaceProvider> {
-        Some(self)
     }
 
     fn wants_pointer_capture(&self) -> bool {
@@ -3237,8 +3384,25 @@ impl Widget for GroupRow {
         if self.scroll_dirty {
             return true;
         }
-        self.groups.iter().any(super::Widget::needs_redraw)
+        // A change inside an app past the row's edges shows nothing until
+        // the strip moves, and moving it redraws the row.
+        self.groups
+            .iter()
+            .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
+            .any(super::Widget::needs_redraw)
             || self.handles.iter().any(super::Widget::needs_redraw)
+    }
+
+    fn mark_drawn(&mut self) {
+        let culled = std::mem::take(&mut self.culled_groups);
+        for group in &mut self.groups {
+            if !culled.contains(&group.id) {
+                group.mark_drawn();
+            }
+        }
+        for handle in &mut self.handles {
+            handle.mark_drawn();
+        }
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -3270,35 +3434,79 @@ impl Widget for GroupRow {
     }
 }
 
+impl crate::component_lifecycle::ComponentLifecycle for GroupRow {
+    fn close_components(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        for child in &mut self.groups {
+            self.close_reports.extend(child.close_components());
+        }
+        self.take_component_close_reports()
+    }
+    fn take_component_close_reports(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        let mut reports = std::mem::take(&mut self.close_reports);
+        for child in &mut self.groups {
+            reports.extend(child.take_component_close_reports());
+        }
+        reports
+    }
+}
+
+impl crate::collaboration::participants::CollaborationTopology for GroupRow {
+    fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        self.groups
+            .iter_mut()
+            .map(|group| group as &mut dyn Widget)
+            .collect()
+    }
+}
+
 impl GroupRow {
     /// Records this frame's per-group local-x for the next `apply_layout`'s
-    /// shift-fade comparison, and — when `shift_armed` was set by a splice
-    /// this frame — starts a [`ShiftAnim`] for whichever groups actually
-    /// moved. Split out of `apply_layout` to keep that under the line cap.
-    fn record_shift_anim(&mut self, local_x: &[f64]) {
-        if std::mem::take(&mut self.shift_armed) {
-            let offsets: Vec<(u64, f64)> = self
-                .groups
-                .iter()
-                .zip(local_x.iter())
-                .filter_map(|(g, now)| {
-                    let was = *self.last_local_x.get(&g.id)?;
-                    let from = was - now;
-                    // Sub-pixel motion is not motion.
-                    (from.abs() > 0.5).then_some((g.id, from))
-                })
-                .collect();
-            self.shift_anim = (!offsets.is_empty()).then(|| ShiftAnim {
-                started: crate::time::now(),
-                offsets,
-            });
-        }
-        self.last_local_x = self
+    /// comparison, and — when `shift_armed` was set by an insert, close or
+    /// reorder — springs whichever groups moved from where they are drawn
+    /// at `now`. A group already travelling keeps its drawn offset and
+    /// velocity, so a second press mid-flight bends the one motion rather
+    /// than snapping. Split out of `apply_layout` to keep that under the
+    /// line cap.
+    fn record_shift_anim(&mut self, now: Instant) {
+        let laid_x: Vec<(u64, f64)> = self
             .groups
             .iter()
-            .zip(local_x.iter())
-            .map(|(g, x)| (g.id, *x))
+            .map(|g| (g.id, g.get_rect().x0))
             .collect();
+        let armed = std::mem::take(&mut self.shift_armed);
+        if self.reduce_motion {
+            self.moves.clear();
+        } else if armed {
+            let moves: Vec<(u64, GroupMove)> = laid_x
+                .iter()
+                .filter_map(|&(id, laid)| {
+                    let jump = self.last_laid_x.get(&id).map_or(0.0, |was| was - laid);
+                    let (drawn, velocity) = self.move_state_at(id, now);
+                    let from = drawn + jump;
+                    // Sub-pixel motion is not motion.
+                    (from.abs() > 0.5 || velocity.abs() > MOVE_SETTLED_PX_PER_S).then_some((
+                        id,
+                        GroupMove {
+                            from,
+                            velocity,
+                            started: now,
+                        },
+                    ))
+                })
+                .collect();
+            self.moves = moves;
+            self.shift_hold = None;
+        } else if self.shift_hold.is_none() {
+            let groups: Vec<u64> = self.groups.iter().map(|g| g.id).collect();
+            let settled: Vec<u64> = self
+                .moves
+                .iter()
+                .filter(|&&(id, m)| !groups.contains(&id) || self.move_settled(m, now))
+                .map(|&(id, _)| id)
+                .collect();
+            self.moves.retain(|(id, _)| !settled.contains(id));
+        }
+        self.last_laid_x = laid_x.into_iter().collect();
     }
 
     /// Feeds each `ResizeHandle` the group rects flanking its gap, after
@@ -3349,32 +3557,31 @@ impl GroupRow {
         maximized_idx: Option<usize>,
         in_run: &[bool],
     ) {
+        self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
             if let Some(g) = self.groups.get_mut(max_i) {
                 g.draw(scene, transform, tr, theme, presence);
             }
             return;
         }
-        // A group a fresh insertion pushed along paints where it used to
-        // be and eases to its new spot, so the strip is seen opening a
-        // gap rather than having always had one.
-        let remaining = 1.0 - self.shift_anim_t();
-        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-            self.shift_anim
-                .as_ref()
-                .map(|a| a.offsets.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
-        for (i, g) in self.groups.iter_mut().enumerate() {
+        // A group an insert, close or reorder moved paints where it was
+        // and springs to its new spot, so the strip is seen opening or
+        // closing a gap rather than having always had one.
+        let now = crate::time::now();
+        for i in 0..self.groups.len() {
             if !in_run.get(i).copied().unwrap_or(false) {
                 continue;
             }
-            let dx = offsets
-                .iter()
-                .find(|(id, _)| *id == g.id)
-                .map_or(0.0, |(_, from)| from * remaining);
+            let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
+            let dx = self.move_state_at(id, now).0;
+            // The row clip hides a group past its edges, but vello still
+            // flattens, bins and tiles everything encoded under the clip:
+            // a strip of dozens of apps would size the GPU's bump buffers
+            // for all of them.
+            if !self.paints_within_row(rect, dx) {
+                self.culled_groups.push(id);
+                continue;
+            }
             let t = if dx.abs() > f64::EPSILON {
                 shift_transform(transform, dx)
             } else {
@@ -3382,17 +3589,17 @@ impl GroupRow {
             };
             let source_is_lifted = self
                 .group_drag
-                .is_some_and(|drag| drag.moved && drag.group_id == g.id);
+                .is_some_and(|drag| drag.moved && drag.group_id == id);
             if source_is_lifted {
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
                     vello::peniko::BlendMode::default(),
                     0.18,
                     t,
-                    &g.get_rect().inflate(160.0, 160.0),
+                    &rect.inflate(160.0, 160.0),
                 );
             }
-            g.draw(scene, t, tr, theme, presence);
+            self.groups[i].draw(scene, t, tr, theme, presence);
             if source_is_lifted {
                 scene.pop_layer();
             }
@@ -3471,15 +3678,12 @@ impl GroupRow {
         if any_drag || maximized_idx.is_some() {
             return;
         }
-        let remaining = 1.0 - self.shift_anim_t();
-        let offsets: Vec<(u64, f64)> = if remaining > 0.0 {
-            self.shift_anim
-                .as_ref()
-                .map(|a| a.offsets.clone())
-                .unwrap_or_default()
-        } else {
-            Vec::new()
-        };
+        let now = crate::time::now();
+        let offsets: Vec<f64> = self
+            .groups
+            .iter()
+            .map(|g| self.move_state_at(g.id, now).0)
+            .collect();
         for (i, h) in self.handles.iter_mut().enumerate() {
             // A group with nothing on screen has no border to be one
             // side of. Still-opening counts as shown: it's already a
@@ -3498,11 +3702,7 @@ impl GroupRow {
             if !shown(self.groups.get(i)) || !shown(self.groups.get(next_i)) {
                 continue;
             }
-            let dx = self
-                .groups
-                .get(next_i)
-                .and_then(|g| offsets.iter().find(|(id, _)| *id == g.id))
-                .map_or(0.0, |(_, from)| from * remaining);
+            let dx = offsets.get(next_i).copied().unwrap_or(0.0);
             let t = if dx.abs() > f64::EPSILON {
                 shift_transform(transform, dx)
             } else {
@@ -3590,21 +3790,7 @@ impl GroupRow {
     /// Resize handles dispatch FIRST so a press in the gap claims the
     /// event before adjacent groups see it. Skipped during any child's
     /// tab-drag, which owns the gap itself.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
-    fn dispatch_to_handles(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn dispatch_to_handles(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         let any_drag_inflight = self
             .groups
             .iter()
@@ -3616,18 +3802,8 @@ impl GroupRow {
             let Some(&node_id) = self.handle_node_ids.get(i) else {
                 break;
             };
-            h.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if *handled {
+            h.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+            if *ctx.handled {
                 break;
             }
         }
@@ -3663,21 +3839,7 @@ impl GroupRow {
     /// mid-frame (detach sweep pushes a new `WindowGroup`), briefly
     /// outrunning `node_ids`; `.get` skips the new one until its next
     /// layout pass assigns a `node_id`.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own signature"
-    )]
-    fn dispatch_to_groups(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn dispatch_to_groups(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         // Mouse buttons carry no position, so dispatch the group that owns the
         // remembered cursor (or an active capture) before siblings. Keep every
         // sibling in the fallback order: synthetic and keyboard-adjacent test
@@ -3710,18 +3872,8 @@ impl GroupRow {
             let Some(&node_id) = self.node_ids.get(i) else {
                 continue;
             };
-            g.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                root,
-                handled,
-                focus_target,
-                node_id,
-                taffy,
-            );
-            if *handled {
+            g.handle_event(event, &mut ctx.reborrow(ctx.path, node_id));
+            if *ctx.handled {
                 break;
             }
         }
@@ -3747,7 +3899,8 @@ impl GroupRow {
         prune.sort_unstable_by(|a, b| b.cmp(a));
         for i in prune {
             let mut group = self.groups.remove(i);
-            self.close_reports.extend(group.close_components());
+            self.close_reports
+                .extend(crate::component_lifecycle::close_components(&mut group));
         }
         debug_assert_eq!(
             self.node_ids.len(),
@@ -3953,6 +4106,8 @@ fn collect_named_rects(w: &dyn Widget, out: &mut Vec<(String, Rect)>) {
 mod tests {
     use super::*;
     use crate::widget::{TabDescriptor, TileContent, WindowWidth, min_group_px};
+    use automerge::{AutoCommit, ObjId};
+    use winit::event::Modifiers;
 
     /// Narrows a fixture viewport width to the `f32` taffy layout expects.
     /// Test fixtures only ever pass small literal pixel constants (hundreds
@@ -4283,14 +4438,16 @@ mod tests {
                     state: ElementState::Released,
                     button: MouseButton::Left,
                 },
-                1.0,
-                &Modifiers::default(),
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &Modifiers::default(),
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -4486,14 +4643,21 @@ mod tests {
         make_row_with_groups_on_display(tab_specs, FIXTURE_USABLE_PX, 2000.0)
     }
 
-    fn relayout_row_owned(mut row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+    fn relayout_row_owned(row: GroupRow, viewport_w: f64) -> (GroupRow, TaffyTree<()>, NodeId) {
+        relayout_row_owned_with(row, viewport_w, &Theme::dark())
+    }
+
+    fn relayout_row_owned_with(
+        mut row: GroupRow,
+        viewport_w: f64,
+        theme: &Theme,
+    ) -> (GroupRow, TaffyTree<()>, NodeId) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Size as TSize, TaffyTree};
 
-        let theme = Theme::dark();
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-        let root = row.build_layout(&mut taffy, &theme, &mut node_map);
+        let root = row.build_layout(&mut taffy, theme, &mut node_map);
         let viewport = taffy.parent_node(
             Style {
                 size: Size {
@@ -4568,6 +4732,86 @@ mod tests {
         make_row_with_groups_with_taffy(tab_specs).0
     }
 
+    fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
+        let specs: Vec<Vec<u64>> = (1..=windows).map(|id| vec![id]).collect();
+        let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
+        let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);
+        let mut scene = Scene::new();
+        row.draw(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            &Theme::dark(),
+            &PresenceCtx::empty(),
+        );
+        (row, scene)
+    }
+
+    /// A desktop that accumulated dozens of windows must encode only those
+    /// the row shows: vello sizes its GPU buffers from everything encoded,
+    /// clipped or not, and WebGPU's 128 MiB binding limit is finite.
+    #[test]
+    fn a_long_strip_encodes_only_the_groups_it_shows() {
+        let (few, few_scene) = drawn_strip(6);
+        let (many, many_scene) = drawn_strip(40);
+        let shown = many.onscreen_group_ids();
+        assert!(
+            !shown.is_empty() && shown.len() < 6,
+            "fixture shows {shown:?}"
+        );
+        assert_eq!(few.onscreen_group_ids(), shown);
+        assert!(many.culled_groups.len() >= 30, "{:?}", many.culled_groups);
+        assert!(
+            shown.iter().all(|id| !many.culled_groups.contains(id)),
+            "an on-screen group was culled"
+        );
+        let (few_paths, many_paths) = (few_scene.encoding().n_paths, many_scene.encoding().n_paths);
+        assert!(
+            many_paths < few_paths * 2,
+            "40 windows encoded {many_paths} paths against {few_paths} for 6"
+        );
+
+        // Redraw requests consult exactly the painted set, so a dirty app
+        // past the edge does not keep the desktop presenting frames.
+        let (consulted, skipped): (Vec<u64>, Vec<u64>) =
+            many.groups.iter().map(|g| g.id).partition(|id| {
+                let g = many.groups.iter().find(|g| g.id == *id).expect("group");
+                many.paints_within_row(g.get_rect(), 0.0)
+            });
+        assert_eq!(skipped, many.culled_groups);
+        assert!(consulted.len() >= shown.len());
+    }
+
+    #[test]
+    fn refused_cross_strip_move_restores_exact_group_and_tab_order() {
+        let mut row = make_row_with_groups(&[&[1, 2, 3], &[10]]);
+        let source_group_index = 0;
+        let source_group_id = row.groups[source_group_index].id;
+        let source_tab_index = 1;
+        let (desc, host) = row.groups[source_group_index]
+            .detach_tab(2)
+            .expect("fixture tab detaches");
+        row.restore_cross_strip_detach(CrossStripDetach {
+            tab_id: 2,
+            source_group_id,
+            source_group_index,
+            source_tab_index,
+            desc,
+            host,
+            release_point: Point::new(900.0, 900.0),
+        });
+
+        assert_eq!(row.group_ids(), vec![100, 200]);
+        assert_eq!(
+            row.groups[0]
+                .tabs()
+                .iter()
+                .map(|tab| tab.id)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3],
+        );
+    }
+
     /// A point in group `idx`'s tab-bar background — right of the last tab
     /// pill, at the bar's vertical centre — where a whole-group reorder
     /// grab lands.
@@ -4603,6 +4847,16 @@ mod tests {
         );
     }
 
+    fn touch_event(id: u64, phase: winit::event::TouchPhase, p: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: unsafe { std::mem::zeroed() },
+            phase,
+            location: winit::dpi::PhysicalPosition::new(p.x, p.y),
+            force: None,
+            id,
+        })
+    }
+
     fn dispatch_at(row: &mut GroupRow, taffy: &TaffyTree<()>, root: NodeId, ev: &WindowEvent) {
         let modifiers = Modifiers::default();
         let mut state = AutoCommit::new();
@@ -4611,14 +4865,16 @@ mod tests {
         let mut focus: Option<NodeId> = None;
         row.handle_event(
             ev,
-            1.0,
-            &modifiers,
-            &mut state,
-            &path,
-            &mut handled,
-            &mut focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut state,
+                path: &path,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy,
+            },
         );
     }
 
@@ -4740,6 +4996,45 @@ mod tests {
         drag_group_to_end_reorders_group_vector_and_publishes_one_shot();
         drag_group_backwards_between_two_groups();
         plain_click_on_bar_background_does_not_reorder();
+    }
+
+    #[test]
+    fn one_finger_horizontal_swipe_on_the_tab_bar_pans_the_strip() {
+        let (mut row, taffy, root) = make_overflow_row(8, 1200.0);
+        assert!(
+            row.pan_max_scroll_x() > 80.0,
+            "the fixture must have room to pan"
+        );
+        let start = group_grab_point(&row, 0);
+        let before = row.scroll_x();
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Started, start),
+        );
+        let mid = Point::new(start.x - 80.0, start.y);
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Moved, mid),
+        );
+        assert!(
+            row.scroll_x() - before > 20.0,
+            "a leftward swipe must pan toward later groups; before {before} after {}",
+            row.scroll_x()
+        );
+        assert!(
+            !row.group_drag_active(),
+            "a horizontal swipe is a pan, not a reorder"
+        );
+        dispatch_at(
+            &mut row,
+            &taffy,
+            root,
+            &touch_event(1, winit::event::TouchPhase::Ended, mid),
+        );
     }
 
     #[test]
@@ -4880,14 +5175,16 @@ mod tests {
             };
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_idx = row
@@ -4957,14 +5254,16 @@ mod tests {
             };
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -4998,14 +5297,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let b_ids: Vec<u64> = row.groups[1].tabs().iter().map(|t| t.id).collect();
@@ -5069,14 +5370,16 @@ mod tests {
             };
             row.handle_event(
                 &release_event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             let a_tabs_after: Vec<u64> = row.groups[0].tabs().iter().map(|t| t.id).collect();
@@ -5187,14 +5490,16 @@ mod tests {
             };
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert!(
@@ -5234,14 +5539,16 @@ mod tests {
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             // Mimic App's RedrawRequested path so the new group gets a rect.
             assert_eq!(row.groups.len(), 2, "drop 1 must produce 2 groups");
@@ -5275,14 +5582,16 @@ mod tests {
                     state: winit::event::ElementState::Released,
                     button: winit::event::MouseButton::Left,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled2,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled2,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             assert_eq!(
                 row.groups.len(),
@@ -5321,14 +5630,16 @@ mod tests {
         let mut focus: Option<NodeId> = None;
         row.handle_event(
             &event,
-            1.0,
-            &modifiers,
-            &mut doc,
-            &doc_root,
-            &mut handled,
-            &mut focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state: &mut doc,
+                path: &doc_root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: root,
+                taffy,
+            },
         );
     }
 
@@ -5377,14 +5688,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5434,14 +5747,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5475,14 +5790,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5529,14 +5846,16 @@ mod tests {
             let mut focus: Option<NodeId> = None;
             row.handle_event(
                 &event,
-                1.0,
-                &modifiers,
-                &mut doc,
-                &doc_root,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut doc,
+                    path: &doc_root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
 
             assert_eq!(
@@ -5892,14 +6211,16 @@ mod tests {
                         device_id: dev,
                         position: PhysicalPosition::new(cx, cy),
                     },
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &root_obj,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy: &taffy,
+                    },
                 );
                 row.handle_event(
                     &WindowEvent::MouseWheel {
@@ -5907,14 +6228,16 @@ mod tests {
                         delta: MouseScrollDelta::LineDelta(0.0, -3.0),
                         phase: winit::event::TouchPhase::Moved,
                     },
-                    1.0,
-                    &modifiers,
-                    &mut state,
-                    &root_obj,
-                    &mut handled,
-                    &mut focus,
-                    root,
-                    &taffy,
+                    &mut crate::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers: &modifiers,
+                        state: &mut state,
+                        path: &root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus,
+                        node_id: root,
+                        taffy: &taffy,
+                    },
                 );
                 assert!(!handled, "a bare wheel must be left unclaimed by the strip");
                 // Lets any wrongly-started eased travel show itself.
@@ -6102,14 +6425,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             row.handle_event(
                 &WindowEvent::MouseWheel {
@@ -6117,14 +6442,16 @@ mod tests {
                     delta: MouseScrollDelta::LineDelta(0.0, -1.0),
                     phase: winit::event::TouchPhase::Moved,
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &root_obj,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &root_obj,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             let anim = row
                 .pan
@@ -6152,9 +6479,41 @@ mod tests {
             );
         }
 
+        /// Reduced motion: the snap lands on the tick it starts, whether it
+        /// follows a wheel's idle or a released direct pan.
+        fn reduced_motion_snaps_land_on_their_first_tick() {
+            let mut row = make_row_with_groups(&[&[1], &[2], &[3]]);
+            row.reduce_motion = true;
+            row.set_group_left_edges_for_test(vec![0.0, 608.0, 1216.0]);
+            row.set_content_w_for_test(1816.0);
+            row.set_rect_for_test(Rect::new(0.0, 0.0, 1000.0, 600.0));
+            row.set_scroll_x_for_test(400.0);
+            let base = crate::time::now();
+            row.set_last_wheel_at_for_test(earlier(base, 250));
+            row.tick_snap_at(base);
+            assert!(
+                (row.scroll_x() - 608.0).abs() < 0.01,
+                "the idle snap must land at once; got {}",
+                row.scroll_x()
+            );
+            assert!(!row.snap_in_flight(), "and nothing is left in flight");
+
+            row.begin_strip_pan();
+            assert!(row.update_strip_pan(-800.0));
+            assert!(row.scroll_x() < 0.0, "fixture: the pan overpulls");
+            assert!(row.end_strip_pan(base));
+            row.tick_snap_at(base);
+            assert!(
+                row.scroll_x().abs() < 0.01,
+                "a released overpull must settle at once; got {}",
+                row.scroll_x()
+            );
+        }
+
         scroll_snaps_to_nearest_group_after_wheel_idle();
         snap_does_not_fire_during_wheel_idle_window();
         wheel_mid_snap_leaves_the_snap_untouched();
+        reduced_motion_snaps_land_on_their_first_tick();
     }
 
     /// Rebuilds a full taffy tree and lays `row` out on it — mimics
@@ -6536,14 +6895,16 @@ mod tests {
                     device_id: dev,
                     position: PhysicalPosition::new(cx, cy),
                 },
-                1.0,
-                &modifiers,
-                &mut state,
-                &path,
-                &mut handled,
-                &mut focus,
-                root,
-                &taffy,
+                &mut crate::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &modifiers,
+                    state: &mut state,
+                    path: &path,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: root,
+                    taffy: &taffy,
+                },
             );
             assert!(
                 !row.handle_at(0).unwrap().is_hovered(),
@@ -6562,10 +6923,6 @@ mod tests {
     /// Shared `row.handle_event` shape for the drag-handle tests below
     /// (fixed scale factor, a caller-owned scratch `handled` flag).
     /// Returns whether the event was claimed.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event's own shape 1:1 for a test dispatcher"
-    )]
     fn dispatch_row(
         row: &mut GroupRow,
         event: &winit::event::WindowEvent,
@@ -6579,14 +6936,16 @@ mod tests {
         let mut handled = false;
         row.handle_event(
             event,
-            1.0,
-            &modifiers,
-            state,
-            path,
-            &mut handled,
-            focus,
-            root,
-            taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &modifiers,
+                state,
+                path,
+                handled: &mut handled,
+                focus_target: focus,
+                node_id: root,
+                taffy,
+            },
         );
         handled
     }
@@ -7102,7 +7461,7 @@ mod tests {
                     "nothing had to move, so group {id} must not animate",
                 );
             }
-            assert_eq!(row.shift_anim_t(), 1.0, "and no slide is in flight");
+            assert!(!row.shift_in_flight(), "and no slide is in flight");
         }
 
         fn a_slide_in_flight_asks_for_animation_frames() {
@@ -7119,10 +7478,218 @@ mod tests {
             );
         }
 
+        /// Reduced motion: the pushed groups are drawn where they now
+        /// belong on the first frame, and nothing asks to be redrawn.
+        fn reduced_motion_makes_room_without_a_slide() {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            let pushed: Vec<u64> = row.groups.iter().map(|g| g.id).collect();
+            row.insert_group(make_group(999, &[9]), 0);
+            let theme = Theme::dark().with_reduce_motion(true);
+            let (row, _taffy, _root) = relayout_row_owned_with(row, 2000.0, &theme);
+            for id in pushed {
+                assert_eq!(
+                    row.shift_offset_for(id),
+                    0.0,
+                    "under reduced motion group {id} is drawn at its new home",
+                );
+            }
+            assert!(
+                !row.needs_animation_frame(),
+                "under reduced motion making room asks for no animation frames",
+            );
+        }
+
+        /// A second insert while the first slide is travelling bends the
+        /// one motion: the group is drawn exactly where it was, moving
+        /// exactly as fast, and only its destination changes.
+        fn a_second_insert_mid_flight_continues_from_where_the_group_is_drawn() {
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let pushed = row.groups[2].id;
+            row.insert_group(make_group(999, &[9]), 1);
+            let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            row.shift_hold = Some(Duration::from_millis(60));
+            let now = crate::time::now();
+            let (drawn, velocity) = row.move_state_at(pushed, now);
+            let laid_before = rect_of(&row, pushed).x0;
+            assert!(
+                drawn < -1.0 && velocity > 1.0,
+                "fixture: 60 ms in, the group is still travelling right: {drawn} px, {velocity} px/s"
+            );
+
+            row.insert_group(make_group(998, &[8]), 0);
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let laid_after = rect_of(&row, pushed).x0;
+            assert!(
+                laid_after > laid_before + 1.0,
+                "fixture: the second insert pushes it on"
+            );
+            let (_, m) = row
+                .moves
+                .iter()
+                .find(|(id, _)| *id == pushed)
+                .copied()
+                .expect("the retargeted group is still moving");
+            assert!(
+                (laid_after + m.from - (laid_before + drawn)).abs() < 1e-6,
+                "no snap: drawn at {} before the retarget, {} after",
+                laid_before + drawn,
+                laid_after + m.from
+            );
+            assert!(
+                (m.velocity - velocity).abs() < 1e-6,
+                "velocity carries across the retarget: {velocity} then {}",
+                m.velocity
+            );
+        }
+
+        /// Closing a window: the groups to its right are drawn where they
+        /// were and spring left into the gap.
+        fn closing_a_window_slides_its_right_neighbours_into_the_gap() {
+            let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let closed = row.groups[0].id;
+            let footprint = rect_of(&row, closed).width() + HANDLE_SLOT_PX;
+            let neighbours: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
+            assert!(row.remove_group_by_id(closed));
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            for id in neighbours {
+                let off = row.shift_offset_for(id);
+                assert!(
+                    off > footprint * 0.5 && off <= footprint + 0.5,
+                    "group {id} must start where it was, {footprint} px right; got {off}"
+                );
+            }
+            assert!(row.needs_animation_frame(), "the gap closes over frames");
+        }
+
+        /// A keyboard move swaps two groups; both are seen travelling, in
+        /// opposite directions.
+        fn a_reorder_springs_both_groups_from_their_old_places() {
+            let (row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2], &[3]]);
+            let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let (a, b) = (row.groups[0].id, row.groups[1].id);
+            assert!(row.reorder_group_by_id(a, 1));
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            let (off_a, off_b) = (row.shift_offset_for(a), row.shift_offset_for(b));
+            assert!(
+                off_a < -1.0,
+                "the moved group starts left, where it was: {off_a}"
+            );
+            assert!(
+                off_b > 1.0,
+                "its neighbour starts right, where it was: {off_b}"
+            );
+        }
+
+        /// Critically damped: the path approaches home from one side and
+        /// arrives within the heavy spring's budget; then the row goes quiet.
+        fn the_spring_never_crosses_home_and_settles_then_goes_quiet() {
+            let omega = spring_omega(crate::tokens::SpringPresets::default().heavy);
+            let m = GroupMove {
+                from: -600.0,
+                velocity: 0.0,
+                started: crate::time::now(),
+            };
+            let mut settled_at = None;
+            for ms in 0..=1000_u64 {
+                let (x, v) = m.at(Duration::from_millis(ms), omega);
+                assert!(x <= 0.0, "crossed home at {ms} ms: {x}");
+                if settled_at.is_none()
+                    && x.abs() < MOVE_SETTLED_PX
+                    && v.abs() < MOVE_SETTLED_PX_PER_S
+                {
+                    settled_at = Some(ms);
+                }
+            }
+            let settled_at = settled_at.expect("the spring settles");
+            assert!(
+                settled_at <= 450,
+                "a 600 px move settles in under half a second, took {settled_at} ms"
+            );
+
+            let (mut row, _taffy, _root) = make_row_with_groups_with_taffy(&[&[1], &[2]]);
+            row.insert_group(make_group(999, &[9]), 0);
+            let (mut row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            for (_, m) in &mut row.moves {
+                m.started = m
+                    .started
+                    .checked_sub(Duration::from_secs(2))
+                    .expect("the clock is past two seconds");
+            }
+            let (row, _taffy, _root) = relayout_row_owned(row, 2000.0);
+            assert!(row.moves.is_empty(), "settled moves are dropped");
+            assert!(
+                !row.needs_animation_frame(),
+                "a settled strip asks for no frames"
+            );
+        }
+
+        /// The strip re-frames its pan in the same pass a close lands in;
+        /// whatever the pan does, no group may jump on the first frame.
+        fn a_close_while_panned_starts_every_group_where_it_was_drawn() {
+            fn panned_four() -> GroupRow {
+                let (row, _taffy, _root) =
+                    make_row_with_groups_with_taffy(&[&[1], &[2], &[3], &[4]]);
+                let (mut row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+                row.set_scroll_x_for_test(1500.0);
+                let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+                assert!(row.scroll_x() > 1.0, "fixture: the strip is panned");
+                row
+            }
+            let mut row = panned_four();
+            let drawn = |row: &GroupRow, id: u64| rect_of(row, id).x0 + row.shift_offset_for(id);
+            let survivors: Vec<u64> = row.groups[1..].iter().map(|g| g.id).collect();
+            let before: Vec<f64> = survivors.iter().map(|&id| drawn(&row, id)).collect();
+            let scroll_before = row.scroll_x();
+            let closed = row.groups[0].id;
+            let mut still = panned_four();
+            assert!(row.remove_group_by_id(closed));
+            let (row, _taffy, _root) = relayout_row_owned(row, 1200.0);
+            for (&id, was) in survivors.iter().zip(before) {
+                let now = drawn(&row, id);
+                assert!(
+                    (now - was).abs() < 1.0,
+                    "group {id} jumped from {was} to {now} on the close's first frame"
+                );
+            }
+            assert!(
+                (row.scroll_x() - scroll_before).abs() < 1.0,
+                "the pan, and the wheel riding it, eases from {scroll_before} rather than cutting to {}",
+                row.scroll_x()
+            );
+            assert!(row.snap_in_flight(), "the re-frame is travelling");
+
+            assert!(still.remove_group_by_id(closed));
+            let theme = Theme::dark().with_reduce_motion(true);
+            let (still, _taffy, _root) = relayout_row_owned_with(still, 1200.0, &theme);
+            assert!(
+                (still.scroll_x() - scroll_before).abs() > 1.0,
+                "fixture: this close re-frames the pan"
+            );
+            assert!(
+                !still.needs_animation_frame(),
+                "under reduced motion the re-frame cuts and nothing travels"
+            );
+        }
+
+        fn rect_of(row: &GroupRow, id: u64) -> Rect {
+            row.groups
+                .iter()
+                .find(|g| g.id == id)
+                .map(WindowGroup::get_rect)
+                .expect("group in the row")
+        }
+
         making_room_translates_the_groups_it_pushes_and_never_narrows_them();
         the_groups_that_moved_start_from_where_they_were();
         appending_at_the_end_animates_nothing();
         a_slide_in_flight_asks_for_animation_frames();
+        reduced_motion_makes_room_without_a_slide();
+        a_second_insert_mid_flight_continues_from_where_the_group_is_drawn();
+        closing_a_window_slides_its_right_neighbours_into_the_gap();
+        a_reorder_springs_both_groups_from_their_old_places();
+        the_spring_never_crosses_home_and_settles_then_goes_quiet();
+        a_close_while_panned_starts_every_group_where_it_was_drawn();
     }
 
     /// A 1000-wide display with the wheel gutter beside an 800-wide one

@@ -38,9 +38,10 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime};
 use tilo_clock::unix_now_ms;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::time::{Duration, Instant, SystemTime};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, Value, transaction::Transactable};
 use os_actions::Dispatcher;
@@ -50,9 +51,10 @@ use ui::theme::Theme;
 use ui::widget::{Button, Dropdown, Slider, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
+use crate::i18n::{t, t_args};
 use crate::prefs::{DisplayPrefs, SystemPrefs};
 use crate::widgets::{
     El, caption, card, choice_row, rows, setting_row, setting_row_described, value_row,
@@ -83,18 +85,38 @@ const NIGHT_LIGHT_TEMPERATURES: &[(&str, u32)] = &[
     ("Very warm · 2800 K", 2_800),
 ];
 
-fn temperature_label(kelvin: u32) -> &'static str {
-    NIGHT_LIGHT_TEMPERATURES
+fn temperature_ftl(english: &str) -> &'static str {
+    match english {
+        "Subtle · 4500 K" => "display-night-light-temp-subtle",
+        "Very warm · 2800 K" => "display-night-light-temp-very-warm",
+        _ => "display-night-light-temp-warm",
+    }
+}
+
+fn temperature_shown(english: &str) -> String {
+    t(temperature_ftl(english))
+}
+
+fn temperature_label(kelvin: u32) -> String {
+    let english = NIGHT_LIGHT_TEMPERATURES
         .iter()
         .min_by_key(|(_, value)| value.abs_diff(kelvin))
-        .map_or("Warm · 3700 K", |(label, _)| *label)
+        .map_or("Warm · 3700 K", |(label, _)| *label);
+    temperature_shown(english)
 }
 
 fn temperature_from_label(label: &str) -> Option<u32> {
     NIGHT_LIGHT_TEMPERATURES
         .iter()
-        .find(|(candidate, _)| *candidate == label)
+        .find(|(english, _)| *english == label || temperature_shown(english) == label)
         .map(|(_, value)| *value)
+}
+
+fn temperature_options() -> Vec<String> {
+    NIGHT_LIGHT_TEMPERATURES
+        .iter()
+        .map(|(english, _)| temperature_shown(english))
+        .collect()
 }
 
 /// Offered `HiDPI` display scales as `(display label, factor)`. The label is
@@ -139,18 +161,51 @@ const TRANSFORMS: &[(&str, OutputTransform)] = &[
     ("Portrait left", OutputTransform::Rotate270),
 ];
 
-pub(crate) fn transform_label(transform: OutputTransform) -> &'static str {
-    TRANSFORMS
+fn transform_ftl(english: &str) -> &'static str {
+    match english {
+        "Portrait right" => "display-rotation-portrait-right",
+        "Upside down" => "display-rotation-upside-down",
+        "Portrait left" => "display-rotation-portrait-left",
+        _ => "display-rotation-landscape",
+    }
+}
+
+fn transform_shown(english: &str) -> String {
+    t(transform_ftl(english))
+}
+
+pub(crate) fn transform_label(transform: OutputTransform) -> String {
+    let english = TRANSFORMS
         .iter()
         .find(|(_, candidate)| *candidate == transform)
-        .map_or("Landscape", |(label, _)| *label)
+        .map_or("Landscape", |(label, _)| *label);
+    transform_shown(english)
 }
 
 fn transform_from_label(label: &str) -> Option<OutputTransform> {
     TRANSFORMS
         .iter()
-        .find(|(candidate, _)| *candidate == label)
+        .find(|(english, _)| *english == label || transform_shown(english) == label)
         .map(|(_, transform)| *transform)
+}
+
+fn transform_options() -> Vec<String> {
+    TRANSFORMS
+        .iter()
+        .map(|(english, _)| transform_shown(english))
+        .collect()
+}
+
+/// Localise the built-in panel name for chrome. The stored label stays
+/// `Built-in display` so placement strings and tests keep one identifier.
+fn output_title(output: &DisplayOutput) -> String {
+    if output.builtin {
+        output
+            .label
+            .replacen("Built-in display", &t("display-builtin"), 1)
+    } else {
+        output.label.clone()
+    }
 }
 
 /// Best pair of timings which address the same pixel extent. The compositor
@@ -182,7 +237,7 @@ fn best_mirror_modes(
 }
 
 /// One real display output, derived from a DRM connector.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 #[allow(
     clippy::struct_excessive_bools,
     reason = "each bool mirrors an independent DRM/compositor capability flag (connected, \
@@ -204,6 +259,9 @@ pub struct DisplayOutput {
     /// mode selection is unavailable, not that a made-up default is valid.
     pub modes: Vec<OutputMode>,
     pub current_mode: Option<OutputMode>,
+    /// The scale the compositor shows it at; an output with no saved entry
+    /// runs at the compositor's own choice.
+    pub scale: f64,
     pub hdr: bool,
     pub sink_hdr: bool,
     pub hdr_unavailable_reason: Option<settings_store::hardware::HdrUnavailable>,
@@ -291,6 +349,7 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         connector_label: name.to_string(),
         modes: Vec::new(),
         current_mode: None,
+        scale: 1.0,
         hdr: false,
         sink_hdr: false,
         hdr_unavailable_reason: None,
@@ -300,6 +359,13 @@ pub fn classify_connector(conn: &str, status: &str) -> DisplayOutput {
         color_profiles: Vec::new(),
         color_profile_labels: BTreeMap::new(),
         monitor: None,
+    }
+}
+
+impl DisplayOutput {
+    /// The entry that describes this output as it runs with none saved.
+    fn unconfigured(&self) -> OutputConfig {
+        OutputConfig::at_scale(self.scale)
     }
 }
 
@@ -370,6 +436,7 @@ fn read_outputs() -> Vec<DisplayOutput> {
                 connector_label,
                 modes: snapshot.descriptor.modes,
                 current_mode: Some(snapshot.current_mode),
+                scale: snapshot.scale,
                 hdr: snapshot.descriptor.hdr,
                 sink_hdr: snapshot.sink_hdr,
                 hdr_unavailable_reason: snapshot.hdr_unavailable_reason,
@@ -501,7 +568,7 @@ impl DisplayPane {
             output_config,
             pending_candidate: None,
             last_seen_transaction: None,
-            last_snapshot_check: Instant::now(),
+            last_snapshot_check: ui::time::now(),
             snapshot_stamp: settings_store::hardware::display_snapshot_path()
                 .and_then(|path| std::fs::metadata(path).ok()?.modified().ok()),
             hardware_probe: Some(probe_rx),
@@ -546,6 +613,7 @@ impl DisplayPane {
                     height: 1080,
                     refresh_mhz: 60_000,
                 }),
+                scale: 1.0,
                 hdr: false,
                 sink_hdr: false,
                 hdr_unavailable_reason: None,
@@ -565,7 +633,7 @@ impl DisplayPane {
             output_brightness: BTreeMap::new(),
             pending_candidate: None,
             last_seen_transaction: None,
-            last_snapshot_check: Instant::now(),
+            last_snapshot_check: ui::time::now(),
             snapshot_stamp: None,
             hardware_probe: None,
             brightness_tx: None,
@@ -841,8 +909,8 @@ impl DisplayPane {
     fn build_arrangement_card(&self, connected: &[&DisplayOutput]) -> El {
         if connected.is_empty() {
             return card(
-                "Displays",
-                rows(vec![caption("No displays detected on this device.")]),
+                &t("display-card-title"),
+                rows(vec![caption(&t("display-none"))]),
             );
         }
         let disconnected = self.outputs.len() - connected.len();
@@ -870,6 +938,7 @@ impl DisplayPane {
                         &crate::i18n::t("display-identify"),
                         None,
                     )
+                    .content_sized()
                     .on_action(
                         crate::actions::display_unit_binding("identify")
                             .expect("display identify action is published"),
@@ -878,14 +947,14 @@ impl DisplayPane {
             ),
         ];
         // One honest line about the idle ports rather than a row each.
-        out_rows.push(caption(if connected.len() > 1 {
-            "Super+P switches between extend, mirror and single-screen at any time."
+        out_rows.push(caption(&if connected.len() > 1 {
+            t("display-caption-switch")
         } else if disconnected == 0 {
-            "Connect a second display to extend or mirror your screen."
+            t("display-caption-second")
         } else {
-            "Connect a display to a free port to extend or mirror your screen."
+            t("display-caption-port")
         }));
-        card("Displays", rows(out_rows))
+        card(&t("display-card-title"), rows(out_rows))
     }
 
     /// The connected outputs as the arrangement canvas draws them: staged
@@ -917,17 +986,13 @@ impl DisplayPane {
         let mut placed: Vec<ArrangedDisplay> = Vec::new();
         for (index, output) in connected.iter().enumerate() {
             let entry = config.outputs.get(&output.connector);
-            let resolved = entry.cloned().unwrap_or_default();
+            let resolved = entry.cloned().unwrap_or_else(|| output.unconfigured());
             if !resolved.enabled {
                 continue;
             }
-            let mode = resolved.mode.or(output.current_mode).unwrap_or(OutputMode {
-                width: 1920,
-                height: 1080,
-                refresh_mhz: 60_000,
-            });
-            let (width, height) =
-                settings_store::display_mode::output_extent(mode, resolved.transform);
+            // Drawn at the logical size the pointer moves through, so a
+            // 2x panel beside a 1x monitor looks, and snaps, as it behaves.
+            let (width, height) = logical_extent_of(output, &resolved);
             // An output with no saved position has never been arranged: put
             // it after the others rather than on top of them.
             let (x, y) = if entry.is_some() {
@@ -938,7 +1003,7 @@ impl DisplayPane {
             next_free_x = next_free_x.max(x.saturating_add(width));
             placed.push(ArrangedDisplay {
                 connector: output.connector.clone(),
-                label: output.label.clone(),
+                label: output_title(output),
                 number: numbers.get(index).copied().unwrap_or(index + 1),
                 placement: Placement::new(x, y, width, height),
                 primary: resolved.primary,
@@ -967,7 +1032,7 @@ impl DisplayPane {
     fn build_brightness_card(&self) -> El {
         let automatic_brightness = if self.ambient_sensor_available {
             setting_row(
-                "Automatic brightness",
+                &t("display-auto-brightness"),
                 Box::new(
                     Toggle::new("settings.display.auto_brightness", AUTO_BRIGHTNESS_KEY)
                         .with_id("display.auto_brightness")
@@ -979,13 +1044,13 @@ impl DisplayPane {
                 ),
             )
         } else {
-            value_row("Automatic brightness", "No ambient-light sensor detected")
+            value_row(&t("display-auto-brightness"), &t("display-no-ambient"))
         };
         card(
-            "Brightness",
+            &t("display-brightness"),
             rows(vec![
                 setting_row(
-                    "Brightness",
+                    &t("display-brightness"),
                     Box::new(
                         Slider::new("settings.display.brightness", BRIGHTNESS_KEY)
                             .with_id("display.brightness")
@@ -997,7 +1062,7 @@ impl DisplayPane {
                 ),
                 automatic_brightness,
                 setting_row(
-                    "Night light",
+                    &t("display-night-light"),
                     Box::new(
                         Toggle::new("settings.display.night_light", NIGHT_LIGHT_KEY)
                             .with_id("display.night_light")
@@ -1008,8 +1073,8 @@ impl DisplayPane {
                     ),
                 ),
                 setting_row_described(
-                    "Sunset to sunrise",
-                    "Turn Night Light on and off on the Appearance day and night schedule",
+                    &t("display-night-light-schedule"),
+                    &t("display-night-light-schedule-desc"),
                     Box::new(
                         Toggle::new(
                             "settings.display.night_light_schedule",
@@ -1024,13 +1089,10 @@ impl DisplayPane {
                     ),
                 ),
                 choice_row(
-                    "Night light warmth",
+                    &t("display-night-light-warmth"),
                     Box::new(
                         Dropdown::new(
-                            NIGHT_LIGHT_TEMPERATURES
-                                .iter()
-                                .map(|(label, _)| (*label).to_string())
-                                .collect(),
+                            temperature_options(),
                             NIGHT_LIGHT_TEMPERATURE_KEY,
                         )
                         .with_id("display.night_light_temperature")
@@ -1040,14 +1102,12 @@ impl DisplayPane {
                                     "Night Light warmth is part of the static resource contract",
                                 ),
                         )
-                        .with_placeholder(temperature_label(
+                        .with_placeholder(&temperature_label(
                             self.initial_prefs.night_light_temperature,
                         )),
                     ),
                 ),
-                caption(
-                    "Night Light applies a whole-desktop colour transform. Automatic brightness follows the kernel ambient-light sensor with smoothing and a deadband.",
-                ),
+                caption(&t("display-night-light-caption")),
             ]),
         )
     }
@@ -1068,12 +1128,12 @@ impl DisplayPane {
             .unwrap_or_else(|| OutputConfig {
                 primary: index == 0,
                 x: index as i32 * 1920,
-                ..Default::default()
+                ..output.unconfigured()
             });
         let mut output_rows = Vec::new();
         if self.output_brightness.contains_key(&output.connector) {
             output_rows.push(setting_row(
-                "Brightness",
+                &t("display-brightness"),
                 Box::new(
                     Slider::new(
                         &format!("settings.display.{}.brightness", output.connector),
@@ -1090,7 +1150,7 @@ impl DisplayPane {
         output_rows.extend(Self::build_output_primary_rows(output, connected, &config));
         output_rows.extend(Self::build_output_mode_and_rotation_rows(output, &config));
         output_rows.extend(Self::build_output_capability_rows(output, &config));
-        card(&output.label, rows(output_rows))
+        card(&output_title(output), rows(output_rows))
     }
 
     /// Enable/primary toggles + scale/position/mirroring dropdowns.
@@ -1142,7 +1202,7 @@ impl DisplayPane {
             );
         vec![
             setting_row(
-                "Use this display",
+                &t("display-use"),
                 Box::new(
                     Toggle::new(
                         &format!("settings.display.{}.enabled", output.connector),
@@ -1159,7 +1219,7 @@ impl DisplayPane {
                 ),
             ),
             setting_row(
-                "Primary display",
+                &t("display-primary"),
                 Box::new(
                     Toggle::new(&toggle_id, &primary_key)
                         .with_id(&primary_key)
@@ -1173,7 +1233,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Scale",
+                &t("display-scale"),
                 Box::new(
                     Dropdown::new(scale_choices.clone(), &scale_key)
                         .with_id(&scale_key)
@@ -1189,7 +1249,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Position",
+                &t("display-position"),
                 Box::new(
                     Dropdown::new(position_choices.clone(), &position_key)
                         .with_id(&position_key)
@@ -1205,7 +1265,7 @@ impl DisplayPane {
                 ),
             ),
             choice_row(
-                "Mirroring",
+                &t("display-mirroring"),
                 Box::new(
                     Dropdown::new(mirror_choices.clone(), &mirror_key)
                         .with_id(&mirror_key)
@@ -1264,29 +1324,22 @@ impl DisplayPane {
                 ),
             ));
         }
+        let rotation = transform_options();
+        let rotation_current = transform_label(config.transform);
         out_rows.push(choice_row(
-            "Rotation",
+            &t("display-rotation"),
             Box::new(
-                Dropdown::new(
-                    TRANSFORMS
-                        .iter()
-                        .map(|(label, _)| (*label).into())
-                        .collect(),
-                    &transform_key,
-                )
-                .with_id(&transform_key)
-                .on_action(
-                    crate::actions::display_output_choice_binding(
-                        "transform",
-                        output.connector.clone(),
-                        TRANSFORMS
-                            .iter()
-                            .map(|(label, _)| (*label).into())
-                            .collect(),
+                Dropdown::new(rotation.clone(), &transform_key)
+                    .with_id(&transform_key)
+                    .on_action(
+                        crate::actions::display_output_choice_binding(
+                            "transform",
+                            output.connector.clone(),
+                            rotation,
+                        )
+                        .expect("output transform action is part of the resource contract"),
                     )
-                    .expect("output transform action is part of the resource contract"),
-                )
-                .with_placeholder(transform_label(config.transform)),
+                    .with_placeholder(&rotation_current),
             ),
         ));
         out_rows
@@ -1375,8 +1428,8 @@ impl DisplayPane {
         }
         if output.color_profiles.is_empty() {
             out_rows.push(value_row(
-                "Colour profile",
-                "System default · no valid ICC profiles detected",
+                &t("display-colour-profile"),
+                &t("display-colour-profile-empty"),
             ));
         } else {
             let mut choices = vec!["System default".into()];
@@ -1397,7 +1450,7 @@ impl DisplayPane {
                 })
                 .unwrap_or_else(|| "System default".into());
             out_rows.push(choice_row(
-                "Colour profile",
+                &t("display-colour-profile"),
                 Box::new(
                     Dropdown::new(choices.clone(), &profile_key)
                         .with_id(&profile_key)
@@ -1427,25 +1480,32 @@ impl DisplayPane {
                     .and_then(|transaction| transaction.deadline_unix_ms)
                     .map(|deadline| deadline.saturating_sub(unix_now_ms()).div_ceil(1_000))
                     .unwrap_or_default();
+                let seconds = i64::try_from(seconds).unwrap_or(i64::MAX);
+                let keep = t("display-keep");
+                let revert = t("display-revert-now");
                 card(
-                    "Keep this display configuration?",
+                    &t("display-keep-title"),
                     rows(vec![
-                        caption(&format!(
-                            "Every display should be visible. Restoring the previous layout in {seconds} seconds unless you keep this one."
+                        caption(&t_args(
+                            "display-keep-caption",
+                            &[("seconds", seconds.into())],
                         )),
                         setting_row(
-                            "Everything looks correct",
+                            &t("display-keep-ok"),
                             Box::new(
-                                Button::new("settings.display.keep", "Keep", None).on_action(
-                                    crate::actions::display_unit_binding("confirm")
-                                        .expect("display confirm action is published"),
-                                ),
+                                Button::new("settings.display.keep", &keep, None)
+                                    .content_sized()
+                                    .on_action(
+                                        crate::actions::display_unit_binding("confirm")
+                                            .expect("display confirm action is published"),
+                                    ),
                             ),
                         ),
                         setting_row(
-                            "Something is wrong",
+                            &t("display-keep-wrong"),
                             Box::new(
-                                Button::new("settings.display.revert", "Revert now", None)
+                                Button::new("settings.display.revert", &revert, None)
+                                    .content_sized()
                                     .on_action(
                                         crate::actions::display_unit_binding("revert")
                                             .expect("display revert action is published"),
@@ -1459,55 +1519,58 @@ impl DisplayPane {
                 DisplayTransactionState::Requested
                 | DisplayTransactionState::ConfirmRequested
                 | DisplayTransactionState::RevertRequested,
-            ) => card(
-                "Applying display configuration",
-                rows(vec![caption(
-                    transaction
-                        .as_ref()
-                        .and_then(|transaction| transaction.message.as_deref())
-                        .unwrap_or("The compositor is validating and applying the output plan…"),
-                )]),
-            ),
+            ) => {
+                let applying = transaction
+                    .as_ref()
+                    .and_then(|transaction| transaction.message.as_deref())
+                    .map_or_else(|| t("display-applying-caption"), str::to_string);
+                card(&t("display-applying-title"), rows(vec![caption(&applying)]))
+            }
             Some(DisplayTransactionState::Rejected) => {
-                let mut content = vec![caption(
-                    transaction
-                        .as_ref()
-                        .and_then(|transaction| transaction.message.as_deref())
-                        .unwrap_or("The compositor rejected this output plan."),
-                )];
+                let rejected = transaction
+                    .as_ref()
+                    .and_then(|transaction| transaction.message.as_deref())
+                    .map_or_else(|| t("display-rejected-caption"), str::to_string);
+                let mut content = vec![caption(&rejected)];
                 if self.pending_candidate.is_some() {
+                    let try_again = t("display-try-again");
                     content.push(setting_row(
-                        "Test the newly edited layout",
+                        &t("display-retry"),
                         Box::new(
-                            Button::new("settings.display.apply", "Try again", None).on_action(
-                                crate::actions::display_unit_binding("apply")
-                                    .expect("display apply action is published"),
-                            ),
+                            Button::new("settings.display.apply", &try_again, None)
+                                .content_sized()
+                                .on_action(
+                                    crate::actions::display_unit_binding("apply")
+                                        .expect("display apply action is published"),
+                                ),
                         ),
                     ));
                 }
-                card("Display change was not applied", rows(content))
+                card(&t("display-rejected-title"), rows(content))
             }
-            _ if self.pending_candidate.is_some() => card(
-                "Apply display changes",
-                rows(vec![
-                    caption(
-                        "The layout is staged, not active. Applying it starts a 15-second safety test; closing Settings cannot cancel the automatic restore.",
-                    ),
-                    setting_row(
-                        "Test staged layout",
-                        Box::new(
-                            Button::new("settings.display.apply", "Apply", None).on_action(
-                                crate::actions::display_unit_binding("apply")
-                                    .expect("display apply action is published"),
+            _ if self.pending_candidate.is_some() => {
+                let apply = t("display-apply");
+                card(
+                    &t("display-apply-title"),
+                    rows(vec![
+                        caption(&t("display-apply-caption")),
+                        setting_row(
+                            &t("display-apply-row"),
+                            Box::new(
+                                Button::new("settings.display.apply", &apply, None)
+                                    .content_sized()
+                                    .on_action(
+                                        crate::actions::display_unit_binding("apply")
+                                            .expect("display apply action is published"),
+                                    ),
                             ),
                         ),
-                    ),
-                ]),
-            ),
+                    ]),
+                )
+            }
             _ => card(
-                "Display configuration",
-                rows(vec![caption("No unapplied display changes.")]),
+                &t("display-config-title"),
+                rows(vec![caption(&t("display-config-empty"))]),
             ),
         }
     }
@@ -1559,7 +1622,7 @@ impl DisplayPane {
                 .unwrap_or_else(|| OutputConfig {
                     primary: index == 0,
                     x: index as i32 * 1920,
-                    ..Default::default()
+                    ..output.unconfigured()
                 });
             let _ = state.put(root, output_key(&output.connector, "enabled"), cfg.enabled);
             let _ = state.put(root, output_key(&output.connector, "primary"), cfg.primary);
@@ -1614,7 +1677,8 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for DisplayPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -1734,33 +1798,12 @@ impl Widget for DisplayPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
     }
 
@@ -1832,7 +1875,7 @@ impl DisplayPane {
         if self.last_snapshot_check.elapsed() < Duration::from_secs(1) {
             return;
         }
-        self.last_snapshot_check = Instant::now();
+        self.last_snapshot_check = ui::time::now();
         let stamp = settings_store::hardware::display_snapshot_path()
             .and_then(|path| std::fs::metadata(path).ok()?.modified().ok());
         if stamp != self.snapshot_stamp {
@@ -2177,7 +2220,7 @@ impl DisplayPane {
                 .outputs
                 .get(&output.connector)
                 .cloned()
-                .unwrap_or_default();
+                .unwrap_or_else(|| output.unconfigured());
             if Self::apply_output_field_overrides(state, root, output, &mut next, &mut cfg) {
                 changed = true;
             }
@@ -2351,7 +2394,7 @@ impl DisplayPane {
                     .outputs
                     .get(&reference.connector)
                     .cloned()
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| reference.unconfigured());
                 // Positions are logical, so neighbours are placed by their
                 // logical extent (mode over scale, rotated), not their mode:
                 // a 2x panel's right-hand neighbour starts 1280 in, not 2560.
@@ -3177,6 +3220,7 @@ mod tests {
             connector_label: connector.into(),
             current_mode: modes.first().copied(),
             modes,
+            scale: 1.0,
             hdr: false,
             sink_hdr: false,
             hdr_unavailable_reason: None,
@@ -3352,6 +3396,91 @@ mod tests {
         assert_eq!(
             monitor.placement,
             super::super::display_arrangement::placement::Placement::new(1920, 0, 2560, 1440)
+        );
+    }
+
+    #[test]
+    fn the_arrangement_draws_mixed_dpi_displays_at_their_logical_size() {
+        use super::super::display_arrangement::placement::{Placement, settle};
+        // A 2x panel of 2560x1600 is 1280x800 on the desktop the pointer
+        // moves through; a 1x monitor beside it starts at x = 1280.
+        let panel_mode = OutputMode {
+            width: 2560,
+            height: 1600,
+            refresh_mhz: 60_000,
+        };
+        let monitor_mode = OutputMode {
+            width: 1920,
+            height: 1080,
+            refresh_mhz: 60_000,
+        };
+        let rec = Arc::new(RecordingDispatcher::default());
+        let mut pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![
+                display_with_modes("eDP-1", "Built-in display", true, vec![panel_mode]),
+                display_with_modes("HDMI-A-1", "Desk monitor", false, vec![monitor_mode]),
+            ]);
+        pane.output_config.outputs.insert(
+            "eDP-1".into(),
+            OutputConfig {
+                primary: true,
+                scale: 2.0,
+                ..Default::default()
+            },
+        );
+        pane.output_config.outputs.insert(
+            "HDMI-A-1".into(),
+            OutputConfig {
+                x: 1280,
+                ..Default::default()
+            },
+        );
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        let panel = displays.iter().find(|d| d.connector == "eDP-1").unwrap();
+        let monitor = displays.iter().find(|d| d.connector == "HDMI-A-1").unwrap();
+        assert_eq!(panel.placement, Placement::new(0, 0, 1280, 800));
+        assert_eq!(monitor.placement, Placement::new(1280, 0, 1920, 1080));
+        assert!(
+            panel.placement.touches(monitor.placement),
+            "the canvas shows the edge the pointer crosses"
+        );
+        // Dropping the monitor near the panel's right edge snaps it onto
+        // that logical edge, never onto the panel's mode width.
+        let dropped = settle(monitor.placement.at(1300, 12), &[panel.placement], 24);
+        assert_eq!((dropped.x, dropped.y), (1280, 0));
+    }
+
+    #[test]
+    fn an_unconfigured_display_is_drawn_and_staged_at_the_compositors_scale() {
+        // Nothing saved: the compositor runs the HiDPI panel at the 2x it
+        // chose itself, so the canvas draws it 1280 wide and staging a
+        // change keeps that scale rather than writing 1x.
+        let mut panel = display_with_modes(
+            "eDP-1",
+            "Built-in display",
+            true,
+            vec![OutputMode {
+                width: 2560,
+                height: 1600,
+                refresh_mhz: 60_000,
+            }],
+        );
+        panel.scale = 2.0;
+        let rec = Arc::new(RecordingDispatcher::default());
+        let pane = DisplayPane::with_dispatcher(rec as Arc<dyn Dispatcher + Send + Sync>, 0.5)
+            .with_outputs(vec![panel]);
+        let connected = pane.connected_outputs();
+        let displays = pane.arranged_displays(&connected);
+        assert_eq!(displays[0].placement.width, 1280);
+        assert_eq!(displays[0].placement.height, 800);
+
+        let mut doc = AutoCommit::new();
+        pane.write_output_controls(&mut doc, &automerge::ROOT, &pane.output_config);
+        assert_eq!(
+            read_str_or_text(&doc, &automerge::ROOT, output_key("eDP-1", "scale")).as_deref(),
+            Some("200%"),
+            "the scale control shows the scale the display runs at"
         );
     }
 

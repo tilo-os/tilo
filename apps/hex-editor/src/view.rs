@@ -23,7 +23,8 @@ use std::collections::HashMap;
 use std::fmt::Write as _;
 use std::path::PathBuf;
 use std::sync::mpsc::TryRecvError;
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -35,9 +36,12 @@ use winit::keyboard::{Key, NamedKey};
 
 use ui::Widget;
 use ui::format::bytes as format_bytes;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+    SaveChannel, SaveOutcome,
+};
 use ui::presence::PresenceCtx;
-use ui::text_render::{TextRenderer, TextStyle, TextWeight};
+use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::widget::{TextInput, TextInputKind};
 
@@ -174,6 +178,9 @@ pub struct HexView {
     path: Option<PathBuf>,
     /// An in-flight XDG-portal open request, drained once per frame in `sync`.
     open_rx: Option<PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    open_contents_rx: Option<ContentsChannel>,
+    save_contents_rx: Option<SaveChannel>,
     /// An in-flight XDG-portal save-destination request.
     save_rx: Option<PortalChannel>,
     resource_invocation: Option<tilo_actions::InvocationId>,
@@ -240,6 +247,8 @@ impl HexView {
             has_file: true,
             path: None,
             open_rx: None,
+            open_contents_rx: None,
+            save_contents_rx: None,
             save_rx: None,
             resource_invocation: None,
             pending_resource_io: None,
@@ -262,6 +271,12 @@ impl HexView {
     pub fn empty() -> Self {
         let mut v = Self::new(Vec::new(), "No file");
         v.has_file = false;
+        // Where files have no path, the file last opened by contents.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+        {
+            v.load_bytes(file.name, file.bytes, None);
+        }
         v
     }
 
@@ -336,7 +351,7 @@ impl HexView {
     /// headless frame captures the floating chip.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Deterministic `--shots` hook for the real search overlay. It is not
@@ -380,8 +395,13 @@ impl HexView {
     /// Start the host file chooser to open a file. No-op if one is already in
     /// flight. The pick arrives over `open_rx`, drained in `sync`.
     fn begin_open(&mut self) {
-        if self.open_rx.is_none() {
+        if self.open_rx.is_some() || self.open_contents_rx.is_some() {
+            return;
+        }
+        if crate::web_file::native_paths() {
             self.open_rx = Some(file_open_request().send());
+        } else {
+            self.open_contents_rx = Some(file_open_request().send_contents());
         }
     }
 
@@ -390,6 +410,13 @@ impl HexView {
     fn begin_save(&mut self) {
         if let Some(path) = self.path.clone() {
             let _ = self.write_to(&path);
+        } else if !crate::web_file::native_paths() {
+            if self.save_contents_rx.is_none() {
+                let name = self.suggested_name();
+                crate::web_file::remember(&name, self.model.bytes());
+                self.save_contents_rx =
+                    Some(file_save_request(&name).send_save_contents(self.model.bytes().to_vec()));
+            }
         } else if self.save_rx.is_none() {
             self.save_rx = Some(file_save_request(&self.suggested_name()).send());
         }
@@ -408,7 +435,10 @@ impl HexView {
     /// Write the current bytes to `path`, clearing the dirty markers on
     /// success and flashing the outcome either way.
     fn write_to(&mut self, path: &std::path::Path) -> Result<(), String> {
-        match std::fs::write(path, self.model.bytes()) {
+        let saved = tilo_files::file_at(path).and_then(|(dir, name)| {
+            tilo_files::blocking::save_document(&dir, &name, self.model.bytes())
+        });
+        match saved {
             Ok(()) => {
                 self.model.clear_dirty();
                 self.path = Some(path.to_path_buf());
@@ -431,23 +461,13 @@ impl HexView {
 
     /// Load a local path into this editor. The path and bytes stay local.
     fn open_path(&mut self, path: PathBuf) -> Result<(), String> {
-        match std::fs::read(&path) {
+        match crate::app::read_file(&path) {
             Ok(bytes) => {
                 let name = path.file_name().map_or_else(
                     || "untitled".to_string(),
                     |s| s.to_string_lossy().into_owned(),
                 );
-                let n = bytes.len();
-                self.model = HexModel::new(bytes);
-                self.file_name = name;
-                self.path = Some(path);
-                self.has_file = true;
-                self.overlay = Overlay::None;
-                self.matches.clear();
-                self.search_needle = None;
-                self.matches_truncated = false;
-                self.match_idx = None;
-                self.dirty = true;
+                let n = self.load_bytes(name, bytes, Some(path));
                 self.flash(
                     format!(
                         "Opened {}",
@@ -464,8 +484,88 @@ impl HexView {
         }
     }
 
+    /// Show `bytes` as the open file; its length.
+    fn load_bytes(&mut self, name: String, bytes: Vec<u8>, path: Option<PathBuf>) -> usize {
+        let n = bytes.len();
+        self.model = HexModel::new(bytes);
+        self.file_name = name;
+        self.path = path;
+        self.has_file = true;
+        self.overlay = Overlay::None;
+        self.matches.clear();
+        self.search_needle = None;
+        self.matches_truncated = false;
+        self.match_idx = None;
+        self.dirty = true;
+        n
+    }
+
+    /// A file chosen by contents: shown, and remembered so it outlives a
+    /// reload.
+    fn open_contents(&mut self, outcome: ContentsOutcome) -> Result<(), String> {
+        match outcome {
+            ContentsOutcome::Picked(files) => {
+                let Some(file) = files.into_iter().next() else {
+                    return Err("no file was chosen".into());
+                };
+                crate::web_file::remember(&file.name, &file.bytes);
+                let n = self.load_bytes(file.name, file.bytes, None);
+                self.flash(
+                    format!(
+                        "Opened {}",
+                        format_bytes(u64::try_from(n).unwrap_or(u64::MAX))
+                    ),
+                    false,
+                );
+                Ok(())
+            }
+            ContentsOutcome::Cancelled => Err("cancelled".into()),
+            ContentsOutcome::Failed(reason) => {
+                self.flash(&reason, true);
+                Err(reason)
+            }
+        }
+    }
+
     /// Drain completed portal open/save requests into this device-local view.
     fn drain_portal(&mut self) {
+        if let Some(rx) = self.open_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.open_contents_rx = None;
+                    let result = self.open_contents(outcome);
+                    self.finish_resource_io(result);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => {
+                    self.open_contents_rx = None;
+                    self.finish_resource_io(Err("file picker disconnected".into()));
+                }
+            }
+        }
+        if let Some(rx) = self.save_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.save_contents_rx = None;
+                    let result = match outcome {
+                        SaveOutcome::Saved => {
+                            self.model.clear_dirty();
+                            self.flash("Saved", false);
+                            self.dirty = true;
+                            Ok(())
+                        }
+                        SaveOutcome::Cancelled => Err("cancelled".into()),
+                        SaveOutcome::Failed(reason) => {
+                            self.flash(&reason, true);
+                            Err(reason)
+                        }
+                    };
+                    self.finish_resource_io(result);
+                }
+                Err(TryRecvError::Empty) => {}
+                Err(TryRecvError::Disconnected) => self.save_contents_rx = None,
+            }
+        }
         if let Some(rx) = self.open_rx.as_ref() {
             match rx.try_recv() {
                 Ok(outcome) => {
@@ -537,7 +637,7 @@ impl HexView {
 
     /// Post a transient status message.
     fn flash(&mut self, msg: impl Into<String>, error: bool) {
-        self.flash = Some((msg.into(), error, Instant::now()));
+        self.flash = Some((msg.into(), error, ui::time::now()));
         self.dirty = true;
     }
 
@@ -805,10 +905,6 @@ impl HexView {
     }
 
     /// Draw a small rounded pill ending at `right_x`; returns its left x.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Pill painting combines render context, right alignment and bar bounds, label measurement, and the fill color."
-    )]
     fn draw_pill(
         scene: &mut Scene,
         t: Affine,
@@ -881,16 +977,13 @@ impl HexView {
 
             // Offset gutter.
             let gutter = format!("{row_off:08X}");
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &gutter,
-                m.cell_font,
                 theme.tokens.colors.accent[6],
                 t * Affine::translate((m.gutter_x0, text_y)),
                 None,
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(m.cell_font).with_family(FontChoice::Monospace),
             );
 
             let ctx = GridCellCtx {
@@ -922,42 +1015,39 @@ impl HexView {
     ) {
         let tokens = &theme.tokens;
         let head_y = m.col_header_y;
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "Offset",
-            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.gutter_x0, head_y)),
             None,
-            TextWeight::Medium,
-            false,
-            true,
+            &TextStyle::new(m.header_font)
+                .with_weight(TextWeight::Medium)
+                .with_family(FontChoice::Monospace),
         );
         for c in 0..bpr {
             let label = format!("{c:02X}");
             let x = m.hex_x0 + c as f64 * m.hex_col_w;
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &label,
-                m.header_font,
                 tokens.colors.text_dim,
                 t * Affine::translate((x, head_y)),
                 None,
-                TextWeight::Medium,
-                false,
-                true,
+                &TextStyle::new(m.header_font)
+                    .with_weight(TextWeight::Medium)
+                    .with_family(FontChoice::Monospace),
             );
         }
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             "ASCII",
-            m.header_font,
             tokens.colors.text_dim,
             t * Affine::translate((m.ascii_x0, head_y)),
             None,
-            TextWeight::Medium,
-            false,
-            true,
+            &TextStyle::new(m.header_font)
+                .with_weight(TextWeight::Medium)
+                .with_family(FontChoice::Monospace),
         );
         // Rules on the grid derive from the surface they cross (HIG §9.5):
         // the declared border is three shades from the dark base and vanishes.
@@ -1134,20 +1224,19 @@ impl HexView {
         } else {
             tokens.colors.text_primary
         };
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &format!("{:02X}", geom.byte),
-            size,
             hex_color,
             t * Affine::translate((geom.hex_x, ctx.text_y)),
             None,
-            if is_dirty {
-                TextWeight::Bold
-            } else {
-                TextWeight::Regular
-            },
-            false,
-            true,
+            &TextStyle::new(size)
+                .with_weight(if is_dirty {
+                    TextWeight::Bold
+                } else {
+                    TextWeight::Regular
+                })
+                .with_family(FontChoice::Monospace),
         );
 
         // ASCII glyph.
@@ -1163,16 +1252,13 @@ impl HexView {
         } else {
             tokens.colors.neutral[5]
         };
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &ch,
-            size,
             ascii_color,
             t * Affine::translate((geom.ascii_x, ctx.text_y)),
             None,
-            TextWeight::Regular,
-            false,
-            true,
+            &TextStyle::new(size).with_family(FontChoice::Monospace),
         );
     }
 
@@ -1189,10 +1275,6 @@ impl HexView {
         Some((cur, cur + width - 1))
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Inspector painting receives render context and the measured grid geometry used to align decoded byte values."
-    )]
     fn draw_inspector(
         &self,
         scene: &mut Scene,
@@ -1237,16 +1319,13 @@ impl HexView {
             self.model.endian().label()
         );
         let value_size = ts(tr, tokens.typography.scale.sm);
-        tr.draw_text_styled(
+        tr.draw_style(
             scene,
             &sub,
-            value_size,
             tokens.colors.accent[6],
             t * Affine::translate((x, y)),
             None,
-            TextWeight::Regular,
-            false,
-            true,
+            &TextStyle::new(value_size).with_family(FontChoice::Monospace),
         );
         let value_line = line_box(tr, value_size);
         y += value_line + 9.0;
@@ -1289,32 +1368,28 @@ impl HexView {
                 None,
                 &band,
             );
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 r.label,
-                value_size,
                 tokens.colors.text_dim,
                 t * Affine::translate((x, y)),
                 None,
-                TextWeight::Medium,
-                false,
-                true,
+                &TextStyle::new(value_size)
+                    .with_weight(TextWeight::Medium)
+                    .with_family(FontChoice::Monospace),
             );
             let val_color = if r.value == "—" {
                 tokens.colors.neutral[4]
             } else {
                 tokens.colors.text_primary
             };
-            tr.draw_text_styled(
+            tr.draw_style(
                 scene,
                 &r.value,
-                value_size,
                 val_color,
                 t * Affine::translate((x + label_w, y)),
                 Some((panel.width() - pad * 2.0 - label_w) as f32),
-                TextWeight::Regular,
-                false,
-                true,
+                &TextStyle::new(value_size).with_family(FontChoice::Monospace),
             );
             y += row_h;
         }
@@ -1353,7 +1428,7 @@ impl HexView {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_bubble_label();
         // Poke only on a genuine change — `draw` runs every frame, so poking
         // unconditionally would pin the bubble open forever.
@@ -1749,28 +1824,32 @@ impl HexView {
             Overlay::Search => {
                 self.search_input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut field_handled,
-                    layout.focus_target,
-                    layout.node_id,
-                    layout.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut field_handled,
+                        focus_target: layout.focus_target,
+                        node_id: layout.node_id,
+                        taffy: layout.taffy,
+                    },
                 );
                 self.search_input.take_dirty().is_some()
             }
             Overlay::Goto => {
                 self.goto_input.handle_event(
                     event,
-                    scale_factor,
-                    &modifiers,
-                    doc,
-                    path,
-                    &mut field_handled,
-                    layout.focus_target,
-                    layout.node_id,
-                    layout.taffy,
+                    &mut ui::widget::EventCtx {
+                        scale_factor,
+                        modifiers: &modifiers,
+                        state: doc,
+                        path,
+                        handled: &mut field_handled,
+                        focus_target: layout.focus_target,
+                        node_id: layout.node_id,
+                        taffy: layout.taffy,
+                    },
                 );
                 self.goto_input.take_dirty().is_some()
             }
@@ -1793,92 +1872,41 @@ fn ui_accent_idx() -> usize {
 }
 
 impl Widget for HexView {
+    ui::provides!(dyn ui::resources::PublishesResources);
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[crate::actions::HEX_EDITOR_OPERATION_TYPE]
     }
 
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind == tilo_actions::OperationKind::Document {
-            return Ok(false);
-        }
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(false);
-        };
-        match operation {
-            HexOperation::Open { .. } => self.begin_open(),
-            HexOperation::Save { .. } if self.has_file => self.begin_save(),
-            HexOperation::Search if self.has_file => {
-                self.overlay = Overlay::Search;
-                self.search_input.set_focus(true);
-                self.recompute_matches();
-                self.dirty = true;
-            }
-            HexOperation::GotoOffset if self.has_file => {
-                self.overlay = Overlay::Goto;
-                self.goto_input.set_focus(true);
-                self.dirty = true;
-            }
-            HexOperation::Edit { edit } if self.has_file => {
-                self.model.apply_local_edit(&edit.into());
-                self.record_local_history();
-                self.dirty = true;
-            }
-            HexOperation::Undo if !self.undo.is_empty() => {
-                let _ = self.undo_local();
-            }
-            HexOperation::Redo if !self.redo.is_empty() => {
-                let _ = self.redo_local();
-            }
-            HexOperation::Undo => return Err("no local edit to undo".into()),
-            HexOperation::Redo => return Err("no local edit to redo".into()),
-            _ => return Err("open a file first".into()),
-        }
-        Ok(true)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
         };
-        match &operation {
-            crate::actions::HexOperation::Open { .. }
-            | crate::actions::HexOperation::Save { .. } => {}
-            _ => {
-                return self
-                    .invoke_resource_operation_v2(kind, type_id, payload, doc, path)
-                    .map(|v| v.map(ui::widget::ResourceOperationStart::Completed));
-            }
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
-            return Err("another file operation is already running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        match &operation {
-            crate::actions::HexOperation::Open { path: None } => {
-                self.begin_open();
-                self.resource_invocation = Some(invocation);
-            }
-            crate::actions::HexOperation::Save { path: None } => {
-                self.begin_save();
-                self.resource_invocation = Some(invocation);
-            }
-            _ => self.pending_resource_io = Some((invocation, operation)),
-        }
-        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -1916,7 +1944,7 @@ impl Widget for HexView {
             .flatten()
     }
 
-    fn sync(&mut self, _doc: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, _doc: &mut AppModel, _path: &ModelPath) {
         if let Some((invocation, operation)) = self.pending_resource_io.take() {
             let result = match operation {
                 crate::actions::HexOperation::Open { path: Some(path) } => {
@@ -1969,7 +1997,7 @@ impl Widget for HexView {
         // once the host dialog closes), while a flash is counting down, and
         // while the floating status bubble is lingering / fading so it hides
         // itself without needing a stray pointer event.
-        self.is_busy() || self.status_bubble.needs_frame(Instant::now())
+        self.is_busy() || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn build_layout(
@@ -2065,35 +2093,24 @@ impl Widget for HexView {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let ctrl = modifiers.state().control_key();
-        let shift = modifiers.state().shift_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let ctrl = ctx.modifiers.state().control_key();
+        let shift = ctx.modifiers.state().shift_key();
 
         if self.overlay != Overlay::None {
             if self.handle_overlay_event(
                 event,
-                scale_factor,
-                *modifiers,
-                state,
-                path,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.path,
                 OverlayLayoutCtx {
-                    focus_target,
-                    node_id,
-                    taffy,
+                    focus_target: ctx.focus_target,
+                    node_id: ctx.node_id,
+                    taffy: ctx.taffy,
                 },
             ) {
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             // An open prompt captures keys even when the field deliberately
@@ -2108,9 +2125,10 @@ impl Widget for HexView {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
-            } => self.handle_mouse_press(shift, handled),
+            } => self.handle_mouse_press(shift, ctx.handled),
             WindowEvent::CursorMoved { position, .. } => {
-                self.last_mouse = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.last_mouse =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let lines = match delta {
@@ -2119,7 +2137,7 @@ impl Widget for HexView {
                 };
                 self.model.scroll_by(-(lines.round() as isize) * 3);
                 self.dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -2129,18 +2147,10 @@ impl Widget for HexView {
                     },
                 ..
             } => {
-                self.handle_key_event(ke, ctrl, shift, handled);
+                self.handle_key_event(ke, ctrl, shift, ctx.handled);
             }
             _ => {}
         }
-    }
-
-    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
-    /// action palette scopes to them. Delegates to the
-    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
-    /// [`crate::actions`].
-    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
     }
 
     fn name(&self) -> &'static str {
@@ -2237,6 +2247,7 @@ impl Widget for HexView {
                             .with_name("Open file")
                             .with_description("Choose a local file to inspect")
                             .with_state(AccessState::default().focusable(true))
+                            .with_bounds(self.open_button)
                             .with_action_target("hex.open"),
                     );
                 }
@@ -2268,8 +2279,8 @@ impl Widget for HexView {
         &mut self,
         target: &str,
         action: &ui::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if matches!(action, ui::a11y::Action::Activate) {
             match target {
@@ -2294,6 +2305,108 @@ impl Widget for HexView {
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
+    }
+}
+
+impl ui::resources::PublishesResources for HexView {
+    /// Publish the open buffer + its byte-edit actions so the shell's Ctrl+K
+    /// action palette scopes to them. Delegates to the
+    /// [`ResourceProvider`](tilo_actions::ResourceProvider) impl in
+    /// [`crate::actions`].
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        <Self as tilo_actions::ResourceProvider>::resources(self, doc)
+    }
+}
+
+impl HexView {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind == tilo_actions::OperationKind::Document {
+            return Ok(false);
+        }
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(false);
+        };
+        match operation {
+            HexOperation::Open { .. } => self.begin_open(),
+            HexOperation::Save { .. } if self.has_file => self.begin_save(),
+            HexOperation::Search if self.has_file => {
+                self.overlay = Overlay::Search;
+                self.search_input.set_focus(true);
+                self.recompute_matches();
+                self.dirty = true;
+            }
+            HexOperation::GotoOffset if self.has_file => {
+                self.overlay = Overlay::Goto;
+                self.goto_input.set_focus(true);
+                self.dirty = true;
+            }
+            HexOperation::Edit { edit } if self.has_file => {
+                self.model.apply_local_edit(&edit.into());
+                self.record_local_history();
+                self.dirty = true;
+            }
+            HexOperation::Undo if !self.undo.is_empty() => {
+                let _ = self.undo_local();
+            }
+            HexOperation::Redo if !self.redo.is_empty() => {
+                let _ = self.redo_local();
+            }
+            HexOperation::Undo => return Err("no local edit to undo".into()),
+            HexOperation::Redo => return Err("no local edit to redo".into()),
+            _ => return Err("open a file first".into()),
+        }
+        Ok(true)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        let Some(operation) = crate::actions::decode_operation(type_id, payload)? else {
+            return Ok(None);
+        };
+        match &operation {
+            crate::actions::HexOperation::Open { .. }
+            | crate::actions::HexOperation::Save { .. } => {}
+            _ => {
+                return self
+                    .answer_resource_operation(kind, type_id, payload, doc, path)
+                    .map(|handled| {
+                        handled.then(|| {
+                            ui::widget::ResourceOperationStart::Completed(
+                                ui::tilo_actions::ActionOutput::default(),
+                            )
+                        })
+                    });
+            }
+        }
+        if self.resource_invocation.is_some() || self.pending_resource_io.is_some() {
+            return Err("another file operation is already running".into());
+        }
+        match &operation {
+            crate::actions::HexOperation::Open { path: None } => {
+                self.begin_open();
+                self.resource_invocation = Some(invocation);
+            }
+            crate::actions::HexOperation::Save { path: None } => {
+                self.begin_save();
+                self.resource_invocation = Some(invocation);
+            }
+            _ => self.pending_resource_io = Some((invocation, operation)),
+        }
+        Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
 }
 
@@ -2769,8 +2882,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "hex-direct-{}-{}",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .unwrap()
                 .as_nanos()
         ));
@@ -2784,13 +2897,15 @@ mod tests {
             path: Some(source.display().to_string()),
         })
         .unwrap();
-        let started = Widget::start_resource_operation(
+        let started = Widget::start_operation(
             &mut view,
-            invocation,
-            tilo_actions::OperationKind::Effect,
-            crate::actions::HEX_EDITOR_OPERATION_TYPE,
-            &payload,
-            &doc,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                &payload,
+            ),
+            &mut doc,
             &automerge::ROOT,
         )
         .unwrap()
@@ -2806,16 +2921,19 @@ mod tests {
 
         // Canonical edit, undo and redo stay local and update availability.
         let mut view = HexView::new(vec![0x10, 0x20], "bytes.bin");
-        let doc = AutoCommit::new();
+        let mut doc = AutoCommit::new();
         let undo = serde_json::to_vec(&crate::actions::HexOperation::Undo).unwrap();
         assert!(
-            Widget::invoke_resource_operation(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &undo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &undo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
             .is_err()
         );
@@ -2826,51 +2944,63 @@ mod tests {
             },
         })
         .unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &edit,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &edit
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
         assert!(
-            Widget::resources(&view, &doc)[0]
+            ui::resources::resources(&view, &doc)[0]
                 .actions
                 .iter()
                 .find(|action| action.id == "undo")
                 .is_some_and(|action| action.contract.availability.is_available())
         );
 
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &undo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &undo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0x20]);
 
         let redo = serde_json::to_vec(&crate::actions::HexOperation::Redo).unwrap();
-        assert!(
-            Widget::invoke_resource_operation(
+        assert!(matches!(
+            Widget::start_operation(
                 &mut view,
-                tilo_actions::OperationKind::Effect,
-                crate::actions::HEX_EDITOR_OPERATION_TYPE,
-                &redo,
-                &doc,
-                &automerge::ROOT,
+                &ui::widget::ResourceOperation::local(
+                    ui::tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    crate::actions::HEX_EDITOR_OPERATION_TYPE,
+                    &redo
+                ),
+                &mut doc,
+                &automerge::ROOT
             )
-            .unwrap()
-        );
+            .unwrap(),
+            Some(ui::widget::ResourceOperationStart::Completed(_))
+        ));
         assert_eq!(view.model.bytes(), &[0x10, 0xAB]);
         assert!(doc.get(automerge::ROOT, "bytes").unwrap().is_none());
     }

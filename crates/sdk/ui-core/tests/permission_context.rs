@@ -155,7 +155,6 @@ fn roles_and_scoped_shares_decide_each_permission_check() {
 
 struct NoOpWidget;
 impl tilo_ui::widget::Widget for NoOpWidget {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -185,19 +184,6 @@ impl tilo_ui::widget::Widget for NoOpWidget {
         _presence: &tilo_ui::presence::PresenceCtx,
     ) {
     }
-    fn handle_event(
-        &mut self,
-        _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
-    ) {
-    }
     fn name(&self) -> &'static str {
         "noop"
     }
@@ -211,8 +197,8 @@ fn widget_defaults_carry_no_presence_or_permission_and_delegate_draw() {
     // Case `widget_default_presence_and_permission_are_none`.
     {
         let w = NoOpWidget;
-        assert!(w.presence_key().is_none());
-        assert!(w.permission_scope().is_none());
+        assert!(tilo_ui::presence::capability::presence_key(&w).is_none());
+        assert!(tilo_ui::permissions::capability::permission_scope(&w).is_none());
     }
 
     // Case `draw_with_presence_default_delegates_to_draw`.
@@ -244,7 +230,8 @@ struct GatedButton {
 }
 
 impl tilo_ui::widget::Widget for GatedButton {
-    fn sync(&mut self, _s: &mut automerge::AutoCommit, _p: &automerge::ObjId) {}
+    tilo_ui::provides!(dyn tilo_ui::permissions::capability::PermissionGated);
+
     #[allow(
         clippy::unimplemented,
         reason = "test-only Widget stub; build_layout is never invoked by these tests (they \
@@ -277,14 +264,7 @@ impl tilo_ui::widget::Widget for GatedButton {
     fn handle_event(
         &mut self,
         _e: &winit::event::WindowEvent,
-        _sf: f64,
-        _mods: &winit::event::Modifiers,
-        _s: &mut automerge::AutoCommit,
-        _p: &automerge::ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<taffy::NodeId>,
-        _nid: taffy::NodeId,
-        _t: &taffy::TaffyTree<()>,
+        _ctx: &mut tilo_ui::widget::EventCtx<'_>,
     ) {
         self.clicked = true;
     }
@@ -294,6 +274,9 @@ impl tilo_ui::widget::Widget for GatedButton {
     fn get_rect(&self) -> vello::kurbo::Rect {
         vello::kurbo::Rect::ZERO
     }
+}
+
+impl tilo_ui::permissions::capability::PermissionGated for GatedButton {
     fn permission_scope(&self) -> Option<PS> {
         Some(self.scope.clone())
     }

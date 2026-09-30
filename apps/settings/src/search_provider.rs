@@ -48,17 +48,19 @@ impl SettingsSearchProvider {
             // The index contains every phrase people can use to find the
             // destination.  The materialised hit stays intentionally lean;
             // it resolves through the canonical `open` action below.
-            let searchable = std::iter::once(category.label())
-                .chain(std::iter::once(category.subtitle()))
+            let label = category.label();
+            let subtitle = category.subtitle();
+            let searchable = [label.as_str(), subtitle.as_str()]
+                .into_iter()
                 .chain(category.keywords().iter().copied())
                 .collect::<Vec<_>>()
                 .join(" ");
             let result = SearchResult::for_action(
                 SETTINGS_KIND,
-                category.label(),
+                &label,
                 crate::actions::open_pane_address(category),
             )
-            .with_subtitle(category.subtitle())
+            .with_subtitle(&subtitle)
             .with_icon(category.icon());
             // Every input above is static, and the result uses precisely the
             // same stable resource id, so this can only fail if a future
@@ -148,7 +150,7 @@ mod tests {
             titles,
             Category::ALL
                 .iter()
-                .map(|category| category.label().to_string())
+                .map(|category| category.label())
                 .collect::<Vec<_>>(),
             "a continuation reaches late categories instead of truncating browse discovery"
         );
@@ -178,13 +180,13 @@ mod tests {
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let mut app = config.app();
-        let providers = app.search_providers();
+        let providers = ui::search::capability::search_providers(&app);
         assert!(
             !providers.is_empty(),
             "settings publishes a search provider"
         );
-        let doc = AutoCommit::new();
-        let resources = app.resources(&doc);
+        let mut doc = AutoCommit::new();
+        let resources = ui::resources::resources(&app, &doc);
         let hits = providers[0].search("");
         assert_eq!(hits.len(), Category::ALL.len());
 
@@ -198,16 +200,20 @@ mod tests {
             let kind = spec.kind;
             let encoded = tilo_actions::door::encode(&resources, &address, None)
                 .expect("the exported operation encodes");
-            assert!(
-                app.invoke_resource_operation(
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
-                    &ROOT,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
+                    &ROOT
                 )
-                .expect("the brokered operation succeeds")
-            );
+                .expect("the brokered operation succeeds"),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.selected(),
                 category,
@@ -219,13 +225,12 @@ mod tests {
     #[test]
     fn runtime_lazy_resolution_only_accepts_current_canonical_open_addresses() {
         use automerge::AutoCommit;
-        use ui::widget::Widget;
         let config = crate::prefs::test_env::ScratchConfig::new();
 
         let app = config.app();
         let doc = AutoCommit::new();
         let address = crate::actions::open_pane_address(Category::Accessibility);
-        let resource = Widget::resource(&app, &doc, &address.resource)
+        let resource = ui::resources::resource(&app, &doc, &address.resource)
             .expect("the widget resolves a current canonical resource at activation time");
         assert_eq!(resource.id.as_str(), address.resource);
         let resources = [resource];
@@ -238,8 +243,8 @@ mod tests {
             crate::actions::pane_resource_id(Category::Accessibility),
             "removed-action",
         );
-        assert!(Widget::resource(&app, &doc, &stale_resource.resource).is_none());
-        let current_resource = Widget::resource(&app, &doc, &stale_action.resource)
+        assert!(ui::resources::resource(&app, &doc, &stale_resource.resource).is_none());
+        let current_resource = ui::resources::resource(&app, &doc, &stale_action.resource)
             .expect("the current resource remains resolvable");
         assert!(tilo_actions::door::resolve(&[current_resource], &stale_action).is_none());
     }

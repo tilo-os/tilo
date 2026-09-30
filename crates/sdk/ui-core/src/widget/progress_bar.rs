@@ -14,11 +14,9 @@
 //! frame-derived state the widget keeps.
 use crate::time::Instant;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
-use winit::event::WindowEvent;
 
 use crate::permissions::PermissionScope;
 use crate::presence::{PathSegment, PresenceKey};
@@ -187,7 +185,10 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence
+    );
 
     fn build_layout(
         &mut self,
@@ -319,20 +320,6 @@ impl Widget for ProgressBar {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "ProgressBar"
     }
@@ -398,20 +385,6 @@ impl Widget for ProgressBar {
         self.rect == Rect::ZERO
     }
 
-    fn presence_key(&self) -> Option<PresenceKey> {
-        if self.presence_path.is_empty() {
-            None
-        } else {
-            Some(PresenceKey::Widget {
-                path: self.presence_path.clone(),
-            })
-        }
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        self.permission_scope.clone()
-    }
-
     fn draw_with_presence(
         &mut self,
         scene: &mut Scene,
@@ -426,7 +399,7 @@ impl Widget for ProgressBar {
         }
         self.draw(scene, transform, text_renderer, theme, presence);
 
-        if let Some(scope) = self.permission_scope()
+        if let Some(scope) = crate::permissions::capability::permission_scope(self)
             && !permissions.check(&scope)
         {
             let overlay = crate::tokens::colors::PERMISSION_DENIED_SCRIM;
@@ -439,12 +412,30 @@ impl Widget for ProgressBar {
             );
         }
 
-        if let Some(key) = self.presence_key()
+        if let Some(key) = crate::presence::capability::presence_key(self)
             && let Some(peers) = presence.here.get(&key)
             && let Some(user) = peers.first()
         {
             presence.draw_peer_focus(scene, theme, user, self.rect);
         }
+    }
+}
+
+impl crate::presence::capability::PublishesPresence for ProgressBar {
+    fn presence_key(&self) -> Option<PresenceKey> {
+        if self.presence_path.is_empty() {
+            None
+        } else {
+            Some(PresenceKey::Widget {
+                path: self.presence_path.clone(),
+            })
+        }
+    }
+}
+
+impl crate::permissions::capability::PermissionGated for ProgressBar {
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        self.permission_scope.clone()
     }
 }
 

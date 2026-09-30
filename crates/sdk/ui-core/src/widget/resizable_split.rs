@@ -10,7 +10,6 @@
 //! handle their own state — `ResizableSplit` just forwards events to
 //! whichever pane the cursor is over.
 
-use automerge::{AutoCommit, ObjId};
 use std::collections::HashMap;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -171,30 +170,15 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
     /// Not consumed by the divider — forward to whichever pane the cursor is
     /// over (positional events), or to both in turn until one claims
     /// `handled` (non-positional events; same convention `Row`/`Column` use).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Split panes forward the Widget event, scale, modifiers, CRDT path, handled/focus outputs, node, and layout to the appropriate child."
-    )]
-    fn forward_to_children(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let children = taffy.children(node_id).unwrap_or_default();
+    fn forward_to_children(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         let left_node = children.first().copied();
         let right_node = children.get(1).copied();
 
         let cursor_pt = if let WindowEvent::CursorMoved { position, .. } = event {
             Some(Point::new(
-                position.x / scale_factor,
-                position.y / scale_factor,
+                position.x / ctx.scale_factor,
+                position.y / ctx.scale_factor,
             ))
         } else {
             None
@@ -204,32 +188,14 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         if let Some(pt) = cursor_pt {
             if left_rect.contains(pt) {
                 if let Some(n) = left_node {
-                    self.left.handle_event(
-                        event,
-                        scale_factor,
-                        &modifiers,
-                        state,
-                        path,
-                        handled,
-                        focus_target,
-                        n,
-                        taffy,
-                    );
+                    self.left
+                        .handle_event(event, &mut ctx.reborrow(ctx.path, n));
                 }
             } else if right_rect.contains(pt)
                 && let Some(n) = right_node
             {
-                self.right.handle_event(
-                    event,
-                    scale_factor,
-                    &modifiers,
-                    state,
-                    path,
-                    handled,
-                    focus_target,
-                    n,
-                    taffy,
-                );
+                self.right
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, n));
             }
             return;
         }
@@ -237,42 +203,25 @@ impl<L: Widget, R: Widget> ResizableSplit<L, R> {
         // Non-positional events: dispatch to both, stopping at the first
         // to claim `handled`. Same convention `Row` and `Column` use.
         if let Some(n) = left_node {
-            self.left.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
-            if *handled {
+            self.left
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
+            if *ctx.handled {
                 return;
             }
         }
         if let Some(n) = right_node {
-            self.right.handle_event(
-                event,
-                scale_factor,
-                &modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                n,
-                taffy,
-            );
+            self.right
+                .handle_event(event, &mut ctx.reborrow(ctx.path, n));
         }
     }
 }
 
 impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
-        self.left.sync(state, path);
-        self.right.sync(state, path);
-    }
+    crate::provides!(
+        dyn crate::permissions::capability::PermissionGated,
+        dyn crate::presence::capability::PublishesPresence,
+        dyn crate::undo::UndoPoints
+    );
 
     fn build_layout(
         &mut self,
@@ -420,28 +369,17 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         );
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let pt = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let pt = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 // Update hover first so a drag-release-and-stay still
                 // reflects the cursor's resting state under the divider.
                 self.divider_hover = self.divider_rect.contains(pt);
 
                 // Apply the press-time offset so the divider doesn't snap to centre.
                 if self.apply_divider_drag(pt) {
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
             }
@@ -454,7 +392,7 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 // delivers a position on CursorMoved, and the most recent
                 // hover position is already encoded by the divider centre.
                 self.divider_drag = Some(0.0);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             WindowEvent::MouseInput {
@@ -463,23 +401,13 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
                 ..
             } if self.divider_drag.is_some() => {
                 self.divider_drag = None;
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             _ => {}
         }
 
-        self.forward_to_children(
-            event,
-            scale_factor,
-            *modifiers,
-            state,
-            path,
-            handled,
-            focus_target,
-            node_id,
-            taffy,
-        );
+        self.forward_to_children(event, ctx);
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -520,16 +448,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         "ResizableSplit"
     }
 
-    fn needs_commit(&self) -> bool {
-        self.children().iter().any(|c| c.needs_commit())
-    }
-
-    fn on_commit(&mut self) {
-        for child in self.children_mut() {
-            child.on_commit();
-        }
-    }
-
     fn take_structure_dirty(&mut self) -> bool {
         let l = self.left.take_structure_dirty();
         let r = self.right.take_structure_dirty();
@@ -540,14 +458,6 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
         // Without this, straying outside the strip mid-drag routes the
         // release to a sibling and the drag silently ends early.
         self.divider_drag.is_some()
-    }
-
-    fn presence_key(&self) -> Option<PresenceKey> {
-        None
-    }
-
-    fn permission_scope(&self) -> Option<PermissionScope> {
-        None
     }
 
     fn draw_with_presence(
@@ -616,9 +526,39 @@ impl<L: Widget + 'static, R: Widget + 'static> Widget for ResizableSplit<L, R> {
     }
 }
 
+impl<L: Widget + 'static, R: Widget + 'static> crate::undo::UndoPoints for ResizableSplit<L, R> {
+    fn needs_commit(&self) -> bool {
+        self.children()
+            .iter()
+            .any(|c| crate::undo::needs_commit(*c))
+    }
+    fn on_commit(&mut self) {
+        for child in self.children_mut() {
+            crate::undo::on_commit(child);
+        }
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::presence::capability::PublishesPresence
+    for ResizableSplit<L, R>
+{
+    fn presence_key(&self) -> Option<PresenceKey> {
+        None
+    }
+}
+
+impl<L: Widget + 'static, R: Widget + 'static> crate::permissions::capability::PermissionGated
+    for ResizableSplit<L, R>
+{
+    fn permission_scope(&self) -> Option<PermissionScope> {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use automerge::AutoCommit;
 
     /// Bare-minimum `Widget` for use as a `ResizableSplit` child in tests.
     struct TestLeaf {
@@ -632,8 +572,6 @@ mod tests {
     }
 
     impl Widget for TestLeaf {
-        fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
-
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -662,20 +600,6 @@ mod tests {
             _text_renderer: &mut TextRenderer,
             _theme: &Theme,
             _presence: &PresenceCtx,
-        ) {
-        }
-
-        fn handle_event(
-            &mut self,
-            _event: &WindowEvent,
-            _scale_factor: f64,
-            _modifiers: &winit::event::Modifiers,
-            _state: &mut AutoCommit,
-            _path: &ObjId,
-            _handled: &mut bool,
-            _focus_target: &mut Option<NodeId>,
-            _node_id: NodeId,
-            _taffy: &TaffyTree<()>,
         ) {
         }
 
@@ -740,14 +664,16 @@ mod tests {
         let root = automerge::ROOT;
         s.handle_event(
             event,
-            1.0,
-            &winit::event::Modifiers::default(),
-            &mut doc,
-            &root,
-            &mut handled,
-            &mut focus_target,
-            node,
-            &tree,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: &mut doc,
+                path: &root,
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: node,
+                taffy: &tree,
+            },
         );
     }
 

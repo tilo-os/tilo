@@ -113,8 +113,8 @@ same relay over plain HTTPS.
 ## Validation
 
 ```sh
-rcargo test -p tilo-moq --test voice
-rcargo test -p tilo-moq --features relay
+cargo test -p tilo-moq --test voice
+cargo test -p tilo-moq --features relay
 ```
 
 The real network tests use localhost WebTransport and pin the generated leaf

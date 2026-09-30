@@ -234,7 +234,7 @@ pub fn logical_geometry(outputs: &[Output]) -> (u32, u32) {
 fn monitor_keys(outputs: &[Output]) -> Vec<String> {
     let connectors: Vec<String> = outputs
         .iter()
-        .map(|o| crate::compositor::output_globals::advertised_name(o, outputs))
+        .map(|o| crate::compositor::output_heads::advertised_name(o, outputs))
         .collect();
     let monitors: Vec<settings_store::hardware::MonitorIdentity> = outputs
         .iter()
@@ -665,6 +665,30 @@ pub trait Backend {
     /// repeat ticks are compositor-owned timers rather than kernel events.
     fn next_service_deadline(&self) -> Option<std::time::Instant> {
         None
+    }
+
+    /// Whether [`Self::poll_events`] can have news that neither
+    /// [`Self::event_fd`] nor [`Self::next_service_deadline`] announces, so an
+    /// idle compositor must keep polling it. [`HeadlessBackend`] has no input
+    /// and no display: polling it would only wake an idle desktop 20 times a
+    /// second to run the whole pre-paint pump for nothing.
+    fn needs_idle_poll(&self) -> bool {
+        true
+    }
+
+    /// Tell a display-less backend whether anyone is looking at its pixels.
+    /// Returns `true` when that attaches a viewer to a backend that has
+    /// been skipping frames, so the caller must paint a fresh one.
+    ///
+    /// Default: a backend with a display is always watched.
+    fn set_watched(&mut self, _watched: bool) -> bool {
+        false
+    }
+
+    /// Whether anyone may be looking at this backend's pixels, and so whether
+    /// shared legacy windows are worth encoding.
+    fn watched(&self) -> bool {
+        true
     }
 
     fn outputs(&self) -> &[Output];

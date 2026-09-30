@@ -8,9 +8,9 @@
 //! result list, sized to look like a fullscreen-ish dialog when
 //! anchored at a generous offset from the window's top-center.
 
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 
-use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
 use uuid::Uuid;
 use vello::Scene;
@@ -18,9 +18,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::color_compat::ColorCompat;
+use crate::paint::PaintCtx;
 use crate::presence::PresenceCtx;
-use crate::query_text::{QueryComposition, QueryEventChange};
+use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::text_render::TextRenderer;
 use crate::text_selection::Selection;
 use crate::theme::Theme;
@@ -503,12 +503,13 @@ impl PageJumpPalette {
         );
 
         self.query_composition.draw(
-            scene,
-            transform,
-            text_renderer,
-            &self.query,
-            &self.query_selection,
-            "Search notes…",
+            &mut PaintCtx::new(scene, transform, text_renderer, theme),
+            QueryView {
+                text: &self.query,
+                selection: &self.query_selection,
+                placeholder: "Search notes…",
+                show_caret: true,
+            },
             Rect::new(
                 input_rect.x0 + 12.0 * scale,
                 input_rect.y0,
@@ -516,11 +517,11 @@ impl PageJumpPalette {
                 input_rect.y1,
             ),
             &tokens.typography.style(TextRole::Body),
-            tokens.colors.text_primary,
-            tokens.colors.text_dim,
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX].with_alpha_factor(0.3),
-            tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
-            true,
+            QueryInk::accented(
+                tokens.colors.text_primary,
+                tokens.colors.text_dim,
+                tokens.colors.accent[crate::tokens::colors::ACCENT_PRIMARY_IDX],
+            ),
         );
         input_rect
     }
@@ -646,7 +647,6 @@ impl PageJumpPalette {
 }
 
 impl Widget for PageJumpPalette {
-    fn sync(&mut self, _state: &mut AutoCommit, _path: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -665,19 +665,6 @@ impl Widget for PageJumpPalette {
         _text_renderer: &mut TextRenderer,
         _theme: &Theme,
         _presence: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _event: &WindowEvent,
-        _scale_factor: f64,
-        _modifiers: &winit::event::Modifiers,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
-        _handled: &mut bool,
-        _focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {
@@ -755,8 +742,8 @@ impl Widget for PageJumpPalette {
         &mut self,
         target: &str,
         action: &crate::a11y::Action,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !self.visible_flag {
             return false;

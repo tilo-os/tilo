@@ -2,6 +2,7 @@
 //! aggregate, delivery, the browser-facing ingress, the embedded relay, desktop
 //! commands, collaboration and app hosting.
 pub mod canonical_records;
+pub mod channel_steward;
 pub mod collaboration;
 pub mod host;
 pub mod https;
@@ -62,6 +63,9 @@ mod media_control;
 
 #[cfg(feature = "media")]
 mod media_ingress;
+
+#[cfg(feature = "media")]
+mod legacy_windows;
 
 #[cfg(feature = "media")]
 pub mod live_service;

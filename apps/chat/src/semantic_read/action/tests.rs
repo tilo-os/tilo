@@ -119,7 +119,7 @@ fn semantic_read_action_rejects_ambiguous_or_oversized_request_before_projection
 }
 
 #[test]
-fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract_decodes() {
+fn semantic_read_action_encodes_and_json_contract_decodes() {
     let resource = resource();
     assert!(
         resource.actions[0]
@@ -128,14 +128,13 @@ fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract
             .is_empty()
     );
     let address = tilo_actions::ActionAddress::new("chat.channel:one", "read-messages");
-    assert!(matches!(
-        tilo_actions::door::encode_json(
-            std::slice::from_ref(&resource),
-            &address,
-            serde_json::json!({"pageSize":2}).as_object().unwrap()
-        ),
-        Err(tilo_actions::DoorError::Unavailable { .. })
-    ));
+    let encoded = tilo_actions::door::encode_json(
+        std::slice::from_ref(&resource),
+        &address,
+        serde_json::json!({"pageSize":2}).as_object().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(encoded.type_id, OPERATION_TYPE);
     let wire = serde_json::to_value(&resource.actions[0].contract).unwrap();
     assert_eq!(wire["permission"], "read");
     assert_eq!(wire["execution"]["mode"], "immediate");
@@ -160,5 +159,4 @@ fn semantic_read_action_existing_door_refuses_unqualified_read_and_json_contract
             })
             .is_err()
     );
-    // JSON schema validation is inert shape validation, never a private SDK stamp.
 }

@@ -31,7 +31,7 @@ use super::SettingsApp;
 use automerge::AutoCommit;
 use taffy::{NodeId, TaffyTree};
 use ui::text_render::TextRenderer;
-use ui::widget::Widget;
+use ui::widget::{ResourceOperation, Widget};
 use vello::kurbo::Point;
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NativeKeyCode, PhysicalKey, SmolStr};
@@ -225,19 +225,21 @@ impl Harness {
             let mut handled = false;
             self.app.handle_event(
                 ev,
-                1.0,
-                &mods,
-                &mut self.doc,
-                &root(),
-                &mut handled,
-                &mut focus_target,
-                self.app_node,
-                &self.taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &mods,
+                    state: &mut self.doc,
+                    path: &root(),
+                    handled: &mut handled,
+                    focus_target: &mut focus_target,
+                    node_id: self.app_node,
+                    taffy: &self.taffy,
+                },
             );
             // Match the live host's action-bound control dispatch boundary,
             // also exercised by tests/control_interaction.rs. Back is a View
             // action; emitting its intent alone does not activate it.
-            while let Some(intent) = self.app.take_control_invocation() {
+            while let Some(intent) = ui::widget::controls::take_control_invocation(&mut self.app) {
                 let control = intent
                     .address
                     .resource
@@ -246,12 +248,14 @@ impl Harness {
                 let payload = serde_json::to_vec(control).unwrap();
                 let started = self
                     .app
-                    .start_resource_operation(
-                        tilo_actions::InvocationId::new(),
-                        tilo_actions::OperationKind::View,
-                        "tilo.ui.control.invoke",
-                        &payload,
-                        &self.doc,
+                    .start_operation(
+                        &ResourceOperation::local(
+                            tilo_actions::InvocationId::new(),
+                            tilo_actions::OperationKind::View,
+                            "tilo.ui.control.invoke",
+                            &payload,
+                        ),
+                        &mut self.doc,
                         &root(),
                     )
                     .unwrap();
@@ -273,14 +277,16 @@ impl Harness {
         let mut focus_target = None;
         self.app.handle_event(
             &ev,
-            1.0,
-            &mods,
-            &mut self.doc,
-            &root(),
-            &mut handled,
-            &mut focus_target,
-            self.app_node,
-            &self.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &mods,
+                state: &mut self.doc,
+                path: &root(),
+                handled: &mut handled,
+                focus_target: &mut focus_target,
+                node_id: self.app_node,
+                taffy: &self.taffy,
+            },
         );
         if let Some(id) = focus_target {
             self.set_focused(Some(id));
@@ -304,7 +310,7 @@ impl Harness {
         let prev_state = self
             .focused
             .and_then(|id| self.node_map.get(&id).copied())
-            .and_then(|w| unsafe { (*w).get_state() });
+            .and_then(|w| unsafe { ui::undo::get_state(&(*w)) });
         // The old node ids are about to be invalidated (fresh taffy tree).
         self.focused = None;
         self.layout();
@@ -315,7 +321,7 @@ impl Harness {
             if let Some(s) = &prev_state
                 && let Some(&w) = self.node_map.get(&id)
             {
-                unsafe { (*w).set_state(s) };
+                unsafe { ui::undo::set_state(&mut (*w), s) };
             }
         }
     }
@@ -395,14 +401,16 @@ fn native_observer_tracks_search_without_committing_pending_changes() {
         let mut handled = false;
         h.app.handle_event(
             &ev,
-            1.0,
-            &Modifiers::default(),
-            &mut h.doc,
-            &root(),
-            &mut handled,
-            &mut None,
-            h.app_node,
-            &h.taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &Modifiers::default(),
+                state: &mut h.doc,
+                path: &root(),
+                handled: &mut handled,
+                focus_target: &mut None,
+                node_id: h.app_node,
+                taffy: &h.taffy,
+            },
         );
         let immediate = h.app.native_input_snapshot(&h.doc, &root()).unwrap();
         assert_eq!(immediate["local_search_text"], "");
@@ -497,14 +505,16 @@ fn narrow_search_retains_focus_through_filter_and_backspace() {
     }
     h.app.handle_event(
         &ev,
-        1.0,
-        &Modifiers::default(),
-        &mut h.doc,
-        &root(),
-        &mut false,
-        &mut None,
-        h.app_node,
-        &h.taffy,
+        &mut ui::widget::EventCtx {
+            scale_factor: 1.0,
+            modifiers: &Modifiers::default(),
+            state: &mut h.doc,
+            path: &root(),
+            handled: &mut false,
+            focus_target: &mut None,
+            node_id: h.app_node,
+            taffy: &h.taffy,
+        },
     );
     h.app.sync(&mut h.doc, &root());
     if h.app.take_structure_dirty() {
@@ -552,12 +562,12 @@ fn query_rebuild_keeps_active_content_local_text_and_caret_state() {
     h.click(h.search_field_rect().center());
     let content = find_test_widget(&h.app, "content-retention-probe").unwrap();
     let identity = std::ptr::from_ref(content).cast::<()>() as usize;
-    let state = content.get_state().unwrap();
+    let state = ui::undo::get_state(content).unwrap();
     let text = local.with(Clone::clone);
     h.type_char("z");
     let retained = find_test_widget(&h.app, "content-retention-probe").unwrap();
     assert_eq!(std::ptr::from_ref(retained).cast::<()>() as usize, identity);
-    assert_eq!(retained.get_state(), Some(state));
+    assert_eq!(ui::undo::get_state(retained), Some(state));
     assert_eq!(local.with(Clone::clone), text);
     h.app.select(super::Category::About);
     h.rebuild();

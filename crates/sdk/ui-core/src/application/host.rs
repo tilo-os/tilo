@@ -2,10 +2,10 @@
 //! Apps supply their definition and migration; this owner supplies storage,
 //! identity, authority and local presentation. No ambient profile discovery.
 use super::{
-    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext, InstanceId,
-    InstanceViewStore, LaunchError, LaunchTarget, PermissionContext, PreparedComponentInputs,
-    RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput, SavedInstanceView,
-    UserId, View, validate_identity,
+    ApplicationDefinition, ApplicationLocalView, ComponentRunnerInputs, HostContext,
+    HostContextInputs, InstanceId, InstanceViewStore, LaunchError, LaunchTarget, PermissionContext,
+    PreparedComponentInputs, RecordCheckout, RecordId, RecordOpenError, RecordStore, RestoreInput,
+    SavedInstanceView, UserId, View, validate_identity,
 };
 use crate::record::RecordOwners;
 use std::cell::RefCell;
@@ -367,7 +367,7 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
                 .write_all(generated.as_bytes())
                 .and_then(|()| file.write_all(b"\n"))
                 .and_then(|()| file.sync_all())
-                .and_then(|()| atomic_file::sync_directory(profile_root))
+                .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root))
             {
                 drop(file);
                 let _ = std::fs::remove_file(&path);
@@ -541,7 +541,7 @@ impl ApplicationHost {
             || saved.as_ref().is_some_and(|saved| {
                 saved.app_id != package_id
                     || saved.record_id != checkout.id.as_str()
-                    || saved.record_kind != checkout.kind.as_str()
+                    || !checkout.kind.names(&saved.record_kind)
             })
         {
             return Err(LaunchError::BindingMismatch);
@@ -565,7 +565,7 @@ impl ApplicationHost {
         let package_id = self.package_id.as_deref().unwrap_or(definition.app_id);
         let id = RecordId::parse(&saved.record_id).ok_or(LaunchError::BindingMismatch)?;
         if saved.app_id != package_id
-            || saved.record_kind != definition.record_kind.as_str()
+            || !definition.record_kind.names(&saved.record_kind)
             || id.is_package_primary()
         {
             return Err(LaunchError::BindingMismatch);
@@ -597,6 +597,31 @@ impl ApplicationHost {
         /// retires one, so this only bounds a pathological history.
         const MAX_SUCCESSORS: usize = 64;
         let records = self.records_for(definition)?;
+        if definition.keeps_room_record() {
+            let target = definition.unsaved_target(&records);
+            let context = HostContext::prepare(
+                definition,
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
+                &target,
+            )?;
+            let restore = initial_view.map_or(RestoreInput::None, |application| {
+                RestoreInput::Local(context.envelope(View::default(), Some(application)))
+            });
+            return Ok(PreparedComponentInputs {
+                context,
+                target,
+                restore,
+                runner_inputs,
+            });
+        }
         let mut checkout = self
             .saved_record(definition, instance_id)?
             .unwrap_or(default);
@@ -625,25 +650,29 @@ impl ApplicationHost {
         let context = if matches!(target, LaunchTarget::New) {
             HostContext::prepare_new_record(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 checkout.id,
             )?
         } else {
             HostContext::prepare(
                 definition,
-                records,
-                self.views.clone(),
-                self.device_id.clone(),
-                instance_id,
-                self.permissions.clone(),
-                self.author.clone(),
-                self.action_context.clone(),
+                HostContextInputs {
+                    records,
+                    views: self.views.clone(),
+                    device_id: self.device_id.clone(),
+                    instance_id,
+                    permissions: self.permissions.clone(),
+                    author: self.author.clone(),
+                    action_context: self.action_context.clone(),
+                },
                 &target,
             )?
         };

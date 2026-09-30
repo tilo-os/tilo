@@ -17,8 +17,8 @@ fn widget_trait_defaults_presence_draw_and_token_radius() {
     // Case `widget_defaults_for_collab_methods`.
     {
         let b = Button::new("b", "label", None);
-        assert!(b.presence_key().is_none());
-        assert!(b.permission_scope().is_none());
+        assert!(tilo_ui::presence::capability::presence_key(&b).is_none());
+        assert!(tilo_ui::permissions::capability::permission_scope(&b).is_none());
         assert!(!b.accepts_drop(&DragPayload::Text { value: "x".into() }));
         assert!(!b.wants_pointer_capture());
     }

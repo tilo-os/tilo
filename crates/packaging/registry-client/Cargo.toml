@@ -1,0 +1,31 @@
+[package]
+name = "registry-client"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+license.workspace = true
+
+# A publisher's side of the registry: keys, signed entries and the HTTP API.
+# Deliberately no iroh: `tilo-app` links it, and outside developers build that.
+
+[dependencies]
+tilo-clock = { path = "../../platform/tilo-clock" }
+tilo-app-package = { path = "../tilo-app-package" }
+registry-types = { path = "../registry-types" }
+tilo-net = { path = "../../platform/tilo-net", features = ["blocking"] }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
+reqwest = { workspace = true, features = ["blocking", "json"] }
+anyhow.workspace = true
+blake3.workspace = true
+ed25519-dalek = { workspace = true, features = ["rand_core"] }
+getrandom.workspace = true
+hex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+tempfile.workspace = true
+
+[lints]
+workspace = true

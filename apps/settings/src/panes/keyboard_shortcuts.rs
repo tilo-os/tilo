@@ -8,17 +8,18 @@
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_bool_action};
 use crate::i18n::t;
 use crate::widgets::{card, rows, setting_row};
-use automerge::{AutoCommit, ObjId, transaction::Transactable};
+use automerge::{AutoCommit, transaction::Transactable};
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig};
 use settings_store::keyboard_shortcuts::{ShortcutCategory, ShortcutEntry, catalogue};
 use std::collections::HashMap;
 use taffy::{NodeId, TaffyTree};
 use ui::doc::{read_bool, read_str_or_text};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{ShortcutRecorder, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 const VIM_MODE: &str = "shortcuts.vim_mode";
 
@@ -196,7 +197,10 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for ShortcutPane {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(dyn ui::undo::CommittedActions, dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         if self.needs_seed {
             for action in rebindable() {
                 let key = durable_key(action);
@@ -335,28 +339,15 @@ impl Widget for ShortcutPane {
             c.draw(scene, transform, text, theme, presence);
         }
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event, scale, modifiers, state, path, handled, focus, cn, taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.composed
@@ -372,12 +363,21 @@ impl Widget for ShortcutPane {
             .into_iter()
             .collect()
     }
+    fn name(&self) -> &'static str {
+        "ShortcutPane"
+    }
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for ShortcutPane {
     fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
         let pending = std::mem::take(&mut self.commit_context_pending)
             || self
                 .composed
                 .as_ref()
-                .is_some_and(|content| content.needs_commit());
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
         crate::panes::preference_commit_context(
             pending,
             "keyboard-shortcuts",
@@ -385,14 +385,11 @@ impl Widget for ShortcutPane {
             "Change keyboard shortcuts",
         )
     }
+}
+
+impl ui::undo::CommittedActions for ShortcutPane {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
         self.actions.take_committed()
-    }
-    fn name(&self) -> &'static str {
-        "ShortcutPane"
-    }
-    fn get_rect(&self) -> Rect {
-        self.rect
     }
 }
 

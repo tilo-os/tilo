@@ -1,5 +1,4 @@
 use super::*;
-use automerge::{AutoCommit, ObjId};
 use vello::kurbo::Rect;
 
 use std::cell::RefCell;
@@ -38,14 +37,8 @@ impl crate::widget::FullscreenProvider for FsRoot {
 }
 
 impl Widget for FsRoot {
-    fn fullscreen_provider(&self) -> Option<&dyn crate::widget::FullscreenProvider> {
-        Some(self)
-    }
+    crate::provides!(dyn crate::widget::FullscreenProvider);
 
-    fn fullscreen_provider_mut(&mut self) -> Option<&mut dyn crate::widget::FullscreenProvider> {
-        Some(self)
-    }
-    fn sync(&mut self, _s: &mut AutoCommit, _p: &ObjId) {}
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -64,19 +57,6 @@ impl Widget for FsRoot {
         _tr: &mut TextRenderer,
         _theme: &Theme,
         _p: &PresenceCtx,
-    ) {
-    }
-    fn handle_event(
-        &mut self,
-        _e: &WindowEvent,
-        _sf: f64,
-        _m: &winit::event::Modifiers,
-        _s: &mut AutoCommit,
-        _r: &ObjId,
-        _h: &mut bool,
-        _ft: &mut Option<NodeId>,
-        _n: NodeId,
-        _t: &TaffyTree<()>,
     ) {
     }
     fn name(&self) -> &'static str {

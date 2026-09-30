@@ -2,9 +2,11 @@
 name = "bounded-command"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
 description = "Deadline and byte-bounded subprocess capture for Tilo trust boundaries"
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 thiserror.workspace = true

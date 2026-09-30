@@ -617,7 +617,7 @@ mod tests {
             app.navigate(sub.clone());
             assert_eq!(app.current_path(), sub);
 
-            let providers = app.search_providers();
+            let providers = ui::search::capability::search_providers(&app);
             assert!(
                 !providers.is_empty(),
                 "the file explorer publishes a search provider"
@@ -628,9 +628,9 @@ mod tests {
                 .find(|r| r.action_address() == Some(place_open_address(&home)))
                 .expect("the Home favourite is findable through the real hook");
 
-            let doc = AutoCommit::new();
+            let mut doc = AutoCommit::new();
             let address = hit.action_address().expect("canonical action address");
-            let resources = app.resources(&doc);
+            let resources = ui::resources::resources(&app, &doc);
             let spec = ui::tilo_actions::door::resolve(&resources, &address)
                 .expect("search address is exported");
             assert_eq!(spec.kind, ui::tilo_actions::OperationKind::View);
@@ -639,16 +639,20 @@ mod tests {
             let encoded =
                 ui::tilo_actions::door::encode_json(&resources, &address, &serde_json::Map::new())
                     .expect("search address is exported");
-            assert!(
-                app.invoke_resource_operation(
-                    kind,
-                    &encoded.type_id,
-                    &encoded.payload,
-                    &doc,
+            assert!(matches!(
+                app.start_operation(
+                    &ui::widget::ResourceOperation::local(
+                        ui::tilo_actions::InvocationId::new(),
+                        kind,
+                        &encoded.type_id,
+                        &encoded.payload
+                    ),
+                    &mut doc,
                     &ROOT
                 )
-                .unwrap()
-            );
+                .unwrap(),
+                Some(ui::widget::ResourceOperationStart::Completed(_))
+            ));
             assert_eq!(
                 app.current_path(),
                 home,

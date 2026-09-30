@@ -37,8 +37,12 @@ mod bluetooth_pairing;
 mod capability_enforcement;
 #[path = "capture_protection.rs"]
 mod capture_protection;
+#[path = "client_exit_closes_its_tabs.rs"]
+mod client_exit_closes_its_tabs;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
+#[path = "closing_window_frames.rs"]
+mod closing_window_frames;
 #[path = "collab_policy_state.rs"]
 mod collab_policy_state;
 #[path = "color_management_protocol.rs"]
@@ -101,6 +105,8 @@ mod hardware_encode;
 mod hdr_capability_probe;
 #[path = "hdr_decode_pipeline.rs"]
 mod hdr_decode_pipeline;
+#[path = "hdr_layer_composite.rs"]
+mod hdr_layer_composite;
 #[path = "hdr_output_encode_shader.rs"]
 mod hdr_output_encode_shader;
 #[path = "hdr_output_pipeline.rs"]
@@ -113,6 +119,8 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "idle_settles.rs"]
+mod idle_settles;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
@@ -189,6 +197,10 @@ mod shell_narration;
 mod shell_state_test;
 #[path = "sidebar_wheel_disc_snapshot.rs"]
 mod sidebar_wheel_disc_snapshot;
+#[path = "speaker_calibration_fabric.rs"]
+mod speaker_calibration_fabric;
+#[path = "speaker_clock_policy.rs"]
+mod speaker_clock_policy;
 #[path = "state_file_format.rs"]
 mod state_file_format;
 #[path = "strip_navigation.rs"]

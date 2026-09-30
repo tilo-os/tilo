@@ -19,7 +19,10 @@ struct LocalEffectProbe {
 }
 
 impl Widget for LocalEffectProbe {
-    fn sync(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) {}
+    crate::provides!(
+        dyn crate::widget::Continuable,
+        dyn crate::resources::PublishesResources
+    );
 
     fn build_layout(
         &mut self,
@@ -45,54 +48,12 @@ impl Widget for LocalEffectProbe {
     ) {
     }
 
-    #[allow(clippy::too_many_arguments, reason = "Widget callback signature")]
-    fn handle_event(
-        &mut self,
-        _: &WindowEvent,
-        _: f64,
-        _: &winit::event::Modifiers,
-        _: &mut automerge::AutoCommit,
-        _: &automerge::ObjId,
-        _: &mut bool,
-        _: &mut Option<NodeId>,
-        _: NodeId,
-        _: &TaffyTree<()>,
-    ) {
-    }
-
     fn name(&self) -> &'static str {
         "local-effect-probe"
     }
 
     fn get_rect(&self) -> KurboRect {
         KurboRect::ZERO
-    }
-
-    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
-        vec![
-            tilo_actions::Resource::new("private-tab", "test.tab", "Private tab")
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "navigate",
-                        "Navigate",
-                        tilo_actions::OperationKind::Effect,
-                        EFFECT_TYPE,
-                        &(),
-                    )
-                    .unwrap(),
-                )
-                .with_action(
-                    tilo_actions::ActionSpec::operation(
-                        "inspect",
-                        "Inspect private tab",
-                        tilo_actions::OperationKind::View,
-                        EFFECT_TYPE,
-                        &(),
-                    )
-                    .unwrap()
-                    .with_contract(tilo_actions::ActionContract::view()),
-                ),
-        ]
     }
 
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -119,13 +80,34 @@ impl Widget for LocalEffectProbe {
             tilo_actions::ActionOutput::default(),
         )))
     }
+}
 
-    fn continuable(&self) -> Option<&dyn crate::widget::Continuable> {
-        Some(self)
-    }
-
-    fn continuable_mut(&mut self) -> Option<&mut dyn crate::widget::Continuable> {
-        Some(self)
+impl crate::resources::PublishesResources for LocalEffectProbe {
+    fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::Resource> {
+        vec![
+            tilo_actions::Resource::new("private-tab", "test.tab", "Private tab")
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "navigate",
+                        "Navigate",
+                        tilo_actions::OperationKind::Effect,
+                        EFFECT_TYPE,
+                        &(),
+                    )
+                    .unwrap(),
+                )
+                .with_action(
+                    tilo_actions::ActionSpec::operation(
+                        "inspect",
+                        "Inspect private tab",
+                        tilo_actions::OperationKind::View,
+                        EFFECT_TYPE,
+                        &(),
+                    )
+                    .unwrap()
+                    .with_contract(tilo_actions::ActionContract::view()),
+                ),
+        ]
     }
 }
 

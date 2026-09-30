@@ -37,10 +37,9 @@ const ROW_TEXT_INSET: f64 = 8.0;
 pub(crate) const LAUNCHER_PLACEHOLDER: &str = "Search containers…";
 const LAUNCHER_PLACEHOLDER_SHORT: &str = "Search";
 
-/// Grouped inputs to a single container row's paint (position, the
-/// container itself, the shared column x-positions, and whether the
-/// compact/detail-open layout applies), kept together so the row-drawing
-/// methods' argument counts stay within the lint limit.
+/// One container row to paint: its position, the container itself, the
+/// shared column x-positions, and whether the compact/detail-open layout
+/// applies.
 #[derive(Clone, Copy)]
 struct ContainerRow<'a> {
     row: Rect,
@@ -177,10 +176,6 @@ impl ContainersApp {
     }
 
     /// The section list (Containers / Images / Volumes / Distrobox).
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "rail painting combines paint context and the rail rect with view state and the expanded/compact layout flags"
-    )]
     fn draw_rail_sections(
         &mut self,
         scene: &mut Scene,
@@ -639,40 +634,20 @@ impl ContainersApp {
         };
         let list = Rect::new(content.x0, body_y, content.x0 + list_w, content.y1);
 
-        let query = view.search.clone();
-        let rows: Vec<Container> = self
-            .visible_containers(&query)
-            .into_iter()
-            .cloned()
-            .collect();
-
         if !single_pane_detail {
             let list_compact = detail_open || self.uses_compact_layout(theme);
             let cols = Self::container_columns(list, list_compact);
             let colhead_bottom =
                 Self::draw_container_list_header(scene, tr, theme, list, list_compact, &cols);
             let rows_area = Rect::new(list.x0, colhead_bottom, list.x1, list.y1);
-            self.draw_container_rows(
-                scene,
-                tr,
-                theme,
-                rows_area,
-                &rows,
-                &cols,
-                list_compact,
-                view,
-            );
+            self.draw_container_rows(scene, tr, theme, rows_area, list_compact, view);
         }
-        self.draw_container_detail_pane(
-            scene,
-            tr,
-            theme,
-            content,
-            list,
-            body_y,
-            single_pane_detail,
-            view,
-        );
+        let detail = if single_pane_detail {
+            Rect::new(content.x0, body_y, content.x1, content.y1)
+        } else {
+            Rect::new(list.x1, body_y, content.x1, content.y1)
+        };
+        self.draw_container_detail_pane(scene, tr, theme, detail, view);
     }
 
     /// The list column header (labels + divider) above the scrollable rows.
@@ -740,36 +715,37 @@ impl ContainersApp {
         colhead.y1
     }
 
-    /// The scrollable container rows, plus the empty-state fallbacks and the
-    /// list scrollbar.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Container rows share render context, row bounds and column positions, container data, and selection/detail state."
-    )]
+    /// The scrollable rows of the containers matching the search, laid out
+    /// in `rows_area`'s columns, plus the empty-state fallbacks and the list
+    /// scrollbar.
     fn draw_container_rows(
         &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
         rows_area: Rect,
-        rows: &[Container],
-        cols: &[f64; 5],
-        detail_open: bool,
+        compact: bool,
         view: &ViewState,
     ) {
+        let rows: Vec<Container> = self
+            .visible_containers(&view.search)
+            .into_iter()
+            .cloned()
+            .collect();
+        let cols = Self::container_columns(rows_area, compact);
         let row_height = Self::row_height(theme);
         let content_h = rows.len() as f64 * row_height;
         let max_scroll = (content_h - rows_area.height()).max(0.0);
         self.clamp_list_scroll(max_scroll);
         let mut y = rows_area.y0 - self.list_scroll;
-        for container in rows {
+        for container in &rows {
             let row = Rect::new(rows_area.x0, y, rows_area.x1, y + row_height);
             if row.y1 >= rows_area.y0 && row.y0 <= rows_area.y1 {
                 let info = ContainerRow {
                     row,
                     container,
-                    cols,
-                    compact: detail_open,
+                    cols: &cols,
+                    compact,
                 };
                 self.draw_container_row(scene, tr, theme, info, view);
             }
@@ -809,29 +785,17 @@ impl ContainersApp {
         Self::draw_scrollbar(scene, theme, rows_area, self.list_scroll, content_h);
     }
 
-    /// The selected container's detail pane, if any (or the "no longer
-    /// exists" fallback when the selection went stale).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Detail painting needs render context, list/content bounds, the body origin, pane mode, and selected-container state."
-    )]
+    /// The selected container's detail pane in `detail`, if any (or the "no
+    /// longer exists" fallback when the selection went stale).
     fn draw_container_detail_pane(
         &mut self,
         scene: &mut Scene,
         tr: &mut TextRenderer,
         theme: &Theme,
-        content: Rect,
-        list: Rect,
-        body_y: f64,
-        single_pane_detail: bool,
+        detail: Rect,
         view: &ViewState,
     ) {
         if let Some(sel) = &view.selected {
-            let detail = if single_pane_detail {
-                Rect::new(content.x0, body_y, content.x1, content.y1)
-            } else {
-                Rect::new(list.x1, body_y, content.x1, content.y1)
-            };
             if let Some(container) = self.engine.find(sel).cloned() {
                 self.draw_detail(scene, tr, theme, detail, &container, view);
             } else {
@@ -3491,20 +3455,11 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "forwards the complete Widget event context to modal-owned shared inputs"
-    )]
     pub(crate) fn on_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         if key.state != ElementState::Pressed {
             return;
@@ -3519,27 +3474,18 @@ impl ContainersApp {
                 self.combo.close();
             } else if self.create_open {
                 self.create_open = false;
-            } else if ViewDoc::selected(doc).is_some() {
-                ViewDoc::set_selected(doc, None);
+            } else if ViewDoc::selected(ctx.state).is_some() {
+                ViewDoc::set_selected(ctx.state, None);
             }
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
         // Create modal owns the keyboard while open.
         if self.create_open {
-            self.create_modal_key(
-                doc,
-                event,
-                key,
-                scale_factor,
-                modifiers,
-                path,
-                focus_target,
-                handled,
-            );
-            self.refresh_view(doc);
+            self.create_modal_key(event, ctx, key);
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -3548,55 +3494,46 @@ impl ContainersApp {
             let s = ch.to_lowercase();
             match s.as_str() {
                 "1" => {
-                    ViewDoc::set_section(doc, Section::Containers);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Containers);
+                    *ctx.handled = true;
                 }
                 "2" => {
-                    ViewDoc::set_section(doc, Section::Images);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Images);
+                    *ctx.handled = true;
                 }
                 "3" => {
-                    ViewDoc::set_section(doc, Section::Volumes);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Volumes);
+                    *ctx.handled = true;
                 }
                 "4" => {
-                    ViewDoc::set_section(doc, Section::Distrobox);
-                    *handled = true;
+                    ViewDoc::set_section(ctx.state, Section::Distrobox);
+                    *ctx.handled = true;
                 }
                 "/" => {
                     self.open_container_palette();
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "n" => {
                     self.create_open = true;
                     self.create_focus = CreateField::Image;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 "b" => {
                     self.toggle_sidebar();
                     self.structure_dirty = true;
-                    *handled = true;
+                    *ctx.handled = true;
                 }
                 _ => {}
             }
         }
-        self.refresh_view(doc);
+        self.refresh_view(ctx.state);
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "create-modal policy wraps the embedded TextInput Widget event path"
-    )]
     fn create_modal_key(
         &mut self,
-        doc: &mut AutoCommit,
         event: &winit::event::WindowEvent,
+        ctx: &mut ui::widget::EventCtx<'_>,
         key: &KeyEvent,
-        scale_factor: f64,
-        modifiers: winit::event::Modifiers,
-        path: &automerge::ObjId,
-        focus_target: &mut Option<taffy::NodeId>,
-        handled: &mut bool,
     ) {
         let field = self.create_focus;
         let on_image = field == CreateField::Image;
@@ -3605,32 +3542,32 @@ impl ContainersApp {
         if on_image && self.combo.open {
             match &key.logical_key {
                 Key::Named(NamedKey::ArrowDown) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::ArrowUp) => {
-                    let len = self.filtered_image_len(doc);
+                    let len = self.filtered_image_len(ctx.state);
                     self.combo.move_highlight(-1, len);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 Key::Named(NamedKey::Enter) => {
                     // Pick the highlighted suggestion, else submit.
-                    let typed = ViewDoc::create_field(doc, CreateField::Image);
+                    let typed = ViewDoc::create_field(ctx.state, CreateField::Image);
                     let options = self.engine.image_references();
                     let filtered = combobox::filter_options(&options, &typed);
                     if let Some(reference) = filtered
                         .get(self.combo.highlight)
                         .and_then(|&idx| options.get(idx))
                     {
-                        ViewDoc::set_create_field(doc, CreateField::Image, reference);
+                        ViewDoc::set_create_field(ctx.state, CreateField::Image, reference);
                         self.combo.close();
                     } else {
-                        self.submit_create(doc);
+                        self.submit_create(ctx.state);
                     }
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 _ => {}
@@ -3643,25 +3580,25 @@ impl ContainersApp {
                     self.focus_create_field(field);
                 }
                 self.combo.close();
-                *handled = true;
+                *ctx.handled = true;
             }
             Key::Named(NamedKey::Enter) => {
-                self.submit_create(doc);
-                *handled = true;
+                self.submit_create(ctx.state);
+                *ctx.handled = true;
             }
             _ => {
                 self.focus_create_field(field);
                 self.route_create_input(
                     field,
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 self.after_create_input(field);
-                *handled = true;
+                *ctx.handled = true;
             }
         }
     }

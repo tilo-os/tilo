@@ -29,6 +29,7 @@
 //! [`TextInput`]: crate::widget::TextInput
 
 use crate::time::{Duration, Instant};
+use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::Arc;
@@ -39,7 +40,7 @@ use taffy::{AvailableSpace, Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Fill;
-use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
@@ -530,17 +531,14 @@ impl RichTextEditor {
             underlines.push((pr.start, pr.end));
         }
         let browser_emoji = tr.browser_color_emoji_installed();
-        let layout = RichTextLayout::shape_browser(
+        let layout = RichTextLayout::shape_styled_browser(
             &mut tr.font_system,
             &spans,
-            base_bold,
-            size,
-            width,
+            &RichTextLayout::block_style(base_bold, size, FontFamily::Sans, 1.0),
+            Some(width),
             TextAlign::Left,
-            FontFamily::Sans,
             underlines,
             strikes,
-            1.0,
             browser_emoji,
         );
         tr.note_browser_rich_layout(&layout);
@@ -848,7 +846,10 @@ fn char_to_byte(text: &str, char_idx: usize) -> usize {
 }
 
 impl Widget for RichTextEditor {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    crate::provides!(dyn crate::undo::UndoPoints);
+
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, path) = crate::doc::document(state, path);
         let Some(field) = Self::ensure_map(state, path, &self.key) else {
             return;
         };
@@ -1016,31 +1017,21 @@ impl Widget for RichTextEditor {
         self.redraw = false;
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
-        let ctrl = modifiers.state().control_key() || modifiers.state().super_key();
-        let shift = modifiers.state().shift_key();
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        let ctrl = ctx.modifiers.state().control_key() || ctx.modifiers.state().super_key();
+        let shift = ctx.modifiers.state().shift_key();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let point = Point::new(position.x / scale_factor, position.y / scale_factor);
-                self.handle_cursor_move(point, handled);
+                let point =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
+                self.handle_cursor_move(point, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
                 button: MouseButton::Left,
                 ..
             } => {
-                self.handle_primary_press(shift, node_id, focus_target, handled);
+                self.handle_primary_press(shift, ctx.node_id, ctx.focus_target, ctx.handled);
             }
             WindowEvent::MouseInput {
                 state: ElementState::Released,
@@ -1048,7 +1039,7 @@ impl Widget for RichTextEditor {
                 ..
             } => {
                 if self.drag_select.release() {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::Ime(Ime::Commit(s)) => {
@@ -1057,8 +1048,8 @@ impl Widget for RichTextEditor {
                 }
                 self.preedit.clear();
                 self.preedit_cursor = None;
-                self.insert_str(state, s);
-                *handled = true;
+                self.insert_str(ctx.state, s);
+                *ctx.handled = true;
             }
             WindowEvent::Ime(Ime::Preedit(s, cursor)) => {
                 if !self.focused {
@@ -1068,7 +1059,7 @@ impl Widget for RichTextEditor {
                 self.preedit_cursor = *cursor;
                 self.redraw = true;
                 self.layout_dirty = true;
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::KeyboardInput {
                 event:
@@ -1083,7 +1074,14 @@ impl Widget for RichTextEditor {
                 if !self.focused {
                     return;
                 }
-                self.handle_key_press(logical_key, text.as_deref(), ctrl, shift, state, handled);
+                self.handle_key_press(
+                    logical_key,
+                    text.as_deref(),
+                    ctrl,
+                    shift,
+                    ctx.state,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -1145,6 +1143,61 @@ impl Widget for RichTextEditor {
         self.layout_dirty
     }
 
+    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+        use crate::a11y::{AccessNode, AccessState, Role};
+        Some(
+            AccessNode::new(Role::TextInput)
+                .with_optional_value(Some(self.text.clone()))
+                .with_text_selection(self.core.selection().anchor, self.core.selection().cursor)
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.focused,
+                    ..Default::default()
+                }),
+        )
+    }
+
+    fn perform_action(
+        &mut self,
+        action: &crate::a11y::Action,
+        state: &mut AppModel,
+        path: &ModelPath,
+    ) -> bool {
+        use crate::a11y::Action;
+        let (state, _) = crate::doc::document(state, path);
+
+        match action {
+            Action::SetValue(value) => {
+                let cleaned = value
+                    .chars()
+                    .filter_map(|c| match c {
+                        '\n' | '\r' => Some(' '),
+                        c if c.is_control() => None,
+                        c => Some(c),
+                    })
+                    .collect::<String>();
+                self.core.set_selection(0, self.text.len());
+                let edit = self.core.insert(&cleaned);
+                self.apply_edit(state, &edit);
+                true
+            }
+            Action::SetSelection { anchor, focus } => {
+                let byte_at = |character_index: usize| {
+                    crate::text_break::grapheme_indices(&self.text)
+                        .nth(character_index)
+                        .map_or(self.text.len(), |(byte, _)| byte)
+                };
+                self.core.set_selection(byte_at(*anchor), byte_at(*focus));
+                self.goal_x = None;
+                self.redraw = true;
+                true
+            }
+            _ => false,
+        }
+    }
+}
+
+impl crate::undo::UndoPoints for RichTextEditor {
     fn needs_commit(&self) -> bool {
         self.last_edit_time
             .is_some_and(|t| t.elapsed() >= Duration::from_secs(1))
@@ -1178,58 +1231,6 @@ impl Widget for RichTextEditor {
                 .place_position(TextPosition::with_affinity(c, affinity), true);
         }
     }
-
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
-        Some(
-            AccessNode::new(Role::TextInput)
-                .with_optional_value(Some(self.text.clone()))
-                .with_text_selection(self.core.selection().anchor, self.core.selection().cursor)
-                .with_state(AccessState {
-                    focusable: true,
-                    focused: self.focused,
-                    ..Default::default()
-                }),
-        )
-    }
-
-    fn perform_action(
-        &mut self,
-        action: &crate::a11y::Action,
-        state: &mut AutoCommit,
-        _path: &ObjId,
-    ) -> bool {
-        use crate::a11y::Action;
-
-        match action {
-            Action::SetValue(value) => {
-                let cleaned = value
-                    .chars()
-                    .filter_map(|c| match c {
-                        '\n' | '\r' => Some(' '),
-                        c if c.is_control() => None,
-                        c => Some(c),
-                    })
-                    .collect::<String>();
-                self.core.set_selection(0, self.text.len());
-                let edit = self.core.insert(&cleaned);
-                self.apply_edit(state, &edit);
-                true
-            }
-            Action::SetSelection { anchor, focus } => {
-                let byte_at = |character_index: usize| {
-                    crate::text_break::grapheme_indices(&self.text)
-                        .nth(character_index)
-                        .map_or(self.text.len(), |(byte, _)| byte)
-                };
-                self.core.set_selection(byte_at(*anchor), byte_at(*focus));
-                self.goal_x = None;
-                self.redraw = true;
-                true
-            }
-            _ => false,
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1237,6 +1238,7 @@ mod tests {
     use super::*;
     use crate::State;
     use vello::kurbo::Affine;
+    use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, SmolStr};
 
     fn setup() -> (State, RichTextEditor) {
@@ -1318,14 +1320,16 @@ mod tests {
         let mut ft = None;
         ed.handle_event(
             ev,
-            1.0,
-            &m,
-            &mut state.doc,
-            &state.root,
-            &mut handled,
-            &mut ft,
-            node,
-            &taffy,
+            &mut crate::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &m,
+                state: &mut state.doc,
+                path: &state.root,
+                handled: &mut handled,
+                focus_target: &mut ft,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -1783,11 +1787,11 @@ mod tests {
                     mods(false, true),
                 );
             }
-            let saved = Widget::get_state(&ed).unwrap();
+            let saved = crate::undo::get_state(&ed).unwrap();
             // A rebuild resets the caret; set_state restores it.
             let mut ed2 = RichTextEditor::new("doc");
             ed2.sync(&mut state.doc, &state.root);
-            Widget::set_state(&mut ed2, &saved);
+            crate::undo::set_state(&mut ed2, &saved);
             assert_eq!(
                 ed2.selection(),
                 0..2,

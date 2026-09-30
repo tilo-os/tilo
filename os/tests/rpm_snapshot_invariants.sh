@@ -4,8 +4,7 @@
 set -uo pipefail
 
 repo="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-workflow="$repo/.forgejo/workflows/snapshot-rpms.yml"
-development_workflow="$repo/.forgejo/workflows/development-rpms-arm64.yml"
+workflow="$repo/.forgejo/workflows/build-rpms.yml"
 snapshot="$repo/os/Containerfile.rpms"
 image_workflow="$repo/.forgejo/workflows/build-image.yml"
 relay_workflow="$repo/.forgejo/workflows/release-relay.yml"
@@ -21,6 +20,9 @@ has() {
   grep -Fq -- "$needle" "$file" && ok "$message" || bad "$message"
 }
 
+# Checks read job text from here-strings, not `printf | grep -q`: under
+# pipefail, grep exiting at its first match can SIGPIPE the writer.
+
 # Every image which consumes the frozen repository must contribute its package
 # blocks to the workflow parser and retrigger the snapshot when it changes.
 mapfile -t frozen_consumers < <(
@@ -34,7 +36,7 @@ mapfile -t frozen_consumers < <(
 
 for file in "${frozen_consumers[@]}"; do
   relative="${file#"$repo/"}"
-  "$derive" --sources | grep -Fxq "$relative" \
+  grep -Fxq "$relative" <<<"$("$derive" --sources)" \
     && ok "$relative contributes packages to the snapshot parser" \
     || bad "$relative consumes frozen RPMs but is absent from the snapshot parser"
   has "$workflow" "- $relative" "$relative changes retrigger the RPM snapshot"
@@ -81,38 +83,14 @@ else
 fi
 has "$workflow" "--arch '\${{ matrix.arch }}'" \
   'snapshot package selection uses the explicit native matrix architecture'
-has "$development_workflow" "workflow_dispatch:" \
-  'development RPM candidate runs only by explicit dispatch'
-has "$development_workflow" "startsWith(github.ref, 'refs/heads/codex/')" \
-  'development RPM candidate accepts reviewed codex branches'
-has "$development_workflow" "github.ref == 'refs/heads/main'" \
-  'development RPM candidate accepts main'
-has "$development_workflow" 'runs-on: runner-arm64' \
-  'development RPM candidate uses only a native ARM64 runner'
-has "$development_workflow" './os/dev/assert-native-arch.sh aarch64' \
-  'development RPM candidate requires native ARM64 execution'
-has "$development_workflow" './os/dev/derive-rpm-package-set.py --arch aarch64' \
-  'development RPM candidate derives the ARM64 package set'
-has "$development_workflow" 'platforms: linux/arm64' \
-  'development RPM candidate publishes only an ARM64 OCI image'
-has "$development_workflow" 'os/Containerfile.rpms' \
-  'development RPM candidate reuses the frozen-repository offline closure build'
-has "$development_workflow" 'production_signed' \
-  'development RPM candidate receipt declares that it is not production-signed'
-if grep -Ev '^[[:space:]]*#' "$development_workflow" \
-  | grep -Eq 'cosign|promote-native-index|rpms-snapshot\.env|resolve-rpm-snapshot|build-image\.yml/dispatches'; then
-  bad 'development RPM candidate neither signs nor promotes or dispatches production work'
-else
-  ok 'development RPM candidate remains separate from production publication'
-fi
 
 has "$workflow" './os/dev/derive-rpm-package-set.py' \
   'snapshot workflow uses the invariant-tested package parser'
 has "$workflow" 'runner: runner-arm64' \
   'snapshot builds ARM64 dependencies on a native runner'
 snapshot_job=$(awk '/^  snapshot:/{p=1} p && /^  promote-snapshot:/{exit} p' "$workflow")
-if printf '%s\n' "$snapshot_job" | grep -Fq 'Install and check native snapshot host tools' \
-  && printf '%s\n' "$snapshot_job" | grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' \
+if grep -Fq 'Install and check native snapshot host tools' <<<"$snapshot_job" \
+  && grep -Fq 'for tool in skopeo jq curl python3 docker base64 sha256sum' <<<"$snapshot_job" \
   && [[ $(printf '%s\n' "$snapshot_job" | grep -nF 'Install and check native snapshot host tools' | head -1 | cut -d: -f1) -lt $(printf '%s\n' "$snapshot_job" | grep -nF 'Ensure the digest-pinned base is mirrored' | head -1 | cut -d: -f1) ]]; then
   ok 'native RPM snapshot installs and checks host tools before accessing the base'
 else
@@ -222,11 +200,11 @@ has "$image_workflow" 'Resolve RPMS_REF (frozen package snapshot)' \
   'OS CI resolves RPMS_REF by fingerprint before building'
 for consumer in "$image_workflow" "$relay_workflow"; do
   resolver_job=$(awk '{sub(/\r$/, "")} /^  ensure-rpms:/{p=1;next} p && /^  [[:alnum:]_-]+:/{exit} p' "$consumer")
-  if printf '%s\n' "$resolver_job" | grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' \
-    && printf '%s\n' "$resolver_job" | grep -Fq './os/dev/resolve-rpm-snapshot.sh' \
-    && printf '%s\n' "$resolver_job" | grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' \
-    && ! printf '%s\n' "$resolver_job" | grep -Fq 'uses: ./.forgejo/workflows/snapshot-rpms.yml' \
-    && ! printf '%s\n' "$resolver_job" | grep -Fq 'enable-openid-connect: true'; then
+  if grep -Fq 'Resolve the exact signed RPM snapshot fingerprint' <<<"$resolver_job" \
+    && grep -Fq './os/dev/resolve-rpm-snapshot.sh' <<<"$resolver_job" \
+    && grep -Fq 'rpms_ref: ${{ steps.resolve.outputs.rpms_ref }}' <<<"$resolver_job" \
+    && ! grep -Fq 'uses: ./.forgejo/workflows/build-rpms.yml' <<<"$resolver_job" \
+    && ! grep -Fq 'enable-openid-connect: true' <<<"$resolver_job"; then
     ok "$(basename "$consumer") resolves the signed RPM fingerprint without reusable OIDC"
   else
     bad "$(basename "$consumer") may sign in a reusable job or accept an unverified RPM snapshot"
@@ -284,11 +262,11 @@ has "$snapshot" 'dnf upgrade -y --best --store=/tmp/tilo-upgrade' \
   'snapshot includes upgrades of installed direct specs and their reverse dependencies'
 has "$snapshot" 'dnf install -y --best --downloadonly --setopt=reposdir=/repo --setopt=install_weak_deps=True ${PACKAGES}' \
   'snapshot proves the best frozen transaction resolves offline without skipped specs'
-has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
+has "$image_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
   'production CI rejects a stale frozen package manifest before building'
 has "$resolve_script" 'registry.tilo.so/tilo/rpms@$digest' \
   'fingerprint resolve returns a digest-pinned RPM registry path'
-has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF" --builder "$SNAPSHOT_BUILDER"' \
+has "$relay_workflow" 'python3 os/dev/verify-rpm-snapshot-buildkit.py "$RPMS_REF"' \
   'relay CI rejects a stale frozen package manifest before building'
 has "$build_script" 'verify-rpm-snapshot-package-set.sh" podman "$RPMS_REF"' \
   'local production builds reject a stale frozen package manifest'

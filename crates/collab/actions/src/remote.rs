@@ -84,6 +84,7 @@ pub struct Caller {
     user_public_key: Option<[u8; 32]>,
     device_public_key: Option<[u8; 32]>,
     room: Option<String>,
+    foreign: bool,
 }
 
 impl Caller {
@@ -96,6 +97,7 @@ impl Caller {
             user_public_key: Some(user_public_key),
             device_public_key: Some(device_public_key),
             room: None,
+            foreign: false,
         }
     }
 
@@ -108,6 +110,7 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            foreign: false,
         }
     }
 
@@ -119,6 +122,7 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            foreign: false,
         }
     }
 
@@ -132,7 +136,36 @@ impl Caller {
             user_public_key: None,
             device_public_key: None,
             room: None,
+            foreign: false,
         }
+    }
+
+    /// A remote agent device whose certificate the transport verified to
+    /// chain to `user_public_key` and whose root-signed delegation names it
+    /// agent `agent_id`. It is its own principal, never the person who
+    /// delegated it.
+    #[must_use]
+    pub fn delegated_agent(
+        agent_id: impl Into<String>,
+        user_public_key: [u8; 32],
+        device_public_key: [u8; 32],
+    ) -> Self {
+        Self {
+            principal: CallerPrincipal::Agent(agent_id.into()),
+            user_public_key: Some(user_public_key),
+            device_public_key: Some(device_public_key),
+            room: None,
+            foreign: false,
+        }
+    }
+
+    /// Mark whether the caller acts from a foreign device: a Tilo runtime on
+    /// an operating system Tilo does not control, as its certificate says.
+    /// Workspaces it does not govern cap such a caller's role.
+    #[must_use]
+    pub fn from_foreign_device(mut self, foreign: bool) -> Self {
+        self.foreign = foreign;
+        self
     }
 
     /// Confine the caller to one room: the connection was admitted to that
@@ -158,6 +191,12 @@ impl Caller {
     #[must_use]
     pub const fn user_public_key(&self) -> Option<&[u8; 32]> {
         self.user_public_key.as_ref()
+    }
+
+    /// Whether the caller acts from a foreign device.
+    #[must_use]
+    pub const fn is_foreign_device(&self) -> bool {
+        self.foreign
     }
 
     /// The remote device that sent the request.
@@ -257,6 +296,9 @@ pub const APPLICATION_RESOURCE_PREFIX: &str = "app.";
 
 /// Action id that opens an application into a workspace.
 pub const APPLICATION_OPEN_ACTION: &str = "open";
+
+/// Action id that closes a running application's windows in a workspace.
+pub const APPLICATION_CLOSE_ACTION: &str = "close";
 
 /// The provider token for the actions workspace `room` itself offers.
 #[must_use]

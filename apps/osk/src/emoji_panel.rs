@@ -616,34 +616,24 @@ impl EmojiPanel {
                 }
                 scene.pop_layer();
                 crate::presentation::draw_cell(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     self.letters_rect,
-                    None,
-                    &i18n::t("osk-emoji-letters"),
+                    crate::presentation::CellFace::new(None, &i18n::t("osk-emoji-letters"), 0.30),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Letters),
-                        accent: true,
+                        tone: crate::presentation::CellTone::Modifier,
                         ..Default::default()
                     },
-                    0.30,
                 );
                 crate::presentation::draw_cell(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     self.delete_rect,
-                    Some(ui::icons::Icon::Delete),
-                    "",
+                    crate::presentation::CellFace::Icon(ui::icons::Icon::Delete),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Delete),
-                        accent: true,
+                        tone: crate::presentation::CellTone::Modifier,
                         ..Default::default()
                     },
-                    0.30,
                 );
             }
             PanelMode::Search => {
@@ -657,18 +647,13 @@ impl EmojiPanel {
                 self.search
                     .draw(scene, transform, text_renderer, theme, presence);
                 crate::presentation::draw_cell(
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
+                    &mut ui::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                     self.end_search_rect,
-                    Some(ui::icons::Icon::ArrowLeft),
-                    "",
+                    crate::presentation::CellFace::Icon(ui::icons::Icon::ArrowLeft),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::EndSearch),
                         ..Default::default()
                     },
-                    0.30,
                 );
                 if self.strip.is_empty() && !self.search.value().trim().is_empty() {
                     let hint = i18n::t("osk-emoji-no-results");

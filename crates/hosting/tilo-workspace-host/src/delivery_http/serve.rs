@@ -3,6 +3,7 @@
 //! ingress pool; held polls retain their original charged request.
 use super::data::owner as cores;
 use super::*;
+use crate::delivery_http::revalidation::RequestEvidence;
 use crate::{
     host_bytes::HostBytes,
     https::{BufferedRequest, Route},
@@ -191,6 +192,11 @@ impl DataRoutes {
             }
             _ => {}
         }
+        // Every remaining route has effects: take it on, so the front waits for
+        // its answer instead of timing it out (polls are held, not started).
+        if request.route() != Route::EventsPoll && !request.start() {
+            return Dispatched::Responded;
+        }
         // Snapshot manifests own their request: the snapshot module may answer
         // now or hand hashing/staging off the owner loop and answer from pump().
         if request.route() == Route::Snapshot {
@@ -270,9 +276,11 @@ impl DataRoutes {
             current,
             budget,
             OwnerDataOperation::State { input_len: total },
-            &proof,
-            &exact,
-            request,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: request,
+            },
         )?;
         drop(items);
         let response =
@@ -304,9 +312,11 @@ impl DataRoutes {
             current,
             budget,
             OwnerDataOperation::Ack,
-            &proof,
-            &exact,
-            request,
+            RequestEvidence {
+                proof: &proof,
+                exact: &exact,
+                original: request,
+            },
         )?;
         cores::ack_core(
             owner,
@@ -372,9 +382,11 @@ impl DataRoutes {
                 current,
                 budget,
                 OwnerDataOperation::Replay,
-                &proof,
-                &exact,
-                &request,
+                RequestEvidence {
+                    proof: &proof,
+                    exact: &exact,
+                    original: &request,
+                },
             )?;
             let entry = checker.entry_serial();
             let ticket = self

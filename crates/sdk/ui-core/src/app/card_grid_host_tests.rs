@@ -1,4 +1,5 @@
 use super::*;
+use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, Card, CardGrid, Column, Container, Element};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -306,14 +307,17 @@ fn card_grid_reflows_rows_and_retains_edit_state() {
         layout(&mut app, 900);
         let node = app.focusable_order[0];
         app.set_focused_node(Some(node));
-        let state = app.inspect_node(node, |widget| widget.get_state()).unwrap();
+        let state = app
+            .inspect_node(node, |widget| crate::undo::get_state(widget))
+            .unwrap();
         assert!(state.is_some());
         for width in [200, 600, 900] {
             layout(&mut app, width);
             assert_eq!(app.focusable_order, vec![node]);
             assert_eq!(app.focused_node, Some(node));
             assert_eq!(
-                app.inspect_node(node, |widget| widget.get_state()).unwrap(),
+                app.inspect_node(node, |widget| crate::undo::get_state(widget))
+                    .unwrap(),
                 state
             );
         }
@@ -420,7 +424,7 @@ struct GrowingBody {
     clicks: Rc<RefCell<Vec<usize>>>,
 }
 impl Widget for GrowingBody {
-    fn update(&mut self, _: &mut automerge::AutoCommit, _: &automerge::ObjId) -> bool {
+    fn update(&mut self, _: &mut AppModel, _: &ModelPath) -> bool {
         if self.count == self.requested.get() {
             return false;
         }
@@ -438,9 +442,6 @@ impl Widget for GrowingBody {
         }
         self.dirty = true;
         true
-    }
-    fn sync(&mut self, state: &mut automerge::AutoCommit, path: &automerge::ObjId) {
-        self.column.sync(state, path);
     }
     fn build_layout(
         &mut self,
@@ -463,21 +464,8 @@ impl Widget for GrowingBody {
     ) {
         self.column.draw(scene, transform, text, theme, presence);
     }
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &winit::event::Modifiers,
-        state: &mut automerge::AutoCommit,
-        path: &automerge::ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        tree: &TaffyTree<()>,
-    ) {
-        self.column.handle_event(
-            event, scale, modifiers, state, path, handled, focus, node, tree,
-        );
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        self.column.handle_event(event, ctx);
     }
     fn children(&self) -> Vec<&dyn Widget> {
         self.column.children()

@@ -310,7 +310,7 @@ fn footer_shows_item_count_and_formatted_path() {
     // format_path substitutes home prefix.
     assert_eq!(
         path_str,
-        file_explorer::model::format_path(&w.current_path(), xdg_paths::home().as_deref())
+        file_explorer::model::format_path(&w.current_path(), tilo_paths::home().as_deref())
     );
 }
 
@@ -453,6 +453,7 @@ fn list_mode_has_name_size_modified_columns() {
 fn list_build_yields_a_file_view() {
     use file_explorer::command::new_sink;
     use file_explorer::model::{Entry, SortBy, SortOrder};
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::list_view::build_list;
     use ui::SelectionModel;
     let entries = vec![Entry {
@@ -472,20 +473,12 @@ fn list_build_yields_a_file_view() {
     }];
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_list(
-        &entries,
-        &SelectionModel::new(),
-        &new_sink(),
-        1.0,
-        1.0,
-        SortBy::Name,
-        SortOrder::Ascending,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &SelectionModel::new(), &new_sink())
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_list(view, SortBy::Name, SortOrder::Ascending);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
@@ -494,6 +487,7 @@ fn grid_mode_uses_responsive_file_view() {
     // available width rather than being hard-coded.
     use file_explorer::command::new_sink;
     use file_explorer::model::Entry;
+    use file_explorer::views::file_view::FileView;
     use file_explorer::views::grid_view::{GRID_CELL_HEIGHT, GRID_CELL_WIDTH, build_grid};
     use std::path::PathBuf;
     use ui::SelectionModel;
@@ -523,18 +517,12 @@ fn grid_mode_uses_responsive_file_view() {
     let sink = new_sink();
     let rename_rect = std::rc::Rc::new(std::cell::Cell::new(None));
     let drop_targets = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
-    let w = build_grid(
-        &entries,
-        &sel,
-        &sink,
-        1.0,
-        1.0,
-        None,
-        rename_rect,
-        vello::kurbo::Point::ZERO,
-        drop_targets,
-        None,
-    );
+    let view = FileView::new(&entries, &sel, &sink)
+        .with_rename(None, rename_rect)
+        .with_cursor(vello::kurbo::Point::ZERO)
+        .with_drop_targets(drop_targets)
+        .with_thumbs(None);
+    let w = build_grid(view);
     assert_eq!(ui::widget::Widget::name(&*w), "FileView");
 }
 
@@ -561,52 +549,29 @@ fn loading_state_shown_during_navigation() {
 }
 
 fn draw_composition_exercises_the_five_pass_pipeline() {
-    // Drives the composed widget through build_layout → apply_layout → draw.
+    // Drives the composed widget through the host's full frame
+    // (sync → build_layout → compute → apply_layout → draw).
     // Assertion: the widget's `rect` is non-empty after the pipeline runs and
     // the child widget tree is non-empty.
-    use std::collections::HashMap;
-    use taffy::{AvailableSpace, TaffyTree};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
+    use ui::headless::Framed;
     use ui::theme::Theme;
     use ui::widget::Widget;
-    use vello::Scene;
-    use vello::kurbo::Point;
 
-    let mut w = FileExplorerWidget::new();
-    let mut taffy: TaffyTree<()> = TaffyTree::new();
-    let theme = Theme::dark();
-    let mut node_map: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
-    let mut text_renderer = TextRenderer::new();
-
-    let root = w.build_layout(&mut taffy, &theme, &mut node_map);
+    let w = Framed::new(
+        ui::State::new(),
+        FileExplorerWidget::new(),
+        (1024, 768),
+        Theme::dark(),
+    );
 
     // The composition registers many taffy nodes (toolbar, breadcrumbs,
     // sidebar, view, footer, plus the intermediate Rows/Columns). A plain
     // leaf-only widget would register exactly one.
+    let nodes = Framed::harness(&w).layout_node_ids().len();
     assert!(
-        node_map.len() > 1,
-        "draw composition must register multiple layout nodes; got {}",
-        node_map.len()
+        nodes > 1,
+        "draw composition must register multiple layout nodes; got {nodes}"
     );
-
-    taffy
-        .compute_layout_with_measure(
-            root,
-            taffy::Size {
-                width: AvailableSpace::Definite(1024.0),
-                height: AvailableSpace::Definite(768.0),
-            },
-            |known, available, node_id, _, _| {
-                if let Some(&ptr) = node_map.get(&node_id) {
-                    unsafe { (*ptr).measure(known, available, &mut text_renderer) }
-                } else {
-                    taffy::Size::ZERO
-                }
-            },
-        )
-        .unwrap();
-    w.apply_layout(&taffy, root, Point::new(0.0, 0.0));
 
     let rect = w.get_rect();
     assert!(
@@ -615,19 +580,10 @@ fn draw_composition_exercises_the_five_pass_pipeline() {
     );
 
     // draw must not panic and must fill a non-empty scene.
-    let mut scene = Scene::new();
-    let presence = PresenceCtx::empty();
-    w.draw(
-        &mut scene,
-        vello::kurbo::Affine::IDENTITY,
-        &mut text_renderer,
-        &theme,
-        &presence,
-    );
     // Scene should have encoded *something* from the composition — at a
     // minimum the toolbar's buttons produce fill/stroke commands.
     assert!(
-        !scene.encoding().is_empty(),
+        !Framed::harness(&w).scene().encoding().is_empty(),
         "draw composition must emit draw commands from the subtree"
     );
 }

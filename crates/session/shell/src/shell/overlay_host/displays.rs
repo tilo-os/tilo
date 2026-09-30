@@ -35,12 +35,32 @@ fn own_top_band() -> f64 {
     f64::from(TOPBAR_HEIGHT_PX) + f64::from(ui::tokens::Spacing::BASE.s3)
 }
 
-/// The displays as the partition knows them, primary (`OutputId(0)`) first.
-/// An output whose monitor the backend can't name is known by its id.
+/// The outputs that are displays of their own, in the backend's order: the
+/// primary chosen in Settings first. The backend lays a mirror over the
+/// rectangle of the output it copies, while outputs that extend the desktop
+/// tile edge to edge and never overlap; so an output overlapping one already
+/// taken shows that one's image and is not another display. The first
+/// output of a mirror set stands for it.
+fn distinct_outputs(outputs: &[OutputGeometry]) -> Vec<&OutputGeometry> {
+    let mut distinct: Vec<&OutputGeometry> = Vec::with_capacity(outputs.len());
+    for output in outputs.iter().filter(|o| o.width > 0.0 && o.height > 0.0) {
+        let copies = |kept: &&OutputGeometry| {
+            let shared = kept.rect().intersect(output.rect());
+            kept.id == output.id || (shared.width() > 0.0 && shared.height() > 0.0)
+        };
+        if !distinct.iter().any(copies) {
+            distinct.push(output);
+        }
+    }
+    distinct
+}
+
+/// The displays as the partition knows them, primary first, a mirror set as
+/// one (see [`distinct_outputs`]). An output whose monitor
+/// the backend can't name is known by its id.
 fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
-    let mut displays: Vec<Display> = outputs
-        .iter()
-        .filter(|o| o.width > 0.0 && o.height > 0.0)
+    distinct_outputs(outputs)
+        .into_iter()
         .map(|o| Display {
             id: o.id,
             monitor: if o.monitor.is_empty() {
@@ -53,10 +73,7 @@ fn displays_of(outputs: &[OutputGeometry]) -> Vec<Display> {
             width: o.width,
             height: o.height,
         })
-        .collect();
-    displays.sort_by_key(|d| d.id);
-    displays.dedup_by_key(|d| d.id);
-    displays
+        .collect()
 }
 
 /// One strip's place in every display's height: the fractions of the
@@ -148,9 +165,44 @@ impl ShellOverlayHost {
                 .is_some_and(|c| c.borrow().tree().desktop.outputs.displays.len() >= 2)
     }
 
-    /// The display the wheel disc and the full top bar live on.
+    /// The display the wheel disc and the full top bar live on: the first
+    /// the backend lists, which is the primary chosen in Settings.
     pub(super) fn primary_output(&self) -> Option<OutputGeometry> {
-        self.outputs.iter().min_by_key(|o| o.id).cloned()
+        distinct_outputs(&self.outputs)
+            .first()
+            .map(|o| (*o).clone())
+    }
+
+    /// The focused display, while the desktop is partitioned; the primary
+    /// when focus names no display that is still connected.
+    pub(super) fn focused_output(&self) -> Option<OutputGeometry> {
+        if !self.is_partitioned() {
+            return None;
+        }
+        let focused = {
+            let state = self.chrome.as_ref()?.borrow();
+            let tree = state.tree();
+            tree.desktop.outputs.focused_display()
+        };
+        let outputs = distinct_outputs(&self.outputs);
+        focused
+            .and_then(|id| outputs.iter().find(|o| o.id == id))
+            .or_else(|| outputs.first())
+            .map(|o| (*o).clone())
+    }
+
+    /// Where a desktop-wide overlay opens — palette, toasts, prompts,
+    /// help: the focused display, or the whole desktop when there is one.
+    pub fn overlay_area(&self) -> Rect {
+        self.focused_output().map_or(self.rect, |o| o.rect())
+    }
+
+    /// The display holding the full top bar, which the tray's popovers
+    /// hang from.
+    pub fn tray_area(&self) -> Rect {
+        self.primary_output()
+            .filter(|_| self.is_partitioned())
+            .map_or(self.rect, |p| p.rect())
     }
 
     /// Wheel-disc slot plus its gap, sized for the display it sits on.
@@ -358,17 +410,28 @@ impl ShellOverlayHost {
         let primary = self.primary_output().filter(|_| !lanes.is_empty());
         let others: Vec<(u32, Rect)> = if primary.is_some() {
             let primary_id = primary.as_ref().map(|p| p.id);
-            self.outputs
-                .iter()
+            distinct_outputs(&self.outputs)
+                .into_iter()
                 .filter(|o| Some(o.id) != primary_id)
                 .map(|o| (o.id, o.rect()))
                 .collect()
         } else {
             Vec::new()
         };
+        let presenting = self.focused_output();
+        let beside_rail = presenting
+            .as_ref()
+            .is_some_and(|o| primary.as_ref().is_some_and(|p| p.id == o.id));
         if let Some(surface) = self.desktop_surface_mut() {
             if let Some(bar) = surface.topbar_mut() {
                 bar.set_placement(primary.map(|p| p.rect()));
+            }
+            if let Some(launchpad) = surface
+                .empty_workspace_mut()
+                .and_then(ui::widget::Widget::as_any_mut)
+                .and_then(|w| w.downcast_mut::<tilo_desktop::launchpad::CollaborationLaunchpad>())
+            {
+                launchpad.set_presentation_area(presenting.map(|o| o.rect()), beside_rail);
             }
             if let Some(bars) = surface
                 .display_chrome_mut()
@@ -443,7 +506,11 @@ impl ShellOverlayHost {
         if !self.is_partitioned() {
             return;
         }
-        let Some(display) = crate::shell::output_scene::output_at(&self.outputs, p).map(|o| o.id)
+        let displays: Vec<OutputGeometry> = distinct_outputs(&self.outputs)
+            .into_iter()
+            .cloned()
+            .collect();
+        let Some(display) = crate::shell::output_scene::output_at(&displays, p).map(|o| o.id)
         else {
             return;
         };
@@ -586,8 +653,8 @@ impl ShellOverlayHost {
     }
 
     /// Move the focused window group to the display `direction` places next
-    /// to its own (negative for the left). It keeps focus and lands after
-    /// the group last focused there.
+    /// to its own (negative for the left). It keeps focus and takes its
+    /// place in the strip's shared order among that display's groups.
     pub fn move_focused_group_to_display(&mut self, direction: i32) -> bool {
         if !self.is_partitioned() {
             return false;
@@ -617,6 +684,70 @@ impl ShellOverlayHost {
             chrome.borrow_mut().bump();
         }
         moved
+    }
+
+    /// Reordering past the last group on a display carries the group onto
+    /// the neighbouring display, where it lands beside the seam it crossed.
+    pub(super) fn carry_focused_group_across_seam(&mut self, direction: i32) -> bool {
+        if direction == 0 || !self.move_focused_group_to_display(direction) {
+            return false;
+        }
+        let Some(chrome) = self.chrome.clone() else {
+            return true;
+        };
+        let reorder = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let reorder = (|| {
+                let partition = &tree.desktop.outputs;
+                let strip_id = *tree.desktop.active_strip.get(&tree.desktop.active)?;
+                let group = tree.desktop.active_group_for(strip_id)?;
+                let display = partition.display_of(group)?;
+                let strip = tree
+                    .desktop
+                    .active_workspace()?
+                    .strips
+                    .iter()
+                    .find(|s| s.id == strip_id)?;
+                let current = strip.window_groups.iter().position(|g| g.id == group)?;
+                let mut neighbours = strip
+                    .window_groups
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| g.id != group && partition.display_of(g.id) == Some(display))
+                    .map(|(i, _)| i);
+                // `to` is the index after the group leaves its old slot.
+                let to = if direction > 0 {
+                    let first = neighbours.next()?;
+                    if first > current {
+                        first.saturating_sub(1)
+                    } else {
+                        first
+                    }
+                } else {
+                    let last = neighbours.next_back()?;
+                    if last < current {
+                        last.saturating_add(1)
+                    } else {
+                        last
+                    }
+                };
+                (to != current).then_some((strip_id, group, to))
+            })();
+            drop(tree);
+            reorder
+        };
+        if let Some((strip, group, to)) = reorder {
+            let reorder = tilo_desktop::intents::SessionIntent::ReorderGroup { strip, group, to };
+            if Self::dispatch_desktop_intents(
+                &chrome,
+                [tilo_desktop::intents::DesktopIntent::Session(reorder)],
+            ) > 0
+            {
+                chrome.borrow_mut().bump();
+            }
+        }
+        true
     }
 
     /// The groups of the active strip on each display, in the order they

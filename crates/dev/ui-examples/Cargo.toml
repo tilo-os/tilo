@@ -22,7 +22,7 @@ presentation-feedback = ["tilo-ui/presentation-feedback"]
 # Scenarios used to live as [[example]] targets of tilo-ui and therefore
 # inherited its dependency graph. Keep the same direct crates they `use`.
 accesskit = "0.25.0"
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 automerge.workspace = true
 chrono = { workspace = true, features = ["clock", "std"] }
 collab-types = { path = "../../collab/collab-types" }
@@ -49,14 +49,17 @@ workspace = true
 [[example]]
 name = "ui-lab"
 path = "examples/ui_lab.rs"
+test = true
 
 [[example]]
 name = "ui-shots"
 path = "examples/ui_shots.rs"
+test = true
 
 [[example]]
 name = "ui-perf"
 path = "examples/ui_perf.rs"
+test = true
 
 [[example]]
 name = "search-latency"

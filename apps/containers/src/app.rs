@@ -15,7 +15,8 @@
 //! fighting a flexbox tree.
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use ui::time::Instant;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use std::cell::Cell;
@@ -394,7 +395,7 @@ pub struct ContainersApp {
     pending_resource_tab: Option<DetailTab>,
     /// In-app lifecycle controls emit the same inert resource intent as Ctrl+K
     /// and agents. The host re-resolves authority, records the Effect, then
-    /// calls `invoke_resource_operation`.
+    /// calls `Widget::start_operation`.
     pub(crate) pending_control_invocation: RawControlSlot,
     /// Collapsible sidebar reveal kernel (the shared `ui` flap animation).
     pub(crate) sidebar_flap: FlapState,
@@ -562,7 +563,7 @@ impl ContainersApp {
             history_arm_restart: None,
             #[cfg(test)]
             history_runtime_replacement: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             live,
             seed_demo,
             seeded: false,
@@ -831,7 +832,7 @@ impl ContainersApp {
         self.toast = Some(Toast {
             message: message.into(),
             error,
-            born: Instant::now(),
+            born: ui::time::now(),
         });
     }
 
@@ -842,7 +843,7 @@ impl ContainersApp {
             return;
         }
         let Some(tx) = self.bg_tx.clone() else { return };
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         #[cfg(test)]
         if let Some(controlled) = &self.controlled_runtime {
             let _ = controlled.send(ControlledRuntimeRequest::Refresh(
@@ -1282,7 +1283,7 @@ impl ContainersApp {
     /// selects that container — the same "find and jump to" the old inline
     /// search bar did, but through the shared search surface.
     pub(crate) fn open_container_palette(&mut self) {
-        let resources = self.resources(&AutoCommit::new());
+        let resources = ui::resources::resources(self, &AutoCommit::new());
         let entries: Vec<CommandEntry> = flatten(&resources)
             .into_iter()
             .filter(|action| action.action.id == "select")
@@ -1296,10 +1297,9 @@ impl ContainersApp {
 
     #[cfg(test)]
     pub(crate) fn dispatch_palette_invocation_for_test(&mut self, doc: &mut AutoCommit) {
-        let intent = self
-            .take_control_invocation()
+        let intent = ui::widget::controls::take_control_invocation(self)
             .expect("palette emitted a resource action");
-        let resources = self.resources(doc);
+        let resources = ui::resources::resources(self, doc);
         let spec = ui::tilo_actions::door::resolve(&resources, &intent.address)
             .expect("palette address resolves");
         let kind = spec.kind;
@@ -1307,7 +1307,7 @@ impl ContainersApp {
             .build_json(&intent.arguments)
             .expect("valid palette arguments");
         assert!(
-            self.invoke_resource_operation(
+            self.answer_resource_operation(
                 kind,
                 &encoded.type_id,
                 &encoded.payload,
@@ -1341,14 +1341,16 @@ impl ContainersApp {
         let mut ignored = false;
         self.search_field.handle_event(
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut ignored,
-            focus_target,
-            dummy_node,
-            &dummy_taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut ignored,
+                focus_target,
+                node_id: dummy_node,
+                taffy: &dummy_taffy,
+            },
         );
     }
 }
@@ -2078,139 +2080,8 @@ fn distrobox_resource(distrobox: &crate::model::DistroBox, engine_live: bool) ->
     resource
 }
 
-impl Widget for ContainersApp {
-    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
-        Some(&crate::framework_history::HISTORY)
-    }
-
-    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[
-            "containers.engine",
-            "containers.container",
-            "containers.logs",
-            "containers.image",
-            "containers.volume",
-            "containers.distrobox",
-        ]
-    }
-
-    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
-        let mut root = Resource::new("containers", "containers.engine", "Containers");
-        if let Ok(spec) = ActionSpec::operation(
-            "create",
-            "Create container",
-            OperationKind::View,
-            "containers.engine",
-            &["create"],
-        ) {
-            let spec = if self.engine.live {
-                spec
-            } else {
-                spec.unavailable(
-                    "engine_offline",
-                    "Creating containers requires a connected Podman engine",
-                )
-            };
-            root.actions.push(spec);
-        }
-        for container in &self.engine.containers {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            ));
-        }
-        for image in &self.engine.images {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children.push(image_resource(image, self.engine.live));
-        }
-        for volume in &self.engine.volumes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(volume_resource(volume, self.engine.live));
-        }
-        for distrobox in &self.engine.distroboxes {
-            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
-                break;
-            }
-            root.children
-                .push(distrobox_resource(distrobox, self.engine.live));
-        }
-        vec![root]
-    }
-
-    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
-        if let Some(container_id) = id
-            .strip_prefix("container:")
-            .and_then(|rest| rest.strip_suffix(":logs"))
-        {
-            let container = self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)?;
-            return container_resource(
-                container,
-                self.engine.live,
-                self.continuation_runtime_identity.as_ref(),
-            )
-            .children
-            .into_iter()
-            .find(|child| child.id.0 == id);
-        }
-        if let Some(container_id) = id.strip_prefix("container:") {
-            return self
-                .engine
-                .containers
-                .iter()
-                .find(|item| item.id == container_id)
-                .map(|item| {
-                    container_resource(
-                        item,
-                        self.engine.live,
-                        self.continuation_runtime_identity.as_ref(),
-                    )
-                });
-        }
-        if let Some(reference) = id.strip_prefix("image:") {
-            return self
-                .engine
-                .images
-                .iter()
-                .find(|item| item.reference() == reference)
-                .map(|item| image_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("volume:") {
-            return self
-                .engine
-                .volumes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| volume_resource(item, self.engine.live));
-        }
-        if let Some(name) = id.strip_prefix("distrobox:") {
-            return self
-                .engine
-                .distroboxes
-                .iter()
-                .find(|item| item.name == name)
-                .map(|item| distrobox_resource(item, self.engine.live));
-        }
-        None
-    }
-
-    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
-        vec![Box::new(self.search_index.provider())]
-    }
-
-    fn invoke_resource_operation(
+impl ContainersApp {
+    fn answer_resource_operation(
         &mut self,
         kind: OperationKind,
         type_id: &str,
@@ -2305,8 +2176,50 @@ impl Widget for ContainersApp {
         self.show_toast(format!("{verb} accepted for {target}"), false);
         Ok(true)
     }
+}
 
-    fn sync(&mut self, doc: &mut AutoCommit, _path: &ObjId) {
+impl Widget for ContainersApp {
+    ui::provides!(
+        dyn ui::history_mode::capability::DocumentHistory,
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources,
+        dyn ui::search::capability::SearchSource
+    );
+
+    fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
+        &[
+            "containers.engine",
+            "containers.container",
+            "containers.logs",
+            "containers.image",
+            "containers.volume",
+            "containers.distrobox",
+        ]
+    }
+
+    fn start_operation(
+        &mut self,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
+        }
+        let Some(request) = op.unscoped() else {
+            return Ok(None);
+        };
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
+    }
+
+    fn sync(&mut self, doc: &mut AppModel, path: &ModelPath) {
+        let (doc, _) = ui::doc::document(doc, path);
         #[cfg(test)]
         if self
             .history_runtime_replacement
@@ -2340,8 +2253,19 @@ impl Widget for ContainersApp {
         if self.seed_demo && !self.seeded {
             self.seed_demo_scene(doc);
         }
-        // Periodically re-probe the engine for fresh stats / state.
-        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL {
+        // Periodically re-probe the engine for fresh stats / state. Controlled
+        // fixtures own that cadence through the request channel; a wall-clock
+        // tick would race their emptiness asserts under a slow runner.
+        if self.live && self.last_refresh.elapsed() >= podman::REFRESH_INTERVAL && {
+            #[cfg(test)]
+            {
+                self.controlled_runtime.is_none()
+            }
+            #[cfg(not(test))]
+            {
+                true
+            }
+        } {
             self.spawn_refresh();
         }
         self.hydrate_selection(doc);
@@ -2527,18 +2451,7 @@ impl Widget for ContainersApp {
         clippy::too_many_lines,
         reason = "the top-level dispatcher coordinates overlays, shared inputs, and app navigation"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &winit::event::Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        _node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         // While open, the shared palette owns all input. It runs against the
         // live document; an Enter outcome selects the chosen container, and
         // Escape (or clicking away) closes it.
@@ -2549,21 +2462,17 @@ impl Widget for ContainersApp {
             if let Ok(dummy_node) = dummy_taffy.new_leaf(Style::default()) {
                 self.palette.handle_event(
                     event,
-                    scale_factor,
-                    modifiers,
-                    doc,
-                    path,
-                    handled,
-                    focus_target,
-                    dummy_node,
-                    &dummy_taffy,
+                    &mut ui::widget::EventCtx {
+                        taffy: &dummy_taffy,
+                        ..ctx.reborrow(ctx.path, dummy_node)
+                    },
                 );
                 if !self.palette.is_open() {
                     self.palette_open = false;
                 }
             }
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -2573,12 +2482,12 @@ impl Widget for ContainersApp {
             event: key_event, ..
         } = event
             && key_event.state == ElementState::Pressed
-            && modifiers.state().control_key()
+            && ctx.modifiers.state().control_key()
             && matches!(&key_event.logical_key, Key::Character(c) if c.eq_ignore_ascii_case("k"))
         {
             self.open_container_palette();
-            *handled = true;
-            self.refresh_view(doc);
+            *ctx.handled = true;
+            self.refresh_view(ctx.state);
             return;
         }
 
@@ -2586,41 +2495,61 @@ impl Widget for ContainersApp {
         // the shared ModalDialog captures every event (typing, clicks, Esc)
         // and nothing leaks to the app behind the scrim.
         if self.confirm.is_some() {
-            self.route_confirm_event(event, scale_factor, *modifiers, doc, handled);
-            self.refresh_view(doc);
+            self.route_confirm_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
+            self.refresh_view(ctx.state);
             return;
         }
         if self.prompt.is_some() {
-            self.route_prompt_event(event, scale_factor, *modifiers, doc, handled);
-            self.refresh_view(doc);
+            self.route_prompt_event(
+                event,
+                ctx.scale_factor,
+                *ctx.modifiers,
+                ctx.state,
+                ctx.handled,
+            );
+            self.refresh_view(ctx.state);
             return;
         }
 
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                self.cursor = Point::new(position.x / scale_factor, position.y / scale_factor);
+                self.cursor =
+                    Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 if self.create_open {
                     for field in CreateField::ALL {
                         self.route_create_input(
                             field,
                             event,
-                            scale_factor,
-                            *modifiers,
-                            doc,
-                            path,
-                            focus_target,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
+                            ctx.state,
+                            ctx.path,
+                            ctx.focus_target,
                         );
                     }
                 }
                 // Keep the launcher's pointer position current for its click test.
-                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
+                self.route_to_launcher(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
                 // Hover changes button shading — request a redraw.
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(p) => p.y / scale_factor,
+                    MouseScrollDelta::PixelDelta(p) => p.y / ctx.scale_factor,
                 };
                 // Scroll the panel under the cursor. A compact selected
                 // container *is* the detail panel, so it must not leak wheel
@@ -2629,13 +2558,13 @@ impl Widget for ContainersApp {
                     && self.view.section == Section::Containers
                     && self.view.selected.is_some();
                 if compact_detail
-                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(doc)
+                    || self.cursor.x > self.rect.x0 + RAIL_WIDTH + self.list_area_width(ctx.state)
                 {
                     self.detail_scroll = (self.detail_scroll - dy).max(0.0);
                 } else {
                     self.list_scroll = (self.list_scroll - dy).max(0.0);
                 }
-                *handled = true;
+                *ctx.handled = true;
             }
             WindowEvent::MouseInput {
                 state: ElementState::Pressed,
@@ -2644,21 +2573,28 @@ impl Widget for ContainersApp {
             } => {
                 // A click on the search launcher opens the palette instead of
                 // running a list hit.
-                self.route_to_launcher(event, scale_factor, *modifiers, doc, path, focus_target);
+                self.route_to_launcher(
+                    event,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
+                );
                 if self.search_field.take_palette_request() {
                     self.open_container_palette();
-                    *handled = true;
+                    *ctx.handled = true;
                 } else {
-                    self.on_click(doc, handled);
+                    self.on_click(ctx.state, ctx.handled);
                     if self.create_open {
                         self.route_create_input(
                             self.create_focus,
                             event,
-                            scale_factor,
-                            *modifiers,
-                            doc,
-                            path,
-                            focus_target,
+                            ctx.scale_factor,
+                            *ctx.modifiers,
+                            ctx.state,
+                            ctx.path,
+                            ctx.focus_target,
                         );
                     }
                 }
@@ -2666,16 +2602,7 @@ impl Widget for ContainersApp {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.on_key(
-                    doc,
-                    event,
-                    key_event,
-                    scale_factor,
-                    *modifiers,
-                    path,
-                    focus_target,
-                    handled,
-                );
+                self.on_key(event, ctx, key_event);
             }
             WindowEvent::Ime(_) if self.create_open => {
                 let field = self.create_focus;
@@ -2683,20 +2610,20 @@ impl Widget for ContainersApp {
                 self.route_create_input(
                     field,
                     event,
-                    scale_factor,
-                    *modifiers,
-                    doc,
-                    path,
-                    focus_target,
+                    ctx.scale_factor,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.focus_target,
                 );
                 self.after_create_input(field);
-                *handled = true;
+                *ctx.handled = true;
             }
             _ => {}
         }
         // Refresh the cached view state after any mutation so the next draw
         // reflects it (draw has no doc access).
-        self.refresh_view(doc);
+        self.refresh_view(ctx.state);
     }
 
     fn name(&self) -> &'static str {
@@ -2875,9 +2802,10 @@ impl Widget for ContainersApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        state: &mut AutoCommit,
-        _path: &ObjId,
+        state: &mut AppModel,
+        path: &ModelPath,
     ) -> bool {
+        let (state, _) = ui::doc::document(state, path);
         if self.palette_open {
             return self
                 .palette
@@ -2996,6 +2924,139 @@ impl Widget for ContainersApp {
         self.has_focus
     }
 
+    fn get_rect(&self) -> Rect {
+        self.rect
+    }
+
+    fn needs_redraw(&self) -> bool {
+        true
+    }
+
+    fn is_layout_dirty(&self) -> bool {
+        self.rect == Rect::ZERO
+    }
+}
+
+impl ui::search::capability::SearchSource for ContainersApp {
+    fn search_providers(&self) -> Vec<Box<dyn ui::search::SearchProvider>> {
+        vec![Box::new(self.search_index.provider())]
+    }
+}
+
+impl ui::resources::PublishesResources for ContainersApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<Resource> {
+        let mut root = Resource::new("containers", "containers.engine", "Containers");
+        if let Ok(spec) = ActionSpec::operation(
+            "create",
+            "Create container",
+            OperationKind::View,
+            "containers.engine",
+            &["create"],
+        ) {
+            let spec = if self.engine.live {
+                spec
+            } else {
+                spec.unavailable(
+                    "engine_offline",
+                    "Creating containers requires a connected Podman engine",
+                )
+            };
+            root.actions.push(spec);
+        }
+        for container in &self.engine.containers {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children.push(container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            ));
+        }
+        for image in &self.engine.images {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children.push(image_resource(image, self.engine.live));
+        }
+        for volume in &self.engine.volumes {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children
+                .push(volume_resource(volume, self.engine.live));
+        }
+        for distrobox in &self.engine.distroboxes {
+            if root.children.len() >= RESOURCE_SNAPSHOT_LIMIT {
+                break;
+            }
+            root.children
+                .push(distrobox_resource(distrobox, self.engine.live));
+        }
+        vec![root]
+    }
+    fn resource(&self, _doc: &AutoCommit, id: &str) -> Option<Resource> {
+        if let Some(container_id) = id
+            .strip_prefix("container:")
+            .and_then(|rest| rest.strip_suffix(":logs"))
+        {
+            let container = self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)?;
+            return container_resource(
+                container,
+                self.engine.live,
+                self.continuation_runtime_identity.as_ref(),
+            )
+            .children
+            .into_iter()
+            .find(|child| child.id.0 == id);
+        }
+        if let Some(container_id) = id.strip_prefix("container:") {
+            return self
+                .engine
+                .containers
+                .iter()
+                .find(|item| item.id == container_id)
+                .map(|item| {
+                    container_resource(
+                        item,
+                        self.engine.live,
+                        self.continuation_runtime_identity.as_ref(),
+                    )
+                });
+        }
+        if let Some(reference) = id.strip_prefix("image:") {
+            return self
+                .engine
+                .images
+                .iter()
+                .find(|item| item.reference() == reference)
+                .map(|item| image_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("volume:") {
+            return self
+                .engine
+                .volumes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| volume_resource(item, self.engine.live));
+        }
+        if let Some(name) = id.strip_prefix("distrobox:") {
+            return self
+                .engine
+                .distroboxes
+                .iter()
+                .find(|item| item.name == name)
+                .map(|item| distrobox_resource(item, self.engine.live));
+        }
+        None
+    }
+}
+
+impl ui::widget::controls::ActionControls for ContainersApp {
     fn install_control_custody(
         &mut self,
         domain: &ui::ControlDomain,
@@ -3006,14 +3067,12 @@ impl Widget for ContainersApp {
             .pending_control_invocation
             .install_custody(domain, attachment);
     }
-
     fn take_control_invocation(&mut self) -> Option<ui::tilo_actions::ControlInvocation> {
         if let Some(invocation) = self.palette.take_control_invocation() {
             return Some(invocation);
         }
         self.pending_control_invocation.take_legacy_compatibility()
     }
-
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         if self.palette_open {
             self.palette.control_action_bindings()
@@ -3085,17 +3144,11 @@ impl Widget for ContainersApp {
             bindings
         }
     }
+}
 
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn needs_redraw(&self) -> bool {
-        true
-    }
-
-    fn is_layout_dirty(&self) -> bool {
-        self.rect == Rect::ZERO
+impl ui::history_mode::capability::DocumentHistory for ContainersApp {
+    fn document_history_definition(&self) -> Option<&'static ui::history_mode::HistoryDefinition> {
+        Some(&crate::framework_history::HISTORY)
     }
 }
 
@@ -3260,10 +3313,6 @@ impl ContainersApp {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "mirrors Widget::handle_event for one embedded hand-laid field"
-    )]
     pub(crate) fn route_create_input(
         &mut self,
         field: CreateField,
@@ -3283,14 +3332,16 @@ impl ContainersApp {
         Widget::handle_event(
             self.create_input_mut(field),
             event,
-            scale_factor,
-            &modifiers,
-            doc,
-            path,
-            &mut ignored,
-            focus_target,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor,
+                modifiers: &modifiers,
+                state: doc,
+                path,
+                handled: &mut ignored,
+                focus_target,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
         let after = self.create_input(field).value().to_string();
         if before != after {
@@ -3467,7 +3518,7 @@ impl ContainersApp {
     /// draw path, mirroring `NavSplit::self_tick`). The first draw sees
     /// `dt == 0` so the rail never teleports.
     pub(crate) fn tick_sidebar(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = self
             .sidebar_tick
             .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));
@@ -3619,14 +3670,16 @@ mod tests {
             let mut focus = None;
             app.handle_event(
                 &key_press(Key::Named(NamedKey::Enter)),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut doc,
-                &root,
-                &mut handled,
-                &mut focus,
-                node,
-                &taffy,
+                &mut ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut doc,
+                    path: &root,
+                    handled: &mut handled,
+                    focus_target: &mut focus,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
             app.dispatch_palette_invocation_for_test(&mut doc);
 
@@ -3766,14 +3819,16 @@ mod tests {
         let mut focus = None;
         app.handle_event(
             ev,
-            1.0,
-            &winit::event::Modifiers::default(),
-            doc,
-            root,
-            &mut handled,
-            &mut focus,
-            node,
-            &taffy,
+            &mut ui::widget::EventCtx {
+                scale_factor: 1.0,
+                modifiers: &winit::event::Modifiers::default(),
+                state: doc,
+                path: root,
+                handled: &mut handled,
+                focus_target: &mut focus,
+                node_id: node,
+                taffy: &taffy,
+            },
         );
     }
 
@@ -3786,8 +3841,7 @@ mod tests {
             app.engine.live = true;
             let id = app.engine.containers[0].id.clone();
             app.apply_action(Action::Stop, &id);
-            let intent = app
-                .take_control_invocation()
+            let intent = ui::widget::controls::take_control_invocation(&mut app)
                 .expect("the host receives an inert resource intent");
             assert_eq!(
                 intent.address,
@@ -3815,7 +3869,7 @@ mod tests {
             app.search_index.sync(&app.engine);
 
             let doc = AutoCommit::new();
-            let root = Widget::resources(&app, &doc).remove(0);
+            let root = ui::resources::resources(&app, &doc).remove(0);
             assert_eq!(root.children.len(), RESOURCE_SNAPSHOT_LIMIT);
             let omitted = format!("container:durable-{:03}", RESOURCE_SNAPSHOT_LIMIT + 16);
             assert!(
@@ -3824,7 +3878,7 @@ mod tests {
                     .all(|resource| resource.id.0 != omitted)
             );
             assert_eq!(
-                Widget::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
+                ui::resources::resource(&app, &doc, &omitted).map(|resource| resource.id.0),
                 Some(omitted.clone())
             );
 
@@ -3833,7 +3887,7 @@ mod tests {
                 .retain(|container| format!("container:{}", container.id) != omitted);
             app.search_index.sync(&app.engine);
             assert!(
-                Widget::resource(&app, &doc, &omitted).is_none(),
+                ui::resources::resource(&app, &doc, &omitted).is_none(),
                 "a stale palette address cannot recreate removed authority"
             );
             assert!(
@@ -3881,6 +3935,20 @@ mod tests {
         assert!(
             requests.try_recv().is_err(),
             "terminal event was reduced once"
+        );
+    }
+
+    #[test]
+    fn controlled_runtime_owns_refresh_cadence() {
+        let (mut app, requests, _results) = ContainersApp::history_test_runtime_root();
+        app.last_refresh = Instant::now()
+            .checked_sub(crate::podman::REFRESH_INTERVAL + std::time::Duration::from_millis(1))
+            .expect("refresh interval fits below Instant::now");
+        let mut doc = AutoCommit::new();
+        app.sync(&mut doc, &automerge::ROOT);
+        assert!(
+            requests.try_recv().is_err(),
+            "controlled fixtures own refresh; wall-clock must not enqueue Refresh"
         );
     }
 
@@ -3991,11 +4059,12 @@ mod tests {
         let mut doc = AutoCommit::new();
         app.sync(&mut doc, &automerge::ROOT);
         app.sync(&mut doc, &automerge::ROOT);
-        let intent = Widget::take_control_invocation(&mut app).expect("retained intent");
+        let intent =
+            ui::widget::controls::take_control_invocation(&mut app).expect("retained intent");
         assert_eq!(intent.address.resource, "container:retained-target");
         assert_eq!(intent.address.action, "restart");
         assert!(intent.arguments.is_empty());
-        assert!(Widget::take_control_invocation(&mut app).is_none());
+        assert!(ui::widget::controls::take_control_invocation(&mut app).is_none());
         assert!(requests.try_recv().is_err());
     }
 

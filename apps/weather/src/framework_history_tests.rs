@@ -38,19 +38,18 @@ fn saved_place_history_is_declared_and_sync_preserves_the_graph() {
     // Case `production_root_and_launch_declare_saved_place_history`.
     {
         assert_eq!(
-            crate::app_root()
-                .document_history_definition()
+            ui::history_mode::capability::document_history_definition(crate::app_root().as_ref())
                 .unwrap()
                 .app_id,
             "so.tilo.weather"
         );
         assert!(include_str!("main.rs").contains(".history(&weather::framework_history::HISTORY)"));
     }
-    // Case `native_legacy_and_blank_actual_live_sync_are_graph_preserving_and_effect_free`.
+    // Case `native_and_blank_actual_live_sync_are_graph_preserving_and_effect_free`.
     {
         let mut native = AutoCommit::new();
         WeatherDoc::write_model(&mut native, &crate::sample::sample_model());
-        for mut d in vec![native, legacy_doc(), AutoCommit::new()].into_boxed_slice() {
+        for mut d in vec![native, AutoCommit::new()].into_boxed_slice() {
             d.put(ROOT, "runtime_metadata", "current").unwrap();
             let heads = d.get_heads();
             let mut root = crate::app_root();
@@ -93,13 +92,12 @@ fn saved_place_history_is_declared_and_sync_preserves_the_graph() {
 }
 
 #[test]
-fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync() {
+fn normal_saver_reopens_restored_native_and_blank_through_actual_live_sync() {
     if let Ok(stage) = std::env::var("TILO_WEATHER_SAVED_STAGE") {
         let kind = std::env::var("TILO_WEATHER_SAVED_KIND").unwrap();
         let (mut state, mut saver) = ui::persist::try_open("so.tilo.weather").unwrap();
         if stage == "write" {
             let mut target = match kind.as_str() {
-                "legacy" => legacy_doc(),
                 "native" => {
                     let mut d = AutoCommit::new();
                     WeatherDoc::write_model(&mut d, &crate::sample::sample_model());
@@ -156,12 +154,12 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
         }
         return;
     }
-    for kind in ["native", "legacy", "blank"] {
+    for kind in ["native", "blank"] {
         let dir =
             std::env::temp_dir().join(format!("weather-history-{kind}-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
         for stage in ["write", "read"] {
-            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_sync","--nocapture"]).env("TILO_WEATHER_SAVED_STAGE",stage).env("TILO_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.weather").output().unwrap();
+            let out=std::process::Command::new(std::env::current_exe().unwrap()).args(["--exact","framework_history_tests::normal_saver_reopens_restored_native_and_blank_through_actual_live_sync","--nocapture"]).env("TILO_WEATHER_SAVED_STAGE",stage).env("TILO_WEATHER_SAVED_KIND",kind).env("XDG_DATA_HOME",&dir).env("XDG_CONFIG_HOME",&dir).env("TILO_PACKAGE_ID","so.tilo.weather").output().unwrap();
             assert!(
                 out.status.success(),
                 "{kind}/{stage}: {} {}",
@@ -179,183 +177,6 @@ fn normal_saver_reopens_restored_native_legacy_and_blank_through_actual_live_syn
     }
 }
 
-fn legacy_doc() -> AutoCommit {
-    let mut d = AutoCommit::new();
-    let list = d
-        .put_object(ROOT, "locations", automerge::ObjType::List)
-        .unwrap();
-    for (i, l) in crate::sample::sample_model().locations.iter().enumerate() {
-        let o = d.insert_object(&list, i, automerge::ObjType::Map).unwrap();
-        for (k, v) in [
-            ("id", l.id.to_string()),
-            ("name", l.name.clone()),
-            ("region", l.region.clone()),
-            ("country", l.country.clone()),
-            ("country_code", l.country_code.clone()),
-            ("tz", l.timezone.clone()),
-        ] {
-            d.put(&o, k, v).unwrap();
-        }
-        d.put(&o, "lat", l.latitude).unwrap();
-        d.put(&o, "lon", l.longitude).unwrap();
-    }
-    d.put(ROOT, "selected", 1).unwrap();
-    d.get_heads();
-    d
-}
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "merged scenario: each former test is a labelled case block with its own fixture"
-)]
-fn legacy_history_restores_exactly_and_migrates_only_on_authored_actions() {
-    // Case `legacy_restore_preserves_exact_representation_current_selection_unknown_descendants_and_redo`.
-    {
-        use tilo_actions::Action;
-        let mut d = legacy_doc();
-        let list = d.get(ROOT, "locations").unwrap().unwrap().1;
-        let first = d.get(&list, 0).unwrap().unwrap().1;
-        let extra = d
-            .put_object(&first, "future_authored", automerge::ObjType::Map)
-            .unwrap();
-        let text = d
-            .put_object(&extra, "note", automerge::ObjType::Text)
-            .unwrap();
-        d.splice_text(&text, 0, 0, "unknown supported text")
-            .unwrap();
-        let selected = d.get_heads()[0];
-        crate::actions::WeatherAction::AddLocation {
-            location: SavedLocation::new("New", "", "Country", "CC", 2., 3., "auto"),
-        }
-        .apply(&mut d)
-        .unwrap();
-        d.put(ROOT, "selected_location", uuid::Uuid::new_v4().to_string())
-            .unwrap();
-        d.put(ROOT, "selected", 77).unwrap();
-        d.put(ROOT, "runtime_metadata", "current identity").unwrap();
-        d.get_heads();
-        let current_selection = d
-            .get(ROOT, "selected_location")
-            .unwrap()
-            .unwrap()
-            .0
-            .as_str()
-            .unwrap()
-            .to_string();
-        let mut driver = managed_driver(d, selected);
-        driver.click_named("history-restore").unwrap();
-        driver.key("Enter");
-        let state = driver.state_mut();
-        assert!(state.doc.get(ROOT, "saved_locations").unwrap().is_none());
-        assert_eq!(
-            state
-                .doc
-                .get(ROOT, "selected_location")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some(current_selection.as_str())
-        );
-        assert_eq!(
-            state.doc.get(ROOT, "selected").unwrap().unwrap().0.as_i64(),
-            Some(77)
-        );
-        assert_eq!(
-            state
-                .doc
-                .get(ROOT, "runtime_metadata")
-                .unwrap()
-                .unwrap()
-                .0
-                .as_str(),
-            Some("current identity")
-        );
-        let before = state.doc.base_heads();
-        test_root().sync(&mut state.doc, &ROOT);
-        assert_eq!(state.doc.base_heads(), before);
-        let target = state.doc.fork_at(&[selected]).unwrap();
-        assert_eq!(
-            project_content(&state.doc, &crate::framework_history::SCHEMA).unwrap(),
-            project_content(&target, &crate::framework_history::SCHEMA).unwrap()
-        );
-        assert!(state.undo(None, None).is_some());
-        assert!(state.doc.get(ROOT, "saved_locations").unwrap().is_some());
-        assert!(state.redo(None, None).is_some());
-        assert!(state.doc.get(ROOT, "saved_locations").unwrap().is_none());
-        let before = state.doc.get_heads();
-        let mut app = crate::WeatherApp::history_test_root();
-        app.sync(&mut state.doc, &ROOT);
-        assert!(app.selected_city().is_some());
-        assert_eq!(state.doc.get_heads(), before);
-    }
-    // Case `legacy_selection_does_not_migrate_but_next_authored_action_does`.
-    {
-        use tilo_actions::Action;
-        let mut d = legacy_doc();
-        let id = WeatherDoc::read_model(&d).locations[0].id;
-        crate::actions::WeatherAction::SelectLocation { id: id.to_string() }
-            .apply(&mut d)
-            .unwrap();
-        assert!(d.get(ROOT, "saved_locations").unwrap().is_none());
-        crate::actions::WeatherAction::RemoveLocation { id: id.to_string() }
-            .apply(&mut d)
-            .unwrap();
-        assert!(d.get(ROOT, "saved_locations").unwrap().is_some());
-        assert!(
-            !WeatherDoc::read_model(&d)
-                .locations
-                .iter()
-                .any(|l| l.id == id)
-        );
-    }
-    // Case `deliberate_legacy_migration_uses_one_canonical_action_and_undo_boundary`.
-    {
-        let mut state = ui::State::from_doc(legacy_doc());
-        let old = project_content(&state.doc, &crate::framework_history::SCHEMA).unwrap();
-        let before = state.doc.get_heads();
-        let mut actions = ui::ActionHost::new();
-        actions
-            .try_dispatch(
-                &mut state.doc,
-                crate::actions::WEATHER_ACTION_TYPE,
-                &crate::actions::WeatherAction::AddLocation {
-                    location: SavedLocation::new("Added", "", "", "", 1., 2., "auto"),
-                },
-            )
-            .unwrap();
-        assert_eq!(state.doc.get_changes(&before).len(), 1);
-        state.record_committed_action(actions.take_committed().unwrap(), None, None);
-        assert!(state.undo(None, None).is_some());
-        assert_eq!(
-            project_content(&state.doc, &crate::framework_history::SCHEMA).unwrap(),
-            old
-        );
-        assert!(state.undo(None, None).is_none());
-        assert!(state.redo(None, None).is_some());
-        assert!(WeatherDoc::has_keyed_schema(&state.doc));
-    }
-    // Case `legacy_next_content_action_preserves_the_current_stable_selection`.
-    {
-        use tilo_actions::Action;
-        let mut d = legacy_doc();
-        let chosen = WeatherDoc::read_model(&d).locations[0].id;
-        crate::actions::WeatherAction::SelectLocation {
-            id: chosen.to_string(),
-        }
-        .apply(&mut d)
-        .unwrap();
-        crate::actions::WeatherAction::AddLocation {
-            location: SavedLocation::new("New", "", "", "", 1., 2., "auto"),
-        }
-        .apply(&mut d)
-        .unwrap();
-        assert_eq!(
-            WeatherDoc::read_model(&d).selected_location().unwrap().id,
-            chosen
-        );
-    }
-}
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -400,7 +221,7 @@ fn history_review_refuses_invalid_or_foreign_records_and_pins_previews() {
                     d.merge_incoming(&mut fork).unwrap();
                 }
                 _ => {
-                    d.put(ROOT, "locations", 7).unwrap();
+                    d.put(ROOT, "location_tombstones", 7).unwrap();
                 }
             }
             let heads = d.get_heads();
@@ -448,7 +269,8 @@ fn history_review_refuses_invalid_or_foreign_records_and_pins_previews() {
     }
     // Case `pinned_preview_recreation_retains_local_navigation_and_never_reads_live_updates`.
     {
-        let mut d = legacy_doc();
+        let mut d = AutoCommit::new();
+        WeatherDoc::write_model(&mut d, &crate::sample::sample_model());
         let selected = d.get_heads()[0];
         let resource = HistoryResource::new(
             "profile",
@@ -493,7 +315,10 @@ fn history_review_refuses_invalid_or_foreign_records_and_pins_previews() {
         recreated.layout(bounds, &mut tr, &theme).unwrap();
         assert_eq!(recreated.view(), saved);
         assert_eq!(recreated.accessibility().description, description);
-        WeatherDoc::ensure_schema(&mut d);
+        WeatherDoc::upsert_location(
+            &mut d,
+            &SavedLocation::new("Later", "", "", "", 1., 2., "auto"),
+        );
         d.get_heads();
         c.refresh(&d).unwrap();
         assert!(c.has_live_updates());

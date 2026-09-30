@@ -34,6 +34,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 use ui::doc::{read_bool, read_str_or_text};
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
 use os_actions::{BatteryInfo, ChargeCapBackend, ChargeCapCapability, Dispatcher, PowerProfile};
@@ -43,7 +44,7 @@ use ui::theme::Theme;
 use ui::widget::{Dropdown, ProgressBar, Sparkline, Toggle, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
-use winit::event::{Modifiers, WindowEvent};
+use winit::event::WindowEvent;
 
 use crate::dispatcher::dispatcher_or_real;
 use crate::prefs::{PowerActionPref, PowerPrefs, SystemPrefs};
@@ -1106,7 +1107,10 @@ pub fn build() -> Box<dyn Widget> {
 }
 
 impl Widget for PowerPane {
-    fn sync(&mut self, shared: &mut AutoCommit, _root: &ObjId) {
+    ui::provides!(dyn ui::undo::UndoPoints);
+
+    fn sync(&mut self, shared: &mut AppModel, root: &ModelPath) {
+        let (shared, _) = ui::doc::document(shared, root);
         let isolated = self.isolate_document;
         let mut state = if isolated {
             std::mem::take(&mut self.local_doc)
@@ -1199,36 +1203,15 @@ impl Widget for PowerPane {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        let was_handled = *handled;
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+        let was_handled = *ctx.handled;
         if let Some(c) = &mut self.composed
-            && let Ok(children) = taffy.children(node_id)
+            && let Ok(children) = ctx.taffy.children(ctx.node_id)
             && let Some(&cn) = children.first()
         {
-            c.handle_event(
-                event,
-                scale_factor,
-                modifiers,
-                state,
-                path,
-                handled,
-                focus_target,
-                cn,
-                taffy,
-            );
+            c.handle_event(event, &mut ctx.reborrow(ctx.path, cn));
         }
-        self.commit_context_pending |= !was_handled && *handled;
+        self.commit_context_pending |= !was_handled && *ctx.handled;
     }
 
     fn children(&self) -> Vec<&dyn Widget> {
@@ -1247,26 +1230,28 @@ impl Widget for PowerPane {
             .collect()
     }
 
-    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
-        let pending = std::mem::take(&mut self.commit_context_pending)
-            || self
-                .composed
-                .as_ref()
-                .is_some_and(|content| content.needs_commit());
-        crate::panes::preference_commit_context(
-            pending,
-            "power",
-            "Power",
-            "Change power preferences",
-        )
-    }
-
     fn name(&self) -> &'static str {
         "PowerPane"
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
+    }
+}
+
+impl ui::undo::UndoPoints for PowerPane {
+    fn take_commit_context(&mut self) -> Option<ui::tilo_actions::ActionContext> {
+        let pending = std::mem::take(&mut self.commit_context_pending)
+            || self
+                .composed
+                .as_ref()
+                .is_some_and(|content| ui::undo::needs_commit(content.as_ref()));
+        crate::panes::preference_commit_context(
+            pending,
+            "power",
+            "Power",
+            "Change power preferences",
+        )
     }
 }
 

@@ -12,9 +12,11 @@ use std::path::Path;
 use std::rc::Rc;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use ui::a11y::{AccessNode, AccessState, Action as AccessibilityAction, Politeness, Role};
+use ui::paint::PaintCtx;
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, PickRequest};
-use ui::text_render::{TextRenderer, TextWeight};
+use ui::text_render::{TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
+use ui::widget::{AppModel, ModelPath};
 use ui::widget::{
     Button, ButtonStyle, ModalAction, ModalFrame, ModalHit, ModalLayout, ModalSpec, Widget,
 };
@@ -541,7 +543,7 @@ impl WindowsApp {
     /// Convert retained button signals into the same inert addresses used by
     /// search and agents. The application host re-resolves these against the
     /// fresh tree, applies permission/confirmation policy, records Effects in
-    /// history, and only then calls `invoke_resource_operation`.
+    /// history, and only then calls `start_operation`.
     fn queue_live_control_signal(&mut self) -> bool {
         if !self.provider.action_native_controls() {
             return false;
@@ -1183,27 +1185,6 @@ impl WindowsApp {
             weight,
         );
     }
-    fn wrapped_text(
-        tr: &mut TextRenderer,
-        scene: &mut Scene,
-        t: Affine,
-        at: Point,
-        text: &str,
-        size: f32,
-        max_width: f32,
-        color: Color,
-        weight: TextWeight,
-    ) {
-        tr.draw_text_weighted(
-            scene,
-            text,
-            size,
-            color,
-            t * Affine::translate((at.x, at.y)),
-            Some(max_width.max(1.0)),
-            weight,
-        );
-    }
     fn line(
         tr: &mut TextRenderer,
         scene: &mut Scene,
@@ -1414,6 +1395,11 @@ impl WindowsApp {
 }
 
 impl Widget for WindowsApp {
+    ui::provides!(
+        dyn ui::widget::controls::ActionControls,
+        dyn ui::resources::PublishesResources
+    );
+
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[
             "windows.launch",
@@ -1441,7 +1427,8 @@ impl Widget for WindowsApp {
         ]
     }
 
-    fn sync(&mut self, state: &mut AutoCommit, _path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
+        let (state, _) = ui::doc::document(state, path);
         self.project_shared_route_policy(state);
         self.drain_portal();
         self.drain_document_portal();
@@ -1663,16 +1650,12 @@ impl Widget for WindowsApp {
                 TextWeight::Regular,
             );
             if let Some(detail) = &appliance.detail {
-                Self::wrapped_text(
-                    tr,
-                    scene,
-                    t,
-                    Point::new(sidebar.x0 + PAD, appliance_y + 50.0),
+                PaintCtx::new(scene, t, tr, theme).text(
                     detail,
-                    10.0,
-                    (sidebar.width() - PAD * 2.0) as f32,
+                    &TextStyle::new(10.0),
                     theme.text_dim,
-                    TextWeight::Regular,
+                    Point::new(sidebar.x0 + PAD, appliance_y + 50.0),
+                    Some(((sidebar.width() - PAD * 2.0) as f32).max(1.0)),
                 );
             }
             if appliance.is_provisioned() {
@@ -1724,16 +1707,12 @@ impl Widget for WindowsApp {
                     );
                 }
             }
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(sidebar.x0 + PAD, appliance_y + 132.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 &strings::t("windows-appliance-desktop-note"),
-                10.0,
-                (sidebar.width() - PAD * 2.0) as f32,
+                &TextStyle::new(10.0),
                 theme.text_dim,
-                TextWeight::Regular,
+                Point::new(sidebar.x0 + PAD, appliance_y + 132.0),
+                Some(((sidebar.width() - PAD * 2.0) as f32).max(1.0)),
             );
             if appliance.is_provisioned() {
                 let recovery = Rect::new(
@@ -2084,16 +2063,12 @@ impl Widget for WindowsApp {
             .as_deref()
             .filter(|_| !app.launch_available)
         {
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(launch.x0, status.y1 + 8.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 reason,
-                10.0,
-                (detail.x1 - launch.x0).max(120.0) as f32,
+                &TextStyle::new(10.0),
                 theme.text_dim,
-                TextWeight::Regular,
+                Point::new(launch.x0, status.y1 + 8.0),
+                Some(((detail.x1 - launch.x0).max(120.0) as f32).max(1.0)),
             );
         }
         if app.route == Route::Vm {
@@ -2155,27 +2130,19 @@ impl Widget for WindowsApp {
             theme.text_primary,
             TextWeight::Bold,
         );
-        Self::wrapped_text(
-            tr,
-            scene,
-            t,
-            Point::new(card.x0 + PAD, card.y0 + 44.0),
+        PaintCtx::new(scene, t, tr, theme).text(
             &app.reason,
-            13.0,
-            (card.width() - PAD * 2.0) as f32,
+            &TextStyle::new(13.0),
             theme.text_dim,
-            TextWeight::Regular,
+            Point::new(card.x0 + PAD, card.y0 + 44.0),
+            Some(((card.width() - PAD * 2.0) as f32).max(1.0)),
         );
-        Self::wrapped_text(
-            tr,
-            scene,
-            t,
-            Point::new(card.x0 + PAD, card.y0 + 74.0),
+        PaintCtx::new(scene, t, tr, theme).text(
             app.route.security_summary(),
-            12.0,
-            (card.width() - PAD * 2.0) as f32,
+            &TextStyle::new(12.0),
             theme.text_dim,
-            TextWeight::Regular,
+            Point::new(card.x0 + PAD, card.y0 + 74.0),
+            Some(((card.width() - PAD * 2.0) as f32).max(1.0)),
         );
         let routes_y = card.y1 + 22.0;
         Self::text(
@@ -2507,20 +2474,16 @@ impl Widget for WindowsApp {
             // transient error. Give it its own visible treatment and wrap it
             // inside the compact detail width so the required confirmation is
             // never silently truncated off-screen.
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(detail.x0, detail.y1 - 40.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 notice,
-                12.0,
-                detail.width() as f32,
+                &TextStyle::new(12.0),
                 if awaiting_confirmation {
                     theme.accent_primary
                 } else {
                     theme.status_success
                 },
-                TextWeight::Regular,
+                Point::new(detail.x0, detail.y1 - 40.0),
+                Some((detail.width() as f32).max(1.0)),
             );
         }
         if self.confirm_delete_data.as_deref() == Some(app.capsule.as_str()) {
@@ -2539,16 +2502,12 @@ impl Widget for WindowsApp {
             let layout = ModalFrame::layout(self.area, &spec, tr, theme);
             ModalFrame::paint_backdrop(scene, t, tr, theme, &layout, &spec);
             let (ink, dim) = ModalFrame::ink(theme);
-            Self::wrapped_text(
-                tr,
-                scene,
-                t,
-                Point::new(layout.body.x0, layout.body.y0 + 4.0),
+            PaintCtx::new(scene, t, tr, theme).text(
                 &strings::t("windows-confirm-delete-body"),
-                13.0,
-                layout.body.width() as f32,
+                &TextStyle::new(13.0),
                 dim,
-                TextWeight::Regular,
+                Point::new(layout.body.x0, layout.body.y0 + 4.0),
+                Some((layout.body.width() as f32).max(1.0)),
             );
             Self::text(
                 tr,
@@ -2568,22 +2527,11 @@ impl Widget for WindowsApp {
         clippy::too_many_lines,
         reason = "one event boundary keeps modal capture ahead of the existing routed controls"
     )]
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        mods: &winit::event::Modifiers,
-        state: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if self.confirm_delete_data.is_some() {
             if let WindowEvent::CursorMoved { position, .. } = event {
                 self.mouse = Point::new(position.x, position.y);
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if let WindowEvent::KeyboardInput {
@@ -2596,7 +2544,7 @@ impl Widget for WindowsApp {
                     Key::Named(NamedKey::Enter) => self.confirm_delete_data(),
                     _ => {}
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
             if matches!(
@@ -2619,15 +2567,15 @@ impl Widget for WindowsApp {
                         Some(ModalHit::Card | ModalHit::Scrim | ModalHit::Action(_)) | None => {}
                     }
                 }
-                *handled = true;
+                *ctx.handled = true;
                 return;
             }
-            *handled = true;
+            *ctx.handled = true;
             return;
         }
         macro_rules! forward_button_event {
             ($button:expr) => {
-                $button.handle_event(event, scale, mods, state, path, handled, focus, node, taffy)
+                $button.handle_event(event, ctx)
             };
         }
         for button in &mut self.route_buttons {
@@ -2660,10 +2608,10 @@ impl Widget for WindowsApp {
         match event {
             WindowEvent::KeyboardInput {
                 event: key_event, ..
-            } if key_event.state == ElementState::Pressed && !*handled => {
+            } if key_event.state == ElementState::Pressed && !*ctx.handled => {
                 if key_event.logical_key == Key::Named(NamedKey::Escape) && self.compact_detail {
                     self.hit(Hit::Back);
-                    *handled = true;
+                    *ctx.handled = true;
                     return;
                 }
                 let next = match key_event.logical_key {
@@ -2677,7 +2625,7 @@ impl Widget for WindowsApp {
                 };
                 if next != self.selected && !self.catalogue.apps.is_empty() {
                     self.hit(Hit::App(next));
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseWheel { delta, .. }
@@ -2686,12 +2634,12 @@ impl Widget for WindowsApp {
             {
                 let delta = match delta {
                     MouseScrollDelta::LineDelta(_, y) => -f64::from(*y) * 48.0,
-                    MouseScrollDelta::PixelDelta(position) => -position.y / scale,
+                    MouseScrollDelta::PixelDelta(position) => -position.y / ctx.scale_factor,
                 };
                 let before = self.sidebar_scroll;
                 self.sidebar_scroll += delta;
                 self.clamp_sidebar_scroll();
-                *handled |= (self.sidebar_scroll - before).abs() > f64::EPSILON;
+                *ctx.handled |= (self.sidebar_scroll - before).abs() > f64::EPSILON;
             }
             WindowEvent::CursorMoved { position, .. } => {
                 self.mouse = Point::new(position.x, position.y);
@@ -2708,7 +2656,7 @@ impl Widget for WindowsApp {
                     .map(|(_, hit)| *hit)
                 {
                     self.hit(hit);
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             _ => {}
@@ -2856,8 +2804,8 @@ impl Widget for WindowsApp {
         &mut self,
         target: &str,
         action: &AccessibilityAction,
-        _state: &mut AutoCommit,
-        _path: &ObjId,
+        _state: &mut AppModel,
+        _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
@@ -2908,67 +2856,35 @@ impl Widget for WindowsApp {
     fn get_rect(&self) -> Rect {
         self.area
     }
-    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        actions::provide_resources(&self.catalogue)
-    }
-    fn invoke_resource_operation(
+    fn start_operation(
         &mut self,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        _doc: &AutoCommit,
-        _path: &ObjId,
-    ) -> Result<bool, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(false);
-        }
-        self.invoke_effect_operation(type_id, payload)
-    }
-
-    fn start_resource_operation(
-        &mut self,
-        invocation: tilo_actions::InvocationId,
-        kind: tilo_actions::OperationKind,
-        type_id: &str,
-        payload: &[u8],
-        doc: &AutoCommit,
+        op: &ui::widget::ResourceOperation<'_>,
+        doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
-        if kind != tilo_actions::OperationKind::Effect {
-            return Ok(None);
+        let Some(request) = op.unscoped() else {
+            return ui::widget::start_in_children(self, op, doc, path);
+        };
+        if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
+            return Ok(Some(started));
         }
-        if self.resource_invocation.is_some() {
-            return Err("another Windows operation is still running".into());
+        if let Some(started) = self.admit_resource_operation(
+            request.invocation,
+            request.kind,
+            request.type_id,
+            request.payload,
+            doc,
+            path,
+        )? {
+            return Ok(Some(started));
         }
-        if !self.invoke_resource_operation(kind, type_id, payload, doc, path)? {
-            return Ok(None);
-        }
-        let deferred = self.portal_rx.is_some()
-            || self.document_portal_rx.is_some()
-            || self.iso_portal_rx.is_some()
-            || self.appliance_owner.busy()
-            || !self.provider.operations_complete_on_return();
-        if deferred {
-            self.resource_invocation = Some(invocation);
-            self.resource_waits_for_appliance = matches!(
-                type_id,
-                "windows.import-iso"
-                    | "windows.recovery"
-                    | "windows.start"
-                    | "windows.restart"
-                    | "windows.suspend"
-                    | "windows.resume"
-                    | "windows.shutdown"
-                    | "windows.temporary-network"
-                    | "windows.update-network"
-                    | "windows.revoke-network"
-            );
-            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
-        } else {
-            Ok(Some(ui::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
-        }
+        Ok(self
+            .answer_resource_operation(request.kind, request.type_id, request.payload, doc, path)?
+            .then(|| {
+                ui::widget::ResourceOperationStart::Completed(
+                    ui::tilo_actions::ActionOutput::default(),
+                )
+            }))
     }
 
     fn poll_resource_operation(
@@ -2991,9 +2907,6 @@ impl Widget for WindowsApp {
     }
     fn test_id(&self) -> Option<&str> {
         Some("windows-app")
-    }
-    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
-        self.pending_control_invocation.take()
     }
     fn modal_capture(&self) -> Option<Rect> {
         self.delete_confirmation_layout
@@ -3157,6 +3070,80 @@ impl Widget for WindowsApp {
         children.push(&mut self.update_windows_button);
         children.push(&mut self.revoke_windows_connection_button);
         children
+    }
+}
+
+impl ui::resources::PublishesResources for WindowsApp {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        actions::provide_resources(&self.catalogue)
+    }
+}
+
+impl ui::widget::controls::ActionControls for WindowsApp {
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        self.pending_control_invocation.take()
+    }
+}
+
+impl WindowsApp {
+    fn answer_resource_operation(
+        &mut self,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        _doc: &AutoCommit,
+        _path: &ObjId,
+    ) -> Result<bool, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(false);
+        }
+        self.invoke_effect_operation(type_id, payload)
+    }
+
+    fn admit_resource_operation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        kind: tilo_actions::OperationKind,
+        type_id: &str,
+        payload: &[u8],
+        doc: &AutoCommit,
+        path: &ObjId,
+    ) -> Result<Option<ui::widget::ResourceOperationStart>, String> {
+        if kind != tilo_actions::OperationKind::Effect {
+            return Ok(None);
+        }
+        if self.resource_invocation.is_some() {
+            return Err("another Windows operation is still running".into());
+        }
+        if !self.answer_resource_operation(kind, type_id, payload, doc, path)? {
+            return Ok(None);
+        }
+        let deferred = self.portal_rx.is_some()
+            || self.document_portal_rx.is_some()
+            || self.iso_portal_rx.is_some()
+            || self.appliance_owner.busy()
+            || !self.provider.operations_complete_on_return();
+        if deferred {
+            self.resource_invocation = Some(invocation);
+            self.resource_waits_for_appliance = matches!(
+                type_id,
+                "windows.import-iso"
+                    | "windows.recovery"
+                    | "windows.start"
+                    | "windows.restart"
+                    | "windows.suspend"
+                    | "windows.resume"
+                    | "windows.shutdown"
+                    | "windows.temporary-network"
+                    | "windows.update-network"
+                    | "windows.revoke-network"
+            );
+            Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+        } else {
+            Ok(Some(ui::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            )))
+        }
     }
 }
 

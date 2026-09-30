@@ -12,12 +12,12 @@ fail=0
 ok() { printf 'ok    %s\n' "$*"; }
 bad() { printf 'FAIL  %s\n' "$*" >&2; fail=1; }
 
-# Every publishing trigger (tags, protected manual main publication, nightly
-# main) must resolve to the one series lock; only validation builds may use a
-# per-ref group.
-grep -Fq "group: \${{ (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.publish == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
+# Generic publication triggers share the generation-series lock. A protected
+# Lenovo dispatch uses its own source-specific group because it never allocates
+# a generic genN; validation builds remain per-ref.
+grep -Fq "group: \${{ github.event_name == 'workflow_call' && format('tilo-os-dev-{0}', github.ref) || (github.ref == 'refs/heads/main' && github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true' && github.event.inputs.hardware_profile == 'lenovo-83ed') && format('tilo-os-image-lenovo-{0}', github.sha) || (startsWith(github.ref, 'refs/tags/v') || (github.ref == 'refs/heads/main' && (github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && github.event.inputs.release == 'true')))) && 'tilo-os-image-series-2' || format('tilo-os-image-validate-{0}', github.ref) }}" "$workflow" \
   && ! grep -Eq 'CONTINUOUS_RELEASE: "1"' "$workflow" \
-  && ok 'OS generation publication is globally serialized' \
+  && ok 'generic generation publication is serialized separately from Lenovo' \
   || bad 'release jobs can race and reuse one generation'
 
 kernel_verify_line="$(grep -n './os/dev/verify-kernel-provenance.sh "$ref"' "$workflow" | tail -1 | cut -d: -f1)"
@@ -32,9 +32,9 @@ else
 fi
 
 publication_guards="$(grep -Fc "if: steps.release-mode.outputs.publish == 'true'" "$workflow")"
-if grep -Fq 'REQUESTED_PUBLISH: ${{ github.event.inputs.publish }}' "$workflow" \
+if grep -Fq 'REQUESTED_RELEASE: ${{ github.event.inputs.release }}' "$workflow" \
    && grep -Fq '$GITHUB_EVENT_NAME == workflow_dispatch && $GITHUB_REF == refs/heads/main' "$workflow" \
-   && grep -Fq '${REQUESTED_PUBLISH:-false} == true' "$workflow" \
+   && grep -Fq '${REQUESTED_RELEASE:-false} == true' "$workflow" \
    && grep -Fq "if [[ '\${{ steps.release-mode.outputs.publish }}' == true ]]; then" "$workflow" \
    && [ "$publication_guards" -ge 6 ] \
    && ! grep -Eq "if:.*github.event_name == 'workflow_dispatch'[[:space:]]*}}" "$workflow"; then
@@ -56,16 +56,21 @@ grep -Fq 'Independently rebuild the release candidate' "$workflow" \
 
 # BuildKit applies SOURCE_DATE_EPOCH to file mtimes only when the exporter
 # rewrites them; without it COPY keeps checkout times and RUN the wall clock.
-oci_exports="$(grep -Ec 'type=oci,dest=/var/tmp/tilo-image' "$workflow")"
-[ "$oci_exports" -ge 3 ] \
-  && [ "$(grep -Ec "type=oci,dest=/var/tmp/tilo-image[^ ',]*,rewrite-timestamp=true" "$workflow")" -eq "$oci_exports" ] \
-  && ok 'every OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
+# Only a Build / OS dev image, never compared or released, skips it: BuildKit
+# pushes it straight to tilo-ci.
+release_rule="$(awk '/- name: Select build, validation, or publication mode/,/dev-channel=/' "$workflow")"
+grep -Fq "outputs: type=oci,dest=/var/tmp/tilo-image-repro.tar,rewrite-timestamp=true" "$workflow" \
+  && [ "$(grep -Fc 'outputs: ${{ env.TILO_IMAGE_OUTPUT }}' "$workflow")" -eq 2 ] \
+  && grep -Fq "echo 'TILO_IMAGE_OUTPUT=type=oci,dest=/var/tmp/tilo-image.tar,rewrite-timestamp=true' >> \"\$GITHUB_ENV\"" <<<"$release_rule" \
+  && grep -Fq "if [[ \$GITHUB_EVENT_NAME == workflow_call ]]; then" <<<"$release_rule" \
+  && grep -Fq '[[ $publish != true ]]' <<<"$release_rule" \
+  && grep -Fq 'echo "TILO_IMAGE_TAGS=registry.tilo.so/tilo/tilo-ci:$series-${{ matrix.arch }}"' <<<"$release_rule" \
+  && ok 'every compared or released OS image export clamps file mtimes to SOURCE_DATE_EPOCH' \
   || bad 'an OS image export keeps build-time file mtimes'
 
 # Integration images skip the second uncached build, but every publication
-# (tag, nightly or protected manual main release) must still run it. The third
-# publication branch unbinds the shared compiler cache
-# (tools/tests/test_publication_compiler_cache.py).
+# (tag, nightly or protected manual main release) must still run it, with no
+# compiler cache (tools/tests/test_publication_compiler_cache.py).
 # The rebuild runs in its own, parallel reproduction lane, which exists only in
 # publication matrices and refuses to run otherwise; the publication lane waits
 # for its digest before installing or signing.
@@ -74,9 +79,11 @@ grep -A1 -F -- '- name: Independently rebuild the release candidate' "$workflow"
   && grep -Fq "echo '::error::a reproduction lane runs only for a publication'" "$workflow" \
   && grep -A2 -F -- '- name: Wait for the independent rebuild' "$workflow" \
     | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
-  && grep -Fq "second_manifest='\${{ steps.reproduction.outputs.manifest }}'" "$workflow" \
+  && grep -A2 -F -- '- name: Compare with the independent rebuild' "$workflow" \
+    | grep -Fq "if: steps.release-mode.outputs.publish == 'true' && matrix.role != 'reproduce'" \
+  && grep -Fq 'REPRO_MANIFEST: ${{ steps.reproduction.outputs.manifest }}' "$workflow" \
   && grep -Fq 'PUBLISH: ${{ steps.release-mode.outputs.publish }}' "$workflow" \
-  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 4 \
+  && test "$(grep -Fc 'if [[ $PUBLISH == true ]]; then' "$workflow")" -eq 2 \
   && ok 'every publication, and only a publication, pays for the uncached rebuild' \
   || bad 'the uncached reproducibility rebuild no longer gates exactly the publications'
 
@@ -114,7 +121,7 @@ fi
 attestation_consumers=(
   "$repo/.forgejo/workflows/build-image.yml"
   "$repo/.forgejo/workflows/build-kernel.yml"
-  "$repo/.forgejo/workflows/snapshot-rpms.yml"
+  "$repo/.forgejo/workflows/build-rpms.yml"
   "$repo/os/dev/build-image.sh"
 )
 attestation_shape_safe=1
@@ -173,7 +180,7 @@ if grep -Fq 'runner":"imager-linux-x86_64"' "$workflow" \
    && grep -Fq 'podman manifest push --all' "$workflow" \
    && grep -Fq 'published OCI index does not contain exactly the verified native children' "$workflow" \
    && grep -Fq 'externalParameters.children == $children' "$workflow" \
-   && grep -Fq 'tilo-buildcache:${{ matrix.arch }}' "$workflow" \
+   && grep -Fq 'type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-rootfs-${{ matrix.arch }}' "$workflow" \
    && grep -Fq 'promote_immutable "$tag"' "$workflow" \
    && grep -Fq 'latest="registry.tilo.so/tilo/tilo:latest"' "$workflow" \
    && grep -Fq 'registry did not commit latest as $index_digest' "$workflow"; then

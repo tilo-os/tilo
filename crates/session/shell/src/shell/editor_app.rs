@@ -14,6 +14,7 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use ui::widget::{AppModel, ModelPath};
 
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue, Value};
@@ -819,19 +820,17 @@ impl EditorApp {
 }
 
 impl Widget for EditorApp {
-    fn sync(&mut self, state: &mut AutoCommit, root: &ObjId) {
+    ui::provides!(
+        dyn ui::presence::capability::PublishesPresence,
+        dyn ui::record::capability::RecordScoped,
+        dyn ui::undo::UndoPoints
+    );
+
+    fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
+        let (state, root) = ui::doc::document(state, root);
         self.body.sync(state, root);
         self.reconcile_disk(state, root);
         self.clamp_cursor();
-    }
-
-    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
-        self.source.as_ref().map(|source| {
-            ui::record::RecordCheckout::new(
-                ui::record::RecordId::for_file(&source.path),
-                ui::record::RecordKind::new("text-document"),
-            )
-        })
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
@@ -945,27 +944,16 @@ impl Widget for EditorApp {
         scene.pop_layer();
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale_factor: f64,
-        modifiers: &Modifiers,
-        state: &mut AutoCommit,
-        root: &ObjId,
-        handled: &mut bool,
-        focus_target: &mut Option<NodeId>,
-        node_id: NodeId,
-        _taffy: &TaffyTree<()>,
-    ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.clamp_cursor();
         match event {
             WindowEvent::CursorMoved { position, .. } => {
-                let p = Point::new(position.x / scale_factor, position.y / scale_factor);
+                let p = Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
                 self.last_mouse = p;
                 let was_hover = self.hovered;
                 self.hovered = self.rect.contains(p);
                 if self.hovered != was_hover {
-                    *handled = true;
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::MouseInput {
@@ -974,14 +962,20 @@ impl Widget for EditorApp {
                 ..
             } => {
                 if self.hovered && *es == ElementState::Pressed {
-                    *focus_target = Some(node_id);
-                    *handled = true;
+                    *ctx.focus_target = Some(ctx.node_id);
+                    *ctx.handled = true;
                 }
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
             } => {
-                self.handle_keyboard_input(key_event, *modifiers, state, root, handled);
+                self.handle_keyboard_input(
+                    key_event,
+                    *ctx.modifiers,
+                    ctx.state,
+                    ctx.path,
+                    ctx.handled,
+                );
             }
             _ => {}
         }
@@ -989,16 +983,6 @@ impl Widget for EditorApp {
 
     fn name(&self) -> &'static str {
         "EditorApp"
-    }
-
-    /// Folded into the body's presence key so a peer's caret for one tab
-    /// isn't drawn in another tab of the same app.
-    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
-        self.body.set_record(record);
-    }
-
-    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
-        Some(self.body.presence_key())
     }
 
     fn get_rect(&self) -> Rect {
@@ -1016,24 +1000,45 @@ impl Widget for EditorApp {
     fn is_focused(&self) -> bool {
         self.focused
     }
+}
 
+impl ui::undo::UndoPoints for EditorApp {
     fn needs_commit(&self) -> bool {
         self.body.needs_commit()
     }
-
     fn on_commit(&mut self) {
         self.body.on_commit();
     }
-
     fn get_state(&self) -> Option<String> {
         Some(self.edit.caret().to_string())
     }
-
     fn set_state(&mut self, s: &str) {
         if let Ok(pos) = s.parse::<usize>() {
             self.edit.set_caret(pos);
             self.clamp_cursor();
         }
+    }
+}
+
+impl ui::record::capability::RecordScoped for EditorApp {
+    fn record_intent(&self) -> Option<ui::record::RecordCheckout> {
+        self.source.as_ref().map(|source| {
+            ui::record::RecordCheckout::new(
+                ui::record::RecordId::for_file(&source.path),
+                ui::record::RecordKind::new("text-document"),
+            )
+        })
+    }
+    /// Folded into the body's presence key so a peer's caret for one tab
+    /// isn't drawn in another tab of the same app.
+    fn set_record_scope(&mut self, record: &ui::record::RecordId) {
+        self.body.set_record(record);
+    }
+}
+
+impl ui::presence::capability::PublishesPresence for EditorApp {
+    fn presence_key(&self) -> Option<ui::presence::PresenceKey> {
+        Some(self.body.presence_key())
     }
 }
 
@@ -1537,8 +1542,7 @@ mod tests {
             // so a peer's caret/selection materialises where `draw` looks.
             // Unhosted — no record named yet — it is the bare field.
             let mut app = EditorApp::new();
-            let key = app
-                .presence_key()
+            let key = ui::presence::capability::presence_key(&app)
                 .expect("the editor body publishes presence");
             match key {
                 PresenceKey::Widget { path } => {
@@ -1551,8 +1555,8 @@ mod tests {
             // tabs would share a key and a peer's caret would draw in whichever
             // tab painted last.
             let record = ui::record::RecordId::for_tab(0x2b);
-            app.set_record_scope(&record);
-            match app.presence_key().expect("still publishes") {
+            ui::record::capability::set_record_scope(&mut app, &record);
+            match ui::presence::capability::presence_key(&app).expect("still publishes") {
                 PresenceKey::Widget { path } => {
                     assert_eq!(
                         path,

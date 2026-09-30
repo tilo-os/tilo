@@ -673,6 +673,10 @@ pub struct ChromeState {
     /// fullscreen/maximized group. The raw request may arrive before its row;
     /// chrome must remain visible until the row is present.
     fullscreen_presentation: bool,
+    /// Whether the active strip alone fills the work area, the others
+    /// collapsed: while agents drive this compositor, so the strip an agent
+    /// works in is the whole screen it sees and clicks. NOT persisted.
+    single_strip: bool,
     /// Whether the palette should offer invite/connect commands.
     /// Mirrored from the overlay host's own flag.
     pub peer_sync_enabled: bool,
@@ -712,6 +716,10 @@ pub struct ChromeState {
     /// and toggles the focused client's `xdg_toplevel` fullscreen state,
     /// which only it holds the protocol handles for.
     fullscreen_toggle_requested: bool,
+    /// Window-management operations an action asked for. The overlay host
+    /// drains them on its next update and runs each exactly as its chord
+    /// would, since the focused group's widgets live there.
+    shortcut_action_requests: Vec<settings_store::hardware::ShortcutAction>,
     /// The input-source chord chose this source. The native compositor
     /// drains it and switches the seat and the physical keyboard at once;
     /// the persisted choice reaches them again on the settings poll.
@@ -835,6 +843,7 @@ impl ChromeState {
             fullscreen_group: None,
             maximized_group: None,
             fullscreen_presentation: false,
+            single_strip: false,
             peer_sync_enabled: false,
             collab_unavailable: None,
             peer_sync_requests: Vec::new(),
@@ -850,6 +859,7 @@ impl ChromeState {
             close_surface_requests: Vec::new(),
             window_transfers: super::window_transfer::WindowTransfers::default(),
             fullscreen_toggle_requested: false,
+            shortcut_action_requests: Vec::new(),
             input_source_request: None,
             strip_viewport: None,
             viewport_size: None,
@@ -1024,6 +1034,19 @@ impl ChromeState {
         std::mem::take(&mut self.fullscreen_toggle_requested)
     }
 
+    /// Run `action` as if its chord had been pressed once, on the overlay
+    /// host's next update.
+    pub fn request_shortcut_action(&mut self, action: settings_store::hardware::ShortcutAction) {
+        self.shortcut_action_requests.push(action);
+        self.bump();
+    }
+
+    pub fn take_shortcut_action_requests(
+        &mut self,
+    ) -> Vec<settings_store::hardware::ShortcutAction> {
+        std::mem::take(&mut self.shortcut_action_requests)
+    }
+
     pub fn request_input_source(&mut self, index: usize) {
         self.input_source_request = Some(index);
         self.bump();
@@ -1050,6 +1073,31 @@ impl ChromeState {
 
     pub fn maximized_group(&self) -> Option<u64> {
         self.maximized_group
+    }
+
+    #[must_use]
+    pub fn single_strip(&self) -> bool {
+        self.single_strip
+    }
+
+    pub fn set_single_strip(&mut self, single: bool) {
+        if self.single_strip != single {
+            self.single_strip = single;
+            self.bump();
+        }
+    }
+
+    /// The active workspace's focused strip, or its first.
+    #[must_use]
+    pub fn active_strip_id(&self) -> Option<crate::shell::state::StripId> {
+        let tree = self.tree();
+        let ws = tree.desktop.active_workspace()?;
+        tree.desktop
+            .active_strip
+            .get(&ws.id)
+            .copied()
+            .filter(|id| ws.strips.iter().any(|s| s.id == *id))
+            .or_else(|| ws.strips.first().map(|s| s.id))
     }
 
     /// Idempotent, so cheap to call every frame from the compositor's
@@ -1079,6 +1127,15 @@ impl ChromeState {
             IdentitySource::Explicit(principal) => Some(principal),
             IdentitySource::SessionRegistry => None,
         }
+    }
+
+    /// Act as `principal` in every room, whatever the machine's identity
+    /// registry selects. A renderer whose output must not depend on the
+    /// machine it runs on pins its identity this way; a live session keeps
+    /// the registry's per-room choice.
+    pub fn act_as(&mut self, principal: crate::shell::state::UserId) {
+        self.local_user_id.clone_from(&principal);
+        self.identity_source = IdentitySource::Explicit(principal);
     }
 
     /// Person principal this session presents inside `room`.
@@ -1915,6 +1972,91 @@ impl ChromeState {
             _ => focused,
         };
         self.focus_strip_index(next)
+    }
+
+    /// Focus `strip` of the active workspace. `false` when it is already
+    /// focused or not in the active workspace.
+    pub fn focus_strip(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let index = {
+            let tree = self.tree();
+            tree.desktop
+                .active_workspace()
+                .and_then(|ws| ws.strips.iter().position(|s| s.id == strip))
+        };
+        index.is_some_and(|index| self.focus_strip_index(index))
+    }
+
+    /// The strip an agent works in: `current` while it is still in the active
+    /// workspace, else an empty strip nobody `claimed` yet, else a new strip
+    /// named `label` at the bottom. `None` without an active workspace.
+    pub fn agent_strip(
+        &mut self,
+        current: Option<crate::shell::state::StripId>,
+        claimed: impl Fn(crate::shell::state::StripId) -> bool,
+        label: &str,
+    ) -> Option<crate::shell::state::StripId> {
+        let strip = {
+            let mut tree = self.tree_mut();
+            let ws = tree.desktop.active_workspace_mut()?;
+            if let Some(current) = current.filter(|id| ws.strips.iter().any(|s| s.id == *id)) {
+                return Some(current);
+            }
+            let free = ws
+                .strips
+                .iter()
+                .find(|s| s.window_groups.is_empty() && !claimed(s.id))
+                .map(|s| s.id);
+            if let Some(free) = free {
+                return Some(free);
+            }
+            let strip = crate::shell::state::Strip::new(
+                <crate::shell::state::StripId as crate::shell::state::FreshId>::new(),
+                label.to_owned(),
+            );
+            let id = strip.id;
+            ws.strips.push(strip);
+            tree.flush_to_disk();
+            id
+        };
+        self.bump();
+        Some(strip)
+    }
+
+    /// Remove `strip` from the active workspace if it holds no window and is
+    /// not the workspace's last strip. Focus moves to the first strip when it
+    /// had it. Returns whether the strip went.
+    pub fn remove_strip_if_empty(&mut self, strip: crate::shell::state::StripId) -> bool {
+        let removed = {
+            let mut tree = self.tree_mut();
+            let Some(ws) = tree.desktop.active_workspace_mut() else {
+                return false;
+            };
+            let Some(index) = ws
+                .strips
+                .iter()
+                .position(|s| s.id == strip && s.window_groups.is_empty())
+            else {
+                return false;
+            };
+            if ws.strips.len() < 2 {
+                return false;
+            }
+            let ws_id = ws.id;
+            ws.strips.remove(index);
+            let first = ws.strips.first().map(|s| s.id);
+            if tree.desktop.active_strip.get(&ws_id) == Some(&strip)
+                && let Some(first) = first
+            {
+                tree.desktop.active_strip.insert(ws_id, first);
+            }
+            tree.desktop.active_group.remove(&strip);
+            tree.flush_to_disk();
+            true
+        };
+        if removed {
+            self.bump();
+        }
+        removed
     }
 
     pub fn switch_workspace(&mut self, dir: i32) -> bool {
@@ -3373,5 +3515,21 @@ mod active_tab_tests {
 
         broker_tree_epoch_invalidates_chrome_exactly_once();
         active_exposure_snapshot_is_sorted_deduplicated_and_edge_triggered();
+    }
+
+    #[test]
+    fn acting_as_a_principal_pins_every_room_to_it() {
+        let tree = tree_with(100);
+        let room = tree.desktop.workspaces[0].room;
+        let chrome = ChromeState::new_with_fixture_handle(
+            tree.shared(),
+            crate::shell::hosted_inputs::HostedTileInputs::fixture()
+                .expect("hosted fixture inputs"),
+        );
+        chrome.borrow_mut().act_as("renderer".into());
+        let state = chrome.borrow();
+        assert_eq!(state.local_user_id, "renderer");
+        assert_eq!(state.local_user_for_room(&room), "renderer");
+        assert_eq!(state.active_local_user(), "renderer");
     }
 }

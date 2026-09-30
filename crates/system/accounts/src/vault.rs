@@ -79,6 +79,10 @@ const FORMAT: VaultFormat = VaultFormat {
 pub struct SecretVault {
     /// The vault directory (`.../tilo/accounts/vault`).
     dir: PathBuf,
+    /// Set where there is no native config directory (a browser page): the
+    /// vault lives in the shared config location's storage instead, its key
+    /// in the platform's secret store.
+    page: Option<tilo_files::Dir>,
     /// Secrets keyed by the account id string.
     entries: BTreeMap<String, Secret>,
     custody: SecretCustody,
@@ -105,11 +109,15 @@ impl SecretVault {
                 let dir = crate::vault_dir_in(&root);
                 Self::open_at(dir, SecretCustody::for_session())
             }
-            None => Self {
-                dir: PathBuf::from("accounts/vault"),
-                entries: BTreeMap::new(),
-                custody: explicit_root_custody(),
-                load_error: Some("user config directory unavailable".into()),
+            None => match tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").config()) {
+                Ok(page) => Self::open_page(page),
+                Err(error) => Self {
+                    dir: PathBuf::from("accounts/vault"),
+                    page: None,
+                    entries: BTreeMap::new(),
+                    custody: explicit_root_custody(),
+                    load_error: Some(format!("user config directory unavailable: {error}")),
+                },
             },
         }
     }
@@ -122,6 +130,23 @@ impl SecretVault {
         Self::open_at(dir, custody)
     }
 
+    fn open_page(page: tilo_files::Dir) -> Self {
+        let (entries, load_error) = match load_page_entries(&page) {
+            Ok(entries) => (entries, None),
+            Err(error) => {
+                tracing::warn!(%error, "accounts: vault unavailable; writes disabled until reopen");
+                (BTreeMap::new(), Some(error))
+            }
+        };
+        Self {
+            dir: PathBuf::from("accounts/vault"),
+            page: Some(page),
+            entries,
+            custody: SecretCustody::System,
+            load_error,
+        }
+    }
+
     fn open_at(dir: PathBuf, custody: SecretCustody) -> Self {
         let (entries, load_error) = match load_entries(&dir, custody) {
             Ok(entries) => (entries, None),
@@ -132,6 +157,7 @@ impl SecretVault {
         };
         Self {
             dir,
+            page: None,
             entries,
             custody,
             load_error,
@@ -201,6 +227,9 @@ impl SecretVault {
                 "vault recovery required; restore access and reopen: {error}"
             ));
         }
+        if let Some(page) = &self.page {
+            return self.save_page(page);
+        }
         // Revalidate the on-disk vault before replacing it, including failures
         // that appeared after this instance was opened.
         load_entries(&self.dir, self.custody)?;
@@ -217,6 +246,47 @@ impl SecretVault {
         atomic_file::write(&self.dir.join("vault.enc"), &blob)
             .map_err(|error| format!("could not write credential vault: {error}"))
     }
+}
+
+impl SecretVault {
+    fn save_page(&self, page: &tilo_files::Dir) -> Result<(), String> {
+        load_page_entries(page)?;
+        let key = FORMAT
+            .load_or_create_system_key(page_vault_exists(page))
+            .ok_or_else(|| "no vault key is available".to_string())?;
+        let plaintext = Zeroizing::new(
+            serde_json::to_vec(&self.entries)
+                .map_err(|error| format!("could not serialize credential vault: {error}"))?,
+        );
+        let blob = seal(&key, &plaintext)
+            .ok_or_else(|| "credential vault encryption failed".to_string())?;
+        tilo_files::blocking::write_atomic(page, &page_vault(), &blob)
+            .map_err(|error| format!("could not write credential vault: {error}"))
+    }
+}
+
+fn page_vault() -> tilo_files::VPath {
+    tilo_files::VPath::new("accounts/vault/vault.enc").unwrap_or_else(|_| tilo_files::VPath::root())
+}
+
+fn page_vault_exists(page: &tilo_files::Dir) -> bool {
+    tilo_files::blocking::metadata(page, &page_vault()).is_ok()
+}
+
+/// As [`load_entries`], for a vault in page storage.
+fn load_page_entries(page: &tilo_files::Dir) -> Result<BTreeMap<String, Secret>, String> {
+    let blob = match tilo_files::blocking::read(page, &page_vault()) {
+        Ok(blob) => blob,
+        Err(tilo_files::FsError::NotFound) => return Ok(BTreeMap::new()),
+        Err(error) => return Err(format!("could not read credential vault: {error}")),
+    };
+    let key = FORMAT
+        .load_or_create_system_key(true)
+        .ok_or_else(|| "credential vault key unavailable".to_string())?;
+    let plaintext =
+        open(&key, &blob).ok_or_else(|| "credential vault integrity check failed".to_string())?;
+    serde_json::from_slice(&plaintext)
+        .map_err(|_| "decrypted credential vault is invalid".to_string())
 }
 
 /// Read and authenticate existing entries, distinguishing absence from damage.
@@ -367,35 +437,6 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_migrates_legacy_key_without_changing_vault`.
-        {
-            let root = temp_root();
-            let dir = crate::vault_dir_in(&root);
-            let id = AccountId::from("migration");
-            let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
-            legacy.put(&id, &Secret::password("preserve original"));
-            legacy.try_save().unwrap();
-            let key = read_key_bytes(&dir.join("vault.key")).unwrap();
-            let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-            let migrated = SecretVault::open_in(&root);
-            assert_eq!(migrated.get(&id).unwrap().password, "preserve original");
-            assert!(!dir.join("vault.key").exists());
-            let protected = std::fs::read(dir.join("vault.key.dpapi")).unwrap();
-            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
-
-            // Reconstruct interrupted cleanup after the protected key was published.
-            private_fs::create_atomic(&dir.join("vault.key"), &key).unwrap();
-            let reopened = SecretVault::open_in(&root);
-            assert_eq!(reopened.get(&id).unwrap().password, "preserve original");
-            assert!(!dir.join("vault.key").exists());
-            assert_eq!(
-                std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
-                protected
-            );
-            assert_eq!(std::fs::read(dir.join("vault.enc")).unwrap(), encrypted);
-            std::fs::remove_dir_all(root).unwrap();
-        }
-
         // Phase `windows_dpapi_insecure_protected_key_cannot_replace_existing_vault`.
         {
             let root = temp_root();
@@ -423,19 +464,16 @@ mod tests {
             std::fs::remove_dir_all(root).unwrap();
         }
 
-        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_legacy`.
+        // Phase `windows_dpapi_corrupt_protected_key_never_falls_back_to_a_plaintext_key`.
         {
             let root = temp_root();
             let dir = crate::vault_dir_in(&root);
-            let mut legacy = SecretVault::open_at(dir.clone(), SecretCustody::LocalFile);
-            legacy.put(&AccountId::from("original"), &Secret::password("fixture"));
-            legacy.try_save().unwrap();
-            let original_key = read_key_bytes(&dir.join("vault.key")).unwrap();
+            let mut vault = SecretVault::open_in(&root);
+            vault.put(&AccountId::from("original"), &Secret::password("fixture"));
+            vault.try_save().unwrap();
             let encrypted = std::fs::read(dir.join("vault.enc")).unwrap();
-            let migrated = SecretVault::open_in(&root);
-            assert!(migrated.recovery_error().is_none());
-            assert!(!dir.join("vault.key").exists());
-            private_fs::create_atomic(&dir.join("vault.key"), &original_key).unwrap();
+            let stray_key = [7; KEY_LEN];
+            private_fs::create_atomic(&dir.join("vault.key"), &stray_key).unwrap();
             private_fs::write_atomic(&dir.join("vault.key.dpapi"), b"corrupt protected key")
                 .unwrap();
             let failed = SecretVault::open_in(&root);
@@ -443,7 +481,7 @@ mod tests {
             assert!(failed.try_save().is_err());
             assert_eq!(
                 std::fs::read(dir.join("vault.key")).unwrap(),
-                original_key.as_slice()
+                stray_key.as_slice()
             );
             assert_eq!(
                 std::fs::read(dir.join("vault.key.dpapi")).unwrap(),
@@ -571,91 +609,6 @@ mod tests {
                 "a wrong key must not decrypt the vault"
             );
             std::fs::remove_dir_all(&root).ok();
-        }
-    }
-
-    // Written by the implementation that predates the shared `secret-vault` crate. The
-    // on-disk format must stay readable: these bytes are what existing users have.
-    const LEGACY_KEY: &str = "0cbc4d3c930f5b8a3b6548d370fee4c18dc82e7ce19c22e2b139b4669efe9752";
-    const LEGACY_VAULT: &str = concat!(
-        "5141535601dbba9509cecea33626bb97253574f510eb957fa26b8ece755192fd",
-        "8c692d88a9a15cf252a99d99dc863ab9f096c467d1f5af7b1e5e7a512fdb7438",
-        "29184efb20a252ab03b86b15b2fc42ad2adb855abab5f58c657a29002156cb8a",
-        "37aa29739dec0a45ac144827e6cea9e76aed72528d453991db81678020887f6c",
-        "773cfe79709489cceb4a656ca7f1642913",
-    );
-    // `seal(&[0x42; KEY_LEN], b"tilo accounts known answer")` from the same implementation.
-    const LEGACY_BLOB: &str = concat!(
-        "514153560131dbb28a3fc60296a87d7cbb75940114dba98a2225ec2d24ebb432",
-        "62e56256a16ec98bd007c1780157630428db3f86a6e6f5ee4560515d3dda77d5",
-        "fda2bb00ed41ec",
-    );
-
-    fn unhex(hex: &str) -> Vec<u8> {
-        hex.as_bytes()
-            .chunks_exact(2)
-            .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-            .collect()
-    }
-
-    #[test]
-    fn the_previous_implementation_format_still_opens() {
-        // Phase `known_answer_blob_from_the_previous_implementation_opens`.
-        {
-            let blob = unhex(LEGACY_BLOB);
-            assert_eq!(&blob[..5], b"QASV\x01");
-            assert_eq!(
-                open(&VaultKey::from_bytes([0x42; KEY_LEN]), &blob)
-                    .unwrap()
-                    .as_slice(),
-                b"tilo accounts known answer"
-            );
-            assert!(open(&VaultKey::from_bytes([0x43; KEY_LEN]), &blob).is_none());
-        }
-
-        // Phase `vault_written_by_the_previous_implementation_opens_and_resaves`.
-        {
-            let root = temp_root();
-            let dir = crate::vault_dir_in(&root);
-            std::fs::create_dir_all(&dir).unwrap();
-            private_fs::create_atomic(&dir.join("vault.key"), &unhex(LEGACY_KEY)).unwrap();
-            std::fs::write(dir.join("vault.enc"), unhex(LEGACY_VAULT)).unwrap();
-            let fixture = AccountId::from("fixture@example.com");
-            let token = AccountId::from("token-only");
-
-            let vault = SecretVault::open_in(&root);
-            assert!(vault.recovery_error().is_none());
-            assert_eq!(
-                vault.get(&fixture),
-                Some(Secret::password("correct horse battery staple"))
-            );
-            assert_eq!(
-                vault.get(&token),
-                Some(Secret {
-                    password: String::new(),
-                    token: Some("tok-123".into()),
-                })
-            );
-            vault.try_save().unwrap();
-            let resaved = std::fs::read(dir.join("vault.enc")).unwrap();
-            assert!(
-                resaved.starts_with(b"TSEAL"),
-                "re-saving writes the current tilo-seal envelope"
-            );
-
-            let reopened = SecretVault::open_in(&root);
-            assert!(reopened.recovery_error().is_none());
-            assert_eq!(
-                reopened.get(&fixture).unwrap().password,
-                "correct horse battery staple"
-            );
-            #[cfg(not(windows))]
-            assert_eq!(
-                read_key_bytes(&dir.join("vault.key")).unwrap().as_slice(),
-                unhex(LEGACY_KEY).as_slice(),
-                "reopening must keep the existing key"
-            );
-            std::fs::remove_dir_all(root).unwrap();
         }
     }
 

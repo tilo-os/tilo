@@ -3,17 +3,17 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
+use ui_core::widget::{AppModel, ModelPath};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use tilo_resource::{Id, Resource};
-use ui_core::automerge::{AutoCommit, ObjId};
 use ui_core::presence::PresenceCtx;
 use ui_core::text_render::TextRenderer;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::{Affine, Point, Rect};
 use ui_core::widget::{ContextMenu, Element, MenuItem, TaffyTreeExt, Widget};
-use ui_core::winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
+use ui_core::winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use ui_core::winit::keyboard::{Key, NamedKey};
 use ui_core::{Theme, taffy};
 
@@ -184,34 +184,17 @@ impl<R: Resource> Each<R> {
     }
 
     /// Route an event to the row menu. Returns whether it was consumed.
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::trivially_copy_pass_by_ref,
-        reason = "forwards the toolkit's positional `Widget::handle_event` arguments to the menu"
-    )]
-    fn menu_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) -> bool {
+    fn menu_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
-            self.menu.cursor = Point::new(position.x / scale, position.y / scale);
+            self.menu.cursor =
+                Point::new(position.x / ctx.scale_factor, position.y / ctx.scale_factor);
         }
         if self.menu.menu.is_open() {
-            self.menu.menu.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, node, taffy,
-            );
+            self.menu.menu.handle_event(event, ctx);
             if let Some(index) = self.menu.menu.take_selection() {
                 self.choose(index);
             }
-            return *handled;
+            return *ctx.handled;
         }
         let target = match event {
             WindowEvent::MouseInput {
@@ -233,7 +216,7 @@ impl<R: Resource> Each<R> {
                 ..
             } if matches!(logical_key, Key::Named(NamedKey::ContextMenu))
                 || (matches!(logical_key, Key::Named(NamedKey::F10))
-                    && modifiers.state().shift_key()) =>
+                    && ctx.modifiers.state().shift_key()) =>
             {
                 self.focused_row().map(|row| {
                     let rect = row.widget.get_rect();
@@ -246,7 +229,7 @@ impl<R: Resource> Each<R> {
             return false;
         };
         if self.open_menu(&item, at) {
-            *handled = true;
+            *ctx.handled = true;
             return true;
         }
         false
@@ -254,7 +237,7 @@ impl<R: Resource> Each<R> {
 }
 
 impl<R: Resource> Widget for Each<R> {
-    fn sync(&mut self, state: &mut AutoCommit, path: &ObjId) {
+    fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         if self.live.revision() != self.built {
             self.built = self.live.revision();
             self.reconcile();
@@ -265,7 +248,7 @@ impl<R: Resource> Widget for Each<R> {
     }
 
     // The per-frame update pass drives retained models; every row sees it.
-    fn update(&mut self, state: &mut AutoCommit, path: &ObjId) -> bool {
+    fn update(&mut self, state: &mut AppModel, path: &ModelPath) -> bool {
         let mut changed = false;
         for row in &mut self.rows {
             changed |= row.widget.update(state, path);
@@ -334,21 +317,8 @@ impl<R: Resource> Widget for Each<R> {
         }
     }
 
-    fn handle_event(
-        &mut self,
-        event: &WindowEvent,
-        scale: f64,
-        modifiers: &Modifiers,
-        doc: &mut AutoCommit,
-        path: &ObjId,
-        handled: &mut bool,
-        focus: &mut Option<NodeId>,
-        node: NodeId,
-        taffy: &TaffyTree<()>,
-    ) {
-        if self.menu_event(
-            event, scale, modifiers, doc, path, handled, focus, node, taffy,
-        ) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+        if self.menu_event(event, ctx) {
             return;
         }
         if let Some(index) = self
@@ -357,17 +327,15 @@ impl<R: Resource> Widget for Each<R> {
             .position(|row| row.widget.wants_pointer_capture())
         {
             if let (Some(row), Some(&child)) = (self.rows.get_mut(index), self.nodes.get(index)) {
-                row.widget.handle_event(
-                    event, scale, modifiers, doc, path, handled, focus, child, taffy,
-                );
+                row.widget
+                    .handle_event(event, &mut ctx.reborrow(ctx.path, child));
             }
             return;
         }
         for (row, &child) in self.rows.iter_mut().zip(&self.nodes) {
-            row.widget.handle_event(
-                event, scale, modifiers, doc, path, handled, focus, child, taffy,
-            );
-            if *handled {
+            row.widget
+                .handle_event(event, &mut ctx.reborrow(ctx.path, child));
+            if *ctx.handled {
                 break;
             }
         }

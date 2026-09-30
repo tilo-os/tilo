@@ -649,8 +649,8 @@ fn merge_styles_xml(
             if present.contains(id) {
                 continue;
             }
-            if let Some(props) = styles.get(id) {
-                defs.push_str(&para_style_def_xml(id, props));
+            if let Some(def) = style_def_xml(id, styles) {
+                defs.push_str(&def);
             }
         }
         let has_doc_defaults = bytes
@@ -677,14 +677,44 @@ fn merge_styles_xml(
         if let Some(lang) = doc_lang {
             s.push_str(&doc_defaults_lang_xml(lang));
         }
+        if !refs.contains(NORMAL_STYLE_ID) {
+            s.push_str(NORMAL_STYLE_XML);
+        }
         for id in refs {
-            if let Some(props) = styles.get(id) {
-                s.push_str(&para_style_def_xml(id, props));
+            if let Some(def) = style_def_xml(id, styles) {
+                s.push_str(&def);
             }
         }
         s.push_str("</w:styles>");
         s.into_bytes()
     }
+}
+
+const NORMAL_STYLE_ID: &str = "Normal";
+/// The default paragraph style a new styles part names, so a paragraph without
+/// a `w:pStyle` has one in every reader.
+const NORMAL_STYLE_XML: &str = r#"<w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/><w:qFormat/></w:style>"#;
+
+/// The definition for a referenced style id: the document's own style, else Word's built-in
+/// heading for a `HeadingN` a heading block references, so other readers see a heading.
+fn style_def_xml(id: &str, styles: &BTreeMap<String, BTreeMap<String, AttrVal>>) -> Option<String> {
+    if let Some(props) = styles.get(id) {
+        return Some(para_style_def_xml(id, props));
+    }
+    let level = id
+        .strip_prefix("Heading")
+        .and_then(|n| n.parse::<u8>().ok())
+        .filter(|n| (1..=6).contains(n))?;
+    let half_points = match level {
+        1 => 32,
+        2 => 26,
+        3 => 24,
+        _ => 22,
+    };
+    let outline = level.saturating_sub(1);
+    Some(format!(
+        r#"<w:style w:type="paragraph" w:styleId="{id}"><w:name w:val="heading {level}"/><w:next w:val="Normal"/><w:uiPriority w:val="9"/><w:qFormat/><w:pPr><w:keepNext/><w:keepLines/><w:spacing w:before="240" w:after="80"/><w:outlineLvl w:val="{outline}"/></w:pPr><w:rPr><w:b/><w:sz w:val="{half_points}"/></w:rPr></w:style>"#
+    ))
 }
 
 /// Insert `frag` right after the `<w:styles …>` open tag, so `<w:docDefaults>` lands ahead
@@ -1751,6 +1781,7 @@ fn render_block(
                 _ => 1,
             };
             let style = format!(r#"<w:pStyle w:val="Heading{level}"/>"#);
+            named_refs.insert(format!("Heading{level}"));
             let ppr = block_ppr(b, &[(b"w:pStyle", style)], ids);
             let _ = write!(
                 body,
@@ -2056,6 +2087,30 @@ mod tests {
             import_docx(&exported, &mut d2);
             let m2 = norm(&d2.materialize());
             assert_eq!(m1, m2, "model round-trips through .docx export then import");
+        }
+        // Phase `a_heading_defines_the_built_in_style_it_references`.
+        {
+            let mut d = Document::new();
+            let h = d.insert_block(None, "heading");
+            d.splice_text(&h, 0, 0, "Q3 Planning");
+            d.as_mut().set_attr(&h, "level", 2_i64);
+            let c = DocxContainer::read(&export_docx(&d)).unwrap();
+            let styles = String::from_utf8(c.get("word/styles.xml").unwrap().to_vec()).unwrap();
+            assert!(styles.contains(r#"w:styleId="Heading2""#), "{styles}");
+            assert!(
+                styles.contains(r#"<w:name w:val="heading 2"/>"#),
+                "{styles}"
+            );
+            assert!(styles.contains(r#"<w:outlineLvl w:val="1"/>"#), "{styles}");
+            assert!(
+                styles.contains(r#"w:default="1" w:styleId="Normal""#),
+                "a new styles part names the default paragraph style: {styles}"
+            );
+            let content_types = c.get("[Content_Types].xml").unwrap();
+            assert!(
+                String::from_utf8_lossy(content_types).contains("/word/styles.xml"),
+                "the styles part is declared"
+            );
         }
         // Phase `heading_paragraph_props_roundtrip`.
         {

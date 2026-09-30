@@ -40,7 +40,6 @@ pub mod model;
 mod priority_contacts;
 pub mod responsive;
 pub mod search_provider;
-pub mod storage;
 pub mod vcard;
 
 pub use app::ContactsApp;
@@ -50,6 +49,14 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(ContactsApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.contacts", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Contacts")
 }
 
 #[cfg(test)]

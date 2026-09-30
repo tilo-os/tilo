@@ -145,6 +145,8 @@ pub enum SlidesOperation {
     SaveAs {
         path: Option<String>,
     },
+    /// The deck's [outline](crate::outline).
+    Read,
 }
 
 /// User-visible audience-output policies. Kept serializable at the action
@@ -207,6 +209,12 @@ fn operation(id: &str, label: &str, kind: OperationKind, value: SlidesOperation)
         | SlidesOperation::StartPresentationOn { .. }
         | SlidesOperation::EndPresentation => spec.with_contract(ActionContract::view()),
         SlidesOperation::Open { .. } | SlidesOperation::SaveAs { .. } => spec.destructive(),
+        SlidesOperation::Read => spec.with_contract(ActionContract {
+            result: ResultSpec::Json {
+                schema: crate::outline::result_schema(),
+            },
+            ..ActionContract::view()
+        }),
     }
 }
 
@@ -537,6 +545,14 @@ pub enum SlidesAction {
         element_id: String,
         edit: qdoc_rich_text::RichTextAction,
     },
+    /// Replace the words of a slide's title (its first text box) and/or body
+    /// (its second), a paragraph per line. `slide` is the slide's id, or its
+    /// number counting from 1 when no slide has that id.
+    SetSlideText {
+        slide: String,
+        title: Option<String>,
+        body: Option<String>,
+    },
     /// Rewrite the deck's first-format text elements as rich text, in place
     /// and once (see [`SlidesDoc::upgrade`]).
     UpgradeText,
@@ -675,6 +691,71 @@ fn validate_element(data: &ElementData) -> Result<(), ActionError> {
 
 fn deck_for_action(doc: &Doc) -> Result<crate::model::Deck, ActionError> {
     SlidesDoc::load(doc).ok_or_else(|| refused("the shared deck is unavailable"))
+}
+
+/// [`SlidesAction::SetSlideText`]: every text is checked and every text box
+/// found before the first one is rewritten.
+fn set_slide_text(doc: &mut Doc, slide: &str, texts: [Option<&str>; 2]) -> Result<(), ActionError> {
+    let deck = deck_for_action(doc)?;
+    let target = deck
+        .slides
+        .iter()
+        .find(|candidate| candidate.id == slide)
+        .or_else(|| {
+            let number = slide.parse::<usize>().ok()?;
+            deck.slides.get(number.checked_sub(1)?)
+        })
+        .ok_or_else(|| refused("no slide has that id or number"))?;
+    let boxes: Vec<&str> = target
+        .elements
+        .iter()
+        .filter(|element| element.kind == ElementKind::Text)
+        .map(|element| element.id.as_str())
+        .collect();
+    let mut edits = Vec::new();
+    for (index, text) in texts.into_iter().enumerate() {
+        let Some(text) = text else { continue };
+        if text.trim().is_empty() || text.chars().count() > MAX_TEXT_CHARS {
+            return Err(refused(
+                "slide text must hold 1 to 100000 characters; delete-element removes a text box",
+            ));
+        }
+        let element = boxes.get(index).ok_or_else(|| {
+            refused(if index == 0 {
+                "the slide has no text box for a title; add one with add-element kind text"
+            } else {
+                "the slide has no second text box for a body; add one with add-element kind text"
+            })
+        })?;
+        let body = SlidesDoc::element_body(doc, &target.id, element)
+            .ok_or_else(|| refused("the text box is not rich text"))?;
+        edits.push((body, paragraphs_markdown(text)));
+    }
+    if edits.is_empty() {
+        return Err(refused("give a title, a body or both"));
+    }
+    for (body, markdown) in edits {
+        qdoc_rich_text::RichTextAction::ReplaceBody { markdown }.apply_under(doc, &body)?;
+    }
+    Ok(())
+}
+
+/// `text` as Markdown that imports to one plain paragraph per line: every
+/// ASCII punctuation mark is escaped, so nothing in it reads as syntax.
+fn paragraphs_markdown(text: &str) -> String {
+    let mut markdown = String::with_capacity(text.len() * 2);
+    for line in text.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        if !markdown.is_empty() {
+            markdown.push_str("\n\n");
+        }
+        for ch in line.chars() {
+            if ch.is_ascii_punctuation() {
+                markdown.push('\\');
+            }
+            markdown.push(ch);
+        }
+    }
+    markdown
 }
 
 /// Resolve a durable element by its canonical id. The positional field in the
@@ -878,11 +959,16 @@ impl Action for SlidesAction {
                 }
                 return Ok(());
             }
+            SlidesAction::SetSlideText { slide, title, body } => {
+                return set_slide_text(doc, slide, [title.as_deref(), body.as_deref()]);
+            }
             _ => {}
         }
         let deck = deck_for_action(doc)?;
         match self {
-            SlidesAction::EditElementText { .. } | SlidesAction::UpgradeText => {}
+            SlidesAction::EditElementText { .. }
+            | SlidesAction::SetSlideText { .. }
+            | SlidesAction::UpgradeText => {}
             SlidesAction::InsertSlide { at, slide } => {
                 if *at > deck.slides.len() || deck.slides.len() >= MAX_DECK_SLIDES {
                     return Err(refused("slide insertion position or deck size is invalid"));
@@ -1402,6 +1488,30 @@ pub fn new_slide_template() -> Slide {
     s
 }
 
+/// A new slide with its words already in place: the starter's cover for
+/// `layout: title`, else [`new_slide_template`]. Omitted text keeps the
+/// template's placeholder.
+pub fn authored_slide(title: Option<&str>, body: Option<&str>, layout: Option<&str>) -> Slide {
+    let cover = (layout == Some("title"))
+        .then(|| crate::model::starter_deck().slides.into_iter().next())
+        .flatten();
+    let mut slide = cover.unwrap_or_else(new_slide_template);
+    let texts = slide
+        .elements
+        .iter_mut()
+        .filter(|element| element.kind == ElementKind::Text);
+    for (index, (element, text)) in texts.zip([title, body]).enumerate() {
+        let Some(text) = text else { continue };
+        element.text = text.to_owned();
+        element.blocks.clear();
+        if index == 1 && layout != Some("title") {
+            // The template's body is a dimmed placeholder; real content is not.
+            element.fill = "text".into();
+        }
+    }
+    slide
+}
+
 /// The element the toolbar's insert tools add, before the user moves or
 /// styles it.
 pub fn inserted_element_template(kind: ElementKind) -> Element {
@@ -1495,6 +1605,7 @@ pub const MOVE_ELEMENT: &str = "move-element";
 pub const RESTYLE_ELEMENT: &str = "restyle-element";
 pub const DELETE_ELEMENT: &str = "delete-element";
 pub const MOVE_SLIDE: &str = "move-slide";
+pub const SET_SLIDE_TEXT: &str = "set-slide-text";
 
 impl ui::tilo_resource::Resource for SlidesDeck {
     const KIND: &'static str = "slides.deck";
@@ -1602,6 +1713,41 @@ impl ui::tilo_resource::Resource for SlidesDeck {
                 },
             )
             .describe("Reorder the deck: move a slide to another position."),
+            ActionDecl::new(
+                SET_SLIDE_TEXT,
+                "Set slide text",
+                vec![
+                    ActionParam::required(
+                        "slide",
+                        ParamType::Text,
+                        "Slide id, or its number as `read` shows it (1 for the first slide)",
+                    ),
+                    ActionParam::optional("title", ParamType::Text, "New title"),
+                    ActionParam::optional(
+                        "body",
+                        ParamType::Text,
+                        "New body, a paragraph per line (\\n)",
+                    ),
+                ],
+                |args, _| {
+                    let slide = args.text("slide").ok_or("name the `slide`")?;
+                    let slide = slide.strip_prefix("slides.slide:").unwrap_or(slide);
+                    let title = args.text("title").map(str::to_owned);
+                    let body = args.text("body").map(str::to_owned);
+                    if title.is_none() && body.is_none() {
+                        return Err("give a `title`, a `body` or both".into());
+                    }
+                    Ok(SlidesAction::SetSlideText {
+                        slide: slide.to_owned(),
+                        title,
+                        body,
+                    })
+                },
+            )
+            .describe(
+                "Replace the words of a slide's title (its first text box) and/or body (its \
+                 second) as plain text, keeping their place and style.",
+            ),
         ]
     }
 
@@ -1902,17 +2048,38 @@ fn deck_resource(ctx: &SlidesResourceCtx) -> Resource {
     }
     deck = deck.with_action(file_operation("open", "Open presentation", false));
     deck = deck.with_action(file_operation("save-as", "Save presentation", true));
+    deck = deck.with_action(read_operation());
 
     // Deck-level: add a new slide after the whole deck. The slide's ids are
     // minted when the palette dispatches (a genuinely new slide), so this spec
     // is not asserted for byte-equality against a builder — every other action
     // here is deterministic and is.
-    let at = ctx.slides.len();
-    deck = deck.with_action(immediate_spec(
-        "add-slide",
-        "Add slide",
-        &insert_slide_with_order_action(&new_slide_template(), resource_rank_for_slot(ctx, at)),
-    ));
+    let rank = resource_rank_for_slot(ctx, ctx.slides.len());
+    deck = deck.with_action(
+        ActionSpec::typed(
+            "add-slide",
+            "Add slide",
+            "optional title and body",
+            ExecutionLocus::ClientLocal,
+            vec![
+                ActionParam::optional("title", ParamType::Text, "The slide's title"),
+                ActionParam::optional(
+                    "body",
+                    ParamType::Text,
+                    "Text below the title, a line per paragraph (a subtitle on a title slide)",
+                ),
+                ActionParam::optional("layout", ParamType::Text, "title: a cover slide")
+                    .with_choices(["title", "title-content"]),
+            ],
+            move |args| {
+                encode(&insert_slide_with_order_action(
+                    &authored_slide(args.text("title"), args.text("body"), args.text("layout")),
+                    rank,
+                ))
+            },
+        )
+        .reversible(),
+    );
 
     // Deck-level: set the accent theme, one row per palette.
     for kind in PaletteKind::ALL {
@@ -2077,11 +2244,53 @@ fn notes_resource(sr: &SlideResource) -> Resource {
     ))
 }
 
+/// The deck's own edits answer with its [outline](crate::outline), so their
+/// caller sees the result without reading the deck again. Only these: every
+/// declared result grows the catalogue the deck publishes to the broker,
+/// whose reply is capped, and a slide or element resolved by id keeps the
+/// contract the catalogue listed.
+const RETURNING_OUTLINE: &[&str] = &[
+    "add-slide",
+    ADD_ELEMENT,
+    MOVE_ELEMENT,
+    RESTYLE_ELEMENT,
+    DELETE_ELEMENT,
+    MOVE_SLIDE,
+    SET_SLIDE_TEXT,
+];
+
+fn returning_outline(mut resource: Resource) -> Resource {
+    if resource.id.as_str() != "slides.deck" {
+        return resource;
+    }
+    for action in &mut resource.actions {
+        if RETURNING_OUTLINE.contains(&action.id.as_str()) && action.kind == OperationKind::Document
+        {
+            action.contract.result = ResultSpec::Json {
+                schema: crate::outline::result_schema(),
+            };
+        }
+    }
+    resource
+}
+
+fn read_operation() -> ActionSpec {
+    operation(
+        "read",
+        "Read deck as text",
+        OperationKind::Effect,
+        SlidesOperation::Read,
+    )
+    .with_description(
+        "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. add-slide, set-slide-text, move-slide and the element edits return this too",
+    )
+}
+
 /// Build the bounded contextual resource tree shown by the palette. Search and
 /// agents resolve everything beyond this window by stable id through
 /// [`resolve_resource`], which always rebuilds from the current deck mirror.
 pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Resource> {
-    vec![deck_resource(ctx)]
+    vec![returning_outline(deck_resource(ctx))]
 }
 
 /// Resolve exactly one current durable deck resource without growing the
@@ -2089,6 +2298,10 @@ pub fn provide_resources(ctx: &SlidesResourceCtx, _doc: &AutoCommit) -> Vec<Reso
 /// agent and collaboration requests are refused instead of being rebound by
 /// position.
 pub fn resolve_resource(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
+    resolve_unannotated(ctx, id).map(returning_outline)
+}
+
+fn resolve_unannotated(ctx: &SlidesResourceCtx, id: &str) -> Option<Resource> {
     if id == "slides.deck" {
         return Some(deck_resource(ctx));
     }
@@ -2178,7 +2391,7 @@ mod tests {
     /// What the door builds for a declared deck operation, from the tree the
     /// app publishes for `doc`.
     fn through_door(doc: &AutoCommit, action: &str, args: serde_json::Value) -> EncodedAction {
-        let resources = Widget::resources(&app_for(doc), doc);
+        let resources = ui::resources::resources(&app_for(doc), doc);
         tilo_actions::door::encode_json(
             &resources,
             &ActionAddress::new("slides.deck", action),
@@ -2229,10 +2442,57 @@ mod tests {
         ]})
     }
 
+    fn set_text_args() -> serde_json::Value {
+        serde_json::json!({"slide": "2", "title": "Agenda", "body": "Goals\nTimeline"})
+    }
+
+    /// `read` and every deck edit declare the outline, and the app answers
+    /// an edit with the deck it left, titled and with its handles.
+    #[test]
+    fn deck_edits_and_read_answer_with_the_outline() {
+        let (_, mut doc) = seeded();
+        let app = app_for(&doc);
+        let resources = ui::resources::resources(&app, &doc);
+        let published = resources
+            .iter()
+            .find(|resource| resource.id.as_str() == "slides.deck")
+            .expect("the deck is published");
+        for id in [SET_SLIDE_TEXT, ADD_ELEMENT, MOVE_SLIDE, "read"] {
+            let action = published
+                .actions
+                .iter()
+                .find(|action| action.id == id)
+                .unwrap_or_else(|| panic!("`{id}` is published"));
+            assert_eq!(
+                action.contract.result,
+                ResultSpec::Json {
+                    schema: crate::outline::result_schema()
+                },
+                "{id}"
+            );
+        }
+
+        let encoded = through_door(&doc, SET_SLIDE_TEXT, set_text_args());
+        let action: SlidesAction = serde_json::from_slice(&encoded.payload).expect("decodes");
+        action.apply(&mut doc).expect("set-slide-text applies");
+        let second = deck(&doc).slides[1].id.clone();
+        let outline = ui::resources::document_action_result(
+            &app_for(&doc),
+            &doc,
+            &ActionAddress::new("slides.deck", SET_SLIDE_TEXT),
+            &[],
+        )
+        .and_then(|value| value.as_str().map(str::to_owned))
+        .expect("the edit answers with the outline");
+        let slide = format!("\nSlide 2 (title-content) {{#{second}}}\n# Agenda {{#");
+        assert!(outline.contains(&slide), "{outline}");
+        assert!(outline.contains("\nGoals↵Timeline {#"), "{outline}");
+    }
+
     ui::action_contract_tests! {
         seed: seeded().1,
         registry: registry(),
-        resources: |doc| Widget::resources(&app_for(doc), doc),
+        resources: |doc| ui::resources::resources(&app_for(doc), doc),
         palette: ["Add slide", "Delete slide", "Delete element", "Start presentation"],
         replay: [
             set_background => |doc| encode(&set_slide_background_action(
@@ -2259,6 +2519,7 @@ mod tests {
                 "element": deck(doc).slides[1].elements[0].id,
             })),
             door_move_slide => |doc| through_door(doc, MOVE_SLIDE, move_slide_args(doc)),
+            door_set_slide_text => |doc| through_door(doc, SET_SLIDE_TEXT, set_text_args()),
             door_group => |doc| through_door(doc, ui::tilo_resource::GROUP, group_args(doc)),
             door_apply => |doc| through_door(doc, ui::tilo_resource::APPLY, serde_json::json!({
                 "action": { "SetSlideBackground": {
@@ -2275,6 +2536,7 @@ mod tests {
             door_resize_element => |doc| through_door(doc, MOVE_ELEMENT, resize_args(doc)),
             door_restyle_element => |doc| through_door(doc, RESTYLE_ELEMENT, restyle_args(doc)),
             door_move_slide => |doc| through_door(doc, MOVE_SLIDE, move_slide_args(doc)),
+            door_set_slide_text => |doc| through_door(doc, SET_SLIDE_TEXT, set_text_args()),
             door_group => |doc| through_door(doc, ui::tilo_resource::GROUP, group_args(doc)),
         ],
         encodes: [
@@ -2307,7 +2569,7 @@ mod tests {
         // bring-front / send-back). Drives the real resource hook.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             assert_eq!(resources.len(), 1, "one deck root");
             let deck = &resources[0];
             assert_eq!(deck.kind, "slides.deck");
@@ -2347,7 +2609,7 @@ mod tests {
         // Case `nested_view_resources_export_stable_broker_addresses`.
         {
             let (app, doc) = seeded();
-            let resources = Widget::resources(&app, &doc);
+            let resources = ui::resources::resources(&app, &doc);
             let slide = &resources[0].children[0];
             let slide_id = slide.id.0.strip_prefix("slides.slide:").unwrap();
             let open_slide = slide

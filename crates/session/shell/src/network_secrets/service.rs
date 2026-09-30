@@ -128,10 +128,6 @@ fn outcome_label(outcome: &Result<super::SettingSecrets, AgentError>) -> &'stati
     }
 }
 
-#[allow(
-    clippy::too_many_arguments,
-    reason = "the D-Bus interface fixes GetSecrets' five arguments; the header and connection are how the caller is checked"
-)]
 #[zbus::interface(name = "org.freedesktop.NetworkManager.SecretAgent")]
 impl SecretAgent {
     /// `NetworkManager` needs secrets for `setting_name` of a connection.
@@ -398,9 +394,14 @@ pub async fn serve(
     queue: PortalDialogQueue,
     roaming: super::store::RoamingWifiSlot,
 ) -> zbus::Result<AgentHandle> {
-    let store = super::store::VaultStore::for_session(roaming).ok_or_else(|| {
-        zbus::Error::Failure("no configuration directory for the network secrets vault".into())
-    })?;
+    // Choosing the vault's custody probes the secret store over a blocking
+    // D-Bus call, which must not run on a runtime thread.
+    let store = tokio::task::spawn_blocking(move || super::store::VaultStore::for_session(roaming))
+        .await
+        .map_err(|error| zbus::Error::Failure(format!("network secrets vault: {error}")))?
+        .ok_or_else(|| {
+            zbus::Error::Failure("no configuration directory for the network secrets vault".into())
+        })?;
     let connection = zbus::Connection::system().await?;
     serve_on(connection, queue, Arc::new(store)).await
 }

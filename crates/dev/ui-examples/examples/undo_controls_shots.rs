@@ -4,7 +4,7 @@
 //! Drives the real pipeline (`sync` → `build_layout` → `compute_layout` →
 //! `apply_layout` → `draw`) over a real [`State`] whose history was built by real
 //! committed actions, and publishes the status through the same
-//! `State::undo_status` → `Widget::set_undo_status` route the host uses — so
+//! `State::undo_status` → `UndoControl::set_undo_status` route the host uses — so
 //! what is painted here is what a user sees.
 //!
 //! Run: `cargo run -p ui-examples --example ui-shots -- undo_controls_shots`
@@ -119,7 +119,7 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
     // to every laid-out widget by sweeping `node_map`.
     let status = state.undo_status(Some(&author()));
     for &w_ptr in node_map.values() {
-        unsafe { (*w_ptr).set_undo_status(&mut || status.clone()) };
+        unsafe { tilo_ui::undo::set_undo_status(&mut (*w_ptr), &mut || status.clone()) };
     }
     println!(
         "  {:>8}  can_undo={} can_redo={} undo={:?}",
@@ -147,14 +147,16 @@ fn shoot(theme: &Theme, out: &Path, case: Case) -> Result<(), String> {
             let mut ft = None;
             row.handle_event(
                 &cursor_at(first.center()),
-                1.0,
-                &winit::event::Modifiers::default(),
-                &mut state.doc,
-                &state.root,
-                &mut handled,
-                &mut ft,
-                node,
-                &taffy,
+                &mut tilo_ui::widget::EventCtx {
+                    scale_factor: 1.0,
+                    modifiers: &winit::event::Modifiers::default(),
+                    state: &mut state.doc,
+                    path: &state.root,
+                    handled: &mut handled,
+                    focus_target: &mut ft,
+                    node_id: node,
+                    taffy: &taffy,
+                },
             );
         }
         // Keyboard focus on the labelled Undo, which is equally available.

@@ -13,6 +13,7 @@ use tilo_desktop::drill_in::{
     SIBLING_GAP, TARGET, TOGGLE_H, TOGGLE_W, centred_text_top, control_radius, leading_glyph,
     paint_control, trailing_glyph, trailing_toggle, type_size,
 };
+use ui::paint::PaintCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
 use ui::widget::drag::{DragController, ListMetrics};
@@ -132,6 +133,14 @@ enum RootStop {
     PowerProfile,
     Edit,
     Tile(RootTile),
+}
+
+/// A drill-in row's focus stop and the glyph, label and detail line it shows.
+struct LinkRow {
+    stop: RootStop,
+    icon: ui::icons::Icon,
+    label: String,
+    detail: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -401,12 +410,12 @@ impl QuickSettingsRoot {
     /// Fit root-page spatial chrome to the available popover height while
     /// leaving text itself at the user's full theme scale. The same effective
     /// factor drives drawing and hit testing through every geometry helper.
+    ///
+    /// Chrome shrinks only when the desktop is too short for the page: a
+    /// panel with room keeps the token rhythm, because a squeezed gap is a
+    /// touch (HIG §7).
     pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
         self.sync_displays(state);
-        // Preserve the refined root's compact footprint even when the host
-        // could offer the old 416px panel. Text remains at its full scale;
-        // only spatial chrome participates in this fit.
-        let height = height.min(320.0);
         let unscaled = self.preferred_height_at(state, 1.0);
         self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.2, 1.2));
         // Rows that had to grow for their type do not shrink with the chrome
@@ -1515,10 +1524,6 @@ impl QuickSettingsRoot {
         self.slider_drag.is_some() || self.edit_drag.is_pending()
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the retained-rendering entry point receives the scene, transform, text, theme, input, and current model together to produce one coherent frame"
-    )]
     pub fn draw(
         &mut self,
         scene: &mut Scene,
@@ -1739,10 +1744,7 @@ impl QuickSettingsRoot {
         let controls = self.visible_controls(state);
         for (i, c) in controls.iter().copied().enumerate() {
             self.draw_control(
-                scene,
-                transform,
-                text,
-                theme,
+                &mut PaintCtx::new(scene, transform, text, theme),
                 cursor,
                 state,
                 i,
@@ -1750,22 +1752,25 @@ impl QuickSettingsRoot {
                 c,
             );
         }
-        for (stop, icon, label, detail) in [
-            (
-                RootStop::Devices,
-                ui::icons::Icon::Monitor,
-                t("qs-devices"),
-                Self::devices_subline(state),
-            ),
-            (
-                RootStop::Clipboard,
-                ui::icons::Icon::ClipboardPaste,
-                t("qs-clipboard"),
-                Self::clipboard_subline(state),
-            ),
+        for row in [
+            LinkRow {
+                stop: RootStop::Devices,
+                icon: ui::icons::Icon::Monitor,
+                label: t("qs-devices"),
+                detail: Self::devices_subline(state),
+            },
+            LinkRow {
+                stop: RootStop::Clipboard,
+                icon: ui::icons::Icon::ClipboardPaste,
+                label: t("qs-clipboard"),
+                detail: Self::clipboard_subline(state),
+            },
         ] {
             self.draw_link_row(
-                scene, transform, text, theme, cursor, state, stop, icon, &label, &detail,
+                &mut PaintCtx::new(scene, transform, text, theme),
+                cursor,
+                state,
+                &row,
             );
         }
         // The power row: battery glyph, profile and detail, chevron — all
@@ -1843,23 +1848,21 @@ impl QuickSettingsRoot {
     }
     /// A drill-in row (Devices, Clipboard): leading glyph, label over a
     /// detail line, trailing chevron — the power row's anatomy at half width.
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a drill-in row's retained rendering needs its shared renderer context plus the stop, glyph and copy it presents"
-    )]
     fn draw_link_row(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Option<Point>,
         state: &QuickSettingsState,
-        stop: RootStop,
-        icon: ui::icons::Icon,
-        label: &str,
-        detail: &str,
+        row: &LinkRow,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
+        let LinkRow {
+            stop,
+            icon,
+            ref label,
+            ref detail,
+        } = *row;
         let colors = &theme.tokens.colors;
         let glyph = Self::glyph_at(self.layout_scale);
         let inset = self.scaled(CONTROL_INSET);
@@ -1910,22 +1913,17 @@ impl QuickSettingsRoot {
             None,
         );
     }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "a control's retained rendering needs its shared renderer context plus the explicit indexed control data for stable focus and geometry"
-    )]
     fn draw_control(
         &self,
-        scene: &mut Scene,
-        transform: Affine,
-        text: &mut TextRenderer,
-        theme: &Theme,
+        ctx: &mut PaintCtx<'_>,
         cursor: Option<Point>,
         s: &QuickSettingsState,
         i: usize,
         count: usize,
         c: QuickSettingsControl,
     ) {
+        let (scene, transform, text, theme) =
+            (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
         let colors = &theme.tokens.colors;
         let r = self.control_card(self.panel, i, count);
         let on = Self::on(c, s);
@@ -2210,12 +2208,15 @@ impl QuickSettingsRoot {
         let edit_count = active
             .len()
             .saturating_add(self.available_edit_controls(state).len());
+        // Control labels are `scale.sm` (HIG §9.6), like the rows above.
+        let label_size = type_size(text, theme.tokens.typography.scale.sm);
         Button::paint(
             scene,
             transform,
             text,
             theme,
             &ButtonFace::new(reset, &t("qs-edit-reset"))
+                .text_size(label_size)
                 .hovered(cursor.is_some_and(|p| reset.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name(&t("qs-edit-reset-a11y")),
@@ -2226,6 +2227,7 @@ impl QuickSettingsRoot {
             text,
             theme,
             &ButtonFace::new(done, &t("qs-edit-done"))
+                .text_size(label_size)
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
@@ -2235,10 +2237,6 @@ impl QuickSettingsRoot {
     /// The grip, label and add/remove button of an edit row, shared by the
     /// resting rows and the drag ghost so the two cannot drift apart. Every
     /// element sits on the row's centre line (HIG §7).
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the row painter receives the scene, transform, text, theme, pointer, row rect and control together to paint one coherent row"
-    )]
     fn draw_edit_row_content(
         &self,
         scene: &mut Scene,
@@ -3112,13 +3110,29 @@ mod tests {
             });
             root.fit_root_layout_to_height(&state, 416.0);
             let height = root.preferred_height(&state);
-            assert!(
-                height <= 320.0,
-                "control-first root should stay materially below the old 416px panel"
-            );
+            assert!(height <= 416.0, "the root fits the height it was offered");
             let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + height);
             root.panel = panel;
             assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
+        }
+
+        fn a_root_with_room_keeps_the_token_rhythm() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState::default();
+            state.radios.wifi_available = true;
+            state.bluetooth_available = true;
+            // A 1080p desktop under the top bar: nothing has to give.
+            root.fit_root_layout_to_height(&state, 1080.0 - 64.0);
+            assert_eq!(root.layout_scale, 1.0);
+            let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + root.preferred_height(&state));
+            root.panel = panel;
+            let count = root.visible_controls(&state).len();
+            let first = root.control_card(panel, 0, count);
+            let second = root.control_card(panel, 1, count);
+            assert_eq!(first.x0 - panel.x0, PANEL_PAD);
+            assert_eq!(panel.x1 - second.x1, PANEL_PAD);
+            assert_eq!(second.x0 - first.x1, SIBLING_GAP);
+            assert!(panel.y1 - root.power_geometry(panel, &state).y1 >= PANEL_PAD);
         }
 
         fn power_utility_keeps_a_clear_root_target() {
@@ -3184,6 +3198,7 @@ mod tests {
         odd_control_count_uses_a_balanced_full_width_last_card();
         bottom_utilities_keep_independent_touch_targets();
         compact_root_reclaims_space_without_clipping_the_power_profile();
+        a_root_with_room_keeps_the_token_rhythm();
         power_utility_keeps_a_clear_root_target();
         accessibility_nodes_carry_the_rects_paint_and_hit_testing_use();
     }

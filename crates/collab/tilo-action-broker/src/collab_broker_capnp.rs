@@ -1,7 +1,7 @@
-// `Promise::from_future(async move {..})` refines capnp-rpc's declared
-// `Promise<.., capnp::Error>` return type — the intended pattern, but it
-// trips `refining_impl_trait`.
-#![allow(refining_impl_trait)]
+#![allow(
+    refining_impl_trait,
+    reason = "`Promise::from_future(async move {..})` refines capnp-rpc's declared `Promise<.., capnp::Error>` return type, the intended pattern"
+)]
 
 //! Native Cap'n Proto server for the Tilo collaboration broker.
 //!
@@ -87,10 +87,6 @@ struct AuthorizedDocumentRoute {
     payload: collab_types::WholeDocumentPayload,
 }
 
-/// Launcher preambles are deliberately tiny: they only bind a socket to the
-/// shell's already-created process record. The cert presented by the
-/// app still decides workspace membership and delegated-agent authority.
-const MAX_COLLAB_LAUNCH_HANDOFF_BYTES: usize = 1024;
 const LAUNCH_RECORD_RACE_RETRIES: u8 = 30;
 const LAUNCH_RECORD_RACE_DELAY: Duration = Duration::from_millis(10);
 
@@ -433,17 +429,32 @@ impl VerifiedJoinIdentity {
     }
 }
 
-/// Whether `cert`'s device is held to the foreign-device cap in `room`, as
-/// far as `authority` knows who governs it.
+/// Whether a device is held to the foreign-device cap in `room`, as far as
+/// `authority` knows who governs it; `device` `None` is this host's own.
 fn cap_applies_in(
+    authority: Option<&dyn super::peer_actions::CertificateAuthority>,
+    room: &str,
+    foreign: bool,
+    device: Option<&[u8; 32]>,
+) -> bool {
+    let governs = authority
+        .zip(uuid::Uuid::parse_str(room).ok())
+        .is_some_and(|(authority, room)| authority.governs(room, device));
+    cap_applies(foreign, governs)
+}
+
+/// [`cap_applies_in`] for `cert`'s device.
+fn cert_capped_in(
     authority: Option<&dyn super::peer_actions::CertificateAuthority>,
     room: &str,
     cert: &tilo_user_identity::DeviceCert,
 ) -> bool {
-    let governs = authority
-        .zip(uuid::Uuid::parse_str(room).ok())
-        .is_some_and(|(authority, room)| authority.governs(room, cert));
-    cap_applies(cert.capabilities.foreign, governs)
+    cap_applies_in(
+        authority,
+        room,
+        cert.capabilities.foreign,
+        Some(&cert.device_public_key),
+    )
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -516,8 +527,12 @@ impl BrokerActor {
         if self.is_agent {
             workspace.actor_for_agent(self.id.strip_prefix("agent:").unwrap_or(&self.id))
         } else {
-            let person = workspace.actor_for_person_at(&self.id, now);
-            capped_if(person, self.capped, workspace, now)
+            crate::policy::WorkspacePolicy::actor_for_person_on_device_at(
+                workspace,
+                &self.id,
+                self.capped,
+                now,
+            )
         }
     }
 }
@@ -549,11 +564,16 @@ impl AdmittedJoinIdentity {
 
     /// The caller this admitted connection is, confined to its room.
     fn caller(&self, room: &str) -> tilo_actions::remote::Caller {
+        let foreign = self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign);
         match &self.agent_id {
             Some(agent) => tilo_actions::remote::Caller::local_agent(agent.clone()),
             None => tilo_actions::remote::Caller::local_person(self.principal_id.clone()),
         }
         .in_room(room)
+        .from_foreign_device(foreign)
     }
 
     fn policy_actor(&self, workspace: &tilo_desktop_model::Workspace, now: u64) -> Actor {
@@ -819,7 +839,7 @@ fn verify_join_identity_with_host_scope(
     )?;
     let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
     let verified = VerifiedJoinIdentity {
-        capped: cap_applies_in(authority, &route.cluster_id, &cert),
+        capped: cert_capped_in(authority, &route.cluster_id, &cert),
         ..verify_join_presentation(
             route,
             &presentation,
@@ -871,7 +891,7 @@ fn verify_enrolled_join_identity(
         .map_err(|error| format!("device certificate was rejected: {error}"))?;
     let verified = VerifiedJoinIdentity::of(
         &cert,
-        cap_applies_in(Some(authority), &route.cluster_id, &cert),
+        cert_capped_in(Some(authority), &route.cluster_id, &cert),
     );
     let membership = membership
         .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
@@ -1302,11 +1322,28 @@ impl CapnpBrokerState {
 
     /// Whether `cert`'s device is held to the foreign-device cap in `room`.
     fn capped_in(&self, room: &str, cert: &tilo_user_identity::DeviceCert) -> bool {
-        cap_applies_in(
+        cert_capped_in(
             self.certificate_authority.get().map(AsRef::as_ref),
             room,
             cert,
         )
+    }
+
+    /// The broker actor `caller` is in `room`.
+    pub(super) fn caller_actor(
+        &self,
+        caller: &tilo_actions::remote::Caller,
+        room: &str,
+    ) -> BrokerActor {
+        BrokerActor {
+            capped: cap_applies_in(
+                self.certificate_authority.get().map(AsRef::as_ref),
+                room,
+                caller.is_foreign_device(),
+                caller.device_public_key(),
+            ),
+            ..BrokerActor::for_caller(caller)
+        }
     }
 
     /// The person `cert` certifies, acting in `room` from that certificate's device.
@@ -1462,10 +1499,12 @@ impl CapnpBrokerState {
         self.dispatch_invocation_from_offered(
             request.peer_id,
             offered,
-            request.argument.as_deref(),
-            &admitted.broker_actor(),
-            confirmation,
-            None,
+            InvocationInputs {
+                argument: request.argument.as_deref(),
+                actor: &admitted.broker_actor(),
+                confirmation_token: confirmation,
+                context: None,
+            },
             Some((caller, request)),
             None,
         )?;
@@ -1712,15 +1751,23 @@ enum ActionDirectoryBridgeRequest {
     },
     Start {
         actor: BrokerActor,
-        cluster_id: String,
-        peer_id: u64,
-        revision: String,
-        resource: String,
-        action: String,
+        target: DirectoryActionTarget,
         argument: Option<String>,
         confirmation: Option<DirectoryActionConfirmation>,
         reply: DirectoryReply,
     },
+}
+
+/// One directory action as the caller chose it: the workspace cluster and
+/// live app peer that offered it, the directory revision it was chosen at,
+/// and its resource/action address. The broker re-resolves it at start;
+/// nothing here is trusted from an earlier page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DirectoryActionTarget {
+    pub cluster_id: String,
+    pub peer_id: u64,
+    pub revision: String,
+    pub address: tilo_actions::ActionAddress,
 }
 
 /// Thread-safe sender for palette/search code.  The receiver is drained only
@@ -1772,10 +1819,6 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Resolution carries the complete authenticated route and bounded invocation inputs to the broker."
-    )]
     /// # Errors
     ///
     /// Returns an error when the target is invalid, the bounded broker queue
@@ -1897,10 +1940,6 @@ impl ActionDirectoryRequestQueue {
         }
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Confirmed invocation preserves the resolved target, caller context and confirmation token together."
-    )]
     /// # Errors
     ///
     /// Returns an error when invocation inputs are invalid, the bounded broker
@@ -1908,26 +1947,18 @@ impl ActionDirectoryRequestQueue {
     pub fn try_start_resolved(
         &self,
         actor: BrokerActor,
-        cluster_id: impl Into<String>,
-        peer_id: u64,
-        revision: impl Into<String>,
-        resource: impl Into<String>,
-        action: impl Into<String>,
+        target: DirectoryActionTarget,
         argument: Option<String>,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<
         tokio::sync::oneshot::Receiver<ActionDirectoryBridgeReply>,
         ActionDirectoryBridgeError,
     > {
-        let cluster_id = cluster_id.into();
-        let revision = revision.into();
-        let resource = resource.into();
-        let action = action.into();
         if validate_directory_target_input(
-            &cluster_id,
-            &revision,
-            &resource,
-            &action,
+            &target.cluster_id,
+            &target.revision,
+            &target.address.resource,
+            &target.address.action,
             argument.as_deref(),
             confirmation.as_ref(),
         )
@@ -1939,11 +1970,7 @@ impl ActionDirectoryRequestQueue {
         let reply = DirectoryReply::Oneshot(reply);
         match self.sender.try_send(ActionDirectoryBridgeRequest::Start {
             actor,
-            cluster_id,
-            peer_id,
-            revision,
-            resource,
-            action,
+            target,
             argument,
             confirmation,
             reply,
@@ -2259,6 +2286,28 @@ pub(crate) struct EnrolledDurable {
     pub(crate) invocation: tilo_actions::InvocationId,
     pub(crate) intent: serde_json::Value,
 }
+/// What the caller brings to one invocation: the argument, the actor it runs
+/// as, the one-use confirmation token it presents and its ambient context.
+/// Admission checks every field; none of them grants authority by itself.
+struct InvocationInputs<'a> {
+    argument: Option<&'a str>,
+    actor: &'a BrokerActor,
+    confirmation_token: Option<&'a str>,
+    context: Option<tilo_actions::ActionContext>,
+}
+/// Who an admission is held for and where it came from: genuine durable
+/// caller evidence, the directory revision the target was chosen at, a
+/// private owner and original caller, the original policy time a retained
+/// invocation keeps, and a task-owned durable identity. Each call site names
+/// every field, so no custody input is filled implicitly.
+struct AdmissionProvenance<'a> {
+    durable: Option<DurableContext<'a>>,
+    revision: Option<&'a str>,
+    private_owner: Option<InvocationOwner>,
+    origin: Option<InvocationCaller>,
+    retained_time: Option<&'a crate::peer_actions::PolicyTime>,
+    enrolled_durable: Option<EnrolledDurable>,
+}
 /// Shared typed broker state, attached to the transport-neutral fanout core.
 pub struct CapnpBrokerState {
     /// Serializes the cloneable shell facade against final shutdown. Broker
@@ -2342,6 +2391,9 @@ pub struct CapnpBrokerState {
     invocation_id: AtomicU64,
     services: HostServices,
     workers: Mutex<Vec<PendingWorker>>,
+    /// Wakes the broker loop to adopt a newly admitted local worker at once
+    /// rather than on its next housekeeping tick.
+    worker_admitted: tokio::sync::Notify,
     /// Signed joins on actual private host-worker descriptors; never reconstructed from surfaces.
     host_workers: Mutex<HashMap<u64, AdmittedJoinIdentity>>,
     enrolled: crate::enrolled_dispatch::EnrolledRegistry,
@@ -2628,6 +2680,7 @@ impl CapnpBrokerState {
             },
         });
         drop(workers);
+        self.worker_admitted.notify_one();
         Ok(client)
     }
 
@@ -2989,6 +3042,7 @@ impl CapnpBrokerState {
                 invocation_id: AtomicU64::new(next_invocation),
                 services,
                 workers: Mutex::new(Vec::new()),
+                worker_admitted: tokio::sync::Notify::new(),
                 host_workers: Mutex::new(HashMap::new()),
                 enrolled: crate::enrolled_dispatch::EnrolledRegistry::default(),
                 #[cfg(test)]
@@ -3326,11 +3380,7 @@ impl CapnpBrokerState {
                     }
                     ActionDirectoryBridgeRequest::Start {
                         actor,
-                        cluster_id,
-                        peer_id,
-                        revision,
-                        resource,
-                        action,
+                        target,
                         argument,
                         confirmation,
                         reply,
@@ -3343,11 +3393,7 @@ impl CapnpBrokerState {
                             state.start_action_directory_for_actor(
                                 &directories,
                                 &actor,
-                                &cluster_id,
-                                peer_id,
-                                &revision,
-                                &resource,
-                                &action,
+                                &target,
                                 argument.as_deref(),
                                 confirmation,
                             ),
@@ -3448,10 +3494,6 @@ impl CapnpBrokerState {
         clippy::future_not_send,
         reason = "the registered Cap'n Proto capability is Rc-backed and is awaited on the shell LocalSet"
     )]
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the exact directory identity tuple is kept explicit so resolve cannot use a cached or partially authenticated route"
-    )]
     async fn resolve_action_directory_for_actor(
         &self,
         directories: &LocalActionDirectoryRegistry,
@@ -3514,7 +3556,6 @@ impl CapnpBrokerState {
     /// `LocalSet`.  No cached descriptor, eager surface entry, or compositor
     /// thread participates in admission.
     #[allow(
-        clippy::too_many_arguments,
         clippy::future_not_send,
         reason = "Admission needs the complete authenticated route and runs on the broker LocalSet with non-Send Capnp state."
     )]
@@ -3522,14 +3563,17 @@ impl CapnpBrokerState {
         &self,
         directories: &LocalActionDirectoryRegistry,
         actor: &BrokerActor,
-        cluster_id: &str,
-        peer_id: u64,
-        revision: &str,
-        resource: &str,
-        action: &str,
+        target: &DirectoryActionTarget,
         argument: Option<&str>,
         confirmation: Option<DirectoryActionConfirmation>,
     ) -> Result<StartedDirectoryAction, ActionDirectoryBridgeError> {
+        let DirectoryActionTarget {
+            cluster_id,
+            peer_id,
+            revision,
+            address: tilo_actions::ActionAddress { resource, action },
+        } = target;
+        let peer_id = *peer_id;
         validate_directory_target_input(
             cluster_id,
             revision,
@@ -3592,11 +3636,13 @@ impl CapnpBrokerState {
             .start_invocation_from_offered(
                 peer_id,
                 (surface, published),
-                argument,
-                actor,
-                confirmation_token.as_deref(),
-                None,
-                Some(revision),
+                InvocationInputs {
+                    argument,
+                    actor,
+                    confirmation_token: confirmation_token.as_deref(),
+                    context: None,
+                },
+                Some(revision.as_str()),
             )
             .map_err(|_| ActionDirectoryBridgeError::Unavailable)?;
         let initial_update = self
@@ -3608,10 +3654,6 @@ impl CapnpBrokerState {
         })
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "The token binds all confirmation evidence to the exact caller, target and invocation."
-    )]
     #[allow(
         clippy::needless_pass_by_value,
         reason = "the owned confirmation is intentionally matched without retaining caller-owned approval material"
@@ -4038,11 +4080,6 @@ impl CapnpBrokerState {
         Ok(token)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        clippy::too_many_lines,
-        reason = "invocation admission validates one complete broker protocol transaction"
-    )]
     /// Start an invocation with optional broker confirmation evidence.
     ///
     /// # Errors
@@ -4061,79 +4098,31 @@ impl CapnpBrokerState {
             peer_id,
             resource,
             action,
-            argument,
-            &BrokerActor::person(actor),
-            confirmation_token,
-            None,
+            InvocationInputs {
+                argument,
+                actor: &BrokerActor::person(actor),
+                confirmation_token,
+                context: None,
+            },
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "the complete invocation identity and confirmation context are explicit at the admission boundary"
-    )]
     fn start_invocation_confirmed_for(
         &self,
         peer_id: u64,
         resource: &str,
         action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
+        inputs: InvocationInputs<'_>,
     ) -> Result<InvocationJob, String> {
-        self.start_invocation_confirmed_for_owned(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            confirmation_token,
-            context,
-            None,
-        )
+        self.start_invocation_confirmed_for_origin(peer_id, resource, action, inputs, None, None)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "app policy actor and retained private owner are distinct"
-    )]
-    fn start_invocation_confirmed_for_owned(
-        &self,
-        peer_id: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
-        private_owner: Option<InvocationOwner>,
-    ) -> Result<InvocationJob, String> {
-        self.start_invocation_confirmed_for_origin(
-            peer_id,
-            resource,
-            action,
-            argument,
-            actor,
-            confirmation_token,
-            context,
-            private_owner,
-            None,
-        )
-    }
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "explicit protocol inputs stay separate parameters"
-    )]
     fn start_invocation_confirmed_for_origin(
         &self,
         peer_id: u64,
         resource: &str,
         action: &str,
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
+        inputs: InvocationInputs<'_>,
         private_owner: Option<InvocationOwner>,
         origin: Option<InvocationCaller>,
     ) -> Result<InvocationJob, String> {
@@ -4158,16 +4147,15 @@ impl CapnpBrokerState {
         self.dispatch_invocation_from_offered_owned(
             peer_id,
             offered,
-            argument,
-            actor,
-            confirmation_token,
-            context,
-            None,
-            None,
-            private_owner,
-            origin,
-            None,
-            None,
+            inputs,
+            AdmissionProvenance {
+                durable: None,
+                revision: None,
+                private_owner,
+                origin,
+                retained_time: None,
+                enrolled_durable: None,
+            },
         )
     }
 
@@ -4175,96 +4163,68 @@ impl CapnpBrokerState {
     /// actions reach this point without ever being copied into the eager
     /// published surface; the caller must have resolved the row on this
     /// `LocalSet` turn and supplied its certified route.
-    #[allow(
-        clippy::too_many_lines,
-        clippy::needless_pass_by_value,
-        reason = "a freshly offered live action is consumed into one invocation job while all route and confirmation checks remain atomic"
-    )]
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "the complete offered route, caller and confirmation of one invocation"
-    )]
     fn start_invocation_from_offered(
         &self,
         peer_id: u64,
         offered: (PublishedSurface, PublishedAction),
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
+        inputs: InvocationInputs<'_>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
         let _admission = self
             .admission_lock
             .lock()
             .map_err(|_| "invocation admission unavailable")?;
-        self.dispatch_invocation_from_offered(
-            peer_id,
-            offered,
-            argument,
-            actor,
-            confirmation_token,
-            context,
-            None,
-            revision,
-        )
+        self.dispatch_invocation_from_offered(peer_id, offered, inputs, None, revision)
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "Dispatch retains the authenticated peer and complete offered action contract without reconstructing authority."
-    )]
     fn dispatch_invocation_from_offered(
         &self,
         peer_id: u64,
         offered: (PublishedSurface, PublishedAction),
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
+        inputs: InvocationInputs<'_>,
         durable: Option<(&VerifiedActionCaller, &CallerInvocation)>,
         revision: Option<&str>,
     ) -> Result<InvocationJob, String> {
         self.dispatch_invocation_from_offered_owned(
             peer_id,
             offered,
-            argument,
-            actor,
-            confirmation_token,
-            context,
-            durable.map(|(caller, request)| DurableContext::Peer(caller, request)),
-            revision,
-            None,
-            None,
-            None,
-            None,
+            inputs,
+            AdmissionProvenance {
+                durable: durable.map(|(caller, request)| DurableContext::Peer(caller, request)),
+                revision,
+                private_owner: None,
+                origin: None,
+                retained_time: None,
+                enrolled_durable: None,
+            },
         )
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "retained private ownership is distinct from app authorization"
-    )]
     #[expect(
         clippy::too_many_lines,
-        clippy::needless_pass_by_value,
         reason = "a freshly offered live action and its durable identity are consumed into one invocation job while all checks remain atomic"
     )]
     fn dispatch_invocation_from_offered_owned(
         &self,
         peer_id: u64,
         offered: (PublishedSurface, PublishedAction),
-        argument: Option<&str>,
-        actor: &BrokerActor,
-        confirmation_token: Option<&str>,
-        context: Option<tilo_actions::ActionContext>,
-        durable: Option<DurableContext<'_>>,
-        revision: Option<&str>,
-        private_owner: Option<InvocationOwner>,
-        origin: Option<InvocationCaller>,
-        retained_time: Option<&crate::peer_actions::PolicyTime>,
-        enrolled_durable: Option<EnrolledDurable>,
+        inputs: InvocationInputs<'_>,
+        provenance: AdmissionProvenance<'_>,
     ) -> Result<InvocationJob, String> {
+        let InvocationInputs {
+            argument,
+            actor,
+            confirmation_token,
+            context,
+        } = inputs;
+        let AdmissionProvenance {
+            durable,
+            revision,
+            private_owner,
+            origin,
+            retained_time,
+            enrolled_durable,
+        } = provenance;
         if enrolled_durable.is_some()
             && !matches!(private_owner, Some(InvocationOwner::Enrolled { .. }))
         {
@@ -4342,6 +4302,7 @@ impl CapnpBrokerState {
                 workspace,
                 now,
                 tilo_agent_control_protocol::InvokingActor::Person { id: &actor.id },
+                actor.capped,
                 None,
                 &offered.0,
                 &offered.1,
@@ -4940,21 +4901,20 @@ impl CapnpBrokerState {
         Ok(())
     }
 
-    #[allow(
-        clippy::too_many_arguments,
-        reason = "task lease, source, target, and action identifiers are all required to prevent a run from invoking another task's action"
-    )]
     fn start_task_action(
         &self,
         peer_id: u64,
         agent_id: &str,
         run_id: u64,
         lease: &str,
-        target_peer: u64,
-        resource: &str,
-        action: &str,
-        argument: Option<&str>,
+        target: runtime_collab::TaskAction<'_>,
     ) -> Result<InvocationJob, String> {
+        let runtime_collab::TaskAction {
+            peer_id: target_peer,
+            resource,
+            action,
+            argument,
+        } = target;
         let run = self.task_run_for(peer_id, agent_id, run_id, lease)?;
         if self.task_run_cancelled(peer_id, agent_id, run_id, lease)? {
             return Err("the task was cancelled; no further action may start".into());
@@ -4988,10 +4948,12 @@ impl CapnpBrokerState {
             target_peer,
             resource,
             action,
-            argument,
-            &BrokerActor::agent(run.agent_id),
-            None,
-            Some(run.action_context),
+            InvocationInputs {
+                argument,
+                actor: &BrokerActor::agent(run.agent_id),
+                confirmation_token: None,
+                context: Some(run.action_context),
+            },
         )
     }
 
@@ -5832,6 +5794,9 @@ impl collab_service::Server for CapnpCollabService {
             );
             state.retain_host_worker(peer_id, &verified_identity)?;
             state.ensure_channel(&channel_id);
+            state
+                .publisher()
+                .local_route(&crate::route::CrdtRoute::from_channel_key(&channel_id));
 
             let client: channel_handle::Client = capnp_rpc::new_client(CapnpChannelHandle {
                 committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
@@ -7456,6 +7421,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                         .and_then(|value| Ok(value.to_str()?.to_owned()))
                 })
                 .transpose()?;
+            let target = runtime_collab::TaskAction {
+                peer_id: request.get_peer_id(),
+                resource: &resource,
+                action: &action,
+                argument: argument.as_deref(),
+            };
             if request.get_has_step() {
                 // Durable parent-step path: the host maps this step to one
                 // child before execution and answers with the committed
@@ -7466,10 +7437,7 @@ impl channel_handle::Server for CapnpChannelHandle {
                         request.get_run_id(),
                         &lease,
                         request.get_step_index(),
-                        request.get_peer_id(),
-                        &resource,
-                        &action,
-                        argument,
+                        target,
                     )
                     .map_err(capnp::Error::failed)?;
                 let reply = tokio::time::timeout(std::time::Duration::from_secs(10), reply)
@@ -7494,26 +7462,9 @@ impl channel_handle::Server for CapnpChannelHandle {
                 return Ok(());
             }
             let job = if state.enrolled.connection(peer_id).is_ok() {
-                state.start_enrolled_task_action(
-                    peer_id,
-                    request.get_run_id(),
-                    &lease,
-                    request.get_peer_id(),
-                    &resource,
-                    &action,
-                    argument.as_deref(),
-                )
+                state.start_enrolled_task_action(peer_id, request.get_run_id(), &lease, target)
             } else {
-                state.start_task_action(
-                    peer_id,
-                    &agent_id,
-                    request.get_run_id(),
-                    &lease,
-                    request.get_peer_id(),
-                    &resource,
-                    &action,
-                    argument.as_deref(),
-                )
+                state.start_task_action(peer_id, &agent_id, request.get_run_id(), &lease, target)
             }
             .map_err(capnp::Error::failed)?;
             let update = state.invocation_status(job.id).ok_or_else(|| {
@@ -7932,10 +7883,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                         peer_id,
                         &resource,
                         &action,
-                        argument.as_deref(),
-                        &actor,
-                        None,
-                        None,
+                        InvocationInputs {
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            confirmation_token: None,
+                            context: None,
+                        },
                         None,
                         Some(InvocationCaller::Local {
                             route: origin_route.clone(),
@@ -7966,10 +7919,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                         peer_id,
                         &resource,
                         &action,
-                        argument.as_deref(),
-                        &actor,
-                        Some(&token),
-                        None,
+                        InvocationInputs {
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            confirmation_token: Some(&token),
+                            context: None,
+                        },
                         None,
                         Some(InvocationCaller::Local {
                             route: origin_route.clone(),
@@ -7992,10 +7947,12 @@ impl channel_handle::Server for CapnpChannelHandle {
                         peer_id,
                         &resource,
                         &action,
-                        argument.as_deref(),
-                        &actor,
-                        Some(&token),
-                        None,
+                        InvocationInputs {
+                            argument: argument.as_deref(),
+                            actor: &actor,
+                            confirmation_token: Some(&token),
+                            context: None,
+                        },
                         None,
                         Some(InvocationCaller::Local {
                             route: origin_route.clone(),
@@ -9607,7 +9564,6 @@ fn pack_color(rgb: [f32; 3]) -> u32 {
 /// parent directory does not exist) or if spawning the accept thread
 /// fails.
 #[allow(
-    clippy::too_many_arguments,
     clippy::needless_pass_by_value,
     reason = "the broker thread takes ownership of the exact shared handles it wires into its isolated LocalSet"
 )]
@@ -9623,13 +9579,15 @@ pub fn spawn(
     spawn_configured(
         &socket_path,
         fanout,
-        broker_channels,
-        publisher,
-        membership,
-        None,
-        services,
+        BrokerWiring {
+            broker_channels,
+            publisher,
+            membership,
+            trusted_devices: None,
+            services,
+            config: None,
+        },
         quit,
-        None,
     )
 }
 
@@ -9817,6 +9775,35 @@ fn rename_socket_noreplace(source: &Path, destination: &Path) -> std::io::Result
             libc::RENAME_NOREPLACE,
         )
     };
+    // A filesystem without RENAME_NOREPLACE (gVisor's gofer mounts answer
+    // EINVAL) claims the name with a hard link, which refuses an occupied
+    // destination the same way, then drops the staging name.
+    #[cfg(target_os = "linux")]
+    let result = if result != 0
+        && matches!(
+            std::io::Error::last_os_error().raw_os_error(),
+            Some(libc::EINVAL | libc::ENOSYS)
+        ) {
+        // SAFETY: both pointers refer to live NUL-terminated path buffers.
+        let linked = unsafe {
+            libc::linkat(
+                libc::AT_FDCWD,
+                source.as_ptr(),
+                libc::AT_FDCWD,
+                destination.as_ptr(),
+                0,
+            )
+        };
+        if linked == 0 {
+            // SAFETY: `source` is a live NUL-terminated path buffer.
+            unsafe { libc::unlink(source.as_ptr()) };
+            0
+        } else {
+            -1
+        }
+    } else {
+        result
+    };
     #[cfg(target_os = "macos")]
     // SAFETY: both pointers refer to live NUL-terminated path buffers.
     // RENAME_EXCL atomically refuses an occupied destination.
@@ -9944,6 +9931,18 @@ struct BrokerThreadShutdown {
     fanout: Arc<FanoutState>,
 }
 
+/// Every host-owned handle the broker state is built from: durable channel
+/// state, the peer publisher, workspace membership, the trusted device keys,
+/// host services and the native peer configuration.
+pub(super) struct BrokerWiring<'a> {
+    pub(super) broker_channels: Arc<Mutex<BrokerChannels>>,
+    pub(super) publisher: Arc<PeerPublisher>,
+    pub(super) membership: Option<WorkspaceTreeHandle>,
+    pub(super) trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
+    pub(super) services: HostServices,
+    pub(super) config: Option<&'a super::peer_actions::NativePeerBrokerConfig>,
+}
+
 impl Drop for BrokerThreadShutdown {
     fn drop(&mut self) {
         self.fanout.shutdown_capnp(&self.state);
@@ -9951,7 +9950,6 @@ impl Drop for BrokerThreadShutdown {
 }
 
 #[expect(
-    clippy::too_many_arguments,
     clippy::too_many_lines,
     reason = "the one broker thread constructor: every host-owned capability is injected here"
 )]
@@ -9962,14 +9960,17 @@ impl Drop for BrokerThreadShutdown {
 pub(super) fn spawn_configured(
     socket_path: &Path,
     fanout: &Arc<FanoutState>,
-    broker_channels: Arc<Mutex<BrokerChannels>>,
-    publisher: Arc<PeerPublisher>,
-    membership: Option<WorkspaceTreeHandle>,
-    trusted_devices: Option<Arc<Vec<[u8; 32]>>>,
-    services: HostServices,
+    wiring: BrokerWiring<'_>,
     quit: Arc<AtomicBool>,
-    config: Option<&super::peer_actions::NativePeerBrokerConfig>,
 ) -> std::io::Result<JoinHandle<()>> {
+    let BrokerWiring {
+        broker_channels,
+        publisher,
+        membership,
+        trusted_devices,
+        services,
+        config,
+    } = wiring;
     let wired = publisher.is_wired();
     let (state, bridge_rx) = CapnpBrokerState::new_configured(
         fanout,
@@ -10130,6 +10131,7 @@ pub(super) fn spawn_configured(
                             continue;
                         },
                         conn = listener.accept() => conn,
+                        () = state.worker_admitted.notified() => continue,
                     };
                     let (stream, _) = match stream {
                         Ok(s) => s,
@@ -10317,26 +10319,27 @@ async fn authenticate_launcher_handoff(
             "collaboration launch marker changed while being read".into(),
         ));
     }
-    let mut length = [0_u8; 4];
-    stream.read_exact(&mut length).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff length: {error}"
-        ))
-    })?;
-    let length = usize::try_from(u32::from_le_bytes(length)).map_err(|_| {
-        capnp::Error::failed("collaboration launch handoff length overflows usize".into())
-    })?;
-    if length == 0 || length > MAX_COLLAB_LAUNCH_HANDOFF_BYTES {
-        return Err(capnp::Error::failed(
-            "collaboration launch handoff has an invalid length".into(),
-        ));
-    }
-    let mut bytes = vec![0_u8; length];
-    stream.read_exact(&mut bytes).await.map_err(|error| {
-        capnp::Error::failed(format!(
-            "could not read collaboration launch handoff: {error}"
-        ))
-    })?;
+    let bytes = match launcher::services::COLLAB_LAUNCH_FRAMING
+        .read_async(stream)
+        .await
+    {
+        Ok(Some(bytes)) => bytes,
+        Ok(None) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff is missing".into(),
+            ));
+        }
+        Err(wire_frame::FrameError::EmptyFrame | wire_frame::FrameError::TooLarge(_)) => {
+            return Err(capnp::Error::failed(
+                "collaboration launch handoff has an invalid length".into(),
+            ));
+        }
+        Err(error) => {
+            return Err(capnp::Error::failed(format!(
+                "could not read collaboration launch handoff: {error}"
+            )));
+        }
+    };
     let handoff: CollabLaunchHandoff = serde_json::from_slice(&bytes).map_err(|error| {
         capnp::Error::failed(format!("invalid collaboration launch handoff: {error}"))
     })?;
@@ -11720,14 +11723,16 @@ pub mod tests {
             ),
             Err(ActionDirectoryBridgeError::InvalidRequest)
         ));
+        let target = DirectoryActionTarget {
+            cluster_id: fixture.cluster_id.clone(),
+            peer_id: fixture.peer_id,
+            revision: "directory-r1".into(),
+            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+        };
         assert!(matches!(
             queue.try_start_resolved(
                 BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
+                target.clone(),
                 Some("x".repeat(DIRECTORY_MAX_PARAMS_BYTES.saturating_add(1))),
                 None,
             ),
@@ -11736,11 +11741,7 @@ pub mod tests {
         assert!(matches!(
             queue.try_start_resolved(
                 BrokerActor::person("actor-a"),
-                &fixture.cluster_id,
-                fixture.peer_id,
-                "directory-r1",
-                "workspace:atlas",
-                "open",
+                target,
                 None,
                 Some(DirectoryActionConfirmation::Phrase(
                     "x".repeat(DIRECTORY_MAX_CONFIRMATION_BYTES.saturating_add(1)),
@@ -11915,15 +11916,18 @@ pub mod tests {
             .insert(fixture.peer_id, surface);
         let job = fixture
             .state
-            .start_invocation_confirmed_for_owned(
+            .start_invocation_confirmed_for_origin(
                 fixture.peer_id,
                 "workspace:atlas",
                 "open",
-                None,
-                &BrokerActor::person(&actor),
-                None,
-                None,
+                InvocationInputs {
+                    argument: None,
+                    actor: &BrokerActor::person(&actor),
+                    confirmation_token: None,
+                    context: None,
+                },
                 Some(owner.clone()),
+                None,
             )
             .unwrap();
         let delivered = fixture.invocation_rx.try_recv().unwrap();
@@ -12080,15 +12084,18 @@ pub mod tests {
                 run: uuid::Uuid::from_u128(6).to_string(),
                 channel: uuid::Uuid::from_u128(7).to_string(),
             };
-            let result = fixture.state.start_invocation_confirmed_for_owned(
+            let result = fixture.state.start_invocation_confirmed_for_origin(
                 fixture.peer_id,
                 "workspace:atlas",
                 "open",
-                None,
-                &BrokerActor::person(&actor),
-                None,
-                None,
+                InvocationInputs {
+                    argument: None,
+                    actor: &BrokerActor::person(&actor),
+                    confirmation_token: None,
+                    context: None,
+                },
                 Some(owner.clone()),
+                None,
             );
             if failure.is_some() {
                 assert!(result.is_err());
@@ -12388,8 +12395,8 @@ pub mod tests {
         ) -> Result<(), String> {
             Ok(())
         }
-        fn governs(&self, _room: uuid::Uuid, certificate: &tilo_user_identity::DeviceCert) -> bool {
-            certificate.device_public_key == self.0
+        fn governs(&self, _room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
+            device == Some(&self.0)
         }
     }
 
@@ -13259,6 +13266,7 @@ pub mod tests {
                 vec![crate::services::LaunchableApplication {
                     package_id: "so.tilo.word-processor".into(),
                     display_name: "Writer".into(),
+                    unconfined: false,
                 }]
             }
             fn launch(&self, _: &str, _: &tilo_desktop_model::Workspace) -> Result<(), String> {
