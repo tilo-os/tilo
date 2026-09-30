@@ -413,6 +413,32 @@ fn still_our_child(descriptor: &OwnedFd) -> io::Result<bool> {
     Ok(true)
 }
 
+fn poll_pidfd(descriptor: &OwnedFd, timeout: Duration) {
+    let Some(deadline) = Instant::now().checked_add(timeout) else {
+        return;
+    };
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return;
+        }
+        let timeout_ms = i32::try_from(remaining.as_millis()).unwrap_or(i32::MAX);
+        let mut fds = [libc::pollfd {
+            fd: descriptor.as_raw_fd(),
+            events: libc::POLLIN,
+            revents: 0,
+        }];
+        // SAFETY: `fds` is a valid pollfd array; `descriptor` stays owned.
+        let ready = unsafe { libc::poll(fds.as_mut_ptr(), 1, timeout_ms) };
+        if ready > 0 {
+            return;
+        }
+        if ready < 0 && io::Error::last_os_error().kind() != io::ErrorKind::Interrupted {
+            return;
+        }
+    }
+}
+
 fn owned_pidfd(pid: libc::pid_t) -> io::Result<OwnedFd> {
     // SAFETY: pidfd_open returns a new owned descriptor or -1.
     let descriptor = unsafe { libc::syscall(libc::SYS_pidfd_open, pid, 0) };
@@ -623,12 +649,11 @@ impl Drop for ManagedChild {
                 libc::SIGTERM,
             );
         }
-        let started = Instant::now();
-        while started.elapsed() < Duration::from_secs(2) {
-            if !matches!(self.child.try_wait(), Ok(None)) {
-                return;
-            }
-            std::thread::sleep(Duration::from_millis(20));
+        if let Ok(pidfd) = owned_pidfd(pid) {
+            poll_pidfd(&pidfd, Duration::from_secs(2));
+        }
+        if !matches!(self.child.try_wait(), Ok(None)) {
+            return;
         }
         // SAFETY: the leader remains our live unreaped child, so its process
         // group cannot have been reused for an unrelated application.

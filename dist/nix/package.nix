@@ -31,7 +31,8 @@
 let
   # A fixed-output vendor path can remain cached after Cargo.lock changes.
   # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "723bfb79163d310b00d9dfdf7f0fad8099f488502a660b0b7fb6aa5f2690e8b9";
+  expectedCargoLockSha256 = "7c949d48d86351cf192b3cac91961b2da953b5ca3327e27b06147e2d4f39b745";
+  repoRoot = toString ../..;
 in
 assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
   "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
@@ -42,12 +43,20 @@ rustPlatform.buildRustPackage rec {
     src = ../..;
     filter = path: type:
       lib.cleanSourceFilter path type
-      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
+      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ])
+      # Nix and CI metadata must not change the Rust source derivation.
+      && !(builtins.elem (toString path) [
+        "${repoRoot}/flake.nix"
+        "${repoRoot}/flake.lock"
+        "${repoRoot}/dist/nix"
+        "${repoRoot}/.forgejo"
+        "${repoRoot}/.codex"
+      ]);
   };
 
   # One fixed-output vendor closure avoids scheduling and copying each of the
   # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = "sha256-u9qbxT7sXspJb9QKYw/VWqM9DKRxRJDUZ7Yk2mMyorM=";
+  cargoHash = "sha256-bpGPPil3p0Xf78jfOfnSng5g6x+Jv1AvoHQvSixGn9k=";
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"

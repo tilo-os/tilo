@@ -266,6 +266,33 @@ impl SheetsDoc {
             .find(|&idx| Self::sheet_resource_id(doc, idx).as_deref() == Some(wanted))
     }
 
+    /// The file sheet `idx` was imported from, if any.
+    pub fn sheet_source(doc: &AutoCommit, idx: usize) -> Option<String> {
+        let (Value::Object(ObjType::Map), wb) = doc.get(&ROOT, "wb").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::List), sheets) = doc.get(&wb, "sheets").ok()?? else {
+            return None;
+        };
+        let (Value::Object(ObjType::Map), sheet) = doc.get(&sheets, idx).ok()?? else {
+            return None;
+        };
+        read_str(doc, &sheet, "source")
+    }
+
+    /// Record the file sheet `idx` was imported from.
+    pub fn set_sheet_source(doc: &mut AutoCommit, idx: usize, source: &str) {
+        if let Some(sheet) = Self::sheet_map(doc, idx) {
+            let _ = doc.put(&sheet, "source", source);
+        }
+    }
+
+    /// The first sheet imported from `source`.
+    pub fn sheet_index_by_source(doc: &AutoCommit, source: &str) -> Option<usize> {
+        (0..Self::sheet_count_readonly(doc))
+            .find(|&idx| Self::sheet_source(doc, idx).as_deref() == Some(source))
+    }
+
     /// The `cells` Map for sheet `idx`, creating it if missing.
     fn cells_map(doc: &mut AutoCommit, idx: usize) -> Option<ObjId> {
         let sheet = Self::sheet_map(doc, idx)?;
@@ -393,6 +420,7 @@ impl SheetsDoc {
         let snap = Self::snapshot_sheet(doc, from, Currency::USD);
         let color = Self::sheet_color(doc, from);
         let resource_id = Self::sheet_resource_id(doc, from);
+        let source = Self::sheet_source(doc, from);
         let charts = Self::charts(doc, from);
         let comments = Self::comments(doc, from);
         let sheets = Self::sheets_list(doc);
@@ -401,6 +429,9 @@ impl SheetsDoc {
         let sheet = Self::insert_object_or_panic(doc, &sheets, insert_at, ObjType::Map);
         if let Some(resource_id) = resource_id {
             let _ = doc.put(&sheet, "resource_id", resource_id);
+        }
+        if let Some(source) = source {
+            let _ = doc.put(&sheet, "source", source);
         }
         let _ = doc.put(&sheet, "name", &snap.name);
         let _ = doc.put_object(&sheet, "cells", ObjType::Map);

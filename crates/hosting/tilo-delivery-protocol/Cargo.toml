@@ -3,7 +3,7 @@ name = "tilo-delivery-protocol"
 version = "0.1.0"
 edition = "2024"
 publish.workspace = true
-description = "Wire contract of Tilo's browser-facing delivery: delivery v3 records and proofs, the private action and agent-read vocabularies, the v2 live envelope and the workspace join contract."
+description = "Wire contract of Tilo's browser-facing delivery: delivery v3 records and proofs, the private action vocabulary, the v2 live envelope and the workspace join contract."
 license = "MIT OR Apache-2.0"
 
 # Browsers, the action broker and both hosts speak these records without
@@ -16,7 +16,6 @@ ignored = ["getrandom03"]
 
 [dependencies]
 tilo-clock = { path = "../../platform/tilo-clock" }
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 tilo-peer-state = { path = "../../collab/tilo-peer-state" }
 tilo-actions = { path = "../../collab/actions" }
 tilo-user-identity = { path = "../../collab/tilo-user-identity" }

@@ -16,6 +16,10 @@
         });
 
       checks = forAllSystems (system: {
+        # Validate Cargo.lock against the fixed vendor output without compiling
+        # the entire desktop session.
+        tilo-cargo-vendor = self.packages.${system}.tilo-session.cargoDeps;
+
         # Force the exported module through a real NixOS option evaluation on
         # each release architecture. `nix flake check --no-build` then catches
         # stale display-manager, PAM, or portal option wiring without building
@@ -34,6 +38,8 @@
               };
               boot.loader.grub.devices = [ "nodev" ];
               services.tilo-session.enable = true;
+              services.displayManager.enable = true;
+              services.pipewire.enable = true;
               system.stateVersion = "24.11";
             }
           ];
@@ -55,13 +61,13 @@
             environment.systemPackages = [ cfg.package ];
             services.displayManager.sessionPackages = [ cfg.package ];
             environment.etc."pam.d/tilo-unlock".source = "${cfg.package}/etc/pam.d/tilo-unlock";
-            environment.etc."systemd/user/tilo-graphical-session.target".source =
-              "${cfg.package}/share/systemd/user/tilo-graphical-session.target";
-            # NixOS's PipeWire reads /etc/pipewire, not the package's share
-            # directory; Settings offers "Reduce echo in calls" only when
-            # `pipewire -c tilo-echo-cancel.conf` can find the config.
-            environment.etc."pipewire/tilo-echo-cancel.conf".source =
-              "${cfg.package}/share/pipewire/tilo-echo-cancel.conf";
+            # NixOS owns /etc/systemd/user as one generated tree. Adding a
+            # nested environment.etc file under it fails while assembling /etc.
+            systemd.user.units."tilo-graphical-session.target".text =
+              builtins.readFile ./os/usr/lib/systemd/user/tilo-graphical-session.target;
+            # PipeWire builds /etc/pipewire from configPackages. Supplying an
+            # environment.etc child underneath that tree conflicts with it.
+            services.pipewire.configPackages = [ cfg.package ];
             xdg.portal.enable = true;
             xdg.portal.extraPortals = [ cfg.package ];
           };
