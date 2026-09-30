@@ -24,8 +24,8 @@ use crate::model::InstallProfile;
 use crate::rhythm::{GROUP, LABEL, RELATED, SECTION, SIBLING};
 
 const FIELD_H: f64 = Metrics::BASE.bar_height as f64;
-const TOGGLE_W: f64 = 52.0;
-const TOGGLE_H: f64 = 28.0;
+const TOGGLE_H: f64 = Metrics::BASE.bar_control_height as f64;
+const TOGGLE_W: f64 = Metrics::BASE.bar_control_height as f64 + Metrics::BASE.icon_lg as f64;
 
 /// One control on the write-setup panel.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
