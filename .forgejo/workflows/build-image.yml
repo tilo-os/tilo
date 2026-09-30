@@ -2957,7 +2957,7 @@ jobs:
           set -euo pipefail
           sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
             bc bison curl device-tree-compiler flex gcc libc6-dev libgnutls28-dev libssl-dev make \
-            python3-pyelftools python3-setuptools swig
+            python3-dev python3-pyelftools python3-setuptools swig
 
       # As dev-disk.yml: Kata's static /dev hides the guest's FUSE and loop
       # devices until devtmpfs is mounted.
