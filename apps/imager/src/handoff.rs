@@ -472,7 +472,19 @@ mod tests {
             &fs::read(dir.path().join("var/lib/tilo/home-peers.json")).unwrap(),
         )
         .unwrap();
-        assert_eq!(copied, vec![peer]);
+        assert!(copied.iter().any(|entry| entry == &peer));
+        let device_key =
+            tilo_user_identity::persist::read_device_key(&local_system.device_privkey).unwrap();
+        let service = hex::encode(tilo_relay_protocol::relay_service_node_id(
+            &device_key.to_bytes(),
+        ));
+        let topic =
+            tilo_relay_protocol::personal_continuity_workspace_id(&local_cert.user_public_key);
+        assert!(copied.iter().any(|entry| {
+            entry.device_node_id == hex::encode(local_cert.device_public_key)
+                && entry.relay_service_node_id == service
+                && entry.relay_workspace_ids.contains(&topic)
+        }));
         let target_identity = dir.path().join(format!(
             "var/home/{}/.config/tilo/identity",
             profile.user.username.trim()
