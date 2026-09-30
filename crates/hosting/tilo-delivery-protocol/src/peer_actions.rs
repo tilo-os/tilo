@@ -29,24 +29,7 @@ pub struct DirectedAction {
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
-#[expect(
-    clippy::large_enum_variant,
-    reason = "public serde wire enum; boxing would change every constructor and match in dependent crates"
-)]
 pub enum ActionMessage {
-    /// Disposable canonical agent read; never a durable business invocation.
-    AgentReadV1 {
-        host: Uuid,
-        invocation: Uuid,
-        request: tilo_agent_control_protocol::AgentRequest,
-    },
-    /// Certified provider result, bound to the original disposable read.
-    AgentReadResultV1 {
-        host: Uuid,
-        invocation: Uuid,
-        binding: crate::agent_reads::AgentReadBinding,
-        response: tilo_agent_control_protocol::AgentResponse,
-    },
     CatalogueRefresh {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         scope: Option<ExactActionRoute>,
@@ -153,26 +136,18 @@ impl ActionMessage {
             | Self::CancellationRequested { invocation } => Some(*invocation),
             Self::Update { update } => Some(update.invocation()),
             Self::CatalogueRefresh { .. }
-            | Self::AgentReadV1 { .. }
-            | Self::AgentReadResultV1 { .. }
             | Self::Catalogue { .. }
             | Self::BrokerCatalogue { .. }
             | Self::Rejected { .. } => None,
         }
     }
 
-    #[expect(
-        clippy::too_many_lines,
-        reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
-    )]
     pub fn validate(&self) -> bool {
         let Ok(json) = serde_json::to_value(self) else {
             return false;
         };
-        let mut remaining = if matches!(
-            self,
-            Self::Catalogue { .. } | Self::BrokerCatalogue { .. } | Self::AgentReadResultV1 { .. }
-        ) {
+        let mut remaining = if matches!(self, Self::Catalogue { .. } | Self::BrokerCatalogue { .. })
+        {
             MAX_CATALOGUE_NODES
         } else {
             4096
@@ -182,23 +157,6 @@ impl ActionMessage {
         }
         let identifier = |value: &str| !value.is_empty() && value.len() <= MAX_IDENTIFIER_BYTES;
         match self {
-            Self::AgentReadV1 {
-                host,
-                invocation,
-                request,
-            } => {
-                !host.is_nil() && !invocation.is_nil() && crate::agent_reads::valid_request(request)
-            }
-            Self::AgentReadResultV1 {
-                host,
-                invocation,
-                binding,
-                response,
-            } => {
-                crate::agent_reads::valid_result(*host, *invocation, binding, response)
-                    && serde_json::to_vec(self)
-                        .is_ok_and(|bytes| bytes.len() <= crate::agent_reads::MAX_RESULT_BYTES)
-            }
             Self::CommittedDesktop {
                 invocation,
                 packets,
@@ -459,85 +417,5 @@ mod catalogue_bounds_tests {
             crate::transport_v2::encode(&crate::transport_v2::EnvelopeV2::Directed(action))
                 .is_err()
         );
-    }
-}
-
-#[cfg(test)]
-mod agent_read_codec_tests {
-    use super::*;
-    use serde_json::{Value, json};
-
-    const HOST: &str = "11111111-1111-4111-8111-111111111111";
-    const INVOCATION: &str = "22222222-2222-4222-8222-222222222222";
-
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "test helper keeps the call shape of the fixtures it builds"
-    )]
-    fn request(body: Value) -> Value {
-        json!({"type":"agent_read_v1","host":HOST,"invocation":INVOCATION,"request":body})
-    }
-    fn valid(value: Value) -> bool {
-        serde_json::from_value::<ActionMessage>(value).is_ok_and(|message| message.validate())
-    }
-    fn result() -> Value {
-        let binding = json!({"machine":"machine","room":HOST,"device":"ab".repeat(32),"host":HOST});
-        json!({"type":"agent_read_result_v1","host":HOST,"invocation":INVOCATION,
-            "binding":{"actionHost":HOST,"agent":binding,"spawn":null,"message":null},
-            "response":{"kind":"agent_list","version":1,"invocationId":INVOCATION,
-                "binding":binding,"agents":[],"nextCursor":null,"revision":"1"}})
-    }
-    #[test]
-    fn agent_read_only_requests_round_trip_without_business_invocation() {
-        for body in [
-            json!({"kind":"agent_capabilities","version":1}),
-            json!({"kind":"agent_list","version":1,"cursor":null}),
-            json!({"kind":"agent_conversation","version":1,"agent_id":"agent","cursor":null}),
-        ] {
-            let value = request(body);
-            let parsed = serde_json::from_value::<ActionMessage>(value.clone());
-            assert!(parsed.is_ok(), "read request must decode: {parsed:?}");
-            let message = parsed.unwrap();
-            assert!(message.validate());
-            assert_eq!(message.invocation(), None);
-            assert_eq!(serde_json::to_value(message).unwrap(), value);
-        }
-    }
-    #[test]
-    fn agent_read_rejects_mutations_status_unknown_fields_and_versions() {
-        for body in [
-            json!({"kind":"agent_spawn","version":1,"name":"n","task":"t","grant_set_id":"g"}),
-            json!({"kind":"agent_message","version":1,"agent_id":"a","text":"t"}),
-            json!({"kind":"agent_status","version":1,"invocation_id":"x"}),
-            json!({"kind":"agent_list","version":2,"cursor":null}),
-            json!({"kind":"agent_list","version":1,"cursor":null,"extra":true}),
-            json!({"kind":"agent_list","version":1}),
-        ] {
-            assert!(!valid(request(body)));
-        }
-    }
-    #[test]
-    fn agent_read_result_checks_binding_and_correlation() {
-        let baseline = result();
-        assert!(valid(baseline.clone()));
-        for path in [
-            vec!["host"],
-            vec!["invocation"],
-            vec!["binding", "actionHost"],
-            vec!["binding", "agent", "host"],
-            vec!["response", "invocationId"],
-            vec!["response", "binding", "device"],
-        ] {
-            let mut invalid = baseline.clone();
-            let mut slot = &mut invalid;
-            for key in path {
-                slot = &mut slot[key];
-            }
-            *slot = json!("33333333-3333-4333-8333-333333333333");
-            assert!(!valid(invalid));
-        }
-        let mut oversized = baseline;
-        oversized["binding"]["spawn"] = json!({"route":{"app_peer":"1","app_id":"app","record_id":"","resource":"r","action":"spawn","revision":"1"},"descriptor":{"resource":"r","action":"spawn","revision":"1","blob":"x".repeat(240*1024)}});
-        assert!(!valid(oversized));
     }
 }

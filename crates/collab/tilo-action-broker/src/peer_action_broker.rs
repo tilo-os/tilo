@@ -65,10 +65,6 @@ impl CapnpBrokerState {
         })
     }
 
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "each request's queue permit and read custody live until its reply is sent"
-    )]
     pub(super) fn start_peer_action_bridge(
         self: &Arc<Self>,
         directories: Rc<LocalActionDirectoryRegistry>,
@@ -86,17 +82,12 @@ impl CapnpBrokerState {
                 tokio::task::spawn_local(async move {
                     if request.reply.is_closed()
                         && request.evidence.as_ref().is_some_and(|e| {
-                            matches!(
-                                &e.action().message,
-                                ActionMessage::AgentReadV1 { .. }
-                                    | ActionMessage::CatalogueRefresh { .. }
-                            )
+                            matches!(&e.action().message, ActionMessage::CatalogueRefresh { .. })
                         })
                     {
                         drop(request);
                         return;
                     }
-                    let custody = crate::agent_reads::AgentReadCustody::from_request(&request);
                     let policy_time = request.policy_time().cloned();
                     let response = match state.invocation_host() {
                         Err(_) => Err(()),
@@ -111,8 +102,6 @@ impl CapnpBrokerState {
                                     evidence,
                                     request.poll,
                                     request.notification,
-                                    request.deadline,
-                                    Some(custody),
                                     policy_time.as_ref(),
                                 )
                                 .await
@@ -153,17 +142,8 @@ impl CapnpBrokerState {
         evidence: &tilo_relay::client::CertifiedAction,
         poll: Option<tilo_actions::InvocationId>,
         notification: Option<tilo_actions::InvocationUpdate>,
-        deadline: tokio::time::Instant,
-        custody: Option<crate::agent_reads::AgentReadCustody>,
         policy_time: Option<&crate::peer_actions::PolicyTime>,
     ) -> Result<ActionMessage, String> {
-        if matches!(
-            &evidence.action().message,
-            ActionMessage::AgentReadV1 { .. }
-        ) && tokio::time::Instant::now() >= deadline
-        {
-            return Err("certified agent read deadline".into());
-        }
         let caller = self.verify_network_action_caller_with_policy_time(evidence, policy_time)?;
         let host = self.invocation_host()?;
         if let Some(invocation) = poll {
@@ -185,55 +165,13 @@ impl CapnpBrokerState {
         }
         match &evidence.action().message {
             ActionMessage::CatalogueRefresh { scope } => {
-                let mut catalogue: serde_json::Value =
-                    serde_json::from_str(&self.action_catalogue_json_for(
-                        &caller.room,
-                        &caller.admitted.broker_actor(),
-                        scope.as_ref(),
-                    )?)
-                    .map_err(|_| "catalogue unavailable")?;
-                if let Some(owner) = self.services.certified_agent_reads.as_ref()
-                    && let Ok(reply) = owner.binding(evidence.clone(), deadline, custody).await
-                {
-                    let binding = reply.value();
-                    // Native fallback does not forward Cloud mutation commands.
-                    // Only an actual same-host read-only provider may be exposed here.
-                    if tokio::time::Instant::now() < deadline
-                        && tilo_delivery_protocol::agent_reads::valid_binding(binding, host)
-                        && binding.agent.room == evidence.action().room.to_string()
-                        && binding.agent.device == hex::encode(evidence.action().source)
-                        && binding.spawn.is_none()
-                        && binding.message.is_none()
-                        && let Some(fields) = catalogue.as_object_mut()
-                    {
-                        fields.insert(
-                            "agentReadsV1".into(),
-                            serde_json::to_value(binding)
-                                .map_err(|_| "invalid agent read binding")?,
-                        );
-                    }
-                }
+                let catalogue = serde_json::from_str(&self.action_catalogue_json_for(
+                    &caller.room,
+                    &caller.admitted.broker_actor(),
+                    scope.as_ref(),
+                )?)
+                .map_err(|_| "catalogue unavailable")?;
                 Ok(ActionMessage::BrokerCatalogue { host, catalogue })
-            }
-            ActionMessage::AgentReadV1 { .. } => {
-                let owner = self
-                    .services
-                    .certified_agent_reads
-                    .as_ref()
-                    .ok_or("certified agent owner unavailable")?;
-                // The original Request still owns the same Arc until send; the
-                // carrier's PendingPeerAction retains it through response release.
-                let (message, _) = crate::agent_reads::read_from_owner(
-                    owner.as_ref(),
-                    host,
-                    evidence.clone(),
-                    deadline,
-                    custody,
-                )
-                .await
-                .map_err(|e| e.to_string())?
-                .into_parts();
-                Ok(message)
             }
             ActionMessage::Status { invocation } => self.peer_observation(&caller, *invocation),
             ActionMessage::Cancel { invocation } => {
