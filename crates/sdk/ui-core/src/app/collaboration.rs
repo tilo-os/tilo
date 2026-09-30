@@ -632,13 +632,15 @@ impl App {
         let mut action_surface_may_have_changed = false;
         for event in events {
             action_surface_may_have_changed |= Self::collab_event_may_change_action_surface(&event);
+            // Always deliver the event. Skipping an unchanged present must
+            // not skip widget handling (keys, catalogues, Nearby replies).
             self.forward_session_notification(&event);
+            any |= Self::collab_event_updates_app_presentation(&event);
+            self.apply_collab_presence_event(event);
             if self.root_widget.take_structure_dirty() {
                 self.layout.structure_dirty = true;
                 any = true;
             }
-            any |= Self::collab_event_updates_app_presentation(&event);
-            self.apply_collab_presence_event(event);
         }
         (any, action_surface_may_have_changed)
     }

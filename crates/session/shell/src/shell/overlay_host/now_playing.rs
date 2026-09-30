@@ -465,6 +465,34 @@ mod tests {
     }
 
     #[test]
+    fn reverse_tab_from_no_selection_opens_power_while_media_plays() {
+        let (mut host, chrome, _) =
+            open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
+        assert!(
+            host.now_playing_view().is_some(),
+            "the card is present so a wrap could steal Shift+Tab"
+        );
+        tab(&mut host, true);
+        assert!(
+            !host.now_playing_card.has_focus(),
+            "Shift+Tab from no selection is Power, not the card"
+        );
+        let mut handled = false;
+        assert!(host.handle_quick_settings_keyboard(
+            &Key::Named(NamedKey::Enter),
+            false,
+            false,
+            &mut handled,
+        ));
+        assert!(handled);
+        assert!(
+            host.power_menu_open(),
+            "Enter on Power must open the menu even when media is playing"
+        );
+        assert!(!chrome.borrow().overlays.quick_settings);
+    }
+
+    #[test]
     fn tab_runs_from_the_root_page_through_the_card_and_back() {
         let (mut host, chrome, source) =
             open_host(vec![player("music", "Music", PlaybackStatus::Playing)]);
