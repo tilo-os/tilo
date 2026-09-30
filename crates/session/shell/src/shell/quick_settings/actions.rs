@@ -42,10 +42,19 @@ impl QsActionAvailability {
         #[cfg(target_os = "linux")]
         {
             let mut availability = Self::from_probe(command_on_path);
-            // The production brightness path writes the kernel backlight class
-            // directly and only falls back to `brightnessctl` on development
-            // hosts, so the binary alone is not its capability source.
-            availability.brightness |= os_actions::display::has_backlight();
+            // Tools on PATH are not hardware. A VM ships nmcli, brightnessctl
+            // and bluetoothctl with no backlight, Wi-Fi radio or adapter; the
+            // actions must then be unavailable rather than a working-looking
+            // toggle that fails or no-ops.
+            availability.brightness = os_actions::display::has_backlight();
+            if let Ok(radios) = os_actions::get_radio_state() {
+                availability.wifi = radios.wifi_available;
+                availability.airplane_mode = radios.wifi_available || radios.wwan_available;
+            } else {
+                availability.wifi = false;
+                availability.airplane_mode = false;
+            }
+            availability.bluetooth = os_actions::bluez::has_adapter();
             availability
         }
         #[cfg(not(target_os = "linux"))]
@@ -175,5 +184,21 @@ mod availability_tests {
         mechanisms_are_probed_independently_before_discovery();
         #[cfg(not(target_os = "linux"))]
         unsupported_host_advertises_no_quick_settings_mechanism();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn detect_uses_hardware_not_tools_on_the_path() {
+        let found = QsActionAvailability::detect();
+        assert_eq!(
+            found.brightness,
+            os_actions::display::has_backlight(),
+            "brightnessctl on PATH must not advertise a backlight this machine does not have"
+        );
+        let wifi = os_actions::get_radio_state()
+            .ok()
+            .is_some_and(|radios| radios.wifi_available);
+        assert_eq!(found.wifi, wifi);
+        assert_eq!(found.bluetooth, os_actions::bluez::has_adapter());
     }
 }
