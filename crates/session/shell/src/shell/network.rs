@@ -1219,7 +1219,9 @@ pub struct ShellNetwork {
     /// registry. This lets refresh remove revoked/decommissioned entries
     /// without disturbing hosts carried by workspace invitations.
     registered_home_peer_ids: Mutex<std::collections::HashSet<iroh::EndpointId>>,
-    /// Device endpoints already handed to the actor as direct peers.
+    /// Direct peers already seen on a live topic. Startup and refresh keep
+    /// dialing the others, so a peer that is still offline when Wi-Fi comes up
+    /// is tried again.
     dialed_direct_peers: Mutex<std::collections::HashSet<iroh::EndpointId>>,
     /// Certified device keys eligible to decrypt personal secrets. Routing
     /// uses the deliberately distinct relay service ids above.
@@ -1589,12 +1591,11 @@ impl ShellNetwork {
                 expectation: Some(host.expectation),
             });
         }
-        let mut dialed_direct_peers = std::collections::HashSet::new();
+        let dialed_direct_peers = std::collections::HashSet::new();
         for addr in personal_device_peer_addrs(
             &home_peer_registry_path().with_file_name("personal-device-peers.json"),
             Some(*local_peer_id.as_bytes()),
         ) {
-            dialed_direct_peers.insert(addr.id);
             let _ = cmd_tx.try_send(NetCmd::Connect { addr });
         }
         host_addrs.sort_by_key(|addr| addr.id.to_string());
@@ -2715,16 +2716,13 @@ impl ShellNetwork {
             &personal_device_peer_path(),
             Some(*self.local_peer_id.as_bytes()),
         );
-        if let Ok(mut dialed) = self.dialed_direct_peers.lock() {
+        if let Ok(connected) = self.dialed_direct_peers.lock() {
             for addr in direct {
-                let id = addr.id;
-                if !dialed.insert(id) {
+                if connected.contains(&addr.id) {
                     continue;
                 }
                 if self.cmd_tx.try_send(NetCmd::Connect { addr }).is_ok() {
                     changed = true;
-                } else {
-                    dialed.remove(&id);
                 }
             }
         }
@@ -4527,7 +4525,10 @@ impl ShellNetwork {
                 }
                 self.handle_host_ready(ws, peer);
             }
-            NetEvent::PeerJoined { ws, .. } => {
+            NetEvent::PeerJoined { ws, peer, .. } => {
+                if let Ok(mut connected) = self.dialed_direct_peers.lock() {
+                    connected.insert(peer);
+                }
                 self.publish_sync_requests();
                 if self
                     .personal_continuity_user
@@ -4544,6 +4545,9 @@ impl ShellNetwork {
                 cause,
                 membership_epoch,
             } => {
+                if let Ok(mut connected) = self.dialed_direct_peers.lock() {
+                    connected.remove(&peer);
+                }
                 if let Ok(mut direct) = self.workspace_control_direct.lock() {
                     direct.remove(&(ws, peer));
                 }
