@@ -425,6 +425,9 @@ pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
                 })
         {
             group_state.active_tab = tab;
+            if let Some(tab_state) = group_state.tabs.iter_mut().find(|t| t.id == tab) {
+                tab_state.title = crate::shell::i18n::t("shell-activity-title");
+            }
         }
         tree.desktop.active_strip.insert(active_workspace, strip);
         tree.desktop.set_active_group(strip, group);
@@ -433,7 +436,7 @@ pub fn open_workspace_activity(tree: &mut WorkspaceTree) -> TabId {
 
     let tab = Tab {
         id: next_id(),
-        title: "While you were away".to_string(),
+        title: crate::shell::i18n::t("shell-activity-title"),
         tile: TileContent::WorkspaceActivity,
     };
     let tab_id = place_tab(tree, tab, Placement::NewGroup);

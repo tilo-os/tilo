@@ -1,0 +1,971 @@
+//! Keeping a document channel's retained history short.
+//!
+//! A late joiner's cost follows a route's retained history: every entry is
+//! replayed and applied. Main's generation store keeps an application
+//! document's entries whole (their bodies are signed `AppDocument`s, which
+//! its raw-Automerge proof cannot read), so a record edited for a long time
+//! keeps thousands of changes. Retained growth on a channel schedules its
+//! upkeep here once the channel has been quiet for [`QUIET`]:
+//!
+//! - **Cleartext entries** the host folds itself ([`fold`]). It verifies
+//!   each frame the way a receiving device does, merges every unit it can
+//!   read into one Automerge document and signs that snapshot as the host
+//!   device, framed exactly as a device publishes one. Only entries whose
+//!   every change the document contains, by change hash, are removed; what
+//!   was retained meanwhile, and whatever the host cannot read, is kept.
+//! - **Sealed entries** the host cannot read. It asks a member device that
+//!   volunteered ([`Envelope::CompactRequest`]); the member commits a sealed
+//!   snapshot and signs a [`CoverageStatement`] naming the entries it
+//!   contains, and the host removes exactly those.
+//!
+//! The host's snapshot is retained, never fanned out: connected devices
+//! already hold its content. Its certificate is retained beside it, so a
+//! replay carries it first (certificate lineages lead a replay) and a native
+//! shell accepts the host-signed state. Rooms whose replay a native shell
+//! selects (`shell_authority`) are left to that selection.
+
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
+
+use automerge::{AutoCommit, ChangeHash};
+use collab_types::{DocumentFrame, DocumentMutation, DocumentMutationKind};
+use tilo_automerge::ApplyIncoming as _;
+use tilo_peer_state::NeighbourMsg;
+use tilo_relay_protocol::compaction::{CoverageStatement, entry_id, snapshot_heads, verify};
+
+use crate::coedit::CoeditPayload;
+use crate::store::compaction::{ChannelEntry, SnapshotWrite, file_digest};
+use crate::transport::Envelope;
+use crate::workspace::SharedWorkspace;
+
+/// Tail size past which a channel is compacted: this many entries, or
+/// [`COMPACT_TAIL_BYTES`] that are at least half its snapshot's size, so a
+/// large document is not reloaded for every few changes.
+pub const COMPACT_TAIL_ENTRIES: usize = 256;
+/// See [`COMPACT_TAIL_ENTRIES`].
+pub const COMPACT_TAIL_BYTES: usize = 1024 * 1024;
+/// Largest channel (saved bytes) the host folds itself. A loaded document
+/// takes far more memory than its saved form.
+pub const MAX_COMPACTED_BYTES: usize = 16 * 1024 * 1024;
+/// A burst of edits is compacted once it ends, not reloaded during it.
+pub const QUIET: Duration = Duration::from_secs(2);
+/// Growth since the last look that makes a channel worth looking at.
+const CHECK_ENTRIES: usize = 64;
+const CHECK_BYTES: usize = 512 * 1024;
+/// How long a member has to answer a request before another may be asked.
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const POLL: Duration = Duration::from_millis(250);
+/// How long a request waits for a volunteer that holds every delivery.
+const CATCH_UP: Duration = Duration::from_secs(10);
+const CATCH_UP_POLL: Duration = Duration::from_millis(20);
+
+#[derive(Default)]
+struct Growth {
+    entries: usize,
+    bytes: usize,
+    last: Option<Instant>,
+    scheduled: bool,
+    /// Deltas of the channel being admitted ([`Admitting`]).
+    admitting: usize,
+}
+
+struct Outstanding {
+    workspace_id: u64,
+    channel: [u8; 32],
+    device: [u8; 32],
+    sent: Instant,
+}
+
+/// A workspace and one of its retained channels.
+type ChannelKey = (u64, [u8; 32]);
+
+struct Inner {
+    key: ed25519_dalek::SigningKey,
+    cert: tilo_user_identity::DeviceCert,
+    jobs: tokio::sync::Semaphore,
+    growth: Mutex<HashMap<ChannelKey, Growth>>,
+    volunteers: Mutex<HashMap<u64, Vec<[u8; 32]>>>,
+    requests: Mutex<HashMap<[u8; 16], Outstanding>>,
+    /// Entry ids of the member snapshot last accepted per channel: its
+    /// segments are the snapshot, not a tail to compact again.
+    member_snapshots: Mutex<HashMap<ChannelKey, HashSet<[u8; 32]>>>,
+    rounds: std::sync::atomic::AtomicU64,
+    folding: std::sync::atomic::AtomicU64,
+    hold: Mutex<Duration>,
+    /// Channels whose last fold ran before they went quiet.
+    forced: Mutex<HashSet<ChannelKey>>,
+}
+
+/// A retained document delta, as [`Compactor::note`] counts it.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct Observed {
+    channel: [u8; 32],
+    len: usize,
+}
+
+/// Schedules and runs compaction for the workspaces of one host.
+#[derive(Clone)]
+pub struct Compactor(Arc<Inner>);
+
+/// A delta of an observed channel being admitted. The channel is not quiet
+/// while one is: a commit whose durability stalls must not let a round start
+/// in the middle of its burst. Dropping it ends the admission.
+pub(crate) struct Admitting {
+    compactor: Compactor,
+    key: ChannelKey,
+}
+
+impl Drop for Admitting {
+    fn drop(&mut self) {
+        if let Some(growth) = lock(&self.compactor.0.growth).get_mut(&self.key) {
+            growth.admitting = growth.admitting.saturating_sub(1);
+        }
+    }
+}
+
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+impl Compactor {
+    /// A compactor signing as this host device.
+    pub fn new(key: ed25519_dalek::SigningKey, cert: tilo_user_identity::DeviceCert) -> Self {
+        Self(Arc::new(Inner {
+            key,
+            cert,
+            jobs: tokio::sync::Semaphore::new(1),
+            growth: Mutex::default(),
+            volunteers: Mutex::default(),
+            requests: Mutex::default(),
+            member_snapshots: Mutex::default(),
+            rounds: std::sync::atomic::AtomicU64::new(0),
+            folding: std::sync::atomic::AtomicU64::new(0),
+            hold: Mutex::new(Duration::ZERO),
+            forced: Mutex::default(),
+        }))
+    }
+
+    /// Compactions finished so far (host folds and accepted statements).
+    pub fn rounds(&self) -> u64 {
+        self.0.rounds.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Host folds that read their channel and are about to remove from it,
+    /// or did.
+    pub fn folds_started(&self) -> u64 {
+        self.0.folding.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Wait this long between reading a channel and removing what the fold
+    /// holds, so a test can write to the channel in between.
+    pub fn hold_before_removing(&self, hold: Duration) {
+        *lock(&self.0.hold) = hold;
+    }
+
+    /// The document channel a delta retains to, and its size, before it is
+    /// admitted.
+    pub(crate) fn observe(delta: &[u8]) -> Option<Observed> {
+        let (CoeditPayload::Checkpoint { channel, body }
+        | CoeditPayload::RetainedDelta { channel, body }) = CoeditPayload::decode(delta)?;
+        matches!(
+            postcard::from_bytes::<NeighbourMsg>(&body),
+            Ok(NeighbourMsg::AppDocument { .. })
+        )
+        .then_some(Observed {
+            channel,
+            len: delta.len(),
+        })
+    }
+
+    /// An observed delta of `workspace_id` is being admitted, until the
+    /// returned guard drops.
+    pub(crate) fn admitting(&self, workspace_id: u64, observed: Observed) -> Admitting {
+        let key = (workspace_id, observed.channel);
+        let mut growth = lock(&self.0.growth);
+        let entry = growth.entry(key).or_default();
+        entry.admitting = entry.admitting.saturating_add(1);
+        drop(growth);
+        Admitting {
+            compactor: self.clone(),
+            key,
+        }
+    }
+
+    /// An observed delta was retained in `workspace_id`: schedule its
+    /// channel's upkeep when it grew enough.
+    pub(crate) fn note(&self, workspace: &SharedWorkspace, workspace_id: u64, observed: Observed) {
+        let Observed { channel, len } = observed;
+        let schedule = {
+            let mut growth = lock(&self.0.growth);
+            let entry = growth.entry((workspace_id, channel)).or_default();
+            entry.entries = entry.entries.saturating_add(1);
+            entry.bytes = entry.bytes.saturating_add(len);
+            entry.last = Some(Instant::now());
+            let due = entry.entries >= CHECK_ENTRIES || entry.bytes >= CHECK_BYTES;
+            let schedule = due && !entry.scheduled;
+            entry.scheduled |= schedule;
+            drop(growth);
+            schedule
+        };
+        if schedule {
+            let this = self.clone();
+            let workspace = workspace.clone();
+            tokio::spawn(async move { this.upkeep(workspace, workspace_id, channel).await });
+        }
+    }
+
+    async fn upkeep(self, workspace: SharedWorkspace, workspace_id: u64, channel: [u8; 32]) {
+        let key = (workspace_id, channel);
+        let quiet = loop {
+            tokio::time::sleep(POLL).await;
+            let (quiet, large) = lock(&self.0.growth)
+                .get(&key)
+                .map_or((true, false), |growth| {
+                    (
+                        growth.admitting == 0
+                            && growth.last.is_none_or(|last| last.elapsed() >= QUIET),
+                        growth.entries >= COMPACT_TAIL_ENTRIES.saturating_mul(4)
+                            || growth.bytes >= COMPACT_TAIL_BYTES.saturating_mul(4),
+                    )
+                });
+            if quiet || large {
+                break quiet;
+            }
+        };
+        let Ok(_job) = self.0.jobs.acquire().await else {
+            return;
+        };
+        if let Some(growth) = lock(&self.0.growth).get_mut(&key) {
+            *growth = Growth {
+                admitting: growth.admitting,
+                ..Growth::default()
+            };
+        }
+        // A fold forced during a burst leaves the burst's end behind; the
+        // fold after it goes quiet takes that end even when it is short.
+        let follow_up = quiet && lock(&self.0.forced).remove(&key);
+        if !quiet {
+            lock(&self.0.forced).insert(key);
+        }
+        let min_tail = if follow_up {
+            CHECK_ENTRIES
+        } else {
+            COMPACT_TAIL_ENTRIES
+        };
+        if let Err(error) = self.run(&workspace, workspace_id, channel, min_tail).await {
+            tracing::warn!(workspace_id, %error, "document compaction failed");
+        }
+    }
+
+    async fn run(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        min_tail: usize,
+    ) -> Result<(), String> {
+        let store = workspace.lock().await.store.clone();
+        if store.shell_authority().is_some() {
+            return Ok(());
+        }
+        let entries = tokio::task::spawn_blocking(move || store.channel_entries(&channel))
+            .await
+            .map_err(|error| error.to_string())?
+            .map_err(|error| error.to_string())?;
+        let known = lock(&self.0.member_snapshots)
+            .get(&(workspace_id, channel))
+            .cloned()
+            .unwrap_or_default();
+        let sealed = sealed_tail(&entries, &known);
+        let key = self.0.key.clone();
+        let plan = tokio::task::spawn_blocking(move || {
+            if !compaction_due(&entries, min_tail) {
+                return None;
+            }
+            fold(&entries).and_then(|folded| {
+                let frames =
+                    document_frames(&key, workspace_id, &folded.route, &folded.snapshot).ok()?;
+                Some((folded, frames))
+            })
+        })
+        .await
+        .map_err(|error| error.to_string())?;
+        if let Some((folded, frames)) = plan {
+            self.0
+                .folding
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let held = Instant::now();
+            while held.elapsed() < *lock(&self.0.hold) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            self.persist_fold(workspace, channel, &folded, frames)
+                .await?;
+        }
+        if let Some(route) = sealed {
+            let (this, workspace) = (self.clone(), workspace.clone());
+            tokio::spawn(async move { this.ask(&workspace, workspace_id, channel, &route).await });
+        }
+        Ok(())
+    }
+
+    async fn persist_fold(
+        &self,
+        workspace: &SharedWorkspace,
+        channel: [u8; 32],
+        folded: &Folded,
+        frames: Vec<Vec<u8>>,
+    ) -> Result<(), String> {
+        let identity = identity_frame(&self.0.cert, workspace.lock().await.store.workspace_id())?;
+        let remove: HashSet<[u8; 32]> = folded.removed.iter().copied().collect();
+        let author = self.0.cert.device_public_key;
+        let outcome = owner_run(workspace, move |store| {
+            store.retain_checkpoint(&identity.0, &identity.1)?;
+            store.replace_channel(&channel, Some(SnapshotWrite { author, frames }), &|bytes| {
+                remove.contains(&file_digest(bytes))
+            })
+        })
+        .await?;
+        self.0
+            .rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            removed = outcome.removed,
+            kept = outcome.kept,
+            snapshot_bytes = folded.snapshot.len(),
+            "host compacted a document channel"
+        );
+        Ok(())
+    }
+
+    /// `device` answers requests for `workspace_id` while subscribed.
+    pub(crate) fn volunteer(&self, workspace_id: u64, device: [u8; 32]) {
+        let mut volunteers = lock(&self.0.volunteers);
+        let list = volunteers.entry(workspace_id).or_default();
+        if !list.contains(&device) {
+            list.push(device);
+        }
+        drop(volunteers);
+    }
+
+    /// Ask volunteers in turn until one answers for `channel`: a volunteer
+    /// that leaves a request unanswered does not keep the channel from being
+    /// compacted.
+    async fn ask(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+    ) {
+        let volunteers = lock(&self.0.volunteers)
+            .get(&workspace_id)
+            .map_or(0, Vec::len);
+        for _ in 0..volunteers.max(1) {
+            let Some(request) = self.request(workspace, workspace_id, channel, route).await else {
+                return;
+            };
+            tokio::time::sleep(REQUEST_TIMEOUT).await;
+            if lock(&self.0.requests).remove(&request).is_none() {
+                return;
+            }
+        }
+    }
+
+    async fn request(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        channel: [u8; 32],
+        route: &Route,
+    ) -> Option<[u8; 16]> {
+        {
+            let mut requests = lock(&self.0.requests);
+            requests.retain(|_, request| request.sent.elapsed() < REQUEST_TIMEOUT);
+            if requests
+                .values()
+                .any(|request| request.workspace_id == workspace_id && request.channel == channel)
+            {
+                return None;
+            }
+        }
+        let candidates = lock(&self.0.volunteers)
+            .get(&workspace_id)
+            .cloned()
+            .unwrap_or_default();
+        // A member answers with the replica it holds when the request reaches
+        // it. The request overtakes deliveries still queued for a member or
+        // left on disk while it lags, so a member that took them all is asked
+        // first; after CATCH_UP any open one is.
+        let asked = Instant::now();
+        let (device, tx) = loop {
+            let runtime = workspace.lock().await;
+            let open: Vec<_> = candidates
+                .iter()
+                .filter_map(|device| {
+                    let subscriber = runtime
+                        .subscribers
+                        .get(device)
+                        .filter(|subscriber| !subscriber.tx.is_closed())?;
+                    let caught_up = runtime
+                        .state_sessions
+                        .get(device)
+                        .is_none_or(crate::peer::StateSession::caught_up);
+                    Some((*device, subscriber.tx.clone(), caught_up))
+                })
+                .collect();
+            drop(runtime);
+            let chosen = open
+                .iter()
+                .find(|(_, _, caught_up)| *caught_up)
+                .or_else(|| open.first().filter(|_| asked.elapsed() >= CATCH_UP));
+            if let Some((device, tx, _)) = chosen {
+                break (*device, tx.clone());
+            }
+            if open.is_empty() {
+                return None;
+            }
+            tokio::time::sleep(CATCH_UP_POLL).await;
+        };
+        let request: [u8; 16] = rand::random();
+        if tx
+            .try_send(Envelope::CompactRequest {
+                workspace_id,
+                request,
+                app_id: route.app_id.clone(),
+                cluster_id: route.cluster_id.clone(),
+                record: route.record_id.clone(),
+            })
+            .is_err()
+        {
+            return None;
+        }
+        lock(&self.0.requests).insert(
+            request,
+            Outstanding {
+                workspace_id,
+                channel,
+                device,
+                sent: Instant::now(),
+            },
+        );
+        // The next request for this workspace goes to someone else first.
+        if let Some(list) = lock(&self.0.volunteers).get_mut(&workspace_id)
+            && let Some(at) = list.iter().position(|candidate| *candidate == device)
+        {
+            let chosen = list.remove(at);
+            list.push(chosen);
+        }
+        Some(request)
+    }
+
+    /// A member's answer: remove exactly the entries its snapshot covers.
+    ///
+    /// # Errors
+    ///
+    /// Returns why the statement was refused; nothing is removed then.
+    pub(crate) async fn compacted(
+        &self,
+        workspace: &SharedWorkspace,
+        workspace_id: u64,
+        device: [u8; 32],
+        statement: &[u8],
+        signature: &[u8; 64],
+    ) -> Result<usize, String> {
+        let decoded = CoverageStatement::decode(statement).map_err(|error| error.to_string())?;
+        let outstanding = lock(&self.0.requests)
+            .remove(&decoded.request)
+            .ok_or("no outstanding compaction request")?;
+        if outstanding.device != device
+            || outstanding.workspace_id != workspace_id
+            || decoded.workspace_id != workspace_id
+            || decoded.channel != outstanding.channel
+        {
+            return Err("statement does not answer this device's request".into());
+        }
+        if !verify(&device, statement, signature) {
+            return Err("statement signature does not verify".into());
+        }
+        let channel = decoded.channel;
+        let snapshot: HashSet<[u8; 32]> = decoded.snapshot.iter().copied().collect();
+        let covered: HashSet<[u8; 32]> = decoded
+            .covered
+            .iter()
+            .copied()
+            .filter(|id| !snapshot.contains(id))
+            .collect();
+        if snapshot.is_empty() {
+            return Err("statement names no snapshot".into());
+        }
+        let retained_snapshot = snapshot.clone();
+        let workspace_number = workspace_id;
+        let outcome = owner_run(workspace, move |store| {
+            let present: HashSet<[u8; 32]> = store
+                .channel_entries(&channel)?
+                .iter()
+                .filter(|entry| entry.author == device)
+                .map(|entry| entry_id(&entry.body))
+                .collect();
+            if !retained_snapshot.is_subset(&present) {
+                return Err(crate::persistence::error(
+                    "the statement's snapshot is not retained",
+                ));
+            }
+            store.replace_channel(&channel, None, &|bytes| {
+                crate::store::retained::body_of(bytes, workspace_number)
+                    .is_some_and(|body| covered.contains(&entry_id(&body)))
+            })
+        })
+        .await?;
+        lock(&self.0.member_snapshots).insert((workspace_id, channel), snapshot);
+        self.0
+            .rounds
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tracing::info!(
+            workspace_id,
+            removed = outcome.removed,
+            kept = outcome.kept,
+            "member compacted a sealed document channel"
+        );
+        Ok(outcome.removed)
+    }
+}
+
+/// Run `operation` on the workspace's persistence owner, serialized with
+/// every other retained write.
+async fn owner_run<T: Send + 'static>(
+    workspace: &SharedWorkspace,
+    operation: impl FnOnce(&crate::store::WorkspaceStore) -> Result<T, crate::store::StoreError>
+    + Send
+    + 'static,
+) -> Result<T, String> {
+    let owner = crate::persistence::handle(workspace).await;
+    let receipt = owner
+        .submit_prepared_wait(
+            4096,
+            async { Ok(()) },
+            move |state, ()| operation(&state.store),
+            |result| async { result },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    crate::persistence::receipt(receipt)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+/// The host's certificate as a retained frame: the channel and the framed
+/// envelope.
+fn identity_frame(
+    cert: &tilo_user_identity::DeviceCert,
+    workspace_id: u64,
+) -> Result<([u8; 32], Vec<u8>), String> {
+    let hello = NeighbourMsg::IdentityHello {
+        cert: Box::new(cert.clone()),
+        revocations: Vec::new(),
+    };
+    let channel =
+        *blake3::hash(&[b"identity-hello\0".as_slice(), &cert.device_public_key].concat())
+            .as_bytes();
+    let body = postcard::to_stdvec(&hello).map_err(|error| error.to_string())?;
+    let bytes = crate::transport::encode(&Envelope::Delta {
+        workspace_id,
+        author_device_public_key: cert.device_public_key,
+        authored_at_ns: tilo_clock::unix_now_ns(),
+        delta: CoeditPayload::Checkpoint { channel, body }
+            .encode()
+            .map_err(|error| error.to_string())?,
+        signature: [0; 64],
+    })
+    .map_err(|error| error.to_string())?;
+    Ok((channel, bytes))
+}
+
+/// The document a retained entry belongs to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Route {
+    /// Application id.
+    pub app_id: String,
+    /// Room (cluster) id.
+    pub cluster_id: String,
+    /// Record wire name.
+    pub record_id: String,
+}
+
+/// What one entry carries, as far as the host can read it.
+enum Piece {
+    Whole(DocumentMutation),
+    Segment(collab_types::DocumentSegment),
+    Sealed,
+    Opaque,
+}
+
+fn decode_entry(entry: &ChannelEntry) -> (Option<Route>, Piece) {
+    let Ok(NeighbourMsg::AppDocument {
+        app_id,
+        cluster_id,
+        record_id,
+        envelope,
+        ..
+    }) = postcard::from_bytes::<NeighbourMsg>(&entry.body)
+    else {
+        return (None, Piece::Opaque);
+    };
+    let route = Route {
+        app_id,
+        cluster_id,
+        record_id,
+    };
+    let artifact =
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+    // The checks a receiving device applies before it merges anything: the
+    // signature verifies, the signer is the device the host authenticated,
+    // and the envelope names this route.
+    if collab_types::verify_op(&envelope).is_err()
+        || *envelope.author.as_bytes() != entry.author
+        || envelope.artifact != artifact
+    {
+        return (Some(route), Piece::Opaque);
+    }
+    if envelope.encryption.is_some() {
+        return (Some(route), Piece::Sealed);
+    }
+    let piece = match DocumentFrame::decode(&envelope.payload) {
+        Ok(DocumentFrame::Whole(mutation)) => Piece::Whole(mutation),
+        Ok(DocumentFrame::Segment(segment)) => Piece::Segment(segment),
+        Err(_) => Piece::Opaque,
+    };
+    (Some(route), piece)
+}
+
+/// A channel's content in units the host can reason about: a whole
+/// mutation, a complete segmented transfer, or something it cannot read.
+struct Unit {
+    /// Indexes of the entries that hold it.
+    entries: Vec<usize>,
+    /// The mutation, or `None` for content the host cannot read.
+    mutation: Option<DocumentMutation>,
+}
+
+/// Segments by (author, transfer digest): the entries holding them and the
+/// segments themselves.
+type Transfers = BTreeMap<([u8; 32], [u8; 32]), (Vec<usize>, Vec<collab_types::DocumentSegment>)>;
+
+fn units(entries: &[ChannelEntry]) -> (Vec<Unit>, Option<Route>) {
+    let mut units = Vec::new();
+    let mut route: Option<Route> = None;
+    let mut transfers: Transfers = BTreeMap::new();
+    for (index, entry) in entries.iter().enumerate() {
+        let (named, piece) = decode_entry(entry);
+        // One channel is one route; a frame naming another is not read.
+        let piece = match (&route, named) {
+            (_, None) => piece,
+            (None, Some(named)) => {
+                route = Some(named);
+                piece
+            }
+            (Some(route), Some(named)) if *route == named => piece,
+            (Some(_), Some(_)) => Piece::Opaque,
+        };
+        match piece {
+            Piece::Whole(mutation) => units.push(Unit {
+                entries: vec![index],
+                mutation: Some(mutation),
+            }),
+            Piece::Segment(segment) => {
+                let (holders, segments) =
+                    transfers.entry((entry.author, segment.digest)).or_default();
+                holders.push(index);
+                segments.push(segment);
+            }
+            Piece::Sealed | Piece::Opaque => units.push(Unit {
+                entries: vec![index],
+                mutation: None,
+            }),
+        }
+    }
+    for ((_, digest), (holders, segments)) in transfers {
+        units.push(Unit {
+            entries: holders,
+            mutation: reassemble(digest, segments),
+        });
+    }
+    (units, route)
+}
+
+fn reassemble(
+    digest: [u8; 32],
+    mut segments: Vec<collab_types::DocumentSegment>,
+) -> Option<DocumentMutation> {
+    segments.sort_by_key(|segment| segment.index);
+    segments.dedup_by_key(|segment| segment.index);
+    let first = segments.first()?;
+    let (kind, count) = (first.kind, first.count());
+    if segments.len() != count as usize
+        || segments
+            .iter()
+            .enumerate()
+            .any(|(at, segment)| segment.index as usize != at || segment.kind != kind)
+    {
+        return None;
+    }
+    let data: Vec<u8> = segments
+        .into_iter()
+        .flat_map(|segment| segment.data)
+        .collect();
+    if collab_types::document_transfer::transfer_digest(kind, &data) != digest {
+        return None;
+    }
+    Some(match kind {
+        DocumentMutationKind::Snapshot => DocumentMutation::Snapshot(data),
+        DocumentMutationKind::Incremental => DocumentMutation::Incremental(data),
+    })
+}
+
+/// The hashes of the Automerge change chunks `bytes` concatenates, or `None`
+/// when any part is not a valid change.
+fn change_hashes(bytes: &[u8]) -> Option<Vec<ChangeHash>> {
+    const HEADER: usize = 4 + 4 + 1;
+    let mut hashes = Vec::new();
+    let mut rest = bytes;
+    while !rest.is_empty() {
+        let mut len: u64 = 0;
+        let mut shift = 0u32;
+        let mut at = HEADER;
+        loop {
+            let byte = *rest.get(at)?;
+            at = at.checked_add(1)?;
+            len |= u64::from(byte & 0x7f).checked_shl(shift)?;
+            if byte & 0x80 == 0 {
+                break;
+            }
+            shift = shift.checked_add(7).filter(|shift| *shift < 64)?;
+        }
+        let end = at.checked_add(usize::try_from(len).ok()?)?;
+        let chunk = rest.get(..end)?;
+        hashes.push(automerge::Change::try_from(chunk).ok()?.hash());
+        rest = rest.get(end..)?;
+    }
+    Some(hashes)
+}
+
+/// Whether every change of `mutation` is in `doc`: a snapshot's heads (it
+/// holds all their ancestors), or each incremental change by hash.
+fn covered_by(doc: &mut AutoCommit, mutation: &DocumentMutation) -> bool {
+    let hashes = match mutation {
+        DocumentMutation::Snapshot(bytes) => snapshot_heads(bytes)
+            .map(|heads| heads.into_iter().map(ChangeHash).collect())
+            .or_else(|| AutoCommit::load(bytes).ok().map(|mut doc| doc.get_heads())),
+        DocumentMutation::Incremental(bytes) => change_hashes(bytes),
+    };
+    hashes.is_some_and(|hashes| {
+        hashes
+            .iter()
+            .all(|hash| doc.get_change_by_hash(hash).is_some())
+    })
+}
+
+fn unit_bytes(entries: &[ChannelEntry], unit: &Unit) -> usize {
+    unit.entries
+        .iter()
+        .filter_map(|at| entries.get(*at))
+        .map(|entry| entry.len)
+        .sum()
+}
+
+/// Whether the readable part of a channel outgrew its snapshots, within
+/// what the host folds: `min_tail` entries, or [`COMPACT_TAIL_BYTES`] that
+/// are at least half the snapshots' size.
+fn compaction_due(entries: &[ChannelEntry], min_tail: usize) -> bool {
+    let (units, _) = units(entries);
+    let (mut snapshot, mut tail, mut tail_entries) = (0usize, 0usize, 0usize);
+    for unit in units.iter().filter(|unit| unit.mutation.is_some()) {
+        let bytes = unit_bytes(entries, unit);
+        if matches!(unit.mutation, Some(DocumentMutation::Snapshot(_))) {
+            snapshot = snapshot.saturating_add(bytes);
+        } else {
+            tail = tail.saturating_add(bytes);
+            tail_entries = tail_entries.saturating_add(unit.entries.len());
+        }
+    }
+    let readable_snapshots = units
+        .iter()
+        .filter(|unit| matches!(unit.mutation, Some(DocumentMutation::Snapshot(_))))
+        .count();
+    snapshot.saturating_add(tail) <= MAX_COMPACTED_BYTES
+        && (tail_entries >= min_tail
+            || (tail >= COMPACT_TAIL_BYTES && tail.saturating_mul(2) >= snapshot)
+            || readable_snapshots > 2)
+}
+
+/// A sealed tail the host should ask a member to compact: the route, when
+/// enough sealed entries arrived after the last member snapshot.
+fn sealed_tail(entries: &[ChannelEntry], known: &HashSet<[u8; 32]>) -> Option<Route> {
+    let (mut count, mut bytes, mut route) = (0usize, 0usize, None);
+    for entry in entries {
+        if let (Some(named), Piece::Sealed) = decode_entry(entry) {
+            if known.contains(&entry_id(&entry.body)) {
+                continue;
+            }
+            count = count.saturating_add(1);
+            bytes = bytes.saturating_add(entry.len);
+            route.get_or_insert(named);
+        }
+    }
+    (count >= COMPACT_TAIL_ENTRIES || bytes >= COMPACT_TAIL_BYTES)
+        .then_some(route)
+        .flatten()
+}
+
+/// A channel folded into one snapshot.
+pub(crate) struct Folded {
+    route: Route,
+    snapshot: Vec<u8>,
+    /// File digests of the entries the snapshot contains entirely.
+    removed: Vec<[u8; 32]>,
+}
+
+/// Fold every readable unit of `entries` into one document. Units that
+/// depend on content the host cannot read stay out of it, and only entries
+/// whose every unit the document contains, by change hash, are removed.
+fn fold(entries: &[ChannelEntry]) -> Option<Folded> {
+    let (units, route) = units(entries);
+    let route = route?;
+    let mut snapshots: Vec<&Vec<u8>> = Vec::new();
+    let mut changes: Vec<u8> = Vec::new();
+    for unit in &units {
+        match &unit.mutation {
+            Some(DocumentMutation::Snapshot(bytes)) => snapshots.push(bytes),
+            Some(DocumentMutation::Incremental(bytes)) => changes.extend_from_slice(bytes),
+            None => {}
+        }
+    }
+    // Start from the largest snapshot: merging copies every change the
+    // receiving side lacks, so the smaller documents go into the larger.
+    snapshots.sort_by_key(|bytes| bytes.len());
+    let mut doc = match snapshots.pop() {
+        Some(bytes) => AutoCommit::load(bytes).ok()?,
+        None => AutoCommit::new(),
+    };
+    for bytes in snapshots {
+        // A snapshot the document already contains is not loaded at all:
+        // holding two large documents at once is the costly part.
+        if snapshot_heads(bytes).is_some_and(|heads| {
+            heads
+                .iter()
+                .all(|head| doc.get_change_by_hash(&ChangeHash(*head)).is_some())
+        }) {
+            continue;
+        }
+        let mut other = AutoCommit::load(bytes).ok()?;
+        doc.merge_incoming(&mut other).ok()?;
+    }
+    if !changes.is_empty() {
+        doc.load_incoming(&changes).ok()?;
+    }
+    let all_applied = doc.get_missing_deps(&[]).is_empty();
+    let folded_units: Vec<bool> = units
+        .iter()
+        .map(|unit| match &unit.mutation {
+            None => false,
+            Some(DocumentMutation::Snapshot(_)) => true,
+            Some(mutation) => all_applied || covered_by(&mut doc, mutation),
+        })
+        .collect();
+    let mut holders: HashMap<usize, bool> = HashMap::new();
+    for (unit, folded) in units.iter().zip(&folded_units) {
+        for entry in &unit.entries {
+            let all = holders.entry(*entry).or_insert(true);
+            *all &= *folded;
+        }
+    }
+    let removed: Vec<[u8; 32]> = holders
+        .into_iter()
+        .filter(|(_, folded)| *folded)
+        .filter_map(|(at, _)| entries.get(at).map(|entry| entry.digest))
+        .collect();
+    if removed.len() < 2 {
+        return None;
+    }
+    Some(Folded {
+        route,
+        snapshot: doc.save(),
+        removed,
+    })
+}
+
+/// Sign `snapshot` for `route` as the host and frame it the way a device
+/// publishes it: one retained envelope per document frame, the first as the
+/// checkpoint. The publisher is the host's own handle, which a native shell
+/// requires of every document it accepts.
+///
+/// # Errors
+///
+/// Returns a description when the snapshot is too large or encoding fails.
+pub(crate) fn document_frames(
+    key: &ed25519_dalek::SigningKey,
+    workspace_id: u64,
+    route: &Route,
+    snapshot: &[u8],
+) -> Result<Vec<Vec<u8>>, String> {
+    use ed25519_dalek::Signer as _;
+    let author = key.verifying_key().to_bytes();
+    let artifact =
+        collab_types::document_artifact_id(&route.app_id, &route.cluster_id, &route.record_id);
+    let attestation =
+        collab_types::document_attestation_id(&route.app_id, &route.cluster_id, &route.record_id);
+    let now_ns = tilo_clock::unix_now_ns();
+    let timestamp = std::time::UNIX_EPOCH
+        .checked_add(Duration::from_nanos(now_ns))
+        .unwrap_or(std::time::UNIX_EPOCH);
+    let channel =
+        *blake3::hash(format!("app\0{}\0{}", route.app_id, route.record_id).as_bytes()).as_bytes();
+    let mut frames = Vec::new();
+    for (index, payload) in DocumentMutation::Snapshot(snapshot.to_vec())
+        .encode_frames()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .enumerate()
+    {
+        let mut op = collab_types::SignedOp::new_unsigned(
+            payload,
+            artifact,
+            collab_types::Ed25519PublicKey::from_bytes(author),
+            attestation,
+            collab_types::OpClass::Splice,
+            timestamp,
+            now_ns.saturating_add(index as u64),
+        );
+        let signing = op.signing_bytes().map_err(|error| error.to_string())?;
+        op.signature = collab_types::Signature::from_bytes(key.sign(&signing).to_bytes());
+        let body = postcard::to_stdvec(&NeighbourMsg::AppDocument {
+            peer: tilo_peer_state::peer_handle(&author),
+            app_id: route.app_id.clone(),
+            cluster_id: route.cluster_id.clone(),
+            record_id: route.record_id.clone(),
+            envelope: Box::new(op),
+        })
+        .map_err(|error| error.to_string())?;
+        let payload = if index == 0 {
+            CoeditPayload::Checkpoint { channel, body }
+        } else {
+            CoeditPayload::RetainedDelta { channel, body }
+        };
+        frames.push(
+            crate::transport::encode(&Envelope::Delta {
+                workspace_id,
+                author_device_public_key: author,
+                authored_at_ns: now_ns,
+                delta: payload.encode().map_err(|error| error.to_string())?,
+                signature: [0; 64],
+            })
+            .map_err(|error| error.to_string())?,
+        );
+    }
+    Ok(frames)
+}
+
+#[cfg(test)]
+mod tests;
