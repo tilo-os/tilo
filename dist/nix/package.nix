@@ -16,6 +16,7 @@
 , libinput
 , systemd
 , libdrm
+, libgbm
 , mesa
 , pipewire
 , dbus
@@ -63,7 +64,7 @@ rustPlatform.buildRustPackage rec {
 
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
-    libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
+    libxkbcommon wayland seatd libinput systemd libdrm libgbm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
     # tilo-flight-recorder: fixup rewrites its /usr/bin/python3 shebang.
