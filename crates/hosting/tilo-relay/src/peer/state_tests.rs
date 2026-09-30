@@ -1217,7 +1217,7 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
 
 #[tokio::test]
 async fn a_commit_is_acknowledged_only_once_it_is_retained() {
-    let mut fixture = Fixture::new();
+    let fixture = Fixture::new();
     let (release, reached) =
         crate::store::test_barrier::install(fixture.store.root(), "state-persist");
     let session = SessionCtx {
