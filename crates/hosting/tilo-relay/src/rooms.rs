@@ -18,6 +18,7 @@ mod admin;
 mod collaboration;
 #[cfg(test)]
 mod tests;
+mod voice;
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -177,6 +178,28 @@ impl GovernedRoom {
 
     fn peer(&self) -> &StatePeer {
         &self.peer
+    }
+
+    /// Take a member's write to a record the governor has into its copy.
+    /// Not persisted: the relay retains the write, and opening the room
+    /// replays it.
+    fn follow(&mut self, author: [u8; 32], message: tilo_peer_state::NeighbourMsg) {
+        let tilo_peer_state::NeighbourMsg::AppDocument {
+            app_id, record_id, ..
+        } = &message
+        else {
+            return;
+        };
+        if self.peer.document(app_id, record_id).is_none() {
+            return;
+        }
+        if let Err(error) = self.peer.receive_from(
+            tilo_peer_state::TransportOrigin::RetainedRelayDelta(author),
+            message,
+            SystemTime::now(),
+        ) {
+            tracing::debug!(room = %self.record.room, %error, "governor did not take in a record write");
+        }
     }
 
     fn room(&self) -> &str {
@@ -362,6 +385,26 @@ struct RoomsInner {
     host: RoomHost,
     dir: PathBuf,
     rooms: AsyncMutex<BTreeMap<String, Arc<AsyncMutex<GovernedRoom>>>>,
+    calls: Arc<voice::Calls>,
+}
+
+/// The authority governing one room, as the room's workspace refers to it.
+#[derive(Clone)]
+pub(crate) struct RoomAuthority {
+    rooms: std::sync::Weak<RoomsInner>,
+    room: String,
+}
+
+impl RoomAuthority {
+    /// The rooms, while the relay still governs them.
+    pub(crate) fn rooms(&self) -> Option<Rooms> {
+        self.rooms.upgrade().map(|inner| Rooms { inner })
+    }
+
+    /// The governed room.
+    pub(crate) fn room(&self) -> &str {
+        &self.room
+    }
 }
 
 impl std::fmt::Debug for Rooms {
@@ -394,6 +437,7 @@ impl Rooms {
                 host,
                 dir,
                 rooms: AsyncMutex::new(rooms),
+                calls: Arc::default(),
             }),
         };
         let rooms = this
@@ -408,7 +452,9 @@ impl Rooms {
             let mut room = room.lock().await;
             this.bind(&room).await?;
             this.settle(&mut room).await?;
+            this.recall(&mut room).await?;
         }
+        this.watch_calls();
         Ok(this)
     }
 
@@ -417,10 +463,6 @@ impl Rooms {
     /// # Errors
     ///
     /// Returns why the room could not be created, persisted or bound.
-    #[expect(
-        clippy::significant_drop_tightening,
-        reason = "the room stays locked until its decision is committed, published and answered"
-    )]
     pub async fn create(&self, name: &str) -> Result<RoomSummary, String> {
         let host = &self.inner.host;
         let room = GovernedRoom::create(
@@ -483,7 +525,8 @@ impl Rooms {
     }
 
     /// Pin the room's workspace, admitting only its governed members, and
-    /// follow its members' writes to create the records they start.
+    /// follow its members' writes: create the records they start and keep the
+    /// governor's copy of the others current, as calls bind to chat records.
     ///
     /// Members' changes stay retained as signed tails: members write directly,
     /// not through the governor, so the owner-baseline selection that retires
@@ -528,6 +571,10 @@ impl Rooms {
         .map_err(|error| error.to_string())?;
         let mut runtime = workspace.lock().await;
         runtime.admit_authenticated = false;
+        runtime.room_authority = Some(RoomAuthority {
+            rooms: Arc::downgrade(&self.inner),
+            room: room.room().to_owned(),
+        });
         if runtime.governor_tap.is_none() {
             let (tap, notices) = tokio::sync::mpsc::channel(RECORD_NOTICES);
             runtime.governor_tap = Some(tap);
@@ -536,27 +583,29 @@ impl Rooms {
         Ok(())
     }
 
-    /// Create each record a member first writes to, as the room's records
-    /// are born only from a governor checkpoint.
+    /// Follow each record write a member makes, see [`Self::absorb`].
     fn follow(&self, room: String, mut notices: tokio::sync::mpsc::Receiver<([u8; 32], Vec<u8>)>) {
         let rooms = Arc::downgrade(&self.inner);
         tokio::spawn(async move {
             while let Some((author, body)) = notices.recv().await {
                 let Some(inner) = rooms.upgrade() else { break };
-                if let Err(error) = (Self { inner }).create_record(&room, author, &body).await {
-                    tracing::warn!(%room, %error, "governed room did not create a record");
+                if let Err(error) = (Self { inner }).absorb(&room, author, &body).await {
+                    tracing::warn!(%room, %error, "governed room did not follow a record write");
                 }
             }
         });
     }
 
-    /// Create the record `body` writes to, empty, if the room lacks it and
-    /// `author` is a device of an editor.
+    /// Take in the record write `body` of `author`. A record the room lacks
+    /// is created from it, if `author` is a device of an editor: records are
+    /// born only from a governor checkpoint. A write to a record the room has
+    /// updates the governor's copy only in memory; opening the room replays
+    /// what the relay retains ([`Self::recall`]).
     #[expect(
         clippy::significant_drop_tightening,
         reason = "the room stays locked until its decision is committed, published and answered"
     )]
-    async fn create_record(&self, room: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
+    async fn absorb(&self, room: &str, author: [u8; 32], body: &[u8]) -> Result<(), String> {
         let host = &self.inner.host;
         if author == host.cert.device_public_key {
             return Ok(());
@@ -577,6 +626,7 @@ impl Rooms {
         let room = self.room(room).await.map_err(|error| error.to_string())?;
         let mut room = room.lock().await;
         if room.peer().document(&app_id, &record_id).is_some() {
+            room.follow(author, message);
             return Ok(());
         }
         if envelope.encryption.is_some() {
@@ -620,9 +670,30 @@ impl Rooms {
         self.settle(&mut room).await
     }
 
+    /// Replay every record write the relay retains for `room` into the
+    /// governor's copy.
+    async fn recall(&self, room: &mut GovernedRoom) -> Result<(), String> {
+        let retained = self
+            .inner
+            .host
+            .records
+            .retained(room.workspace_id())
+            .await?;
+        for retained in retained {
+            if retained.author == self.inner.host.cert.device_public_key {
+                continue;
+            }
+            if let Ok(message) = postcard::from_bytes(&retained.body) {
+                room.follow(retained.author, message);
+            }
+        }
+        Ok(())
+    }
+
     /// Bring the relay in line with the room's committed state: admit exactly
     /// its governed members, then retain every governance change not yet
-    /// published. Runs after each decision, before the decision is answered.
+    /// published, then re-derive its calls' participants. Runs after each
+    /// decision, before the decision is answered.
     async fn settle(&self, room: &mut GovernedRoom) -> Result<(), String> {
         let host = &self.inner.host;
         let access: GovernedAccess = room.peer().governed_access(SystemTime::now())?;
@@ -647,7 +718,9 @@ impl Rooms {
                 .await?;
             room.record.published = room.record.published.saturating_add(1);
         }
-        room.persist()
+        room.persist()?;
+        self.observe_calls(room);
+        Ok(())
     }
 
     /// The signed Iroh address a joining device dials to redeem an
