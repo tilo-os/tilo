@@ -9806,6 +9806,46 @@ mod tests {
             assert_eq!(first_boot[0].addr.id, service);
         }
 
+        fn cold_boot_dials_home_peers_on_the_person_topic_without_local_rooms() {
+            let temp = tempfile::tempdir().expect("temp");
+            let registry = temp.path().join("home-peers.json");
+            let own_user = [0x11; 32];
+            let topic = personal_continuity_topic_id(&own_user);
+            let service = iroh::SecretKey::from_bytes(&[0x22; 32]).public();
+            let device = iroh::SecretKey::from_bytes(&[0x33; 32]).public();
+            let other_service = iroh::SecretKey::from_bytes(&[0x44; 32]).public();
+            std::fs::write(
+                &registry,
+                serde_json::to_vec(&serde_json::json!([
+                    {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                        "device_node_id": hex::encode(device.as_bytes()),
+                        "relay_service_node_id": hex::encode(service.as_bytes()),
+                        "label": "Home server",
+                        "user_public_key": hex::encode(own_user),
+                        "relay_workspace_ids": [topic],
+                    },
+                    {
+                        "schema_version": tilo_relay_protocol::HomePeerRegistration::CURRENT_SCHEMA,
+                        "device_node_id": hex::encode(device.as_bytes()),
+                        "relay_service_node_id": hex::encode(other_service.as_bytes()),
+                        "label": "Unrelated room",
+                        "user_public_key": hex::encode(own_user),
+                        "relay_workspace_ids": [77],
+                    },
+                ]))
+                .expect("registry"),
+            )
+            .expect("write registry");
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("TILO_HOME_PEERS_PATH", &registry);
+            let rooms = std::collections::BTreeSet::from([topic]);
+            let peers = registered_home_peer_addrs(Some(own_user), &rooms).unwrap();
+            assert_eq!(peers.len(), 1);
+            assert_eq!(peers[0].addr.id, service);
+            assert_eq!(peers[0].expectation.user_public_key, own_user);
+        }
+
         fn home_peer_registry_prefers_persisted_endpoint_hints_and_falls_back_to_the_service_id() {
             let temp = tempfile::tempdir().expect("temp");
             let registry = temp.path().join("home-peers.json");
