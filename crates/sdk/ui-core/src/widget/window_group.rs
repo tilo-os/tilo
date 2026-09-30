@@ -372,6 +372,17 @@ impl WindowGroup {
         self.resolved_width_px()
     }
 
+    /// Width the slot is going to, in the same pixels as
+    /// [`Self::layout_width_px`]. A later usable-basis change does not
+    /// rewrite an in-flight target, so overflow can use this instead of
+    /// the current fraction.
+    pub fn dest_width_px(&self) -> f64 {
+        if let Some(spring) = &self.width_spring {
+            return f64::from(spring.target()).max(0.0);
+        }
+        self.layout_width_px()
+    }
+
     fn width_params() -> crate::tokens::SpringParams {
         SpringPresets::default().heavy
     }
@@ -4223,7 +4234,7 @@ mod tests {
             for _ in 0..8 {
                 g.step_width_spring();
                 let now = g.layout_width_px();
-                assert!(now >= last, "open must grow the slot, {last} → {now}",);
+                assert!(now >= last, "open must grow the slot, {last} → {now}");
                 last = now;
             }
             assert!(
@@ -4295,7 +4306,7 @@ mod tests {
             for _ in 0..8 {
                 g.step_width_spring();
                 let now = g.layout_width_px();
-                assert!(now <= last, "close must collapse the slot, {last} → {now}",);
+                assert!(now <= last, "close must collapse the slot, {last} → {now}");
                 last = now;
             }
             assert!(
