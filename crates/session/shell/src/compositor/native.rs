@@ -842,7 +842,7 @@ fn pump_chooser_opens(
                 .map(|_| ())
                 .map_err(|error| error.user_message())
         } else {
-            Err("the app's workspace is not the one on screen".to_owned())
+            Err(crate::shell::i18n::t("portal-chooser-other-workspace"))
         };
         if let Err(reason) = &outcome {
             tracing::info!(app = %open.caller.app_id, path = %open.path.display(), %reason, "chooser open refused");
