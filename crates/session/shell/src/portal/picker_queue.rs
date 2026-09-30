@@ -179,6 +179,7 @@ mod tests {
                 accept_label: None,
                 current_name: None,
                 filters: Vec::new(),
+                scope: None,
                 reply: tx,
             },
             rx,

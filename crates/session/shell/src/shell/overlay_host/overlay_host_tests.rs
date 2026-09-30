@@ -1625,6 +1625,7 @@ fn print_screen_opens_the_requested_capture_and_preserves_transactional_surfaces
             accept_label: None,
             current_name: Some("before".to_string()),
             filters: Vec::new(),
+            scope: None,
             reply,
         });
         assert!(h.host.pump_file_picker());
