@@ -16,6 +16,7 @@ exclude = [
     "vendor/winit",
     "crates/forks/winit",
     "vendor/accesskit_winit",
+    "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
@@ -856,8 +857,12 @@ web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
 # ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
 libspa-sys = { path = "vendor/libspa-sys" }
-# Pinned DX12 shader cache and opt-in Metal presentation feedback.
+# Pinned DX12 shader cache and opt-in Metal presentation feedback; a device-loss
+# switch that lets tests reset a Vulkan device. See vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
+# `Device::poll` reports a lost device instead of panicking, so the compositor
+# survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
+wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
 # crates.io crates that depend on winit (accesskit_winit, smithay) get the
