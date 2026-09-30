@@ -7654,6 +7654,7 @@ impl Widget for FileExplorerWidget {
             "files.new-folder",
             "files.paste",
             "files.go-to",
+            "files.move",
             "files.transfer",
             "files.new-from-template",
             "files.open",
