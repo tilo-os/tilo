@@ -480,27 +480,34 @@ mod tests {
             tree.desktop.set_active_group(strip, 200);
         }
 
-        // Tab 3 is the focused window, so only the other one of the same
-        // name is somewhere to go; nothing on the list closes anything.
+        // Tab 3 is focused. A search still names every matching window,
+        // including that one: findable by name means the open window is a
+        // result, not only its close actions.
         let rows = palette(&chrome, &doc, "Profilfehler");
-        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
-        assert_eq!(ids, ["tab.focus:100:1"]);
-        assert_eq!(rows[0].title, "Profilfehler aufgetreten");
-        assert_eq!(rows[0].operation_kind, tilo_actions::OperationKind::View);
+        let mut ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
+        let go = rows
+            .iter()
+            .find(|row| row.id == "tab.focus:100:1")
+            .expect("unfocused window stays a focus result");
+        assert_eq!(go.title, "Profilfehler aufgetreten");
+        assert_eq!(go.operation_kind, tilo_actions::OperationKind::View);
         assert_eq!(
-            rows[0].subtitle.as_deref(),
+            go.subtitle.as_deref(),
             Some("Open in this workspace · 2 tabs")
         );
 
         // A window is found by its app when its title names the document.
-        let ids: Vec<String> = palette(&chrome, &doc, "chrome")
+        let mut ids: Vec<String> = palette(&chrome, &doc, "chrome")
             .into_iter()
             .map(|row| row.id)
             .collect();
-        assert_eq!(ids, ["tab.focus:100:1"]);
+        ids.sort();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
 
-        // Enter on the top row brings that window forward, as a click would.
-        (rows[0].on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
+        // Enter on the unfocused row brings that window forward, as a click would.
+        (go.on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
         let (active_group, active_tab) = {
             let state = chrome.borrow();
             let tree = state.tree();
