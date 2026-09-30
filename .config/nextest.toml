@@ -50,10 +50,13 @@ filter = 'binary(it) and (test(clipboard_e2e::) or test(interaction_test::) or t
 test-group = "compositor"
 priority = 90
 
+# Not started with the pool-wide and longest tests: each suite's first route
+# join runs under the SDK's 4.5 s primary-route deadline, which the opening
+# burst of a whole-workspace shard (every slot starting a process at once)
+# exceeds.
 [[profile.default.overrides]]
 filter = 'package(agent) and binary(it) and (test(presence_semantics::) or test(relay_roundtrip::) or test(discovered_operations::) or test(concurrent_edit::))'
 test-group = "agent-collaboration"
-priority = 100
 
 [[profile.default.overrides]]
 filter = 'package(shell) and binary(it) and test(flatpak_share_e2e::session_delivers_30_frames_in_3_seconds_at_bounded_latency)'
