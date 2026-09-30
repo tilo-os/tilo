@@ -600,36 +600,6 @@ sudo -n systemd-repart --empty=force --dry-run=no --discard=no --offline=false \
   --definitions="$DEFS" --size="$SIZE" "$RAW"
 
 LOOP="$(sudo -n losetup -fP --show "$RAW")"
-# Partition nodes exist before udev has probed their filesystems. The boot-gap
-# layout is identified by those filesystem types, so wait until the probe lands.
-sudo -n blockdev --rereadpt "$LOOP" 2>/dev/null || true
-sudo -n udevadm settle 2>/dev/null || true
-if [ -n "$BOOT_GAP" ]; then
-  root_dev=""
-  esp_dev=""
-  for _ in 1 2 3 4 5; do
-    root_dev=""
-    esp_dev=""
-    while read -r part fstype; do
-      case "$fstype" in
-        vfat)
-          [ -z "$esp_dev" ] || die "boot-gap disk has more than one FAT partition"
-          esp_dev="$part" ;;
-        btrfs|ext4)
-          [ -z "$root_dev" ] || die "boot-gap disk has more than one root filesystem"
-          root_dev="$part" ;;
-      esac
-    done < <(lsblk -ln -o PATH,FSTYPE "$LOOP")
-    [ -n "$root_dev" ] && [ -n "$esp_dev" ] && break
-    sleep 0.5
-    sudo -n udevadm settle 2>/dev/null || true
-  done
-  [ -n "$root_dev" ] && [ -n "$esp_dev" ] \
-    || die "boot-gap disk is missing its ESP or root filesystem"
-else
-  root_dev="${LOOP}p2"
-  esp_dev="${LOOP}p1"
-fi
 sudo -n udevadm settle 2>/dev/null || true
 # systemd-repart lays the partitions out in definition order: with the boot gap
 # the loader hole is p1, so the ESP and root move up by one. Their filesystem
