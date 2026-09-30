@@ -2923,6 +2923,16 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install image tooling
+        run: |
+          set -euo pipefail
+          if command -v apt-get >/dev/null; then
+            sudo -n apt-get -o Acquire::Retries=3 update
+            sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman skopeo jq
+          else
+            sudo -n dnf --setopt=retries=3 install -y podman skopeo jq
+          fi
+
       - name: Require this commit's aarch64 dev image
         env:
           SERIES: ${{ steps.series.outputs.series }}
@@ -2944,14 +2954,6 @@ jobs:
           FIRMWARE_MANIFEST_SHA256: ${{ vars.TILO_LENOVO_FIRMWARE_MANIFEST_SHA256 }}
         run: |
           set -euo pipefail
-          command -v podman >/dev/null || {
-            if command -v apt-get >/dev/null; then
-              sudo -n apt-get -o Acquire::Retries=3 update
-              sudo -n apt-get -o Acquire::Retries=3 install -y --no-install-recommends podman jq
-            else
-              sudo -n dnf --setopt=retries=3 install -y podman jq
-            fi
-          }
           authfile=$(mktemp "${RUNNER_TEMP:?}/tilo-firmware-auth.XXXXXX")
           store=$(mktemp -d "${RUNNER_TEMP:?}/tilo-firmware-login.XXXXXX")
           trap 'sudo -n rm -rf -- "$authfile" "$store"' EXIT
