@@ -390,6 +390,7 @@ fn read_cells_spec(sheet_id: &str) -> ActionSpec {
         },
         ..ActionContract::view()
     })
+    .reads_document()
 }
 
 /// The cell actions each sheet publishes beside rename/delete/insert.

@@ -107,6 +107,21 @@ fn raws(doc: &AutoCommit) -> Vec<Vec<String>> {
         .collect()
 }
 
+/// An `open` of a workbook answers the used cells through the one action a
+/// sheet declares as its document's read.
+#[test]
+fn read_cells_is_the_sheets_declared_document_read() {
+    let doc = workbook(&[&["Region", "Q1"], &["North", "120"]]);
+    let readers: Vec<_> = sheet_resource(&doc)
+        .actions
+        .iter()
+        .filter(|spec| spec.contract.reads_document())
+        .map(|spec| spec.id.clone())
+        .collect();
+    assert_eq!(readers, ["read-cells"]);
+    assert_eq!(read(&doc, None)["range"], "A1:B2");
+}
+
 #[test]
 fn set_cells_writes_values_and_formulas_that_read_back_computed() {
     let mut doc = workbook(&[&["Region", "Q1"], &["North", "120"], &["South", "90"]]);

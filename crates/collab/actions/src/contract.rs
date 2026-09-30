@@ -71,6 +71,13 @@ pub const PROGRAMMATIC_TAG: &str = "surface:programmatic";
 /// requiring confirmation (see [`ActionContract::advertised_confirmation`]).
 pub const ARGUMENT_RISK_TAG: &str = "confirmation:by-argument";
 
+/// [`ActionContract::tags`] entry of the read-only action that answers, when
+/// invoked with no arguments, the first page of the document an app has
+/// open (a word processor's text, a sheet's used cells, a deck's outline).
+/// A caller that just opened a file reads it through this action without
+/// knowing the app.
+pub const DOCUMENT_READ_TAG: &str = "read:document";
+
 /// Minimum authority required to see and invoke an action. Capability-denied
 /// actions remain absent; this value lets every allowed catalogue use the same
 /// gate instead of inferring authority inconsistently from `OperationKind`.
@@ -256,6 +263,12 @@ impl ActionContract {
     /// [`PROGRAMMATIC_TAG`].
     pub fn is_programmatic(&self) -> bool {
         self.tags.iter().any(|tag| tag == PROGRAMMATIC_TAG)
+    }
+
+    /// Whether the action reads the open document's first page. See
+    /// [`DOCUMENT_READ_TAG`].
+    pub fn reads_document(&self) -> bool {
+        self.tags.iter().any(|tag| tag == DOCUMENT_READ_TAG)
     }
 
     /// Whether confirmation depends on the invocation's arguments. See
