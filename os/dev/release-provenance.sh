@@ -83,11 +83,6 @@ case "$hardware_profile" in
     [[ "$firmware_candidate" =~ ^code\.tilo\.so/tilo/[a-z0-9][a-z0-9._-]*@sha256:[0-9a-f]{64}$ \
        && "$firmware_manifest" =~ ^[0-9a-f]{64}$ ]] \
       || { printf 'Lenovo provenance requires pinned board firmware\n' >&2; exit 1; } ;;
-  orangepi-3b-v2-1)
-    [ "$release_architecture" = aarch64 ] \
-      || { printf 'Orange Pi provenance requires native aarch64 build\n' >&2; exit 1; }
-    [ -z "$firmware_candidate$firmware_manifest" ] \
-      || { printf 'Orange Pi provenance cannot carry board firmware\n' >&2; exit 1; } ;;
   *) printf 'unsupported hardware profile in provenance\n' >&2; exit 1 ;;
 esac
 case "$windows_input_class" in
