@@ -3129,7 +3129,8 @@ impl State {
     /// flip barriers and enqueue owning client handles.
     pub fn pump_foreign_capture_barriers(&mut self, display: &DisplayHandle) -> bool {
         let completed = crate::compositor::foreign::drain_completed_dmabuf_captures();
-        let changed = !completed.is_empty();
+        let changed =
+            crate::compositor::foreign::take_published_shm_frames() | !completed.is_empty();
         for client in completed {
             let Some(client_state) = client.get_data::<ClientState>() else {
                 continue;
