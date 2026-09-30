@@ -14,7 +14,7 @@ homepage.workspace = true
 # `tilo-relay-client`, the iroh endpoint, runtime and storage in `tilo-relay`.
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }
