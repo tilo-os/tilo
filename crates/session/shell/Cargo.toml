@@ -303,7 +303,6 @@ media = { package = "tilo-media", path = "../../platform/tilo-media", features =
 fluent.workspace = true
 runtime-portal = { path = "../../runtime/runtime-portal" }
 tilo-atomic-file = { path = "../../system/atomic-file", features = ["test-support"] }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host", default-features = false, features = ["test-support"] }
 tilo-action-broker = { path = "../../collab/tilo-action-broker", features = ["test-support"] }
 tilo-joined-room = { path = "../../collab/tilo-joined-room", features = ["test-support"] }
 tilo-startup-metrics = { path = "../../system/tilo-startup-metrics", features = ["test-support"] }
