@@ -32,7 +32,7 @@ fn framed_envelope(bytes: &[u8]) -> Option<(Envelope, &[u8])> {
 
 /// Validate EVERY enclosing representation before granting proof authority.
 /// Authentication happens at ingress, not in this disk decoder.
-pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
+pub(crate) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditPayload)> {
     let (
         Envelope::Delta {
             workspace_id,
@@ -49,6 +49,15 @@ pub(super) fn payload(bytes: &[u8], workspace: u64) -> Option<([u8; 32], CoeditP
         return None;
     }
     Some((author_device_public_key, complete_coedit_payload(&delta)?))
+}
+
+/// The co-edit body of a retained frame of `workspace`.
+pub(crate) fn body_of(bytes: &[u8], workspace: u64) -> Option<Vec<u8>> {
+    match payload(bytes, workspace)?.1 {
+        CoeditPayload::Checkpoint { body, .. } | CoeditPayload::RetainedDelta { body, .. } => {
+            Some(body)
+        }
+    }
 }
 
 /// Used with an independently validated complete outer frame during replay.
@@ -224,6 +233,117 @@ impl Drop for Record {
     }
 }
 
+/// Record digests by device and inode, with the size and change times each
+/// was hashed at.
+#[cfg(unix)]
+type Digests = std::collections::HashMap<[u64; 2], ([i64; 5], [u8; 32])>;
+
+/// Digests of retained files by identity. A record is never rewritten once
+/// published, so a file whose identity, size and change times are the ones
+/// it was hashed with still holds those bytes.
+#[cfg(unix)]
+fn digests() -> std::sync::MutexGuard<'static, Digests> {
+    use std::sync::{Mutex, OnceLock, PoisonError};
+    static DIGESTS: OnceLock<Mutex<Digests>> = OnceLock::new();
+    DIGESTS
+        .get_or_init(Mutex::default)
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+}
+
+#[cfg(unix)]
+fn file_key(metadata: &fs::Metadata) -> ([u64; 2], [i64; 5]) {
+    use std::os::unix::fs::MetadataExt as _;
+    (
+        [metadata.dev(), metadata.ino()],
+        [
+            i64::from_ne_bytes(metadata.len().to_ne_bytes()),
+            metadata.mtime(),
+            metadata.mtime_nsec(),
+            metadata.ctime(),
+            metadata.ctime_nsec(),
+        ],
+    )
+}
+
+/// Past this many remembered digests the cache starts over.
+#[cfg(unix)]
+const MAX_DIGESTS: usize = 65_536;
+
+/// The digest of the record at `path`, read only when not remembered.
+fn record_digest(path: &Path, metadata: &fs::Metadata) -> Result<[u8; 32], StoreError> {
+    #[cfg(unix)]
+    let (identity, times) = file_key(metadata);
+    #[cfg(unix)]
+    let known = digests().get(&identity).copied();
+    #[cfg(unix)]
+    if let Some((known, digest)) = known
+        && known == times
+    {
+        return Ok(digest);
+    }
+    #[cfg(not(unix))]
+    let _ = metadata;
+    let bytes = super::replay::frame_bytes(path)?.unwrap_or_default();
+    let digest = *blake3::hash(&bytes).as_bytes();
+    #[cfg(unix)]
+    {
+        let mut cache = digests();
+        if cache.len() >= MAX_DIGESTS {
+            cache.clear();
+        }
+        cache.insert(identity, (times, digest));
+    }
+    Ok(digest)
+}
+
+/// Remember `digest` for the record just published at `path`.
+fn remember_digest(path: &Path, digest: &[u8; 32]) {
+    #[cfg(unix)]
+    if let Ok(metadata) = fs::symlink_metadata(path) {
+        let (identity, times) = file_key(&metadata);
+        let mut cache = digests();
+        if cache.len() >= MAX_DIGESTS {
+            cache.clear();
+        }
+        cache.insert(identity, (times, *digest));
+    }
+    #[cfg(not(unix))]
+    let _ = (path, digest);
+}
+
+/// One prior record of a delta's lineage: its ordinal, and whether it holds
+/// the delta's exact bytes. Only a record of the same size whose digest
+/// matches is read, and then compared in full.
+fn inspect_delta(
+    entry: &fs::DirEntry,
+    name: &str,
+    (bytes, digest): (&[u8], &[u8; 32]),
+    last: &mut u64,
+    duplicate: &mut bool,
+    stats: &mut super::bounded::WorkStats,
+) -> Result<(), StoreError> {
+    if let Some(prefix) = name.get(..16)
+        && let Ok(ordinal) = u64::from_str_radix(prefix, 16)
+    {
+        *last = (*last).max(ordinal);
+    }
+    if *duplicate {
+        return Ok(());
+    }
+    let metadata = entry.metadata()?;
+    if metadata.len() != bytes.len() as u64 || record_digest(&entry.path(), &metadata)? != *digest {
+        return Ok(());
+    }
+    let record = Record::read_for_proof(entry.path())?;
+    super::bounded::increment(&mut stats.preparation_reads)?;
+    stats.peak_frame_bytes = stats
+        .peak_frame_bytes
+        .max(record.bytes.len().saturating_add(bytes.len()));
+    *duplicate = record.bytes == bytes;
+    Ok(())
+}
+
 fn records(generation: &Path) -> Result<Vec<Record>, StoreError> {
     let mut paths = fs::read_dir(generation)?.collect::<Result<Vec<_>, _>>()?;
     paths.sort_by_key(fs::DirEntry::file_name);
@@ -253,6 +373,55 @@ pub(super) fn sync_dir(path: &Path) -> Result<(), StoreError> {
     Ok(())
 }
 
+/// A directory's identity and change times: adding, removing or renaming an
+/// entry changes them.
+#[cfg(unix)]
+fn stamp(path: &Path) -> io::Result<[i64; 6]> {
+    use std::os::unix::fs::MetadataExt as _;
+    let metadata = fs::metadata(path)?;
+    Ok([
+        i64::from_ne_bytes(metadata.dev().to_ne_bytes()),
+        i64::from_ne_bytes(metadata.ino().to_ne_bytes()),
+        metadata.mtime(),
+        metadata.mtime_nsec(),
+        metadata.ctime(),
+        metadata.ctime_nsec(),
+    ])
+}
+
+/// [`sync_dir`], unless this process synced `path` before and its entries
+/// have not changed since: a barrier every commit repeats over the same
+/// ancestors then costs a `stat` instead of an fsync.
+pub(super) fn sync_dir_once(path: &Path) -> Result<(), StoreError> {
+    #[cfg(unix)]
+    {
+        use std::collections::HashMap;
+        use std::sync::{Mutex, OnceLock, PoisonError};
+        static SYNCED: OnceLock<Mutex<HashMap<PathBuf, [i64; 6]>>> = OnceLock::new();
+        let synced = SYNCED.get_or_init(Mutex::default);
+        #[cfg(test)]
+        super::test_barrier::check(path, "sync-dir")?;
+        // Taken before the barrier: a change racing it leaves a stale stamp.
+        let before = stamp(path)?;
+        if synced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(path)
+            == Some(&before)
+        {
+            return Ok(());
+        }
+        fs::File::open(path)?.sync_all()?;
+        synced
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(path.to_owned(), before);
+        Ok(())
+    }
+    #[cfg(not(unix))]
+    sync_dir(path)
+}
+
 pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     match fs::create_dir(path) {
         Ok(()) => {}
@@ -262,17 +431,22 @@ pub(super) fn create_dir(path: &Path) -> Result<(), StoreError> {
     // Also sync existing directories: a previous attempt may have returned
     // after creation but before the parent directory reached stable storage.
     if let Some(parent) = path.parent() {
-        sync_dir(parent)?;
+        sync_dir_once(parent)?;
     }
     Ok(())
 }
 
 pub(super) fn durable_write(path: &Path, bytes: &[u8]) -> Result<(), StoreError> {
     atomic_file::write(path, bytes)?;
-    // atomic_file's parent fsync is best-effort. Destructive retirement needs
-    // an explicit, successful directory barrier before it can proceed.
+    // atomic_file fsyncs the parent and fails when that fails. Apple's fsync
+    // leaves the drive's cache unflushed, so there the barrier is repeated
+    // with F_FULLFSYNC before destructive retirement relies on it.
+    #[cfg(any(test, target_vendor = "apple"))]
     if let Some(parent) = path.parent() {
+        #[cfg(target_vendor = "apple")]
         sync_dir(parent)?;
+        #[cfg(all(test, not(target_vendor = "apple")))]
+        super::test_barrier::check(parent, "sync-dir")?;
     }
     Ok(())
 }
@@ -429,6 +603,8 @@ pub(crate) struct RetainBuild {
     active: PathBuf,
     scratch: PathBuf,
     bytes: Vec<u8>,
+    /// Digest of `bytes`, which a prior record must share to be read.
+    digest: [u8; 32],
     checkpoint: bool,
     workspace: u64,
     sorter: super::bounded::Sorter,
@@ -636,6 +812,59 @@ impl RetainBuild {
     pub(crate) fn selected_obsolete(&self) -> bool {
         self.selected_obsolete
     }
+    /// Every prior record was inspected: collect a duplicate, stage a
+    /// checkpoint, or append.
+    fn inspected(&mut self) -> Result<(), StoreError> {
+        if self.duplicate && self.continuity.is_none() {
+            self.phase = if self.staged_only {
+                RetainPhase::Done
+            } else {
+                RetainPhase::Collect(Box::new(GenerationGc::new(self.lineage.clone())?))
+            };
+        } else if self.continuity.is_none()
+            && self.checkpoint
+            && !self.opaque
+            && covers(&self.bytes, &self.bytes, self.workspace)
+        {
+            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
+            create_dir(&staged)?;
+            durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
+            self.staged = Some(staged);
+            #[cfg(test)]
+            super::test_barrier::check(&self.lineage, "checkpoint-stage-after-allocation")?;
+            self.phase = RetainPhase::Stage(fs::File::open(
+                self.sorted.as_ref().invariant("sorted missing")?,
+            )?);
+        } else if self.staged_only {
+            // Preserve opaque/unproved history exactly in an
+            // inactive generation. The live generation is not
+            // mutated until the caller promotes this stage.
+            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
+            create_dir(&staged)?;
+            self.staged = Some(staged);
+            #[cfg(test)]
+            super::test_barrier::check(&self.lineage, "checkpoint-stage-after-allocation")?;
+            self.staged_append = true;
+            self.phase = RetainPhase::Stage(fs::File::open(
+                self.sorted.as_ref().invariant("sorted missing")?,
+            )?);
+        } else {
+            let next = self
+                .last
+                .checked_add(1)
+                .ok_or_else(|| invalid("retained record sequence exhausted"))?;
+            let path = self.active.join(format!("{next:016x}.delta"));
+            if let Some(receipt) = &self.continuity {
+                super::continuity::account_validation(&mut self.sorter.stats, self.bytes.len());
+                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
+            }
+            durable_write(&path, &self.bytes)?;
+            remember_digest(&path, &self.digest);
+            self.written = self.bytes.len() as u64;
+            self.phase = RetainPhase::Done;
+        }
+        Ok(())
+    }
     #[expect(
         clippy::too_many_lines,
         reason = "one ordered protocol state machine; splitting it would scatter the invariants each step relies on"
@@ -671,11 +900,22 @@ impl RetainBuild {
                     self.sorter.spill_step(limit)?;
                     return Ok(Step::More);
                 }
-                for _ in 0..limit.record_entries() {
+                // A delta holds no metadata per entry, so its scan takes the
+                // whole entry quantum and needs no ordered pass after it.
+                let quantum = if self.checkpoint {
+                    limit.record_entries()
+                } else {
+                    limit.entries
+                };
+                for _ in 0..quantum {
                     self.sorter.stats.last_step_work =
                         self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(entry) = entries.next() else {
-                        self.phase = RetainPhase::Sort;
+                        if self.checkpoint {
+                            self.phase = RetainPhase::Sort;
+                        } else {
+                            self.inspected()?;
+                        }
                         return Ok(Step::More);
                     };
                     let entry = entry?;
@@ -688,6 +928,17 @@ impl RetainBuild {
                         && lossy.ends_with(".delta")
                         && !lossy.starts_with('.')
                     {
+                        if !self.checkpoint {
+                            inspect_delta(
+                                &entry,
+                                &lossy,
+                                (&self.bytes, &self.digest),
+                                &mut self.last,
+                                &mut self.duplicate,
+                                &mut self.sorter.stats,
+                            )?;
+                            continue;
+                        }
                         let order = if name == "checkpoint.delta" { "0" } else { "1" };
                         self.sorter.push(Meta {
                             key: vec![order.into(), name.clone()],
@@ -713,64 +964,7 @@ impl RetainBuild {
                     self.sorter.stats.last_step_work =
                         self.sorter.stats.last_step_work.saturating_add(1);
                     let Some(meta) = read_meta(file)? else {
-                        if self.duplicate && self.continuity.is_none() {
-                            self.phase = if self.staged_only {
-                                RetainPhase::Done
-                            } else {
-                                RetainPhase::Collect(Box::new(GenerationGc::new(
-                                    self.lineage.clone(),
-                                )?))
-                            };
-                        } else if self.continuity.is_none()
-                            && self.checkpoint
-                            && !self.opaque
-                            && covers(&self.bytes, &self.bytes, self.workspace)
-                        {
-                            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
-                            create_dir(&staged)?;
-                            durable_write(&staged.join("checkpoint.delta"), &self.bytes)?;
-                            self.staged = Some(staged);
-                            #[cfg(test)]
-                            super::test_barrier::check(
-                                &self.lineage,
-                                "checkpoint-stage-after-allocation",
-                            )?;
-                            self.phase = RetainPhase::Stage(fs::File::open(
-                                self.sorted.as_ref().invariant("sorted missing")?,
-                            )?);
-                        } else if self.staged_only {
-                            // Preserve opaque/unproved history exactly in an
-                            // inactive generation. The live generation is not
-                            // mutated until the caller promotes this stage.
-                            let staged = self.lineage.join(hex::encode(rand::random::<[u8; 16]>()));
-                            create_dir(&staged)?;
-                            self.staged = Some(staged);
-                            #[cfg(test)]
-                            super::test_barrier::check(
-                                &self.lineage,
-                                "checkpoint-stage-after-allocation",
-                            )?;
-                            self.staged_append = true;
-                            self.phase = RetainPhase::Stage(fs::File::open(
-                                self.sorted.as_ref().invariant("sorted missing")?,
-                            )?);
-                        } else {
-                            let next = self
-                                .last
-                                .checked_add(1)
-                                .ok_or_else(|| invalid("retained record sequence exhausted"))?;
-                            let path = self.active.join(format!("{next:016x}.delta"));
-                            if let Some(receipt) = &self.continuity {
-                                super::continuity::account_validation(
-                                    &mut self.sorter.stats,
-                                    self.bytes.len(),
-                                );
-                                super::continuity::write(&self.store, &path, &self.bytes, receipt)?;
-                            }
-                            durable_write(&path, &self.bytes)?;
-                            self.written = self.bytes.len() as u64;
-                            self.phase = RetainPhase::Done;
-                        }
+                        self.inspected()?;
                         return Ok(Step::More);
                     };
                     if let Some(name) = meta.source.file_name().and_then(|n| n.to_str())
@@ -1007,7 +1201,7 @@ impl WorkspaceStore {
             return Err(invalid("retained envelope channel or kind mismatch"));
         }
         for directory in self.root.ancestors().take(3) {
-            sync_dir(directory)?;
+            sync_dir_once(directory)?;
         }
         let v2 = self.root.join(RETAINED_DIR).join("v2");
         create_dir(&v2)?;
@@ -1033,6 +1227,7 @@ impl WorkspaceStore {
             lineage,
             active,
             scratch,
+            digest: *blake3::hash(&bytes).as_bytes(),
             bytes,
             checkpoint,
             workspace: self.workspace_id,
