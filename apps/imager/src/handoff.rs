@@ -252,6 +252,18 @@ fn collect_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> io::Resul
     Ok(())
 }
 
+fn nm_quoted(value: &str) -> String {
+    let mut quoted = String::from("\"");
+    for ch in value.chars() {
+        if ch == '\\' || ch == '"' {
+            quoted.push('\\');
+        }
+        quoted.push(ch);
+    }
+    quoted.push('"');
+    quoted
+}
+
 fn now_ns() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -275,6 +287,8 @@ fn write_wifi_connection(root: &Path, ssid: &str, psk: &str) -> Result<(), Strin
     let dir = root.join("etc/NetworkManager/system-connections");
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join("tilo-setup.nmconnection");
+    let ssid = nm_quoted(ssid);
+    let psk = nm_quoted(psk);
     let body = format!(
         "[connection]\nid=tilo-setup\ntype=wifi\nautoconnect=true\npermissions=\n\n[wifi]\nmode=infrastructure\nssid={ssid}\n\n[wifi-security]\nkey-mgmt=wpa-psk\npsk={psk}\n\n[ipv4]\nmethod=auto\n\n[ipv6]\nmethod=auto\n"
     );
@@ -452,8 +466,10 @@ mod tests {
                 .join("etc/NetworkManager/system-connections/tilo-setup.nmconnection"),
         )
         .unwrap();
-        assert!(connection.contains("ssid=studio"));
-        assert!(connection.contains("psk=correct-horse"));
+        assert!(connection.contains("ssid=\"studio\""));
+        assert!(connection.contains("psk=\"correct-horse\""));
+        assert_eq!(nm_quoted("my network"), "\"my network\"");
+        assert_eq!(nm_quoted("a\\b"), "\"a\\\\b\"");
         let media = String::from_utf8(profile.to_media_profile_json().unwrap()).unwrap();
         assert!(!media.contains("correct-horse"));
         assert!(!media.contains("orange-pi"));
