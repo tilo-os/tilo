@@ -1674,6 +1674,19 @@ mod command_path_tests {
         ] {
             assert!(handlers.contains(&handler), "missing handler {handler}");
         }
+        // One published operation without a handler refuses the app's whole
+        // surface, and a directory search then finds none of its actions.
+        let root = tempfile::tempdir().unwrap();
+        std::fs::write(root.path().join("notes.txt"), b"txt").unwrap();
+        let mut files = FileExplorerWidget::with_persistence(None, Some(root.path().into()));
+        files.navigate(root.path().to_path_buf());
+        let resources = ui::resources::resources(&files, &automerge::AutoCommit::new());
+        let violations = ui::tilo_actions::validate_surface(
+            &resources,
+            &ui::tilo_actions::ActionRegistry::new(),
+            &Widget::resource_operation_handlers(&files),
+        );
+        assert!(violations.is_empty(), "{violations:?}");
     }
 
     /// An agent sorts a downloads folder with typed actions only: `go-to` an
