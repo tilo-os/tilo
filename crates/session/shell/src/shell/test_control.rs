@@ -1173,7 +1173,16 @@ fn plan_enrolled_device_action(
             Vec::new(),
         );
     }
-    if provider.is_empty() || tilo_actions::ActionAddress::parse(id).is_none() {
+    let Some(address) = remote_action_address(id) else {
+        return (
+            Response::Err {
+                code: "unknown_action".into(),
+                message: "action id is not a resource address".into(),
+            },
+            Vec::new(),
+        );
+    };
+    if provider.is_empty() {
         return (
             Response::Err {
                 code: "unknown_action".into(),
@@ -1182,6 +1191,7 @@ fn plan_enrolled_device_action(
             Vec::new(),
         );
     }
+    let id = address.encode();
     (
         Response::Answer(serde_json::json!({
             "device": device,
@@ -1191,11 +1201,25 @@ fn plan_enrolled_device_action(
         })),
         vec![PlannedAction::InvokeAction {
             provider: provider.to_string(),
-            id: id.to_string(),
+            id,
             args: args.clone(),
             device: Some(device.to_string()),
         }],
     )
+}
+
+/// A catalogue address, or `resource/action` when the action name itself
+/// contains no slash. Resource ids such as `files.entry:/tmp/report` stay on
+/// the catalogue separator; a slash there would be ambiguous.
+fn remote_action_address(id: &str) -> Option<tilo_actions::ActionAddress> {
+    if let Some(address) = tilo_actions::ActionAddress::parse(id) {
+        return Some(address);
+    }
+    let (resource, action) = id.split_once('/')?;
+    if resource.is_empty() || action.is_empty() || action.contains('/') {
+        return None;
+    }
+    Some(tilo_actions::ActionAddress::new(resource, action))
 }
 
 fn decode_device_id(value: &str) -> Option<[u8; 32]> {
@@ -2424,7 +2448,7 @@ mod tests {
                 let (resp, actions) = dispatch_command(
                     &Command::ActionsInvoke {
                         provider: "workspace:room".into(),
-                        id: id.clone(),
+                        id: "app.files/open".into(),
                         args: serde_json::Map::new(),
                         device: Some(device.clone()),
                     },
