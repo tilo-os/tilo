@@ -2754,9 +2754,31 @@ impl Widget for GroupRow {
     ) -> NodeId {
         self.reduce_motion = theme.reduce_motion;
         self.move_omega = spring_omega(theme.tokens.motion.springs.heavy);
-        for group in &mut self.groups {
+        let usable_per_group = self.usable_per_group();
+        for (g, &usable) in self.groups.iter_mut().zip(usable_per_group.iter()) {
+            g.set_strip_usable_px(usable);
+        }
+        let runs = self.lanes.len().max(1);
+        let snap_lane: Vec<bool> = (0..runs)
+            .map(|k| {
+                let dest = self.dest_content_w(k);
+                let inset = self.pan_of_lane(k).inset;
+                let viewport = self.pan_of_lane(k).viewport.width().max(self.rect.width());
+                dest - inset <= viewport
+            })
+            .collect();
+        let lane_of: Vec<usize> = (0..self.groups.len())
+            .map(|i| self.lane_index_of(i))
+            .collect();
+        for (i, group) in self.groups.iter_mut().enumerate() {
             group.set_reduce_motion(theme.reduce_motion);
-            group.step_width_spring();
+            let lane = lane_of.get(i).copied().unwrap_or(0);
+            let dest_fits = snap_lane.get(lane).copied().unwrap_or(false);
+            if dest_fits || group.width_target_is_stale() {
+                group.snap_width_spring();
+            } else {
+                group.step_width_spring();
+            }
         }
         self.node_ids.clear();
         if self.external_navigation && self.hidden {
@@ -3076,10 +3098,10 @@ impl Widget for GroupRow {
             let dest = dest_w.get(k).copied().unwrap_or(0.0);
             let pan = self.pan_of_lane_mut(k);
             let before = pan.scroll_x;
-            // Dest, not taffy: in-flight springs can overshoot when many
-            // layout passes share one wall-clock burst, and that must not
-            // shrink or inflate the legal pan bound.
-            pan.content_w = if dest > pan.inset { dest } else { w };
+            // Dest for pan only when the dest strip itself overflows.
+            // In-flight springs from a wider share can be larger than
+            // the viewport even though the settled slots still fit.
+            pan.content_w = if dest > pan.viewport.width() { dest } else { w };
             pan.group_left_edges = e;
             // Preserve transient rubber-band travel while fingers are down
             // or a release settle is in flight. At rest, geometry changes

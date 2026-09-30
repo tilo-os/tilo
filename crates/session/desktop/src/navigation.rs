@@ -169,7 +169,8 @@ impl DesktopSurface {
         let widths = row
             .groups
             .iter()
-            .map(|group| (group.id, group.get_rect().width()))
+            .filter(|group| !group.is_closing())
+            .map(|group| (group.id, group.dest_width_px()))
             .collect::<Vec<_>>();
         if widths.iter().any(|(_, width)| *width <= 0.0) {
             return None;
@@ -187,7 +188,7 @@ impl DesktopSurface {
         let count: usize = strips
             .iter()
             .filter_map(|id| self.row(*id))
-            .map(|row| row.groups.len())
+            .map(|row| row.groups.iter().filter(|g| !g.is_closing()).count())
             .sum();
         let focused = self.navigation.active_strip.and_then(|strip| {
             self.navigation
