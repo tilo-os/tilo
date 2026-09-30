@@ -1927,9 +1927,11 @@ impl TextRenderer {
     ) -> Option<f32> {
         let width = max_width?;
         // Balance and hyphenation consult the wrap width even when the natural
-        // line would fit; keep those keys distinct.
+        // line would fit; keep those keys distinct. So does drawing a centred
+        // or end-aligned line: its glyphs sit inside the width.
         if style.wrap_mode == TextWrapMode::Balance
             || !matches!(style.hyphenation, Hyphenation::None)
+            || (warm_shape && matches!(style.align, ParagraphAlign::Center | ParagraphAlign::End))
         {
             return Some(width);
         }
@@ -3067,6 +3069,33 @@ pub(crate) fn rich_run_outside_clip(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A short centred line drawn in a wide box sits in the middle of the
+    /// box, and an end-aligned one at its end: the draw keeps the width even
+    /// though the line fits without wrapping.
+    #[test]
+    fn a_line_that_fits_is_drawn_where_its_alignment_puts_it() {
+        let mut renderer = crate::font_catalog::fixture_renderer();
+        let first_x = |renderer: &mut TextRenderer, align: ParagraphAlign| {
+            let style = TextStyle::new(16.0).with_align(align);
+            let width = renderer.collapse_unused_max_width("New note", Some(400.0), &style, true);
+            let runs = renderer.shaped_runs("New note", width, &style);
+            runs.iter()
+                .flat_map(|run| run.glyphs.iter())
+                .map(|glyph| glyph.x)
+                .fold(f32::INFINITY, f32::min)
+        };
+        let start = first_x(&mut renderer, ParagraphAlign::Start);
+        let center = first_x(&mut renderer, ParagraphAlign::Center);
+        let end = first_x(&mut renderer, ParagraphAlign::End);
+        let (natural, _) = renderer.measure_style("New note", None, &TextStyle::new(16.0));
+        assert!(start.abs() < 1.0, "{start}");
+        assert!(
+            (center - (400.0 - natural) / 2.0).abs() < 2.0,
+            "{center} of {natural}"
+        );
+        assert!((end - (400.0 - natural)).abs() < 2.0, "{end} of {natural}");
+    }
 
     #[test]
     fn renderer_font_system_pins_families_weights_and_fallbacks() {

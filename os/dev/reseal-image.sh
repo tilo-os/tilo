@@ -51,8 +51,36 @@ else
 fi
 
 stage="$(mktemp -d "${TMPDIR:-/tmp}/tilo-reseal.XXXXXX")"
-trap 'rm -rf "$stage"' EXIT
-cp "$TILO_OS_DIR/dev/uki-cmdline.py" "$stage/uki-cmdline.py"
+container=""
+cleanup() {
+  [ -z "$container" ] || podman "${podman_args[@]}" rm "$container" >/dev/null 2>&1 || true
+  rm -rf "$stage"
+}
+trap cleanup EXIT
+# A RUN layer copies up /etc when Podman prepares its build container, changing
+# its directory mtime. bootc includes that metadata in the composefs digest even
+# if the command itself edits only /boot. Extract the UKI without starting the
+# image, edit it locally, then add it with COPY, which preserves the rootfs tree.
+mkdir "$stage/uki"
+container="$(podman "${podman_args[@]}" create --pull=never --entrypoint /bin/true "$image")"
+podman "${podman_args[@]}" cp "$container:/boot/EFI/Linux/." "$stage/uki"
+shopt -s nullglob
+ukis=("$stage/uki/"*.efi)
+[ "${#ukis[@]}" -eq 1 ] || die "reseal requires exactly one UKI under /boot/EFI/Linux"
+uki_name="${ukis[0]##*/}"
+[[ "$uki_name" =~ ^[A-Za-z0-9_.-]+\.efi$ ]] || die "invalid UKI filename"
+mv "${ukis[0]}" "$stage/uki.efi"
+chmod 0644 "$stage/uki.efi"
+python3 "$TILO_OS_DIR/dev/uki-cmdline.py" set "composefs=$digest" "$stage/uki.efi"
+python3 "$TILO_OS_DIR/dev/uki-cmdline.py" show "$stage/uki.efi"
+copy_target=""
+if podman "${podman_args[@]}" cp "$container:/boot/tilo-target/tilo-target.efi" "$stage/target.efi" 2>/dev/null; then
+  chmod 0644 "$stage/target.efi"
+  python3 "$TILO_OS_DIR/dev/uki-cmdline.py" set "composefs=$digest" "$stage/target.efi"
+  copy_target='COPY target.efi /boot/tilo-target/tilo-target.efi'
+fi
+podman "${podman_args[@]}" rm "$container" >/dev/null
+container=""
 build_args=(-t "$image" -f - --build-arg "BASE_IMAGE=$image")
 if [ -n "$iidfile" ]; then
   mapfile -t reproducible < <(podman_epoch_args "$epoch" "${podman_args[@]}")
@@ -69,12 +97,8 @@ if [ -n "$iidfile" ]; then export SOURCE_DATE_EPOCH="$epoch"; fi
 podman "${podman_args[@]}" build "${build_args[@]}" "$stage" <<EOF
 ARG BASE_IMAGE
 FROM \${BASE_IMAGE}
-RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \
-    python3 /run/uki-cmdline.py set "composefs=$digest" \
- && if [ -f /boot/tilo-target/tilo-target.efi ]; then \
-      python3 /run/uki-cmdline.py set "composefs=$digest" /boot/tilo-target/tilo-target.efi; \
-    fi \
- && python3 /run/uki-cmdline.py show
+COPY uki.efi /boot/EFI/Linux/$uki_name
+$copy_target
 EOF
 if [ -n "$iidfile" ]; then
   result=$(cat "$iidfile")

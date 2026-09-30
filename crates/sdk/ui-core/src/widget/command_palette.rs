@@ -501,7 +501,7 @@ impl CommandPalette {
             entries: Vec::new(),
             entry_index: ListIndex::default(),
             query: String::new(),
-            query_placeholder: "Search\u{2026}".to_string(),
+            query_placeholder: crate::i18n!("palette-placeholder"),
             query_selection: crate::text_selection::Selection::collapsed(0),
             query_composition: QueryComposition::new(),
             filter: None,

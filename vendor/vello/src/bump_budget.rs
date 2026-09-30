@@ -91,7 +91,16 @@ pub(crate) struct BudgetTracker {
     pinned: bool,
     /// An overflow that growth could not answer has been reported.
     limit_reported: bool,
-    /// Tiles in the viewport last rendered, for the log only.
+    /// Bytes the whole adaptive budget may grow to.
+    max_total_bytes: u64,
+    /// Grow straight to `max_total_bytes` on the first growth, then never
+    /// again: one reallocation per renderer instead of a doubling per frame
+    /// while a scene fills up.
+    grow_once: bool,
+    /// `grow_once` has grown.
+    saturated: bool,
+    /// Tiles in the viewport last rendered: the log's floors, and the
+    /// viewport-scaled ceiling growth stops at.
     n_tiles: u32,
     /// Frames seen, for the log only.
     frame: u64,
@@ -142,6 +151,9 @@ impl BudgetTracker {
             log: std::env::var_os(LOG_ENV).is_some_and(|v| !v.is_empty()),
             pinned,
             limit_reported: false,
+            max_total_bytes: u64::MAX,
+            grow_once: false,
+            saturated: false,
             n_tiles: 0,
             frame: 0,
         }
@@ -152,6 +164,47 @@ impl BudgetTracker {
         self.budget = self
             .budget
             .with_max_binding_bytes(max_binding_bytes(limits));
+    }
+
+    /// Limit the growth of the whole budget to `bytes`, shrinking it now if
+    /// it is already larger.
+    pub(crate) fn set_max_total_bytes(&mut self, bytes: u64) {
+        self.max_total_bytes = bytes;
+        self.budget.fit_total_bytes(bytes);
+    }
+
+    /// See [`Self::grow_once`].
+    pub(crate) fn set_grow_once(&mut self, grow_once: bool) {
+        self.grow_once = grow_once;
+    }
+
+    /// Grow to cover `used`, within what this viewport may reserve, the
+    /// device can bind and the total limit.
+    fn grow(&mut self, used: &BumpAllocators) -> bool {
+        if self.saturated {
+            return false;
+        }
+        let before = self.budget;
+        self.budget
+            .observe_within(used, &BumpBudget::ceiling_for_viewport(self.n_tiles));
+        if self.grow_once && self.budget != before && self.max_total_bytes != u64::MAX {
+            // The observed needs, and the ceiling's proportions for the rest,
+            // scaled together to the limit.
+            let mut ceiling =
+                BumpBudget::CEILING.with_max_binding_bytes(self.budget.max_binding_bytes);
+            ceiling.fit_total_bytes(self.max_total_bytes);
+            let b = &mut self.budget;
+            b.lines = b.lines.max(ceiling.lines);
+            b.binning = b.binning.max(ceiling.binning);
+            b.tiles = b.tiles.max(ceiling.tiles);
+            b.seg_counts = b.seg_counts.max(ceiling.seg_counts);
+            b.segments = b.segments.max(ceiling.segments);
+            b.blend_spill = b.blend_spill.max(ceiling.blend_spill);
+            b.ptcl = b.ptcl.max(ceiling.ptcl);
+            self.saturated = true;
+        }
+        self.budget.fit_total_bytes(self.max_total_bytes);
+        self.budget != before
     }
 
     /// The reservation to render the next frame with.
@@ -279,7 +332,7 @@ impl BudgetTracker {
         let before = self.effective();
         let overflowed = used.failed != 0;
         let in_effect = self.effective();
-        let budget_changed = !self.pinned && self.budget.observe(&used);
+        let budget_changed = !self.pinned && self.grow(&used);
         let changed = before != self.effective();
         if self.log {
             self.report(&used, &in_effect, budget_changed);
@@ -321,7 +374,7 @@ impl BudgetTracker {
     pub(crate) fn observe_now(&mut self, used: &BumpAllocators) -> bool {
         self.frame += 1;
         let in_effect = self.effective();
-        let changed = !self.pinned && self.budget.observe(used);
+        let changed = !self.pinned && self.grow(used);
         if self.log {
             self.report(used, &in_effect, changed);
         }
@@ -407,7 +460,36 @@ fn map_read(buf: &Buffer, f: impl FnOnce(bool) + Send + 'static) {
 
 #[cfg(test)]
 mod tests {
-    use super::max_binding_bytes;
+    use super::{BudgetTracker, max_binding_bytes};
+    use vello_encoding::BumpAllocators;
+
+    // Catches a budget that doubles several times while a scene fills up:
+    // each growth reallocates every buffer, briefly held twice by a browser.
+    #[test]
+    fn grow_once_reallocates_once_and_then_holds() {
+        let mut tracker = BudgetTracker::new();
+        tracker.set_max_total_bytes(32 << 20);
+        tracker.set_grow_once(true);
+        let small = BumpAllocators {
+            lines: 1000,
+            ptcl: 1000,
+            ..Default::default()
+        };
+        assert!(tracker.grow(&small), "the first growth reallocates");
+        let grown = *tracker.budget();
+        assert!(grown.size_in_bytes() <= 32 << 20);
+        assert!(
+            grown.size_in_bytes() > 16 << 20,
+            "it grows to the limit, not to 2x use"
+        );
+        let big = BumpAllocators {
+            lines: 1 << 22,
+            ptcl: 1 << 24,
+            ..Default::default()
+        };
+        assert!(!tracker.grow(&big), "no second reallocation");
+        assert_eq!(*tracker.budget(), grown);
+    }
 
     fn size_class(bytes: u64) -> u64 {
         let power = bytes.next_power_of_two();

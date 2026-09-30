@@ -132,6 +132,21 @@ pub(crate) fn certified(store: &Store, message: ActionMessage) -> CertifiedActio
     let admitted = admission.admit(&proof, &request, &context).unwrap();
     CertifiedAction::from_http_request(admitted, &peer).unwrap()
 }
+/// Every test here runs the actual runtime thread, which opens this Store on
+/// each command: run it in production storage mode, where a read-only open of
+/// an unchanged Store pays no file or directory barrier (see
+/// `journal_this_process`).
+fn enrolled() -> (tempfile::TempDir, Store, [u8; 32]) {
+    crate::storage::test_journal::journal_this_process();
+    crate::agent_owner_tests::enrolled()
+}
+/// The whole persisted aggregate: a journaled commit leaves `state.json` as is.
+fn persisted(root: &std::path::Path) -> (Vec<u8>, Option<Vec<u8>>) {
+    (
+        std::fs::read(root.join("state.json")).unwrap(),
+        std::fs::read(root.join("state.journal")).ok(),
+    )
+}
 fn evidence(root: &std::path::Path, request: AgentRequest) -> CertifiedAction {
     let store = Store::open(root, "agent-admission").unwrap();
     certified(
@@ -145,7 +160,7 @@ fn evidence(root: &std::path::Path, request: AgentRequest) -> CertifiedAction {
 }
 #[tokio::test]
 async fn agent_read_attachment_real_private_projection_and_binding_never_write() {
-    let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
+    let (dir, mut store, device) = enrolled();
     let ids = crate::agent_owner_tests::retained_unknown(
         &mut store,
         device,
@@ -158,7 +173,7 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
         .await
         .unwrap();
     let service = runtime.certified_commands();
-    let before = std::fs::read(dir.path().join("state.json")).unwrap();
+    let before = persisted(dir.path());
     let binding = service
         .binding(
             catalogue,
@@ -217,15 +232,12 @@ async fn agent_read_attachment_real_private_projection_and_binding_never_write()
             if messages.len() == 1 && messages[0].text == "secret task never published"),
         "an unknown control shows only its retained task"
     );
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        before
-    );
+    assert_eq!(persisted(dir.path()), before);
     runtime.close().await.unwrap();
 }
 #[tokio::test]
 async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let catalogue = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
@@ -279,7 +291,7 @@ async fn agent_read_attachment_deadline_shutdown_and_actual_queue_capacity() {
 #[tokio::test]
 async fn agent_read_attachment_result_retains_original_queue_custody() {
     use tilo_action_broker::{agent_reads::AgentReadCustody, peer_actions::PeerActionQueue};
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
@@ -321,14 +333,14 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
         agent_reads::AgentReadCustody,
         peer_actions::{CarrierError, PeerActionQueue},
     };
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
     let provider = AgentControlProvider::new_read_only(owner.clone());
     publish_runtime_state(&owner, None, &mut None, false, false).unwrap();
     let store_lock = Store::open(dir.path(), "agent-admission").unwrap();
-    let before = std::fs::read(dir.path().join("state.json")).unwrap();
+    let before = persisted(dir.path());
     let (queue, mut requests) = PeerActionQueue::channel();
     let deadline = Instant::from_std(tilo_test_env::hang_deadline());
     let pending = queue.submit_certified(evidence.clone(), deadline).unwrap();
@@ -385,16 +397,13 @@ async fn agent_read_attachment_blocked_store_read_keeps_custody_after_waiter_dro
         .unwrap();
     assert!(matches!(while_blocked, Err(CarrierError::Capacity)));
     assert!(queue.submit_certified(evidence, deadline).is_ok());
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        before
-    );
+    assert_eq!(persisted(dir.path()), before);
     drop(held);
 }
 
 #[tokio::test]
 async fn agent_read_attachment_broker_callback_uses_actual_owner_and_exact_scope() {
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let host = store.state.room.parse().unwrap();
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
@@ -435,7 +444,7 @@ async fn agent_read_attachment_broker_callback_uses_actual_owner_and_exact_scope
 
 #[tokio::test]
 async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fallback() {
-    let (dir, mut store, device) = crate::agent_owner_tests::enrolled();
+    let (dir, mut store, device) = enrolled();
     let id = Uuid::new_v4();
     crate::agent_owner_tests::retained_unknown(&mut store, device, id, "retained task");
     let invocation = tilo_actions::InvocationId(id);
@@ -452,7 +461,7 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
         .await
         .unwrap();
     let commands = runtime.certified_commands();
-    let before = std::fs::read(dir.path().join("state.json")).unwrap();
+    let before = persisted(dir.path());
     for evidence in [status, cancel] {
         let response = commands
             .handle_certified(evidence, Instant::from_std(tilo_test_env::hang_deadline()))
@@ -469,11 +478,8 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
             .unwrap()
             .is_none()
     );
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        before
-    );
-    let (foreign_dir, foreign, _) = crate::agent_owner_tests::enrolled();
+    assert_eq!(persisted(dir.path()), before);
+    let (foreign_dir, foreign, _) = enrolled();
     let wrong = certified(&foreign, ActionMessage::CatalogueRefresh { scope: None });
     drop(foreign);
     assert_eq!(
@@ -493,7 +499,7 @@ async fn agent_read_attachment_original_retained_status_cancel_and_ordinary_fall
 
 #[tokio::test]
 async fn agent_read_attachment_expired_and_dropped_reads_skip_locked_store() {
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
@@ -567,7 +573,7 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
         agent_reads::AgentReadCustody,
         peer_actions::{CarrierError, PeerActionQueue},
     };
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
@@ -638,7 +644,7 @@ async fn agent_read_attachment_ready_owner_reply_polled_after_absolute_deadline_
 #[tokio::test]
 async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired_queue() {
     use tilo_action_broker::{agent_reads::AgentReadCustody, peer_actions::PeerActionQueue};
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let evidence = certified(&store, ActionMessage::CatalogueRefresh { scope: None });
     drop(store);
     let owner = Arc::new(RuntimeOwner::open(dir.path(), "agent-admission").unwrap());
@@ -665,7 +671,7 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
         custody: Some(custody),
         reply,
     };
-    let before = std::fs::read(dir.path().join("state.json")).unwrap();
+    let before = persisted(dir.path());
     source.invalidate();
     dispatch(
         command,
@@ -684,17 +690,14 @@ async fn cloud_policy_clock_real_command_keeps_request_origin_and_denies_retired
     let (reply, retained) = response.await.unwrap().into_parts();
     assert!(reply.is_err());
     assert!(retained.unwrap().policy_time().unwrap().now_ns().is_err());
-    assert_eq!(
-        std::fs::read(dir.path().join("state.json")).unwrap(),
-        before
-    );
+    assert_eq!(persisted(dir.path()), before);
     drop(request);
     drop(pending);
 }
 
 #[tokio::test]
 async fn cloud_policy_clock_legacy_runtime_start_rejects_late_source_upgrade() {
-    let (dir, store, _) = crate::agent_owner_tests::enrolled();
+    let (dir, store, _) = enrolled();
     let version = store.state.version;
     drop(store);
     let mut runtime = CloudAgentRuntime::start(dir.path(), "agent-admission", true)
@@ -757,7 +760,7 @@ async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
     // locking Store alone); what is under test is the reuse, not that bound.
     const RECHECK: Duration = Duration::from_secs(600);
     let _recheck = crate::agent_runtime_adapter::store_hint::TestStoreRecheck::set(RECHECK);
-    let (dir, store, device) = crate::agent_owner_tests::enrolled();
+    let (dir, store, device) = enrolled();
     drop(store);
     let (_, first_agent) = add_agent(dir.path(), device);
     let (owner, provider) = read_owner(dir.path());
@@ -834,7 +837,7 @@ async fn agent_read_burst_basis_is_reused_until_the_store_changes() {
 /// it.
 #[tokio::test]
 async fn agent_read_burst_basis_is_never_an_authorization() {
-    let (dir, store, device) = crate::agent_owner_tests::enrolled();
+    let (dir, store, device) = enrolled();
     drop(store);
     let (id, _) = add_agent(dir.path(), device);
     let store = Store::open(dir.path(), "agent-admission").unwrap();
@@ -862,7 +865,7 @@ async fn agent_read_burst_basis_is_never_an_authorization() {
 
     // Another enrolled device (another Store identity) is proved freshly
     // and denied; the retained basis is not a verdict for it.
-    let (foreign_dir, foreign, _) = crate::agent_owner_tests::enrolled();
+    let (foreign_dir, foreign, _) = enrolled();
     let foreign_read = certified(
         &foreign,
         ActionMessage::AgentReadV1 {

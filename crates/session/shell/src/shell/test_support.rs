@@ -106,6 +106,21 @@ impl PopulatedShellFixture {
     }
 }
 
+/// A collaborator renames the active workspace from their own device: the
+/// kind of change Catch up and the unread badge exist to show, which the
+/// reader's own bootstrap writes are not.
+#[cfg(test)]
+pub(crate) fn collaborator_renames_active_workspace(tree: &mut crate::shell::state::WorkspaceTree) {
+    let reader = tree.doc.get_actor().clone();
+    tree.doc
+        .set_actor(automerge::ActorId::from(b"ada-device".as_slice()));
+    if let Some(workspace) = tree.desktop.active_workspace_mut() {
+        workspace.name = "Board review".to_string();
+    }
+    tree.seed_doc_from_cache();
+    tree.doc.set_actor(reader);
+}
+
 #[cfg(test)]
 impl std::ops::Deref for PopulatedShellFixture {
     type Target = crate::shell::frame::FrameBuilder;

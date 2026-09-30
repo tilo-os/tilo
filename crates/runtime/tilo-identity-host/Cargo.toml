@@ -13,9 +13,13 @@ description = "The host side of the app identity service: the identity broker ap
 name = "tilo_identity_host"
 path = "src/lib.rs"
 
+[features]
+# Compiles the throwaway test identity into a release build (dev images only).
+throwaway-test-identity = []
+
 [dependencies]
-advisory-lock = { path = "../../system/advisory-lock" }
-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 collab-types = { path = "../../collab/collab-types" }
 ed25519-dalek = { workspace = true, features = ["rand_core"] }
 getrandom.workspace = true

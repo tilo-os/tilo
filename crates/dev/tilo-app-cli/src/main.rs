@@ -917,7 +917,7 @@ struct NewArgs {
 
     /// Build against the toolkit `ui` crate of this Tilo checkout (or set
     /// `TILO_UI_PATH`).
-    #[arg(long, conflicts_with_all = ["sdk_git", "sdk_rev"])]
+    #[arg(long, conflicts_with_all = ["sdk_git", "sdk_rev", "sdk_version"])]
     ui_path: Option<PathBuf>,
 
     /// Build a standalone app against this Tilo git repository. Without a
@@ -929,6 +929,18 @@ struct NewArgs {
     /// `tilo-app` was built from.
     #[arg(long, value_name = "COMMIT")]
     sdk_rev: Option<String>,
+
+    /// Build a standalone app on the published SDK: `tilo-app` from the
+    /// registry at this version requirement, with no `[patch]` or lockfile.
+    /// Without a value, the version this `tilo-app` was built with.
+    #[arg(
+        long,
+        value_name = "VERSION",
+        num_args = 0..=1,
+        default_missing_value = "",
+        conflicts_with_all = ["sdk_git", "sdk_rev"]
+    )]
+    sdk_version: Option<String>,
 
     /// Print the files that would be created without writing them.
     #[arg(long, conflicts_with = "dev")]
@@ -1844,12 +1856,12 @@ fn run_platform_build(path: &Path, args: BuildArgs) -> Result<Value> {
         },
     )?;
     eprintln!(
-        "[tilo-app] built {} for the web in {:.1} s: {} (module {} bytes, core {} bytes)",
+        "[tilo-app] built {} for the web in {:.1} s: {} ({}, module {} bytes)",
         build.app_id,
         build.elapsed.as_secs_f64(),
         build.output.display(),
-        build.module_bytes,
-        build.core_bytes
+        build.entry,
+        build.module_bytes
     );
     Ok(build.to_json())
 }
@@ -2653,6 +2665,7 @@ fn run_new(args: NewArgs, interactive: bool) -> Result<Value> {
         ui_path: args.ui_path,
         sdk_git: args.sdk_git,
         sdk_rev: args.sdk_rev,
+        sdk_version: args.sdk_version,
         dry_run: args.dry_run,
     };
     let outcome = if interactive {

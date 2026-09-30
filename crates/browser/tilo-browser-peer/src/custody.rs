@@ -63,11 +63,25 @@ pub trait PeerStore: tilo_relay_client::MaybeSendSync {
     ///
     /// Returns a description when the write did not become durable.
     fn save(&self, record: &PeerRecord) -> Result<(), String>;
+    /// The stored channel state (encrypted-channel membership and the
+    /// edits held for it), if any. A store without it keeps channel state
+    /// for the session only.
+    fn load_channels(&self) -> Option<Vec<u8>> {
+        None
+    }
+    /// Replace the stored channel state.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description when the write did not become durable.
+    fn save_channels(&self, _bytes: &[u8]) -> Result<(), String> {
+        Ok(())
+    }
 }
 
 /// An in-memory [`PeerStore`] for native peers and tests.
 #[derive(Default)]
-pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>);
+pub struct MemoryPeerStore(Mutex<Option<PeerRecord>>, Mutex<Option<Vec<u8>>>);
 
 impl PeerStore for MemoryPeerStore {
     fn load(&self) -> Option<PeerRecord> {
@@ -82,6 +96,21 @@ impl PeerStore for MemoryPeerStore {
             .0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(record.clone());
+        Ok(())
+    }
+
+    fn load_channels(&self) -> Option<Vec<u8>> {
+        self.1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
+    }
+
+    fn save_channels(&self, bytes: &[u8]) -> Result<(), String> {
+        *self
+            .1
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(bytes.to_vec());
         Ok(())
     }
 }

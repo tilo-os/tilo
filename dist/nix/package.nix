@@ -16,6 +16,7 @@
 , libinput
 , systemd
 , libdrm
+, libgbm
 , mesa
 , pipewire
 , dbus
@@ -27,6 +28,13 @@
 , python3
 }:
 
+let
+  # A fixed-output vendor path can remain cached after Cargo.lock changes.
+  # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
+  expectedCargoLockSha256 = "077b3fdc5c8b9f7cd062c3a49d12a62625b4060bba5bab3d79acd03baee49841";
+in
+assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
+  "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
@@ -37,21 +45,9 @@ rustPlatform.buildRustPackage rec {
       && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
   };
 
-  cargoLock = {
-    lockFile = ../../Cargo.lock;
-    # Git dependencies are pinned in Cargo.lock, but Nix also needs the
-    # content hash of each checkout before it can vendor them offline.
-    outputHashes = {
-      "accesskit-0.25.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
-      "accesskit_atspi_common-0.20.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
-      "accesskit_consumer-0.39.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
-      "accesskit_unix-0.23.0" = "sha256-/nM7DnIEBlEbSqOvDvbUB+DGMOMViDz4cz8SLAAY0JA=";
-      "atspi-0.29.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
-      "atspi-common-0.13.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
-      "atspi-proxies-0.13.0" = "sha256-2friOT0Bwuv/2Z1cTojaoCYMDtpYH/vDqXMie+xjIsA=";
-      "rustypipe-0.11.4" = "sha256-Sdy1ynkgGbQ5q9o3U9OkxJtJJjiBd7IIFLMi1TIStgc=";
-    };
-  };
+  # One fixed-output vendor closure avoids scheduling and copying each of the
+  # 1600 Cargo.lock packages as a separate remote derivation.
+  cargoHash = "sha256-+hHFjyMcnI0DXqWEW55rpwhJJDKEPBE8eMSCq3nkLZI=";
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
@@ -75,7 +71,7 @@ rustPlatform.buildRustPackage rec {
 
   nativeBuildInputs = [ pkg-config cmake clang capnproto makeWrapper ];
   buildInputs = [
-    libxkbcommon wayland seatd libinput systemd libdrm mesa pipewire dbus
+    libxkbcommon wayland seatd libinput systemd libdrm libgbm mesa pipewire dbus
     fontconfig freetype harfbuzz fuse3
     gst_all_1.gstreamer gst_all_1.gst-plugins-base
     # tilo-flight-recorder: fixup rewrites its /usr/bin/python3 shebang.
@@ -95,7 +91,7 @@ rustPlatform.buildRustPackage rec {
     runHook preInstall
     shell_bin=$(find target -type f -path '*/release/shell' -perm -0100 -print -quit)
     test -n "$shell_bin"
-    "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
+    bash "$src/dist/stage-payload.sh" "$(dirname "$shell_bin")" "$TMPDIR/tilo-payload"
     p="$TMPDIR/tilo-payload"
     install -Dm755 "$p/bin/tilo-shell" "$out/bin/tilo-shell"
     install -Dm755 "$p/bin/tilo-launcher" "$out/bin/tilo-launcher"
@@ -146,6 +142,8 @@ rustPlatform.buildRustPackage rec {
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
+
+  passthru.providedSessions = [ "tilo" ];
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";

@@ -214,7 +214,7 @@ DEDICATED_TEST_WEIGHT = 1_000
 # suites' handshake bounds expire, so test shards keep them apart whenever
 # there is more than one shard.
 TEST_SHARD_APART = (
-    frozenset({"fs", "fs-native", "private-fs"}),
+    frozenset({"tilo-fs", "fs-native", "private-fs"}),
     frozenset({
         "tilo-action-broker",
         "tilo-cloud-host",
@@ -575,6 +575,7 @@ EXAMPLE_APPS = "examples/apps/"
 WEB_BUILD_INPUTS = (
     "crates/browser/tilo-browser-runtime/scripts/",
     "crates/dev/tilo-app-cli/src/web.rs",
+    "crates/dev/tilo-app-cli/src/targets/",
     "crates/dev/tilo-app-cli/src/portability.rs",
     "tools/ci/build-web-examples.sh",
 )

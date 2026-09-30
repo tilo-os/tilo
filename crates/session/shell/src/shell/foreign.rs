@@ -3227,12 +3227,12 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Wayland clients that draw on demand wait for `wl_surface.frame` before
 /// their next buffer; without this pass a client renders one frame and
-/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen.
+/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
+/// and for a window the compositor asked to close, whose tab is already gone.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
     for toplevel in toplevels {
@@ -3242,20 +3242,14 @@ pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> us
             let tree = state.workspace_tree.read();
             is_visible_tab(&tree, store().sheet_root(id))
         };
-        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
+        if !visible_tab
+            && state.osk_surface != Some(id)
+            && !state.is_floating_toplevel(id)
+            && !state.is_closing_toplevel(id)
+        {
             continue;
         }
-        let mut fired = false;
-        smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<smithay::wayland::compositor::SurfaceAttributes>();
-            for callback in attrs.current().frame_callbacks.drain(..) {
-                callback.done(time_ms);
-                fired = true;
-            }
-        });
-        if fired {
+        if state.release_frame_callbacks(surface) {
             signalled = signalled.saturating_add(1);
         }
     }

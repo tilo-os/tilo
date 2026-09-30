@@ -1914,6 +1914,73 @@ impl FrameBuilder {
         self.host.content_animating_leaves()
     }
 
+    /// Who holds [`Self::next_wake_deadline`]: chrome sources by name, and
+    /// widgets by path. Empty when nothing will wake the loop. Allocates, so
+    /// only diagnostics and tests call it.
+    pub fn wake_deadline_owners(&self) -> Vec<String> {
+        let Some(due) = self.next_wake_deadline() else {
+            return Vec::new();
+        };
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let holds = |deadline: Option<Instant>| deadline.is_some_and(|at| at <= limit);
+        let mut owners = self.host.wake_deadline_owners(due);
+        for (_, surface) in &self.floating_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if holds(surface.next_wake_deadline()) {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if holds(
+            self.osk_overlay
+                .as_ref()
+                .and_then(Widget::next_wake_deadline),
+        ) {
+            owners.push("osk".to_string());
+        }
+        if holds(self.chrome.borrow().window_transfers.next_poll()) {
+            owners.push("window-transfers".to_string());
+        }
+        owners
+    }
+
+    /// Paths to the deepest widgets asking for animation frames, host
+    /// sources by label; empty when the loop may idle. For tests and
+    /// diagnostics.
+    pub fn animation_owners(&self) -> Vec<String> {
+        let demand = self.animation_demand();
+        let mut owners: Vec<String> = crate::shell::animation_diagnostics::host_labels(demand.host)
+            .filter(|label| *label != "content")
+            .map(str::to_string)
+            .collect();
+        if demand.host & (1 << 10) != 0 {
+            owners.extend(
+                self.content_animating_leaves()
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+            );
+        }
+        for (_, surface) in &self.floating_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("floating/{}", surface.name()));
+            }
+        }
+        for (_, surface) in &self.transient_overlays {
+            if surface.needs_animation_frame() {
+                owners.push(format!("transient/{}", surface.name()));
+            }
+        }
+        if demand.osk {
+            owners.push("osk".to_string());
+        }
+        owners
+    }
+
     pub(crate) fn animation_demand(&self) -> AnimationDemand {
         AnimationDemand {
             host: self.host.animation_demand_bits(Instant::now()),
@@ -3199,6 +3266,9 @@ mod tests {
         fn startup_keeps_unread_activity_passive() {
             let mut frame =
                 crate::shell::test_support::PopulatedShellFixture::new((1600, 900), Theme::dark());
+            crate::shell::test_support::collaborator_renames_active_workspace(
+                &mut frame.chrome().tree_mut(),
+            );
             let _ = frame.paint_settled();
             assert!(
                 frame.chrome().activity_glance.unread > 0,
@@ -4409,9 +4479,35 @@ mod tests {
             );
         }
 
+        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
+        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        fn super_f_on_a_tilo_group_covers_the_wheel() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(fb.chrome().is_fullscreen());
+            let during = fb.widget_registry();
+            let row = rect_named(&during, "GroupRow");
+            assert!(
+                row.width() >= fb.viewport().0 - 1.0,
+                "Super+F must cover the wheel; row width {} vs output {}",
+                row.width(),
+                fb.viewport().0,
+            );
+            assert!(
+                rect_named(&during, "TopBarChrome").height() <= 0.5,
+                "Super+F hides the top bar"
+            );
+            assert!(fb.host_mut().toggle_focused_group_fullscreen());
+            let _ = fb.paint_settled();
+            assert!(!fb.chrome().is_fullscreen());
+        }
+
         restored_native_tab_gets_a_configure_rect_before_its_first_buffer();
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
+        super_f_on_a_tilo_group_covers_the_wheel();
     }
 
     /// Look up a widget's rect by its *last* path segment

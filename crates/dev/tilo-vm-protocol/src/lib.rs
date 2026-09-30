@@ -243,6 +243,10 @@ pub struct SlotCreate {
     /// means one connector at the compositor's default mode and scale.
     #[serde(default)]
     pub outputs: Vec<OutputSpec>,
+    /// Give the slot's user a throwaway test identity through the session's
+    /// dev-only control op, and start the session with fresh desktop state.
+    #[serde(default)]
+    pub identity: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -581,6 +585,13 @@ pub enum Action {
     SetOutputs {
         outputs: String,
     },
+    /// The session gave its user a throwaway test identity.
+    ProvisionTestIdentity {
+        created: bool,
+    },
+    /// The slot user's desktop layout removed, so the next session starts
+    /// with none.
+    ResetDesktopState,
     /// Recorded but not activated; takes effect at the next session restart.
     Deferred {
         reason: String,
@@ -766,6 +777,19 @@ pub struct SlotCreateResult {
     pub slot: SlotInfo,
     pub created: bool,
     pub actions: Vec<Action>,
+    /// Set exactly when [`SlotCreate::identity`] was asked for; a daemon
+    /// that leaves it out does not know the flag.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity: Option<TestIdentity>,
+}
+
+/// The throwaway test identity a slot's user holds.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TestIdentity {
+    /// Minted by this create, rather than kept from an earlier one.
+    pub created: bool,
+    pub display_name: String,
+    pub throwaway: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1057,6 +1081,7 @@ mod tests {
             kind: SlotKind::Headful,
             owner: Owner::default(),
             outputs: display::parse_outputs("2560x1600@2,1920x1080").unwrap(),
+            identity: false,
         });
         let value = serde_json::to_value(&request).unwrap();
         assert_eq!(
@@ -1067,6 +1092,8 @@ mod tests {
         // A client that sends no outputs gets the single default connector.
         let bare: SlotCreate = serde_json::from_str(r#"{"name":"a","kind":"headful"}"#).unwrap();
         assert!(bare.outputs.is_empty());
+        // Nor a test identity.
+        assert!(!bare.identity);
     }
 
     /// Request lines are flat JSON-RPC, method names match serde tags, and job lines are found among other

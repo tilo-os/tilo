@@ -56,6 +56,23 @@ pub fn ensure_collaboration_identity(
     )
 }
 
+/// [`tilo_identity_host::provisioning::ensure_throwaway_test_identity`] in
+/// this session's identity storage.
+///
+/// # Errors
+///
+/// As the provisioning function.
+pub fn ensure_throwaway_test_identity(
+    identity_dir: &Path,
+    paths: &IdentityPaths,
+) -> Result<ProvisionOutcome, io::Error> {
+    tilo_identity_host::provisioning::ensure_throwaway_test_identity(
+        identity_dir,
+        paths,
+        IDENTITY_STORAGE,
+    )
+}
+
 /// [`tilo_identity_host::provisioning::ensure_collaboration_identity_for_legacy_linux_host`]
 /// in this session's identity storage.
 ///

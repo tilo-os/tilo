@@ -480,27 +480,34 @@ mod tests {
             tree.desktop.set_active_group(strip, 200);
         }
 
-        // Tab 3 is the focused window, so only the other one of the same
-        // name is somewhere to go; nothing on the list closes anything.
+        // Tab 3 is focused. A search still names every matching window,
+        // including that one: findable by name means the open window is a
+        // result, not only its close actions.
         let rows = palette(&chrome, &doc, "Profilfehler");
-        let ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
-        assert_eq!(ids, ["tab.focus:100:1"]);
-        assert_eq!(rows[0].title, "Profilfehler aufgetreten");
-        assert_eq!(rows[0].operation_kind, tilo_actions::OperationKind::View);
+        let mut ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
+        let go = rows
+            .iter()
+            .find(|row| row.id == "tab.focus:100:1")
+            .expect("unfocused window stays a focus result");
+        assert_eq!(go.title, "Profilfehler aufgetreten");
+        assert_eq!(go.operation_kind, tilo_actions::OperationKind::View);
         assert_eq!(
-            rows[0].subtitle.as_deref(),
+            go.subtitle.as_deref(),
             Some("Open in this workspace · 2 tabs")
         );
 
         // A window is found by its app when its title names the document.
-        let ids: Vec<String> = palette(&chrome, &doc, "chrome")
+        let mut ids: Vec<String> = palette(&chrome, &doc, "chrome")
             .into_iter()
             .map(|row| row.id)
             .collect();
-        assert_eq!(ids, ["tab.focus:100:1"]);
+        ids.sort();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
 
-        // Enter on the top row brings that window forward, as a click would.
-        (rows[0].on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
+        // Enter on the unfocused row brings that window forward, as a click would.
+        (go.on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
         let (active_group, active_tab) = {
             let state = chrome.borrow();
             let tree = state.tree();
@@ -653,6 +660,131 @@ mod tests {
         assert!(
             chrome.borrow_mut().take_surface_close_requests().is_empty(),
             "a window whose state cannot travel is never asked to close"
+        );
+    }
+
+    /// Stands in for the machine's Linux apps: a long list the empty
+    /// palette must not open with.
+    struct LinuxApps;
+
+    impl crate::shell::search::SearchProvider for LinuxApps {
+        fn id(&self) -> &'static str {
+            "host-apps"
+        }
+        fn name(&self) -> &'static str {
+            "Linux apps"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::HostApplication]
+        }
+        fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+            (0..40)
+                .map(|i| {
+                    SearchResult::nullary(
+                        ResourceKind::HostApplication,
+                        "host-apps",
+                        format!("org.example.App{i}"),
+                        format!("App {i}"),
+                        None,
+                        10,
+                        |_, _, _| {},
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_empty_palette_offers_windows_to_go_back_to_not_an_inventory() {
+        let (chrome, doc) = fixture();
+        let mut registry = registry();
+        registry.register(Rc::new(
+            crate::shell::search::providers::ActionsProvider::new(),
+        ));
+        registry.register(Rc::new(LinuxApps));
+        let state = chrome.borrow();
+        let groups = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        let first = groups.first().expect("the empty palette has rows");
+        assert_eq!(first.kind, ResourceKind::Tab, "windows come first");
+        assert!(
+            first
+                .results
+                .iter()
+                .all(|row| row.id.starts_with("tab.focus:")),
+            "every window row goes to it: {:?}",
+            first.results.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        let rows: Vec<&SearchResult> = groups.iter().flat_map(|group| &group.results).collect();
+        assert!(
+            rows.iter().all(
+                |row| row.operation_kind == tilo_actions::OperationKind::View
+                    || row.kind == ResourceKind::Application
+            ),
+            "nothing on the empty palette changes anything: {:?}",
+            rows.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == ResourceKind::HostApplication),
+            "the Linux app list is a keystroke away, not the default"
+        );
+        assert!(rows.iter().any(|row| row.id == "room.activity.open"));
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.total == group.results.len())
+        );
+
+        let app_scoped = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::ActiveApp,
+                active_provider_id: Some("host-apps"),
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        assert_eq!(
+            app_scoped
+                .iter()
+                .find(|group| group.kind == ResourceKind::HostApplication)
+                .map(|group| group.total),
+            Some(40),
+            "scoped to one app, the empty palette lists that app's inventory, not a curated pick"
+        );
+
+        let listing = registry.query_exhaustive(&crate::shell::search::QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &ROOT,
+        });
+        assert!(
+            listing.iter().any(|row| row.id == "tab.close:100:1")
+                && listing
+                    .iter()
+                    .filter(|row| row.kind == ResourceKind::HostApplication)
+                    .count()
+                    == 40,
+            "agents still enumerate every action and app"
         );
     }
 }

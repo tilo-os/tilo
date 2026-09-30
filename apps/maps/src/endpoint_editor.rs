@@ -128,8 +128,14 @@ impl EndpointEditor {
         self.focused.is_some()
     }
 
+    #[cfg(test)]
     pub(super) fn has_pending_query(&self) -> bool {
         self.deadline.is_some()
+    }
+
+    /// When the focused endpoint's typed query settles into a live geocode.
+    pub(super) const fn query_deadline(&self) -> Option<Instant> {
+        self.deadline
     }
 
     #[cfg(test)]

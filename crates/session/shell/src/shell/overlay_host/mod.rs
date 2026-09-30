@@ -1775,6 +1775,9 @@ impl ShellOverlayHost {
         search_registry.register(std::rc::Rc::new(
             crate::shell::search::providers::NativeApplicationsProvider::default(),
         ));
+        search_registry.register(std::rc::Rc::new(
+            crate::shell::search::providers::UnavailableApplicationsProvider::for_host(),
+        ));
         // Applications Tilo did not package: unconfined, separate chip
         // from the one above.
         search_registry.register(std::rc::Rc::new(
@@ -3618,10 +3621,6 @@ impl ShellOverlayHost {
     /// both [`Widget::update`] and [`Widget::take_structure_dirty`] — the
     /// shots driver's relayout-only path skips `update`.
     fn resync_workspace_content(&mut self) -> bool {
-        // Both update and structure-dirty enter here before canonical
-        // reconciliation. Commit pending widget gestures first, before a
-        // rebuild drops the rows holding them.
-        self.harvest_active_tab_writeback();
         let Some(chrome) = self.chrome.clone() else {
             return false;
         };
@@ -4250,9 +4249,15 @@ impl ShellOverlayHost {
         };
         // Client `xdg_toplevel.set_fullscreen` wins over a user-expanded
         // group if both are set.
-        let fs_group = {
+        let (fs_group, maximize, single) = {
             let st = chrome.borrow();
-            st.fullscreen_group().or_else(|| st.maximized_group())
+            let client = st.fullscreen_group();
+            let single = st.single_strip().then(|| st.active_strip_id()).flatten();
+            (
+                client.or_else(|| st.maximized_group()),
+                client.is_none(),
+                single,
+            )
         };
         // The live client tree and this rendered tree aren't yet unified,
         // so a fullscreen id we don't host must count as "no fullscreen"
@@ -4269,20 +4274,40 @@ impl ShellOverlayHost {
         // rebuilding while this still says `true` leaves the sidebar node at
         // `display:none`, with no later structural edge to rebuild it again.
         chrome.borrow_mut().set_fullscreen_presentation(owned);
-        for &row_ptr in self.group_row_ptrs.values() {
+        for (&strip, &row_ptr) in &self.group_row_ptrs {
             // SAFETY: same contract as every other `group_row_ptrs` accessor —
             // the pointer comes from a `Box<GroupRow>` owned by the content
             // tree, the host outlives the content, and `&mut self` gives us
             // unaliased access for the duration of this call.
             let row: &mut GroupRow = unsafe { &mut *row_ptr };
+            // A maximize fills the work area beside the wheel; a client
+            // fullscreen covers the whole output.
+            row.set_promotion_keeps_gutter(maximize);
             match fs_group {
                 Some(gid) if owned && row.group_ids().contains(&gid) => {
                     row.set_fullscreen(Some(gid), false);
                 }
                 Some(_) if owned => row.set_fullscreen(None, true),
-                _ => row.set_fullscreen(None, false),
+                _ => row.set_fullscreen(None, single.is_some_and(|single| single != strip)),
             }
         }
+    }
+
+    /// Whether a client's fullscreen group is represented by a live retained
+    /// row, so it covers the output and the wheel with it. A maximize does
+    /// not: the wheel says where you are.
+    fn client_fullscreen_is_owned(&self) -> bool {
+        let Some(chrome) = self.chrome.as_ref() else {
+            return false;
+        };
+        let group = chrome.borrow().fullscreen_group();
+        group.is_some_and(|group| {
+            self.group_row_ptrs.values().any(|&row| {
+                // SAFETY: same retained-row ownership contract as
+                // `sync_fullscreen_from_chrome`; this is read-only.
+                unsafe { (*row).group_ids().contains(&group) }
+            })
+        })
     }
 
     /// Whether the requested fullscreen/maximized group is represented by a
@@ -4421,8 +4446,9 @@ impl ShellOverlayHost {
     /// Mirrors the widget-side `TabBar::active_id` back into the persisted
     /// tree's `group.active_tab`/`active_group`/`active_strip` — without
     /// it, a tab click flips visible content but leaves search-scope
-    /// helpers pointing at the group's initial tab. Runs every frame; the
-    /// O(groups × tabs) walk stays cheap enough to skip a dirty bit.
+    /// helpers pointing at the group's initial tab. Runs after input
+    /// (`flush_active_tab_writeback`) and before a search or palette
+    /// scope is resolved, not every frame.
     fn harvest_active_tab_writeback(&self) {
         // Widgets and chrome can't be borrowed at once, so collect the
         // tuples first and apply under one chrome borrow.
@@ -5705,8 +5731,8 @@ impl ShellOverlayHost {
     }
 
     /// Selects `tab` inside `group` on the live widget tree (the
-    /// authoritative side — `harvest_active_tab_writeback` mirrors it into
-    /// the persisted tree each frame). Used by the compositor's Alt+Shift
+    /// authoritative side — `flush_active_tab_writeback` mirrors it into
+    /// the persisted tree after input). Used by the compositor's Alt+Shift
     /// wheel jump.
     pub fn focus_window_widget(&mut self, strip_id: StripId, group: GroupId, tab: u64) -> bool {
         let Some(&ptr) = self.group_row_ptrs.get(&strip_id) else {
@@ -6318,6 +6344,35 @@ impl ShellOverlayHost {
         })
     }
 
+    /// Super+F on a Tilo window: cover the output, including the wheel.
+    /// A client `xdg_toplevel` fullscreen still goes through the compositor.
+    pub(crate) fn toggle_focused_group_fullscreen(&self) -> bool {
+        let Some(chrome) = self.chrome.clone() else {
+            return false;
+        };
+        let focused = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = tree.desktop.active_strip.get(&tree.desktop.active).copied();
+            let group = strip.and_then(|strip| tree.desktop.active_group_for(strip));
+            drop(tree);
+            drop(state);
+            group
+        };
+        let Some(group) = focused else {
+            return false;
+        };
+        let current = chrome.borrow().fullscreen_group();
+        chrome
+            .borrow_mut()
+            .set_fullscreen_group(if current == Some(group) {
+                None
+            } else {
+                Some(group)
+            });
+        true
+    }
+
     fn detach_focused_tab(&mut self) -> bool {
         self.mutate_focused_group_widget(GroupRow::detach_active_tab)
     }
@@ -6808,6 +6863,10 @@ impl ShellOverlayHost {
     fn harvest_empty_workspace_launchpad(&mut self, doc: &mut AutoCommit, root: &ObjId) -> bool {
         use tilo_desktop::launchpad::LaunchpadAction;
 
+        if tilo_desktop::launchpad::take_open_app(doc, root) {
+            self.open_app_launcher(doc, root);
+            return true;
+        }
         let Some(action) = LaunchpadAction::take(doc, root) else {
             return false;
         };
@@ -6828,6 +6887,22 @@ impl ShellOverlayHost {
             | LaunchpadAction::Meet => {}
         }
         true
+    }
+
+    /// The app launcher Super+N and the empty workspace's "Open an app"
+    /// open: the palette over everything, opening beside the focus.
+    fn open_app_launcher(&mut self, doc: &AutoCommit, root: &ObjId) {
+        if let Some(chrome) = self.chrome.clone() {
+            let mut st = chrome.borrow_mut();
+            st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
+            st.search_scope = crate::shell::chrome_state::SearchScope::All;
+            st.bump();
+        }
+        self.palette_visible = true;
+        self.palette.set_focus(true);
+        self.palette.set_query("");
+        self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
+        self.refresh_search_results(doc, root);
     }
 
     fn open_launchpad_app(
@@ -11817,21 +11892,9 @@ impl ShellOverlayHost {
             }
             // Super+N — a new window, placed by the rule.
             "n" | "N" => {
-                if repeat {
-                    *handled = true;
-                    return true;
+                if !repeat {
+                    self.open_app_launcher(state, path);
                 }
-                if let Some(chrome) = self.chrome.clone() {
-                    let mut st = chrome.borrow_mut();
-                    st.open_target = crate::shell::chrome_state::OpenTarget::Beside;
-                    st.search_scope = crate::shell::chrome_state::SearchScope::All;
-                    st.bump();
-                }
-                self.palette_visible = true;
-                self.palette.set_focus(true);
-                self.palette.set_query("");
-                self.last_search_query = "\u{0}not-yet-refreshed\u{0}".to_string();
-                self.refresh_search_results(state, path);
                 *handled = true;
                 true
             }
@@ -15753,13 +15816,12 @@ impl Widget for ShellOverlayHost {
         self.clear_stale_open_target();
         self.clear_stale_wifi_password();
         self.sync_status_from_bridge();
-        self.harvest_active_tab_writeback();
         let presence_dirty = self.pump_presence_requests();
         self.pump_screenshot_sends();
         let follow_dirty = self.reconcile_followed_peer();
         self.follow_focus_across_displays();
-        // Both edge-triggered on `active_group`, so they run after the
-        // writeback above reflects this frame's focus change.
+        // Edge-triggered on `active_group`. Input already flushed the
+        // widget-side tab into the tree before this update.
         self.scroll_active_group_into_view();
         let capture_targets = self.capture_targets();
         self.capture_studio.set_candidates(capture_targets);
@@ -15966,6 +16028,7 @@ impl Widget for ShellOverlayHost {
         // so it hovers above the content pane instead of displacing it.
         let primary = self.primary_output().filter(|_| self.is_partitioned());
         let sidebar_width = self.sidebar_width();
+        let covers_wheel = self.client_fullscreen_is_owned();
         let sidebar_node = self.sidebar.as_mut().map(|sidebar| {
             let node = sidebar.build_layout(taffy, theme, node_map);
             // See the palette override above: failure here is not
@@ -15997,8 +16060,9 @@ impl Widget for ShellOverlayHost {
                 style.flex_grow = 0.0;
                 style.flex_shrink = 0.0;
                 // A fullscreen surface covers the whole output, so the
-                // wheel is suppressed alongside the top bar.
-                if fullscreen {
+                // wheel is suppressed alongside the top bar. A maximized
+                // group stops beside it.
+                if covers_wheel {
                     style.display = Display::None;
                 }
                 let _ = taffy.set_style(node, style);
@@ -16174,11 +16238,12 @@ impl Widget for ShellOverlayHost {
                 .unwrap_or(0.0);
             // A summoned wheel places itself around the pointer in screen
             // space; the strip's pan would shift it out from under the cursor.
-            let summoned = self
-                .chrome
-                .as_ref()
-                .is_some_and(|c| c.borrow().wheel_summon().is_some());
-            let anchor_x = if summoned {
+            // A promoted group is drawn unpanned, so the wheel beside it is too.
+            let pinned = self.chrome.as_ref().is_some_and(|c| {
+                let st = c.borrow();
+                st.wheel_summon().is_some() || st.is_fullscreen()
+            });
+            let anchor_x = if pinned {
                 self.rect.x0
             } else {
                 self.rect.x0 - active_scroll_x
@@ -16488,24 +16553,31 @@ impl Widget for ShellOverlayHost {
                 use ui::gesture::{TouchGestureEvent, TouchSwipeDirection};
                 match gesture {
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Left,
                     } => claimed |= self.step_focus_along_strip(1),
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
+                        fingers: 3,
                         direction: TouchSwipeDirection::Right,
                     } => claimed |= self.step_focus_along_strip(-1),
+                    // Three fingers are strips, four workspaces: the touchpad's
+                    // levels (`backend::drm::gestures`).
                     TouchGestureEvent::Swipe {
-                        fingers: 3..,
-                        direction,
-                    } => {
+                        fingers,
+                        direction: direction @ (TouchSwipeDirection::Up | TouchSwipeDirection::Down),
+                    } if fingers >= 3 => {
                         let step = if direction == TouchSwipeDirection::Up {
                             -1
                         } else {
                             1
                         };
                         if let Some(chrome) = self.chrome.as_ref() {
-                            claimed |= chrome.borrow_mut().switch_workspace(step);
+                            let mut chrome = chrome.borrow_mut();
+                            claimed |= if fingers == 3 {
+                                chrome.switch_strip(step)
+                            } else {
+                                chrome.switch_workspace(step)
+                            };
                         }
                     }
                     TouchGestureEvent::Pinch {
@@ -18069,29 +18141,73 @@ impl Widget for ShellOverlayHost {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = Instant::now();
+        self.wake_deadline_sources(Instant::now())
+            .into_iter()
+            .filter_map(|(_, deadline)| deadline)
+            .min()
+    }
+}
+
+impl ShellOverlayHost {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
         [
-            self.onboarding
-                .as_ref()
-                .and_then(Widget::next_wake_deadline),
-            self.content.next_wake_deadline(),
-            self.sidebar
-                .as_ref()
-                .and_then(|sidebar| sidebar.next_wake_deadline()),
-            self.chrome.as_ref().and_then(|chrome| {
-                self.notification_stack
-                    .next_wake_deadline(&ChromeNotifications::new(chrome))
-            }),
-            self.chrome
-                .as_ref()
-                .and_then(|chrome| chrome.borrow().osd)
-                .and_then(|osd| osd.next_wake_deadline_at(now)),
-            self.now_playing_wake_deadline(now),
-            self.window_previews_wake_deadline(now),
+            (
+                "onboarding",
+                self.onboarding
+                    .as_ref()
+                    .and_then(Widget::next_wake_deadline),
+            ),
+            ("content", self.content.next_wake_deadline()),
+            (
+                "sidebar",
+                self.sidebar
+                    .as_ref()
+                    .and_then(|sidebar| sidebar.next_wake_deadline()),
+            ),
+            (
+                "notification",
+                self.chrome.as_ref().and_then(|chrome| {
+                    self.notification_stack
+                        .next_wake_deadline(&ChromeNotifications::new(chrome))
+                }),
+            ),
+            (
+                "osd",
+                self.chrome
+                    .as_ref()
+                    .and_then(|chrome| chrome.borrow().osd)
+                    .and_then(|osd| osd.next_wake_deadline_at(now)),
+            ),
+            ("now-playing", self.now_playing_wake_deadline(now)),
+            ("window-previews", self.window_previews_wake_deadline(now)),
         ]
-        .into_iter()
-        .flatten()
-        .min()
+    }
+
+    /// Which of the host's sources hold a wake deadline at or before `due`;
+    /// for the desktop's widget tree, the deepest widgets holding it.
+    pub(crate) fn wake_deadline_owners(&self, due: Instant) -> Vec<String> {
+        let limit = due
+            .checked_add(crate::shell::animation_diagnostics::WAKE_MATCH_SLACK)
+            .unwrap_or(due);
+        let mut owners = Vec::new();
+        for (name, deadline) in self.wake_deadline_sources(Instant::now()) {
+            if deadline.is_none_or(|at| at > limit) {
+                continue;
+            }
+            if name == "content" {
+                owners.extend(
+                    crate::shell::animation_diagnostics::wake_deadline_leaves(
+                        self.content.as_ref(),
+                        due,
+                    )
+                    .into_iter()
+                    .map(|leaf| format!("content{leaf}")),
+                );
+            } else {
+                owners.push(name.to_string());
+            }
+        }
+        owners
     }
 }
 
@@ -19788,12 +19904,20 @@ impl ShellOverlayHost {
                         TouchGesture::SwipeRight { fingers: 3 },
                     ),
                     (
-                        "guide-touch-previous-workspace",
+                        "guide-touch-strip-above",
                         TouchGesture::SwipeUp { fingers: 3 },
                     ),
                     (
-                        "guide-touch-next-workspace",
+                        "guide-touch-strip-below",
                         TouchGesture::SwipeDown { fingers: 3 },
+                    ),
+                    (
+                        "guide-touch-previous-workspace",
+                        TouchGesture::SwipeUp { fingers: 4 },
+                    ),
+                    (
+                        "guide-touch-next-workspace",
+                        TouchGesture::SwipeDown { fingers: 4 },
                     ),
                     ("guide-touch-open-overview", TouchGesture::PinchIn),
                     ("guide-touch-close-overview", TouchGesture::PinchOut),
