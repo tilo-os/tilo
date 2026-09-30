@@ -255,6 +255,9 @@ qcow2 once, then run `tilo-vm scenario install --medium <qcow2> --graphics
 software` on the Windows WHPX host. Keep the medium as the immutable base for
 later throwaway install overlays. Component changes in a running dev VM use
 `tilo-vm vm deploy`; normal OS image changes use `tilo-vm vm upgrade`.
+For a running WHPX installer, `installer-console.py --socket
+tcp://127.0.0.1:<console-port> state` reads the same action protocol that the
+scenario driver uses.
 
 A CI install medium can instead carry a separately signed generic or Lenovo
 ARM64 target in
