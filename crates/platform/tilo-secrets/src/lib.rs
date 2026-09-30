@@ -403,6 +403,19 @@ impl SecretStore {
     }
 }
 
+/// Whether what this build puts in the system store stays readable by later
+/// builds of the same program. On macOS only a Developer ID signature does
+/// (see the `macos` backend): an ad-hoc or dev build's Keychain items belong
+/// to that exact build, and a later one fails on them rather than ask. Always
+/// true elsewhere.
+#[must_use]
+pub fn items_outlive_rebuilds() -> bool {
+    #[cfg(target_os = "macos")]
+    return macos::developer_id_signed();
+    #[cfg(not(target_os = "macos"))]
+    true
+}
+
 static PROCESS_BACKEND: std::sync::OnceLock<Arc<dyn SecretBackend>> = std::sync::OnceLock::new();
 
 /// From now on, every [`SecretStore::for_app`] in this process shares one
@@ -506,7 +519,7 @@ fn system_backend() -> Backend {
             "the test environment has no login Keychain",
         )));
     }
-    Backend::Sync(Arc::new(macos::Keychain))
+    Backend::Sync(Arc::new(macos::Keychain::new()))
 }
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
