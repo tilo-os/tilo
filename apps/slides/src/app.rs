@@ -6326,6 +6326,20 @@ impl ui::resources::PublishesResources for SlidesApp {
         }
         <Self as tilo_actions::ResourceProvider>::resource(self, doc, id)
     }
+
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        address
+            .resource
+            .as_str()
+            .starts_with("slides.")
+            .then(|| crate::outline::of_document(doc).map(serde_json::Value::String))
+            .flatten()
+    }
 }
 
 impl ui::history_mode::capability::DocumentHistory for SlidesApp {
@@ -6449,6 +6463,7 @@ impl SlidesApp {
                     "presentation file operations require the lifecycle-capable host".into(),
                 );
             }
+            SlidesOperation::Read => return Ok(false),
         }
         Ok(true)
     }
@@ -6492,6 +6507,15 @@ impl SlidesApp {
                 }
                 Ok(Some(ui::widget::ResourceOperationStart::Accepted))
             }
+            crate::actions::SlidesOperation::Read => Ok(Some(
+                ui::widget::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+                    value: Some(
+                        crate::outline::of_document(doc)
+                            .map_or(serde_json::Value::Null, serde_json::Value::String),
+                    ),
+                    ..tilo_actions::ActionOutput::default()
+                }),
+            )),
             _ => self
                 .answer_resource_operation(kind, type_id, payload, doc, path)
                 .map(|handled| {

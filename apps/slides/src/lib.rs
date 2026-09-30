@@ -53,6 +53,7 @@ pub mod framework_history;
 mod help_overlay;
 pub mod model;
 pub mod odp;
+pub mod outline;
 mod overview_grid;
 pub mod pptx;
 mod presentation;
