@@ -3187,25 +3187,11 @@ jobs:
 
       # Main also moves tilo-vm:<board>-ci, the origin the disk records, so
       # an installed laptop follows main with `bootc upgrade`.
-      - name: Publish the board dev image
+      # The image push and the disk upload run side by side; the disk
+      # manifest names the pushed digest once the push is done.
+      - name: Publish the board dev image and the flashable disk
         env:
           SERIES: ${{ steps.series.outputs.series }}
-        run: |
-          set -euo pipefail
-          image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
-          digest_file="$(mktemp "${RUNNER_TEMP:?}/tilo-board-digest.XXXXXX")"
-          podman push --compression-format zstd --digestfile "$digest_file" "$BOARD_IMAGE" "docker://$image"
-          digest="$(tr -d '[:space:]' < "$digest_file")"
-          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]]
-          if [[ $GITHUB_REF == refs/heads/main ]]; then
-            skopeo copy --preserve-digests "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
-              "docker://registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
-          fi
-          echo "DEV_IMAGE_DIGEST=$digest" >> "$GITHUB_ENV"
-          echo "::notice::published $image ($digest)"
-
-      - name: Publish the flashable disk
-        env:
           ARCH: aarch64
           SOURCE_REVISION: ${{ github.sha }}
           DISK_TOOLING_REVISION: ${{ github.sha }}
@@ -3218,9 +3204,22 @@ jobs:
           TILO_PACKAGE_PUBLIC_BASE_URL: ${{ vars.TILO_PACKAGE_PUBLIC_BASE_URL }}
         run: |
           set -euo pipefail
-          BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
-            | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')" \
-            bash ./os/dev/publish-dev-disk-candidate.sh
+          image="registry.tilo.so/tilo/tilo-vm:$SERIES-$BOARD"
+          export DEV_IMAGE_DIGEST_FILE="$(mktemp -u "${RUNNER_TEMP:?}/tilo-board-digest.XXXXXX")"
+          ( podman push --compression-format zstd --digestfile "$DEV_IMAGE_DIGEST_FILE.part" "$BOARD_IMAGE" "docker://$image" \
+              && mv "$DEV_IMAGE_DIGEST_FILE.part" "$DEV_IMAGE_DIGEST_FILE" \
+              || touch "$DEV_IMAGE_DIGEST_FILE.failed" ) &
+          push=$!
+          export BASE_CHILD_DIGEST="$(skopeo inspect "docker://$BOARD_BASE" \
+            | jq -er '.Labels["org.opencontainers.image.base.child.digest"]')"
+          bash ./os/dev/publish-dev-disk-candidate.sh
+          wait "$push"
+          digest="$(tr -d '[:space:]' < "$DEV_IMAGE_DIGEST_FILE")"
+          if [[ $GITHUB_REF == refs/heads/main ]]; then
+            skopeo copy --preserve-digests "docker://registry.tilo.so/tilo/tilo-vm@$digest" \
+              "docker://registry.tilo.so/tilo/tilo-vm:$BOARD-ci"
+          fi
+          echo "::notice::published $image ($digest)"
 
   # Board images stay outside the generic multiarch latest/genN series. This
   # publishes one immutable, source-bound ARM64 reference for an initial Lenovo
