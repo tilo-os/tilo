@@ -67,7 +67,7 @@ need "$containerfile" "required compiler cache configuration is unavailable"
 need "$containerfile" "probe-sccache.py"
 need "$containerfile" "test ! -e /context/.git/config"
 need "$containerfile" "test ! -e /context/.forgejo"
-need "$containerfile" "cargo build --locked --release -p tilo-relay -p fs --bins"
+need "$containerfile" "cargo build --locked --release -p tilo-relay -p tilo-fs --bins"
 if grep -Fq 'sed -i' "$containerfile"; then
   fail "Containerfile mutates the locked workspace before compiling"
 fi

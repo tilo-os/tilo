@@ -96,6 +96,42 @@ pub trait PublishesResources: Widget {
     ) -> Option<tilo_actions::ActionAddress> {
         None
     }
+
+    /// The result of document action `address`, which has just applied to
+    /// `doc` as `changes`: a compact summary of what it produced, so its
+    /// caller needs no second read to see what happened. Asked only for an
+    /// action whose contract declares a JSON result, which this value must
+    /// satisfy.
+    fn document_action_result(
+        &self,
+        _doc: &AutoCommit,
+        _address: &tilo_actions::ActionAddress,
+        _changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        None
+    }
+}
+
+/// The first [`PublishesResources::document_action_result`] in `widget`'s
+/// tree, depth first. A publisher that wraps another forwards to it.
+pub fn document_action_result(
+    widget: &dyn Widget,
+    doc: &AutoCommit,
+    address: &tilo_actions::ActionAddress,
+    changes: &[automerge::Patch],
+) -> Option<serde_json::Value> {
+    if let Some(value) = capability::<dyn PublishesResources>(widget)
+        .and_then(|publisher| publisher.document_action_result(doc, address, changes))
+    {
+        return Some(value);
+    }
+    let mut found = None;
+    widget.for_each_child(&mut |child| {
+        if found.is_none() {
+            found = document_action_result(child, doc, address, changes);
+        }
+    });
+    found
 }
 
 /// The resources `widget` has open.

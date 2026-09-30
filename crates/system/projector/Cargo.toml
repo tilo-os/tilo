@@ -8,7 +8,7 @@ publish = false
 [dependencies]
 hex.workspace = true
 bounded-command = { path = "../bounded-command" }
-xdg-paths = { path = "../xdg-paths" }
+tilo-xdg-paths = { path = "../xdg-paths" }
 serde.workspace = true
 serde_json.workspace = true
 fcast-sender-sdk.workspace = true

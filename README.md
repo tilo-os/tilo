@@ -58,7 +58,7 @@ Install Rust through rustup and the native dependencies listed in
 ```bash
 cargo build -p shell        # compositor, tilo-control, shots
 cargo build -p ui
-cargo build -p fs
+cargo build -p tilo-fs
 cargo build -p file-explorer
 ```
 

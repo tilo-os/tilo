@@ -2,8 +2,10 @@
 name = "test-http"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "In-process HTTP/1.1 responder for tests: scripted replies, recorded requests, std only."
 
 # Test fixtures only; deliberately free of dependencies so every crate can take

@@ -262,9 +262,9 @@ fn dispatch_wayland_clients_fairly(
     Ok(dispatched)
 }
 
-/// Select how long calloop may sleep. Presentation cadence is a deadline only
-/// while visual work is pending; a static desktop instead sleeps until the
-/// earliest real service/widget deadline and wakes early on registered fds.
+/// [`native_loop_park_named`]'s timeout alone, for tests about how long the
+/// loop sleeps rather than why.
+#[cfg(test)]
 fn native_loop_park(
     now: Instant,
     backend_has_event_wake: bool,
@@ -273,18 +273,87 @@ fn native_loop_park(
     frame_deadline: Instant,
     deadlines: impl IntoIterator<Item = Option<Instant>>,
 ) -> Option<Duration> {
+    native_loop_park_named(
+        now,
+        backend_has_event_wake,
+        wayland_dispatch_pending,
+        cadence_needed,
+        frame_deadline,
+        deadlines.into_iter().map(|deadline| ("deadline", deadline)),
+    )
+    .0
+}
+
+/// Select how long calloop may sleep. Presentation cadence is a deadline only
+/// while visual work is pending; a static desktop instead sleeps until the
+/// earliest real service/widget deadline and wakes early on registered fds.
+///
+/// Also names the deadline the park ends on — the `wake` column of the frame
+/// trace, and what paint-stats blames when an idle desktop keeps waking.
+/// `None` names a park only an fd can end.
+fn native_loop_park_named(
+    now: Instant,
+    backend_has_event_wake: bool,
+    wayland_dispatch_pending: bool,
+    cadence_needed: bool,
+    frame_deadline: Instant,
+    deadlines: impl IntoIterator<Item = (&'static str, Option<Instant>)>,
+) -> (Option<Duration>, Option<&'static str>) {
     let wayland_retry = wayland_dispatch_pending
         .then(|| now.checked_add(WAYLAND_PENDING_RETRY_FLOOR).unwrap_or(now));
     let semantic_deadline = deadlines
         .into_iter()
-        .flatten()
-        .chain(wayland_retry)
-        .chain(cadence_needed.then_some(frame_deadline))
-        .min();
+        .filter_map(|(name, deadline)| deadline.map(|at| (at, name)))
+        .chain(wayland_retry.map(|at| (at, "wayland-retry")))
+        .chain(cadence_needed.then_some((frame_deadline, "cadence")))
+        .min_by_key(|(at, _)| *at);
 
-    semantic_deadline
-        .map(|deadline| deadline.saturating_duration_since(now))
-        .or_else(|| (!backend_has_event_wake).then_some(IDLE_BACKEND_POLL))
+    match semantic_deadline {
+        Some((deadline, name)) => (Some(deadline.saturating_duration_since(now)), Some(name)),
+        None if !backend_has_event_wake => (Some(IDLE_BACKEND_POLL), Some("idle-backend-poll")),
+        None => (None, None),
+    }
+}
+
+/// Name what ended a park of `park` that lasted `slept`: the deadline it was
+/// set for when the timeout ran out, [`metrics::WAKE_IO`] when an fd fired
+/// first. A timeout returns a little late, never early, so a sleep within
+/// [`WAKE_TIMER_SLACK`] of the timeout still counts as the timer.
+fn park_wake_reason(
+    park: Option<Duration>,
+    deadline: Option<&'static str>,
+    slept: Duration,
+) -> &'static str {
+    match (park, deadline) {
+        (Some(timeout), Some(name)) if slept.saturating_add(WAKE_TIMER_SLACK) >= timeout => name,
+        _ => super::metrics::WAKE_IO,
+    }
+}
+
+const WAKE_TIMER_SLACK: Duration = Duration::from_micros(200);
+
+/// Paint-stats' count of what ended each park, by wake name.
+#[derive(Default)]
+struct WakeTally(Vec<(&'static str, u32)>);
+
+impl WakeTally {
+    fn note(&mut self, reason: &'static str) {
+        match self.0.iter_mut().find(|(name, _)| *name == reason) {
+            Some((_, count)) => *count = count.saturating_add(1),
+            None => self.0.push((reason, 1)),
+        }
+    }
+
+    fn take_summary(&mut self) -> String {
+        let summary = self
+            .0
+            .iter()
+            .map(|(name, count)| format!("{name}={count}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        self.0.clear();
+        summary
+    }
 }
 
 /// A lock-state edge replaces every pixel on screen.  Keep that edge pending
@@ -7314,6 +7383,8 @@ pub fn run() {
     let (mut cause_session, mut cause_keepalive) = (0u32, 0u32);
     let mut animation_sources_seen = crate::shell::frame::AnimationDemand::default();
     let mut animating_content_leaves: Vec<String> = Vec::new();
+    let mut wakes_seen = WakeTally::default();
+    let mut widget_wake_owner: Option<String> = None;
     // Test-control commands are intentionally serviced after this tick's
     // paint gate. Preserve their redraw edge for the following iteration;
     // dropping it here records input latency forever without ever producing
@@ -9563,6 +9634,11 @@ pub fn run() {
                 cause_anim = 0;
                 cause_session = 0;
                 cause_keepalive = 0;
+                eprintln!(
+                    "paint-stats: wakes {} | widget-deadline owner {:?}",
+                    wakes_seen.take_summary(),
+                    widget_wake_owner.take().unwrap_or_default(),
+                );
                 animation_sources_seen = crate::shell::frame::AnimationDemand::default();
                 animating_content_leaves.clear();
                 stats_since = Instant::now();
@@ -10295,32 +10371,44 @@ pub fn run() {
         // left to wake the loop; its frame is due on the next cadence.
         let cadence_needed =
             cadence_needed || cadence_wait_needed(pipe_ready, injected_redraw_pending);
-        let park = native_loop_park(
+        let (park, park_deadline) = native_loop_park_named(
             park_now,
             backend_event_wake,
             display.backend().has_pending_client_dispatch(),
             cadence_needed,
             frame_clock.next_deadline(),
             [
-                widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
-                lock_animation_park_deadline(
-                    park_now,
-                    lock_animation_deadline(
-                        frame_builder.theme(),
-                        &session,
-                        lock_has_wallpaper,
-                        last_lock_animation_frame,
+                (
+                    "widget",
+                    widget_deadline_for_presenter(pipe_ready, frame_builder.next_wake_deadline()),
+                ),
+                (
+                    "lock-animation",
+                    lock_animation_park_deadline(
                         park_now,
+                        lock_animation_deadline(
+                            frame_builder.theme(),
+                            &session,
+                            lock_has_wallpaper,
+                            last_lock_animation_frame,
+                            park_now,
+                        ),
                     ),
                 ),
-                lock_clock_deadline,
-                lock_media_deadline,
-                run_deadline,
-                controller_nav.next_deadline(park_now),
-                backend.next_service_deadline(),
-                wayland_client_service_deadline(wayland_client_wake, park_now),
-                state.text_commit_deadline(),
-                client_followup_deadline(clients_dispatched, park_now),
+                ("lock-clock", lock_clock_deadline),
+                ("lock-media", lock_media_deadline),
+                ("run-deadline", run_deadline),
+                ("controller-nav", controller_nav.next_deadline(park_now)),
+                ("backend-service", backend.next_service_deadline()),
+                (
+                    "wayland-client-fallback",
+                    wayland_client_service_deadline(wayland_client_wake, park_now),
+                ),
+                ("text-commit", state.text_commit_deadline()),
+                (
+                    "client-followup",
+                    client_followup_deadline(clients_dispatched, park_now),
+                ),
             ],
         );
         let t_sleep_start = Instant::now();
@@ -10328,7 +10416,16 @@ pub fn run() {
             eprintln!("tilo compositor: event loop dispatch error: {err}");
             break;
         }
-        metrics.mark_sleep(t_sleep_start.elapsed());
+        let slept = t_sleep_start.elapsed();
+        metrics.mark_sleep(slept);
+        let wake = park_wake_reason(park, park_deadline, slept);
+        metrics.mark_wake(wake);
+        if paint_stats {
+            wakes_seen.note(wake);
+            if wake == "widget" && widget_wake_owner.is_none() {
+                widget_wake_owner = Some(frame_builder.wake_deadline_owners().join(","));
+            }
+        }
         metrics.end_tick();
         if let Some(deadline) = run_deadline
             && Instant::now() >= deadline
@@ -10585,6 +10682,60 @@ mod tests {
             ),
             None,
             "a tick that dispatched nothing parks"
+        );
+    }
+
+    #[test]
+    fn a_park_names_the_deadline_that_ends_it() {
+        let now = Instant::now();
+        let frame = now + Duration::from_millis(8);
+        let (park, name) = native_loop_park_named(
+            now,
+            true,
+            false,
+            false,
+            frame,
+            [
+                ("lock-clock", Some(now + Duration::from_secs(30))),
+                ("widget", Some(now + Duration::from_millis(250))),
+                ("text-commit", None),
+            ],
+        );
+        assert_eq!(park, Some(Duration::from_millis(250)));
+        assert_eq!(name, Some("widget"), "the earliest deadline owns the wake");
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(250)),
+            "widget",
+            "a park that ran its full timeout was ended by that deadline"
+        );
+        assert_eq!(
+            park_wake_reason(park, name, Duration::from_millis(40)),
+            super::metrics::WAKE_IO,
+            "a park cut short was ended by an fd, not the deadline"
+        );
+        assert_eq!(
+            native_loop_park_named(now, true, false, true, frame, []).1,
+            Some("cadence")
+        );
+        assert_eq!(
+            native_loop_park_named(now, false, false, false, frame, []).1,
+            Some("idle-backend-poll"),
+            "the bounded poll that stands in for a missing wake fd is named too"
+        );
+        assert_eq!(
+            park_wake_reason(None, None, Duration::from_secs(5)),
+            super::metrics::WAKE_IO,
+            "only an fd can end an unbounded park"
+        );
+        let mut tally = WakeTally::default();
+        for wake in ["widget", "io", "widget"] {
+            tally.note(wake);
+        }
+        assert_eq!(tally.take_summary(), "widget=2,io=1");
+        assert_eq!(
+            tally.take_summary(),
+            "",
+            "each report covers its own window"
         );
     }
 

@@ -684,7 +684,7 @@ RUN --mount=type=cache,target=/build/.cargo-home \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
     && build_phase rust-release \
@@ -1389,7 +1389,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
     && ! printf '%s\n' "$installed" | grep -Eq '^systemd-(coredump|networkd|resolved)$' \
-    && dnf clean all && ${FINALIZE_RPMDB}
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && rm -rf /var/cache/swcatalog
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our

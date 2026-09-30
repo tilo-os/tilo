@@ -1,5 +1,7 @@
 //! Allocation-free decomposition of compositor animation demand.
 
+use std::time::{Duration, Instant};
+
 pub(crate) const HOST_SOURCE_NAMES: [&str; 15] = [
     "root-transition",
     "quick-settings",
@@ -110,6 +112,38 @@ pub(crate) fn animating_leaves(root: &dyn ui::widget::Widget) -> Vec<String> {
     walk(root, "", &mut out);
     out
 }
+
+/// Paths to the deepest widgets under `root` whose one-shot wake deadline
+/// is `due` or earlier: who will wake an otherwise idle loop next. Allocates,
+/// so only diagnostics call it.
+pub(crate) fn wake_deadline_leaves(root: &dyn ui::widget::Widget, due: Instant) -> Vec<String> {
+    fn walk(widget: &dyn ui::widget::Widget, due: Instant, path: &str, out: &mut Vec<String>) {
+        if widget.next_wake_deadline().is_none_or(|at| at > due) {
+            return;
+        }
+        let here = match widget.test_id() {
+            Some(id) => format!("{path}/{}#{id}", widget.name()),
+            None => format!("{path}/{}", widget.name()),
+        };
+        let before = out.len();
+        widget.for_each_child(&mut |child| walk(child, due, &here, out));
+        if out.len() == before {
+            out.push(here);
+        }
+    }
+    let mut out = Vec::new();
+    walk(
+        root,
+        due.checked_add(WAKE_MATCH_SLACK).unwrap_or(due),
+        "",
+        &mut out,
+    );
+    out
+}
+
+/// Deadlines computed against a slightly later clock than the minimum they
+/// are compared with still name the same owner.
+pub(crate) const WAKE_MATCH_SLACK: Duration = Duration::from_millis(1);
 
 #[cfg(test)]
 mod tests {

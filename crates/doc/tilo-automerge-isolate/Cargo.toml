@@ -13,7 +13,7 @@ tilo-automerge.workspace = true
 
 [target.'cfg(target_os = "linux")'.dependencies]
 libc.workspace = true
-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
 seccompiler.workspace = true
 
 [dev-dependencies]
