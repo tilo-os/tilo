@@ -2466,8 +2466,8 @@ jobs:
             echo '::notice::installed dev image, desktop, app integration and tilo-vmd passed; publication was not requested'
           fi
 
-      - name: Upload the failed boot's QEMU and serial logs
-        if: failure() && steps.release.outcome == 'failure'
+      - name: Upload the boot's QEMU and serial logs
+        if: always()
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3
         with:
           name: tilo-os-boot-failure-${{ matrix.arch }}${{ matrix.role && format('-{0}', matrix.role) || '' }}
