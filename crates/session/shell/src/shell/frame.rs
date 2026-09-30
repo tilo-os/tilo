@@ -4529,8 +4529,9 @@ mod tests {
             );
         }
 
-        /// Super+F on a Tilo window (no `xdg_toplevel`) must cover the wheel.
-        /// Maximize stops beside it; that fallback was the W07 313px gap.
+        /// Super+F on a Tilo window covers the wheel. Hosted apps are xdg
+        /// clients; chrome fullscreen still wins so W07 sees
+        /// `fullscreen_group`. Maximize stays beside the wheel.
         fn super_f_on_a_tilo_group_covers_the_wheel() {
             let mut fb = FrameBuilder::new((1600, 900));
             let _ = fb.paint_settled();
@@ -4558,6 +4559,49 @@ mod tests {
         set_fullscreen_promotes_group_and_restores_on_exit();
         set_fullscreen_with_unknown_group_does_not_blank_shell();
         super_f_on_a_tilo_group_covers_the_wheel();
+    }
+
+    #[test]
+    fn overview_and_workspace_switch_request_a_run_of_frames() {
+        fn overview_toggle_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            fb.with_chrome(|st| {
+                st.overlays.overview = true;
+                st.bump();
+            });
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "root-transition"),
+                "overview must request frames on the update that sees the toggle, not only after draw; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        fn workspace_switch_requests_frames_before_draw() {
+            let mut fb = FrameBuilder::new((1600, 900));
+            let _ = fb.paint_settled();
+            let mut switched = false;
+            fb.with_chrome(|st| {
+                switched = st.switch_workspace(1);
+            });
+            assert!(switched, "the demo tree has a second workspace");
+            let mut doc = AutoCommit::new();
+            fb.pump_apps(&mut doc, &automerge::ROOT);
+            assert!(
+                fb.animation_owners()
+                    .iter()
+                    .any(|owner| owner == "workspace-switch"),
+                "a workspace switch must request a run of frames; owners {:?}",
+                fb.animation_owners()
+            );
+        }
+
+        overview_toggle_requests_frames_before_draw();
+        workspace_switch_requests_frames_before_draw();
     }
 
     /// Look up a widget's rect by its *last* path segment
