@@ -34,6 +34,7 @@
               };
               boot.loader.grub.devices = [ "nodev" ];
               services.tilo-session.enable = true;
+              services.displayManager.enable = true;
               system.stateVersion = "24.11";
             }
           ];
