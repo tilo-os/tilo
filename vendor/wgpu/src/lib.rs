@@ -94,6 +94,13 @@
 // NOTE: Keep this in sync with `wgpu-core`.
 #![cfg_attr(not(send_sync), allow(clippy::arc_with_non_send_sync))]
 #![cfg_attr(not(any(wgpu_core, webgpu)), allow(unused))]
+// Workspace CI compiles this crate with `-D warnings` for wasm32. Upstream
+// 29.0.3 leaves HAL doc macros, Deref imports, and BufferMappedRange::len
+// unused on that target; they are not Tilo changes.
+#![cfg_attr(
+    target_arch = "wasm32",
+    allow(unused_macros, unused_imports, dead_code)
+)]
 
 extern crate alloc;
 #[cfg(any(std, test))]

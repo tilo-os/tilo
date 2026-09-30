@@ -20,3 +20,9 @@ before the poll returns. So in `src/backend/wgpu_core.rs`:
 
 Every other fatal site is unchanged. Remove this patch once upstream reports a
 lost device from `poll` (`PollError` has no variant for it in 29.0).
+
+Workspace CI compiles `vendor/wgpu` with `-D warnings` for
+`wasm32-unknown-unknown`. Upstream 29.0.3 leaves the HAL documentation
+macros, two `Deref` imports and `BufferMappedRangeInterface::len` unused on
+that target, so `lib.rs` allows those lints there. Remove the allow when
+upstream stops emitting them.
