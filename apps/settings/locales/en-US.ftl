@@ -53,6 +53,38 @@ display-rotation-portrait-right = Portrait right
 display-rotation-upside-down = Upside down
 display-rotation-portrait-left = Portrait left
 
+display-card-title = Displays
+display-none = No displays detected on this device.
+display-caption-switch = Super+P switches between extend, mirror and single-screen at any time.
+display-caption-second = Connect a second display to extend or mirror your screen.
+display-caption-port = Connect a display to a free port to extend or mirror your screen.
+display-use = Use this display
+display-primary = Primary display
+display-scale = Scale
+display-position = Position
+display-mirroring = Mirroring
+display-colour-profile = Colour profile
+display-colour-profile-empty = System default · no valid ICC profiles detected
+display-keep-title = Keep this display configuration?
+display-keep-caption = Every display should be visible. Restoring the previous layout in { $seconds } seconds unless you keep this one.
+display-keep-ok = Everything looks correct
+display-keep = Keep
+display-keep-wrong = Something is wrong
+display-revert-now = Revert now
+display-applying-title = Applying display configuration
+display-applying-caption = The compositor is validating and applying the output plan…
+display-rejected-caption = The compositor rejected this output plan.
+display-retry = Test the newly edited layout
+display-try-again = Try again
+display-rejected-title = Display change was not applied
+display-apply-title = Apply display changes
+display-apply-caption = The layout is staged, not active. Applying it starts a 15-second safety test; closing Settings cannot cancel the automatic restore.
+display-apply-row = Test staged layout
+display-apply = Apply
+display-config-title = Display configuration
+display-config-empty = No unapplied display changes.
+
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad

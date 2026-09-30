@@ -53,6 +53,38 @@ display-rotation-portrait-right = Hochformat rechts
 display-rotation-upside-down = Auf dem Kopf
 display-rotation-portrait-left = Hochformat links
 
+display-card-title = Bildschirme
+display-none = Keine Bildschirme an diesem Gerät erkannt.
+display-caption-switch = Super+P wechselt jederzeit zwischen Erweitern, Spiegeln und nur einem Bildschirm.
+display-caption-second = Schließen Sie einen zweiten Bildschirm an, um zu erweitern oder zu spiegeln.
+display-caption-port = Schließen Sie einen Bildschirm an einen freien Anschluss an, um zu erweitern oder zu spiegeln.
+display-use = Diesen Bildschirm nutzen
+display-primary = Primärbildschirm
+display-scale = Skalierung
+display-position = Position
+display-mirroring = Spiegeln
+display-colour-profile = Farbprofil
+display-colour-profile-empty = Systemvorgabe · keine gültigen ICC-Profile erkannt
+display-keep-title = Diese Bildschirmeinstellung behalten?
+display-keep-caption = Jeder Bildschirm sollte sichtbar sein. Die vorherige Anordnung wird in { $seconds } Sekunden wiederhergestellt, wenn Sie diese nicht behalten.
+display-keep-ok = Alles sieht richtig aus
+display-keep = Behalten
+display-keep-wrong = Etwas stimmt nicht
+display-revert-now = Jetzt zurücksetzen
+display-applying-title = Bildschirmeinstellung wird angewendet
+display-applying-caption = Der Compositor prüft und wendet den Ausgabeplan an…
+display-rejected-caption = Der Compositor hat diesen Ausgabeplan abgelehnt.
+display-retry = Die neu geänderte Anordnung testen
+display-try-again = Erneut versuchen
+display-rejected-title = Bildschirmänderung wurde nicht angewendet
+display-apply-title = Bildschirmänderungen anwenden
+display-apply-caption = Die Anordnung ist vorgemerkt, nicht aktiv. Anwenden startet einen 15-Sekunden-Sicherheitstest; Einstellungen schließen bricht das automatische Zurücksetzen nicht ab.
+display-apply-row = Vorgemerkte Anordnung testen
+display-apply = Anwenden
+display-config-title = Bildschirmeinstellung
+display-config-empty = Keine unangewendeten Bildschirmänderungen.
+
+
 # Mouse & Keyboard pane: touchpad
 input-touchpad-title = Touchpad
 input-touchpad-enabled = Touchpad
