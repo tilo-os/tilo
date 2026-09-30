@@ -199,7 +199,8 @@ activity-latest = Latest · { $headline }
 activity-history-pending = History is waiting for current edits to finish
 activity-caught-up = You're caught up
 activity-summary-on-device = On-device summary
-activity-summary-glance = At a glance
+activity-session-move-newer = ↑  1 action
+activity-session-move-older = 1 action  ↓
 activity-more-sessions = More work sessions…
 activity-first-sessions = First work sessions…
 activity-brief-underlying = { $count } underlying { $count ->
@@ -419,16 +420,26 @@ search-provider-desktop-windows = Desktop windows
 search-badge-tab = Tab
 search-badge-window-group = Window group
 search-window-move-tab = Move tab “{ $tab }” to workspace “{ $workspace }”
-search-window-move-tab-detail = App { $app } · from workspace “{ $workspace }” · group { $group } · tab { $tab }
+search-window-move-tab-detail = From workspace “{ $workspace }”
 search-window-copy-tab = Copy tab “{ $tab }” to workspace “{ $workspace }”
-search-window-group-untitled = Window group { $group }
+search-window-group-untitled = Untitled window
 search-window-close-group = Close window group “{ $group }”
-search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · { $count ->
+search-window-close-group-detail = Workspace “{ $workspace }” · strip “{ $strip }” · { $count ->
     [one] 1 tab
    *[other] { $count } tabs
 }
 search-window-close-tab = Close tab “{ $tab }”
-search-window-close-tab-detail = App { $app } · workspace “{ $workspace }” · strip “{ $strip }” · group { $group } · tab { $tab }
+search-window-close-tab-detail = Workspace “{ $workspace }” · strip “{ $strip }”
+search-window-focus-place = Open in this workspace
+search-window-focus-place-strip = Open in strip “{ $strip }”
+search-window-focus-detail-shared = { $place } · { $count ->
+    [one] 1 tab
+   *[other] { $count } tabs
+}
+# Words that ask for a window's close or move/copy rows; a search for a
+# window by name only offers going to it. Space-separated, lowercase.
+search-window-verb-close = close quit
+search-window-verb-relocate = move copy send
 
 # Notifications: banner stack and notification centre
 drill-in-back = Back
@@ -586,6 +597,7 @@ workspace-settings-expiry-session = Session
 workspace-settings-expiry-until = Until
 workspace-settings-expiry-always = Always
 workspace-settings-granted-by-person = granted by { $id }
+workspace-settings-granted-by-you = granted by you
 workspace-settings-granted-by-app = granted by the { $app } app
 workspace-settings-granted-by-agent = granted by agent { $id }
 workspace-settings-granted-by-token = granted by token { $id }
@@ -680,6 +692,8 @@ workspace-settings-apps-intro-detail = The workspace supplies a baseline; each p
 workspace-settings-apps-header = DEFAULT APPLICATIONS
 workspace-settings-workspace-choice = Workspace choice
 workspace-settings-your-choice = Your choice
+workspace-settings-resource-extension = .{ $ext } files
+workspace-settings-resource-scheme = { $scheme }: links
 workspace-settings-follow-personal = Follow personal defaults
 workspace-settings-use-workspace-choice = Use workspace choice
 workspace-settings-use-personal-default = Use my personal default
@@ -705,10 +719,7 @@ workspace-settings-who-agent = Who · AGENT (only this surface; no ambient works
 workspace-settings-nobody-to-grant = Nobody to grant to yet — invite someone, or open an app here.
 workspace-settings-what-it-allows = What it allows
 workspace-settings-grant-header = GRANT A PERMISSION
-workspace-settings-saved-roles = { $count ->
-    [one] 1 SAVED ROLE · MANAGE
-   *[other] { $count } SAVED ROLES · MANAGE
-}
+workspace-settings-saved-roles = Manage roles ({ $count })
 workspace-settings-expiry-caption = Until
 workspace-settings-grant = Grant
 workspace-settings-role-sheet-title = Choose workspace access

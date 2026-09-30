@@ -11,7 +11,7 @@
 //! - [`region`] — read-only consumer of the shared Settings store, from which
 //!   the display units are derived (Settings owns the toggle, not this app).
 //! - [`api`] — Open-Meteo URL construction + JSON parsing (pure/testable).
-//! - [`net`] — the live background fetch worker (reqwest + tokio).
+//! - [`net`] — the live background fetches (`tilo_net` on the app runtime).
 //! - [`doc`] — the Automerge CRDT projection (saved places only; provider
 //!   cache data is device-local).
 //! - [`sample`] — bundled, fully-populated offline data.
@@ -95,6 +95,13 @@ use ui::widget::Widget;
 /// used by both the live event loop and the `--shots` offscreen renderer.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(WeatherApp::live())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.weather", app_root)
+        .component_actions(actions::register)
+        .as_definition("Weather")
 }
 
 /// Like [`app_root`] but seeded with a named interaction scenario for a

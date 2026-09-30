@@ -781,6 +781,11 @@ fn configured_host_addrs() -> Vec<iroh::EndpointAddr> {
     hosts
 }
 
+/// Whether `TILO_COLLAB_HOST` or `TILO_COLLAB_HOSTS` names a workspace host.
+pub fn collab_host_configured() -> bool {
+    !configured_host_addrs().is_empty()
+}
+
 const MAX_HOME_PEER_REGISTRY_BYTES: u64 = 1024 * 1024;
 const MAX_HOME_PEERS: usize = 128;
 const MAX_HOME_PEER_LABEL_BYTES: usize = 80;
@@ -1242,6 +1247,11 @@ pub struct ShellNetwork {
     wire_records: Mutex<crate::network::wire_record::WireRecordIds>,
     /// Received app-presence frames awaiting fan-out to local apps.
     inbound_app_presence: Arc<Mutex<Vec<InboundAppPresence>>>,
+    /// This device's presence per room as workspace-host live frames.
+    live_presence: Mutex<crate::shell::live_presence::Outbound>,
+    /// Names live members asked to be drawn with, per room and handle:
+    /// browsers and agents that are no peers of the room document.
+    live_labels: Mutex<std::collections::HashMap<String, std::collections::BTreeMap<u64, String>>>,
     /// Inbound cooperative-scrollback *requests*; the broker's drainer
     /// answers any it holds matching ops for.
     inbound_scrollback_request: Arc<Mutex<Vec<InboundScrollbackRequest>>>,
@@ -1319,6 +1329,9 @@ pub struct InboundDocument {
     /// Live workspace role established from the authenticated peer's user
     /// certificate before this entry was queued.
     pub role: collab_types::Role,
+    /// A workspace host replayed it from retained, host-ordered history, so
+    /// its age says nothing about freshness.
+    pub replayed: bool,
     /// Boxed to mirror the wire shape and bound the queue entry size —
     /// `SignedOp` is large (32-byte pubkey + 64-byte sig + payload + UUIDs).
     pub envelope: Box<collab_types::SignedOp>,
@@ -1635,6 +1648,8 @@ impl ShellNetwork {
             inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
             wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
             inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+            live_presence: Mutex::default(),
+            live_labels: Mutex::default(),
             inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
             inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
             inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -1844,8 +1859,16 @@ impl ShellNetwork {
         let Ok(replica) = self.replica.lock() else {
             return empty;
         };
-
-        replica.tree.read().room_peer_labels(room)
+        let mut labels = replica.tree.read().room_peer_labels(room);
+        drop(replica);
+        if let Ok(live) = self.live_labels.lock()
+            && let Some(live) = live.get(cluster_id)
+        {
+            for (handle, label) in live {
+                labels.entry(*handle).or_insert_with(|| label.clone());
+            }
+        }
+        labels
     }
 
     /// Live session handles and their admitted display names for one room.
@@ -2241,6 +2264,13 @@ impl ShellNetwork {
         in_room
     }
 
+    /// Certificates of `user`'s devices this session authenticated (directly
+    /// or through a workspace host), valid and not revoked now.
+    pub fn authenticated_devices_of(&self, user: &[u8; 32]) -> Vec<tilo_user_identity::DeviceCert> {
+        self.peer_identities
+            .devices_of(user, tilo_clock::unix_now_ns())
+    }
+
     /// Shared handle to inbound signed document envelopes.
     pub fn inbound_documents_handle(&self) -> Arc<Mutex<Vec<InboundDocument>>> {
         Arc::clone(&self.inbound_documents)
@@ -2325,6 +2355,37 @@ impl ShellNetwork {
             .resolve(cluster_id, app_id, wire)
     }
 
+    /// A document this device published earlier that its workspace host
+    /// replayed ([`NetEvent::OwnReplay`]): queued for the broker as this
+    /// device's own editor op. The broker still checks the signature, and its
+    /// per-author sequence drops what the device already holds.
+    fn dispatch_own_replayed_document(&self, msg: NeighbourMsg) {
+        let NeighbourMsg::AppDocument {
+            peer,
+            app_id,
+            cluster_id,
+            record_id,
+            envelope,
+        } = msg
+        else {
+            return;
+        };
+        let Some(record_id) = self.local_record_for_wire(&app_id, &cluster_id, &record_id) else {
+            return;
+        };
+        if self.is_in_room(&cluster_id) {
+            self.handle_document_message(
+                peer,
+                app_id,
+                cluster_id,
+                record_id,
+                collab_types::Role::Editor,
+                true,
+                *envelope,
+            );
+        }
+    }
+
     /// Queue a received signed document for the broker's drainer.
     pub fn handle_document_message(
         &self,
@@ -2333,6 +2394,7 @@ impl ShellNetwork {
         cluster_id: String,
         record_id: String,
         role: collab_types::Role,
+        replayed: bool,
         envelope: collab_types::SignedOp,
     ) {
         if let Ok(mut buf) = self.inbound_documents.lock() {
@@ -2342,6 +2404,7 @@ impl ShellNetwork {
                 cluster_id,
                 record_id,
                 role,
+                replayed,
                 envelope: Box::new(envelope),
             });
         }
@@ -2363,6 +2426,138 @@ impl ShellNetwork {
             presence,
         };
         let _ = self.publish_message(msg);
+    }
+
+    /// Publish an app's presence on the room's workspace-host live plane,
+    /// where browsers and agents draw it: the pointer and caret in the
+    /// record, under this person's name.
+    pub fn publish_live_presence(
+        &self,
+        app_id: &str,
+        cluster_id: &str,
+        record_id: &str,
+        presence: &collab_types::PeerPresence,
+    ) {
+        let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) else {
+            return;
+        };
+        let ws = room_topic_id(room);
+        let focus = tilo_relay_protocol::live::LiveRecord {
+            app: app_id.to_owned(),
+            record: crate::network::wire_record::wire_record_id(cluster_id, app_id, record_id),
+        };
+        let frame = self.live_presence.lock().ok().and_then(|mut live| {
+            live.update(
+                ws,
+                focus,
+                self.live_participant(),
+                presence,
+                std::time::Instant::now(),
+            )
+        });
+        if let Some(frame) = frame {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+        }
+    }
+
+    /// Repeat quiet live presence so other devices keep drawing it.
+    fn live_keepalive(&self) {
+        let due = self
+            .live_presence
+            .lock()
+            .map(|mut live| live.keepalives(std::time::Instant::now()))
+            .unwrap_or_default();
+        for (ws, frame) in due {
+            let _ = self.cmd_tx.try_send(NetCmd::PublishLive { ws, frame });
+        }
+    }
+
+    /// How this device asks live members to draw it: the person's name,
+    /// else the device's certified label.
+    fn live_participant(&self) -> tilo_relay_protocol::live::LiveParticipant {
+        let label = ui::local_identity::load()
+            .map(|identity| identity.display_name)
+            .filter(|name| !name.is_empty())
+            .or_else(|| {
+                self.host_identity
+                    .as_ref()
+                    .map(|identity| identity.device_cert.device_label.clone())
+            })
+            .filter(|name| !name.is_empty())
+            .unwrap_or_else(|| "Tilo".into());
+        let device = self
+            .host_identity
+            .as_ref()
+            .map_or(*self.local_peer_id.as_bytes(), |identity| {
+                identity.device_signing_key.verifying_key().to_bytes()
+            });
+        crate::shell::live_presence::participant(label, &device)
+    }
+
+    /// A live member's frame: its pointer and caret reach local apps as
+    /// presence of the sender's handle, and its name labels that handle.
+    fn handle_live_frame(&self, ws: u64, from: [u8; 32], frame: &[u8]) {
+        let Some(inbound) = crate::shell::live_presence::inbound(frame) else {
+            return;
+        };
+        let room = self.replica.lock().ok().and_then(|replica| {
+            replica
+                .tree
+                .read()
+                .rooms()
+                .into_iter()
+                .find(|room| room_topic_id(*room) == ws)
+        });
+        let Some(room) = room else {
+            return;
+        };
+        let cluster_id = room.to_string();
+        let peer = neighbour_wire::peer_handle(&from);
+        tracing::debug!(
+            room = %cluster_id,
+            from = %hex::encode(&from[..4]),
+            label = inbound.label.as_deref().unwrap_or(""),
+            app = %inbound.app_id,
+            updates = ?inbound.updates.iter().map(|update| &update.payload).collect::<Vec<_>>(),
+            "live presence from a workspace member"
+        );
+        if let Some(label) = inbound.label
+            && let Ok(mut labels) = self.live_labels.lock()
+        {
+            let previous = labels
+                .entry(cluster_id.clone())
+                .or_default()
+                .insert(peer, label.clone());
+            if previous.as_ref() != Some(&label) {
+                tracing::info!(
+                    room = %cluster_id,
+                    from = %hex::encode(&from[..4]),
+                    label,
+                    app = %inbound.app_id,
+                    "a live member's cursor reaches this device"
+                );
+            }
+        }
+        for presence in inbound.updates {
+            self.handle_typed_app_presence_message(
+                peer,
+                inbound.app_id.clone(),
+                cluster_id.clone(),
+                presence,
+            );
+        }
+    }
+
+    /// Ask the room's workspace hosts to replay the room, for a local app
+    /// that just joined one of its records: what they replayed or fanned out
+    /// before was dropped here while nothing held the record, and the app
+    /// would otherwise miss the room's history.
+    pub fn request_room_replay(&self, cluster_id: &str) {
+        if let Some(room) = RoomId::parse(cluster_id).filter(|room| !room.is_nil()) {
+            let _ = self.cmd_tx.try_send(NetCmd::Replay {
+                ws: room_topic_id(room),
+            });
+        }
     }
 
     /// Shared handle to the inbound app-presence buffer, drained by the
@@ -4420,6 +4615,7 @@ impl ShellNetwork {
         // of a capability change up to date.
         self.kick_periodic_sync();
         self.refresh_home_peer_hosts_periodically();
+        self.live_keepalive();
         // Hold the lock for the whole drain so a concurrent frame-tick
         // never sees half-merged events. A poisoned mutex (a prior
         // holder panicked mid-drain) just skips this tick rather than
@@ -4445,6 +4641,7 @@ impl ShellNetwork {
     fn dispatch_net_event(&self, event: NetEvent) {
         match event {
             NetEvent::NativeInput(input) => self.dispatch_native_input(&input),
+            NetEvent::Live { ws, from, frame } => self.handle_live_frame(ws, from, &frame),
             NetEvent::HostReady { ws, peer } => {
                 if let Ok(mut relays) = self.workspace_control_relays.lock() {
                     relays.insert((ws, peer));
@@ -4507,8 +4704,10 @@ impl ShellNetwork {
                 ws,
                 peer,
                 membership_epoch,
+                replayed,
                 msg,
-            } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, msg),
+            } => self.dispatch_neighbour_msg(ws, peer, membership_epoch, replayed, msg),
+            NetEvent::OwnReplay { msg, .. } => self.dispatch_own_replayed_document(msg),
             NetEvent::PersonalFabric {
                 ws,
                 peer,
@@ -5108,6 +5307,7 @@ impl ShellNetwork {
         ws: u64,
         peer: iroh::EndpointId,
         membership_epoch: Option<crate::network::actor::MembershipEpoch>,
+        replayed: bool,
         msg: NeighbourMsg,
     ) {
         if let Some(expected) = Self::explicit_topic_for_message(&msg)
@@ -5272,7 +5472,7 @@ impl ShellNetwork {
                     && let Some(role) = role
                 {
                     self.handle_document_message(
-                        peer_hash, app_id, cluster_id, record_id, role, *envelope,
+                        peer_hash, app_id, cluster_id, record_id, role, replayed, *envelope,
                     );
                 }
             }
@@ -6188,6 +6388,8 @@ pub(crate) fn shell_network_for_test(
         inbound_channel_governance: Arc::new(Mutex::new(Vec::new())),
         wire_records: Mutex::new(crate::network::wire_record::WireRecordIds::default()),
         inbound_app_presence: Arc::new(Mutex::new(Vec::new())),
+        live_presence: Mutex::default(),
+        live_labels: Mutex::default(),
         inbound_scrollback_request: Arc::new(Mutex::new(Vec::new())),
         inbound_scrollback_response: Arc::new(Mutex::new(Vec::new())),
         inbound_remote_actions: Arc::new(Mutex::new(Vec::new())),
@@ -6924,6 +7126,7 @@ mod tests {
                 DEFAULT_WS_TOPIC,
                 stranger.public(),
                 None,
+                false,
                 NeighbourMsg::RemoteAction { frame },
             );
             assert!(net.inbound_remote_actions.lock().expect("queue").is_empty());
@@ -7090,6 +7293,7 @@ mod tests {
             topic,
             device.public(),
             Some(membership_epoch),
+            false,
             NeighbourMsg::IdentityHello {
                 cert: Box::new(cert),
                 revocations: Vec::new(),
@@ -7225,6 +7429,7 @@ mod tests {
                 personal_continuity_topic_id(&user),
                 peer.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: user,
                     publisher: crate::network::behaviour::peer_liveness_handle(&peer.public()),
@@ -8311,6 +8516,7 @@ mod tests {
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
             None,
+            false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8396,6 +8602,7 @@ mod tests {
             personal_continuity_topic_id(&user_public_key),
             source_endpoint.public(),
             None,
+            false,
             NeighbourMsg::PersonalContinuityCheckpoint {
                 user_public_key,
                 publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8455,6 +8662,7 @@ mod tests {
                 personal_continuity_topic_id(&local_user),
                 foreign_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key: local_user,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8505,6 +8713,7 @@ mod tests {
                 personal_continuity_topic_id(&user_public_key),
                 peer_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -8573,6 +8782,7 @@ mod tests {
                 personal_continuity_topic_id(&user_public_key),
                 peer_device.public(),
                 None,
+                false,
                 NeighbourMsg::PersonalContinuityCheckpoint {
                     user_public_key,
                     publisher: crate::network::behaviour::peer_liveness_handle(
@@ -9116,6 +9326,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::IdentityHello {
                         cert: Box::new(cert.clone()),
                         revocations: Vec::new(),
@@ -9137,6 +9348,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::SyncReq {
                         since: Vec::new(),
                         room: room.to_string(),
@@ -9159,6 +9371,7 @@ mod tests {
                     ws: room_topic_id(room),
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: NeighbourMsg::SyncReq {
                         since: Vec::new(),
                         room: room.to_string(),
@@ -10163,6 +10376,7 @@ mod tests {
                 .map_or(DEFAULT_WS_TOPIC, room_topic_id),
             peer,
             membership_epoch: None,
+            replayed: false,
             msg: NeighbourMsg::AppDocument {
                 peer: from_peer_hash,
                 app_id: app_id.to_string(),
@@ -10224,6 +10438,7 @@ mod tests {
                 ws: room_topic_id(our_room),
                 peer: device.public(),
                 membership_epoch: None,
+                replayed: false,
                 msg: NeighbourMsg::IdentityHello {
                     cert: Box::new(cert.clone()),
                     revocations: Vec::new(),
@@ -10256,6 +10471,7 @@ mod tests {
                     ws,
                     peer: device.public(),
                     membership_epoch: None,
+                    replayed: false,
                     msg: message.clone(),
                 })
                 .expect("queue governance");
@@ -10466,9 +10682,53 @@ mod tests {
             );
         }
 
+        /// This device's own document comes back only as host-replayed
+        /// history, queued as its own replayed edit; the same message as
+        /// ordinary traffic under this device's session is an echo.
+        fn a_replayed_own_document_reaches_the_broker_and_an_echo_does_not() {
+            let (net, room, _, own_signing) = network_with_admitted_peer();
+            let cluster = room.to_string();
+            let own = net.local_peer_hash;
+            let NetEvent::Msg { msg, .. } = app_document_event(
+                "so.tilo.notes",
+                &cluster,
+                own,
+                iroh::SecretKey::from_bytes(&[72; 32]).public(),
+                &own_signing,
+            ) else {
+                unreachable!()
+            };
+            net.event_tx
+                .try_send(NetEvent::Msg {
+                    ws: room_topic_id(room),
+                    peer: iroh::SecretKey::from_bytes(&[72; 32]).public(),
+                    membership_epoch: None,
+                    replayed: true,
+                    msg: msg.clone(),
+                })
+                .expect("queue the echo");
+            net.tick();
+            assert!(net.inbound_documents_handle().lock().unwrap().is_empty());
+
+            net.event_tx
+                .try_send(NetEvent::OwnReplay {
+                    ws: room_topic_id(room),
+                    msg,
+                })
+                .expect("queue the replay");
+            net.tick();
+            let inbound = net.inbound_documents_handle();
+            let delivered = inbound.lock().unwrap();
+            assert_eq!(delivered.len(), 1);
+            assert!(delivered[0].replayed);
+            assert_eq!(delivered[0].peer, own);
+            assert_eq!(delivered[0].role, collab_types::Role::Editor);
+        }
+
         file_backed_records_never_put_a_path_on_the_wire();
         a_sealed_record_name_reaches_the_local_app_holding_that_record();
         app_document_from_a_room_we_are_not_in_never_reaches_the_broker();
+        a_replayed_own_document_reaches_the_broker_and_an_echo_does_not();
     }
 
     #[test]
@@ -10635,6 +10895,7 @@ mod tests {
                 "cluster-7".to_string(),
                 "uuid:9f".to_string(),
                 collab_types::Role::Editor,
+                false,
                 envelope.clone(),
             );
             let buf = buf_handle.lock().unwrap().clone();
@@ -10891,6 +11152,6 @@ mod tests {
             })
             .expect("a remote-action frame was sent");
         assert_eq!(target, to_key.public(), "addressed to exactly one device");
-        to.dispatch_neighbour_msg(ws, from.public(), None, msg);
+        to.dispatch_neighbour_msg(ws, from.public(), None, false, msg);
     }
 }

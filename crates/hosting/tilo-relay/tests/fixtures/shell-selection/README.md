@@ -1,13 +1,16 @@
 # Shell selection fixture
 
 Exported from the real `SessionOwner` publication scenario in
-`tilo-device-host/tests/publication.rs`. The identities are created by that test
-on every run, so no key outside the repository signs anything here. Regenerate
-with:
+`tilo-device-host/tests/publication.rs`, which was removed with the retired
+Cloud server stack. The fixture is frozen; the generator is in history at
+commit `3959eafc50`:
 
 ```sh
-cargo nextest run -p tilo-device-host --test publication --run-ignored only regenerate_shell_selection_fixture
+git show 3959eafc50:crates/hosting/tilo-device-host/tests/publication.rs
 ```
+
+The identities were created by that test, so no key outside the repository
+signs anything here.
 
 `manifest.json` records the authority and certificates, the export time, the
 room and routes, and the BLAKE3 hash, length, channel and kind of every signed

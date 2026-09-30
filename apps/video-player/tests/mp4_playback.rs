@@ -11,7 +11,7 @@
 use std::path::Path;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use media::gst::prelude::*;
 use ui::widget::Widget;
@@ -57,7 +57,7 @@ fn wait_for(
             return;
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "timed out waiting for {description}"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -72,8 +72,8 @@ fn h264_aac_mp4_plays_pauses_seeks_and_resumes_through_app_actions() {
         exercise_app(Path::new(&root));
         return;
     }
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nonce = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let root =
@@ -179,10 +179,10 @@ fn exercise_app(root: &Path) {
         |app| frame_pts(app).is_some_and(|pts| (1_960..=2_040).contains(&pts)),
     );
     let paused_pts = frame_pts(&app).unwrap();
-    let hold_until = Instant::now()
+    let hold_until = ui::time::now()
         .checked_add(Duration::from_millis(200))
         .expect("hold deadline is representable");
-    while Instant::now() < hold_until {
+    while ui::time::now() < hold_until {
         app.sync(&mut doc, &automerge::ROOT);
         assert_eq!(frame_pts(&app).unwrap(), paused_pts);
         assert!(!app.player().is_playing());

@@ -30,6 +30,12 @@ pub use placement::{GroupSpan, OpenContext, OpenIntent, Seam, StripViewport, ope
 pub const APP_ID: &str = "so.tilo.desktop";
 pub const RESOURCE: &str = "desktop:session";
 pub const ACTION: &str = "command";
+/// Resource prefix of the per-application open action (`desktop:app:<app>`).
+pub const OPEN_APP_RESOURCE_PREFIX: &str = "desktop:app:";
+/// Resource kind of the per-application open action.
+pub const OPEN_APP_RESOURCE_KIND: &str = "desktop.application";
+/// Action id of the per-application open action.
+pub const OPEN_APP_ACTION: &str = "open";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DesktopCommandError {
@@ -199,6 +205,15 @@ pub enum DesktopCommand {
         app: String,
         target_app: String,
         action: String,
+    },
+    /// Move window group `group`, whole, from whichever strip of the
+    /// workspace holds it into strip `strip`, before group `before` or at
+    /// the end. A move within one strip is a reorder. Appended last:
+    /// existing encodings are unchanged.
+    MoveGroup {
+        group: u64,
+        strip: u64,
+        before: Option<u64>,
     },
 }
 
@@ -936,6 +951,11 @@ pub fn apply_command(
             group,
             before,
         } => reorder_group(workspace, *strip, *group, *before)?,
+        DesktopCommand::MoveGroup {
+            group,
+            strip,
+            before,
+        } => move_group(workspace, *group, *strip, *before)?,
         DesktopCommand::MoveTab {
             location: at,
             placement,
@@ -994,6 +1014,47 @@ fn reorder_group(
         .and_then(|id| groups.iter().position(|window| window.id == id))
         .unwrap_or(groups.len());
     groups.insert(destination, moved);
+    Ok(())
+}
+
+fn move_group(
+    workspace: &mut Workspace,
+    group: u64,
+    strip: u64,
+    before: Option<u64>,
+) -> Result<(), String> {
+    let destination = strip_index(workspace, strip)?;
+    if before == Some(group) {
+        return Err("group cannot be its own destination".into());
+    }
+    let source = workspace
+        .strips
+        .iter()
+        .position(|candidate| {
+            candidate
+                .window_groups
+                .iter()
+                .any(|window| window.id == group)
+        })
+        .ok_or("group was removed")?;
+    if source == destination {
+        return reorder_group(workspace, strip, group, before);
+    }
+    let groups = &strip_at(workspace, destination)?.window_groups;
+    if before.is_some_and(|id| !groups.iter().any(|window| window.id == id)) {
+        return Err("destination group was removed".into());
+    }
+    let source_groups = &mut strip_at_mut(workspace, source)?.window_groups;
+    let at = source_groups
+        .iter()
+        .position(|window| window.id == group)
+        .ok_or("group was removed")?;
+    let moved = source_groups.remove(at);
+    let groups = &mut strip_at_mut(workspace, destination)?.window_groups;
+    let index = before
+        .and_then(|id| groups.iter().position(|window| window.id == id))
+        .unwrap_or(groups.len());
+    groups.insert(index, moved);
     Ok(())
 }
 

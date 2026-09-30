@@ -252,7 +252,7 @@ pub struct PasswordsSurface {
     active_field: Option<ActiveField>,
     /// Explicit, short-lived disclosure. The value zeroizes when it expires,
     /// when focus leaves the window, or when another item is revealed.
-    revealed: Option<(SecretId, Zeroizing<String>, std::time::Instant)>,
+    revealed: Option<(SecretId, Zeroizing<String>, ui::time::Instant)>,
     status: String,
     mobile_detail: bool,
     health: crate::VaultHealth,
@@ -262,7 +262,7 @@ pub struct PasswordsSurface {
     export_portal: Option<ui::portal::PortalChannel>,
     backup_portal: Option<ui::portal::PortalChannel>,
     restore_portal: Option<ui::portal::OpenFileChannel>,
-    transfer_poll_deadline: std::cell::Cell<Option<std::time::Instant>>,
+    transfer_poll_deadline: std::cell::Cell<Option<ui::time::Instant>>,
     backup_password: TextInput,
     backup_confirmation: TextInput,
     backup_focus: usize,
@@ -1402,17 +1402,19 @@ impl PasswordsSurface {
                 }
                 let lease =
                     accounts::ClipboardLease::new(secret, std::time::Duration::from_secs(30));
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(30));
+                let clearing = ui::rt::spawn_thread("passwords-clipboard-clear", move || {
+                    let _ = ui::rt::sleep_thread(std::time::Duration::from_secs(30));
                     let current = ui::text_selection::clipboard_paste();
                     if lease.should_clear(current.as_deref()) {
                         let _ = ui::try_clipboard_copy("");
                     }
                 });
-                self.status = format!(
-                    "Copied {}; clipboard clears in 30 seconds",
-                    Self::secret_field_label(item.kind).to_lowercase()
-                );
+                let label = Self::secret_field_label(item.kind).to_lowercase();
+                self.status = if clearing.is_ok() {
+                    format!("Copied {label}; clipboard clears in 30 seconds")
+                } else {
+                    format!("Copied {label}")
+                };
             }
             Err(error) => self.status = error,
         }
@@ -1428,9 +1430,9 @@ impl PasswordsSurface {
                 self.revealed = Some((
                     item.id.clone(),
                     secret,
-                    std::time::Instant::now()
+                    ui::time::now()
                         .checked_add(std::time::Duration::from_secs(10))
-                        .unwrap_or_else(std::time::Instant::now),
+                        .unwrap_or_else(ui::time::now),
                 ));
             }
             Err(error) => self.status = error,
@@ -1752,12 +1754,15 @@ impl PasswordsSurface {
                     self.import_portal = None;
                     let file = opened.into_file();
                     let (tx, rx) = std::sync::mpsc::channel();
-                    self.import_parse = Some(rx);
-                    let _ = std::thread::Builder::new()
-                        .name("passwords-csv-parser".into())
-                        .spawn(move || {
-                            let _ = tx.send(crate::transfer::parse_browser_csv(file));
-                        });
+                    let spawned = ui::rt::spawn_thread("passwords-csv-parser", move || {
+                        let _ = tx.send(crate::transfer::parse_browser_csv(file));
+                    });
+                    match spawned {
+                        Ok(_) => self.import_parse = Some(rx),
+                        Err(error) => {
+                            self.status = format!("Could not start the CSV parser: {error}");
+                        }
+                    }
                 }
                 Ok(ui::portal::OpenFileOutcome::Cancelled) => {
                     self.import_portal = None;
@@ -1917,7 +1922,7 @@ impl PasswordsSurface {
         };
         let items = model.items();
         let csv = crate::transfer::export_browser_csv(&items);
-        atomic_file::write_with_mode(path, csv.as_bytes(), 0o600)
+        tilo_files::native::atomic::write_with_mode(path, csv.as_bytes(), 0o600)
             .map_err(|_| "Could not finish writing the selected file".to_string())?;
         Ok(items.len())
     }
@@ -1932,7 +1937,7 @@ impl PasswordsSurface {
         };
         let items = model.items();
         let backup = crate::transfer::export_encrypted_backup(&items, passphrase)?;
-        atomic_file::write_with_mode(path, &backup, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &backup, 0o600)
             .map_err(|_| "Could not finish writing the selected backup".to_string())?;
         Ok(items.len())
     }
@@ -3039,7 +3044,7 @@ impl PasswordsSurface {
         let password = self
             .revealed
             .as_ref()
-            .filter(|(id, _, until)| id == &item.id && *until > std::time::Instant::now())
+            .filter(|(id, _, until)| id == &item.id && *until > ui::time::now())
             .map_or("••••••••••••••••", |(_, value, _)| value.as_str());
         let origin_summary = item.origins.iter().next().map(|first| {
             let remaining = item.origins.len().saturating_sub(1);
@@ -3182,7 +3187,9 @@ impl PasswordsSurface {
                 None,
             );
         }
-        let now = tilo_clock::unix_now();
+        let now = ui::time::wall()
+            .duration_since(ui::time::UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_secs());
         let updated = ui::format::relative(
             i64::try_from(now.saturating_sub(item.updated_unix)).unwrap_or(i64::MAX),
         );
@@ -3910,7 +3917,7 @@ impl Widget for PasswordsSurface {
         if self
             .revealed
             .as_ref()
-            .is_some_and(|(_, _, until)| *until <= std::time::Instant::now())
+            .is_some_and(|(_, _, until)| *until <= ui::time::now())
         {
             self.revealed = None;
         }
@@ -5481,7 +5488,7 @@ impl Widget for PasswordsSurface {
         }
         true
     }
-    fn next_wake_deadline(&self) -> Option<std::time::Instant> {
+    fn next_wake_deadline(&self) -> Option<ui::time::Instant> {
         let pending = self.import_portal.is_some()
             || self.import_parse.is_some()
             || self.export_portal.is_some()
@@ -5491,9 +5498,9 @@ impl Widget for PasswordsSurface {
             // Keep the deadline fixed until sync consumes the tick. Returning
             // now + 16 ms on every query would postpone it indefinitely.
             let deadline = self.transfer_poll_deadline.get().unwrap_or_else(|| {
-                std::time::Instant::now()
+                ui::time::now()
                     .checked_add(std::time::Duration::from_millis(16))
-                    .unwrap_or_else(std::time::Instant::now)
+                    .unwrap_or_else(ui::time::now)
             });
             self.transfer_poll_deadline.set(Some(deadline));
             Some(deadline)
@@ -5736,8 +5743,8 @@ mod tests {
             let root = std::env::temp_dir().join(format!(
                 "tilo-passwords-access-ui-{}-{}",
                 std::process::id(),
-                std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
+                ui::time::wall()
+                    .duration_since(ui::time::UNIX_EPOCH)
                     .unwrap()
                     .as_nanos()
             ));
@@ -6215,7 +6222,7 @@ mod tests {
             app.revealed = Some((
                 SecretId("demo-0".into()),
                 Zeroizing::new("temporary-value".into()),
-                std::time::Instant::now() + std::time::Duration::from_secs(10),
+                ui::time::now() + std::time::Duration::from_secs(10),
             ));
             assert!(Widget::next_wake_deadline(&app).is_some());
 
@@ -6251,7 +6258,7 @@ mod tests {
             tx.send(ui::portal::PortalOutcome::Cancelled).unwrap();
             app.sync(&mut AutoCommit::new(), &automerge::ROOT);
             assert!(app.next_wake_deadline().is_none());
-            let deadline = std::time::Instant::now();
+            let deadline = ui::time::now();
             app.revealed = Some((
                 SecretId("test".into()),
                 Zeroizing::new("fixture secret".into()),
@@ -6493,8 +6500,8 @@ mod tests {
             ));
             ui::host::scoped(&services, || app.request_import());
             assert_eq!(recorder.pick_requests()[0].title(), "Import passwords");
-            let deadline = std::time::Instant::now() + HANG_BOUND;
-            while std::time::Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 app.poll_transfers();
                 if app.transfer_dialog.is_some() {
                     break;
@@ -6512,8 +6519,8 @@ mod tests {
                 ui::portal::OpenedFile::new(selected, "passwords.csv"),
             ));
             ui::host::scoped(&services, || app.request_import());
-            let deadline = std::time::Instant::now() + HANG_BOUND;
-            while std::time::Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 app.poll_transfers();
                 if app.transfer_dialog.is_some() {
                     break;

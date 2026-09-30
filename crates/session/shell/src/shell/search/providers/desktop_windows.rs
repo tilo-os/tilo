@@ -1,14 +1,15 @@
 //! Addressable actions for the live desktop topology.
 //!
 //! These rows expose tabs and window groups through the same render-free
-//! action catalogue used by the command palette and control socket. Closing a
-//! row commits through the durable tab lifecycle, including the compositor's
-//! normal foreign-surface close request; it never synthesises pointer input.
+//! action catalogue used by the command palette and control socket. Going to
+//! a tab sets the same four focus coordinates a click does; closing commits
+//! through the durable tab lifecycle, including the compositor's normal
+//! foreign-surface close request. Neither synthesises pointer input.
 
 use std::rc::Rc;
 
 use tilo_desktop::search::{
-    WINDOWS_PROVIDER_ID, WindowAction, WindowRowKind, window_rows, window_rows_revision,
+    WINDOWS_PROVIDER_ID, WindowAction, WindowRow, WindowRowKind, window_rows, window_rows_revision,
     windows_provider_name,
 };
 use ui::search::{FieldWeight, ListIndex};
@@ -16,7 +17,7 @@ use ui::search::{FieldWeight, ListIndex};
 use crate::shell::chrome_state::Chrome;
 use crate::shell::search::action_api::{ActionArgs, ActionError};
 use crate::shell::search::{ResourceKind, SearchContext, SearchProvider, SearchResult};
-use crate::shell::state::{GroupId, TabId, WorkspaceId};
+use crate::shell::state::{GroupId, StripId, TabId, WorkspaceId};
 
 fn close_contract() -> tilo_actions::ActionContract {
     tilo_actions::ActionContract {
@@ -71,6 +72,19 @@ fn refused(tab_id: TabId) -> ActionError {
     ActionError::Refused(format!(
         "tab {tab_id} could not be removed from durable desktop state"
     ))
+}
+
+/// Brings the tab to the front, as clicking it would.
+fn focus_tab(
+    chrome: &Chrome,
+    workspace: WorkspaceId,
+    strip: StripId,
+    group: GroupId,
+    tab: TabId,
+) -> Result<(), ActionError> {
+    tab_in_group(chrome, group, tab)?;
+    chrome.borrow_mut().focus_tab(workspace, strip, group, tab);
+    Ok(())
 }
 
 /// Closes through the one tab lifecycle, so the close can be undone.
@@ -137,6 +151,7 @@ fn close_group(chrome: &Chrome, group_id: GroupId) -> Result<(), ActionError> {
 
 fn contract(action: WindowAction) -> tilo_actions::ActionContract {
     match action {
+        WindowAction::FocusTab { .. } => tilo_actions::ActionContract::view(),
         WindowAction::CloseGroup { .. } | WindowAction::CloseTab { .. } => close_contract(),
         WindowAction::MoveTab { .. } | WindowAction::CopyTab { .. } => move_contract(),
     }
@@ -145,6 +160,12 @@ fn contract(action: WindowAction) -> tilo_actions::ActionContract {
 fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
     use crate::shell::window_transfer::TransferMode;
     match action {
+        WindowAction::FocusTab {
+            workspace,
+            strip,
+            group,
+            tab,
+        } => focus_tab(chrome, workspace, strip, group, tab),
         WindowAction::CloseGroup { group } => close_group(chrome, group),
         WindowAction::CloseTab { group, tab } => close_tab(chrome, group, tab),
         WindowAction::MoveTab {
@@ -157,6 +178,36 @@ fn invoke(chrome: &Chrome, action: WindowAction) -> Result<(), ActionError> {
             tab,
             workspace,
         } => transfer_tab(chrome, group, tab, workspace, TransferMode::Copy),
+    }
+}
+
+fn result(row: WindowRow, score: i32) -> SearchResult {
+    let action = row.action;
+    SearchResult {
+        kind: match row.kind {
+            WindowRowKind::Tab => ResourceKind::Tab,
+            WindowRowKind::WindowGroup => ResourceKind::WindowGroup,
+        },
+        operation_kind: match action {
+            WindowAction::FocusTab { .. } => tilo_actions::OperationKind::View,
+            WindowAction::CloseGroup { .. }
+            | WindowAction::CloseTab { .. }
+            | WindowAction::MoveTab { .. }
+            | WindowAction::CopyTab { .. } => tilo_actions::OperationKind::Effect,
+        },
+        provider_id: WINDOWS_PROVIDER_ID.into(),
+        id: row.id,
+        title: row.title,
+        subtitle: Some(row.subtitle),
+        badge: Some(row.badge),
+        score,
+        params: Vec::new(),
+        contract: Some(contract(action)),
+        on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
+            invoke(chrome, action)
+        }),
+        on_invoke: None,
+        on_begin_invoke: None,
     }
 }
 
@@ -198,46 +249,30 @@ impl SearchProvider for DesktopWindowsProvider {
 
     fn query(&self, ctx: SearchContext<'_>) -> Vec<SearchResult> {
         let tree = ctx.chrome.tree();
-        // Every row is listed with its names, each of which names it; ranking
-        // them together keeps the matches.
-        let names = std::cell::RefCell::new(Vec::new());
-        let rows = window_rows(&tree.desktop, |fields| {
-            names.borrow_mut().push(
-                fields
-                    .iter()
-                    .map(|field| ((*field).to_owned(), FieldWeight::TITLE))
-                    .collect(),
-            );
-            Some(0)
-        });
+        let rows = window_rows(&tree.desktop, ctx.needle);
         drop(tree);
-        let rows = rows
-            .into_iter()
+        // An exact address is how an agent or a pasted id selects one row;
+        // it resolves outright instead of being ranked against names.
+        let exact = ctx.needle.trim();
+        if let Some(row) = rows.iter().find(|row| row.id == exact) {
+            return vec![result(row.clone(), self.max_score())];
+        }
+        let names: Vec<Vec<(String, FieldWeight)>> = rows
+            .iter()
             .map(|row| {
-                let action = row.action;
-                SearchResult {
-                    kind: match row.kind {
-                        WindowRowKind::Tab => ResourceKind::Tab,
-                        WindowRowKind::WindowGroup => ResourceKind::WindowGroup,
-                    },
-                    operation_kind: tilo_actions::OperationKind::Effect,
-                    provider_id: WINDOWS_PROVIDER_ID.into(),
-                    id: row.id,
-                    title: row.title,
-                    subtitle: Some(row.subtitle),
-                    badge: Some(row.badge),
-                    score: row.score,
-                    params: Vec::new(),
-                    contract: Some(contract(action)),
-                    on_open: Rc::new(move |_doc, _root, chrome: &Chrome, _args: &ActionArgs| {
-                        invoke(chrome, action)
-                    }),
-                    on_invoke: None,
-                    on_begin_invoke: None,
-                }
+                row.names
+                    .iter()
+                    .map(|name| (name.clone(), FieldWeight::TITLE))
+                    .chain(
+                        row.hint
+                            .iter()
+                            .map(|hint| (hint.clone(), FieldWeight::SUBTITLE)),
+                    )
+                    .collect()
             })
             .collect();
-        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names.into_inner())
+        let rows = rows.into_iter().map(|row| result(row, 0)).collect();
+        crate::shell::search::rank_rows(&self.ranker, ctx.needle, rows, &names)
     }
 
     fn search_revision(&self, ctx: &SearchContext<'_>) -> String {
@@ -321,7 +356,7 @@ mod tests {
             let state = chrome.borrow();
             let catalog = ActionCatalog::build(
                 &registry(),
-                "Profilfehler",
+                "close Profilfehler",
                 SearchScope::All,
                 None,
                 &state,
@@ -340,11 +375,16 @@ mod tests {
             );
             assert!(actions[..2].iter().all(|action| {
                 action.title.contains("Profilfehler")
-                    && action
-                        .subtitle
-                        .as_deref()
-                        .is_some_and(|text| text.contains("group"))
+                    && action.subtitle.as_deref() == Some("Workspace “Home” · strip “Main”")
             }));
+            assert!(
+                actions.iter().all(|action| action
+                    .subtitle
+                    .as_deref()
+                    .is_some_and(|text| !text.contains("100") && !text.contains("200"))),
+                "a subtitle names a group by its place, never its internal id: {:?}",
+                actions.iter().map(|a| &a.subtitle).collect::<Vec<_>>()
+            );
             assert_eq!(
                 actions[2].title,
                 "Close window group “Profilfehler aufgetreten”"
@@ -414,6 +454,119 @@ mod tests {
             );
             assert!(chrome.borrow_mut().take_surface_close_requests().is_empty());
             let _ = &mut doc;
+        }
+    }
+
+    fn palette(chrome: &Chrome, doc: &AutoCommit, needle: &str) -> Vec<SearchResult> {
+        let state = chrome.borrow();
+        registry().query(&crate::shell::search::QueryArgs {
+            needle,
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc,
+            doc_root: &ROOT,
+        })
+    }
+
+    #[test]
+    fn searching_a_window_goes_to_it_and_never_offers_to_close_it() {
+        let (chrome, mut doc) = fixture();
+        {
+            let state = chrome.borrow();
+            let mut tree = state.tree_mut();
+            let strip = tree.desktop.workspaces[0].strips[0].id;
+            tree.desktop.set_active_group(strip, 200);
+        }
+
+        // Tab 3 is focused. A search still names every matching window,
+        // including that one: findable by name means the open window is a
+        // result, not only its close actions.
+        let rows = palette(&chrome, &doc, "Profilfehler");
+        let mut ids: Vec<&str> = rows.iter().map(|row| row.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
+        let go = rows
+            .iter()
+            .find(|row| row.id == "tab.focus:100:1")
+            .expect("unfocused window stays a focus result");
+        assert_eq!(go.title, "Profilfehler aufgetreten");
+        assert_eq!(go.operation_kind, tilo_actions::OperationKind::View);
+        assert_eq!(
+            go.subtitle.as_deref(),
+            Some("Open in this workspace · 2 tabs")
+        );
+
+        // A window is found by its app when its title names the document.
+        let mut ids: Vec<String> = palette(&chrome, &doc, "chrome")
+            .into_iter()
+            .map(|row| row.id)
+            .collect();
+        ids.sort();
+        assert_eq!(ids, ["tab.focus:100:1", "tab.focus:200:3"]);
+
+        // Enter on the unfocused row brings that window forward, as a click would.
+        (go.on_open)(&mut doc, &ROOT, &chrome, &ActionArgs::none()).expect("focused");
+        let (active_group, active_tab) = {
+            let state = chrome.borrow();
+            let tree = state.tree();
+            let strip = &tree.desktop.workspaces[0].strips[0];
+            (
+                tree.desktop.active_group_for(strip.id),
+                strip.window_groups[0].active_tab,
+            )
+        };
+        assert_eq!((active_group, active_tab), (Some(100), 1));
+        assert!(chrome.borrow_mut().take_surface_close_requests().is_empty());
+
+        // Ids and app ids are addresses, not names a person types.
+        assert!(palette(&chrome, &doc, "google").is_empty());
+        assert!(palette(&chrome, &doc, "200").is_empty());
+
+        // Every row a person reads names places, never ids.
+        for row in palette(&chrome, &doc, "") {
+            let subtitle = row.subtitle.unwrap_or_default();
+            assert!(
+                !subtitle.contains("100")
+                    && !subtitle.contains("200")
+                    && !subtitle.contains("com."),
+                "{} carries an internal id in {subtitle:?}",
+                row.id
+            );
+        }
+    }
+
+    #[test]
+    fn a_listing_keeps_every_window_action_for_agents() {
+        let (chrome, doc) = fixture();
+        let state = chrome.borrow();
+        let catalog = ActionCatalog::build(
+            &registry(),
+            "",
+            SearchScope::All,
+            None,
+            &state,
+            &doc,
+            &ROOT,
+            &AllVisible,
+        );
+        let ids: Vec<String> = catalog
+            .enumerate()
+            .into_iter()
+            .map(|action| action.resource.id)
+            .collect();
+        for id in [
+            "tab.focus:100:1",
+            "tab.close:100:1",
+            "group.close:100",
+            "tab.close:200:3",
+            "group.close:200",
+        ] {
+            assert!(
+                ids.iter().any(|listed| listed == id),
+                "{id} missing from {ids:?}"
+            );
         }
     }
 
@@ -507,6 +660,131 @@ mod tests {
         assert!(
             chrome.borrow_mut().take_surface_close_requests().is_empty(),
             "a window whose state cannot travel is never asked to close"
+        );
+    }
+
+    /// Stands in for the machine's Linux apps: a long list the empty
+    /// palette must not open with.
+    struct LinuxApps;
+
+    impl crate::shell::search::SearchProvider for LinuxApps {
+        fn id(&self) -> &'static str {
+            "host-apps"
+        }
+        fn name(&self) -> &'static str {
+            "Linux apps"
+        }
+        fn resource_kinds(&self) -> &[ResourceKind] {
+            &[ResourceKind::HostApplication]
+        }
+        fn query(&self, _ctx: SearchContext<'_>) -> Vec<SearchResult> {
+            (0..40)
+                .map(|i| {
+                    SearchResult::nullary(
+                        ResourceKind::HostApplication,
+                        "host-apps",
+                        format!("org.example.App{i}"),
+                        format!("App {i}"),
+                        None,
+                        10,
+                        |_, _, _| {},
+                    )
+                })
+                .collect()
+        }
+    }
+
+    #[test]
+    fn the_empty_palette_offers_windows_to_go_back_to_not_an_inventory() {
+        let (chrome, doc) = fixture();
+        let mut registry = registry();
+        registry.register(Rc::new(
+            crate::shell::search::providers::ActionsProvider::new(),
+        ));
+        registry.register(Rc::new(LinuxApps));
+        let state = chrome.borrow();
+        let groups = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::All,
+                active_provider_id: None,
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        let first = groups.first().expect("the empty palette has rows");
+        assert_eq!(first.kind, ResourceKind::Tab, "windows come first");
+        assert!(
+            first
+                .results
+                .iter()
+                .all(|row| row.id.starts_with("tab.focus:")),
+            "every window row goes to it: {:?}",
+            first.results.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        let rows: Vec<&SearchResult> = groups.iter().flat_map(|group| &group.results).collect();
+        assert!(
+            rows.iter().all(
+                |row| row.operation_kind == tilo_actions::OperationKind::View
+                    || row.kind == ResourceKind::Application
+            ),
+            "nothing on the empty palette changes anything: {:?}",
+            rows.iter().map(|row| &row.id).collect::<Vec<_>>()
+        );
+        assert!(
+            !rows
+                .iter()
+                .any(|row| row.kind == ResourceKind::HostApplication),
+            "the Linux app list is a keystroke away, not the default"
+        );
+        assert!(rows.iter().any(|row| row.id == "room.activity.open"));
+        assert!(
+            groups
+                .iter()
+                .all(|group| group.total == group.results.len())
+        );
+
+        let app_scoped = registry.query_grouped(
+            &crate::shell::search::QueryArgs {
+                needle: "",
+                scope: SearchScope::ActiveApp,
+                active_provider_id: Some("host-apps"),
+                wanted_kinds: &[],
+                chrome: &state,
+                doc: &doc,
+                doc_root: &ROOT,
+            },
+            12,
+        );
+        assert_eq!(
+            app_scoped
+                .iter()
+                .find(|group| group.kind == ResourceKind::HostApplication)
+                .map(|group| group.total),
+            Some(40),
+            "scoped to one app, the empty palette lists that app's inventory, not a curated pick"
+        );
+
+        let listing = registry.query_exhaustive(&crate::shell::search::QueryArgs {
+            needle: "",
+            scope: SearchScope::All,
+            active_provider_id: None,
+            wanted_kinds: &[],
+            chrome: &state,
+            doc: &doc,
+            doc_root: &ROOT,
+        });
+        assert!(
+            listing.iter().any(|row| row.id == "tab.close:100:1")
+                && listing
+                    .iter()
+                    .filter(|row| row.kind == ResourceKind::HostApplication)
+                    .count()
+                    == 40,
+            "agents still enumerate every action and app"
         );
     }
 }

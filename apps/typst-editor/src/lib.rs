@@ -59,6 +59,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(app::TypstApp::new())
 }
 
+/// The app as every host mounts it: the live root.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.typst-editor", app_root)
+        .history(&framework_history::HISTORY)
+        .as_definition("Typst Editor")
+}
+
 /// Build a hermetic root seeded with the bundled demo documents. Used by the
 /// offscreen `--shots` renderer and tests so captures are deterministic and do
 /// not depend on whatever `.typ` files happen to be on disk.

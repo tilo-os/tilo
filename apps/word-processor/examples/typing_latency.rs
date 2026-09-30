@@ -15,7 +15,6 @@
 //! Release only — a debug build is slow enough to make every reading meaningless.
 
 use std::path::PathBuf;
-use std::time::Instant;
 
 use ui::headless::Driver;
 use winit::event::{ElementState, WindowEvent};
@@ -143,7 +142,7 @@ fn type_and_time(paragraphs: usize, chars: usize) -> std::io::Result<(Vec<u64>, 
     let mut passes = PassTotals::default();
     for ch in text {
         driver.clear_profile_samples();
-        let t = Instant::now();
+        let t = ui::time::now();
         driver.key(&ch.to_string());
         let wall = saturating_u64(t.elapsed().as_micros());
         let frames = driver.take_profile_samples();
@@ -306,7 +305,7 @@ fn paced_burst_profile(
         .take(chars)
         .collect();
 
-    let start = Instant::now();
+    let start = ui::time::now();
     let mut done_at = Vec::with_capacity(chars);
     for (i, ch) in text.into_iter().enumerate() {
         // The key is due at `i · interval`. If the editor is already past that,

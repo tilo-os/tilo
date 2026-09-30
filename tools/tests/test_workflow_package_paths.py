@@ -123,7 +123,7 @@ jobs:
                 )
             pairs = (
                 ("tilo-relay", ".forgejo/workflows/release-relay.yml"),
-                ("fs", ".forgejo/workflows/release-relay.yml"),
+                ("tilo-fs", ".forgejo/workflows/release-relay.yml"),
                 ("tilo-crypto", ".forgejo/workflows/build-kernel.yml"),
             )
             violations: list[str] = []

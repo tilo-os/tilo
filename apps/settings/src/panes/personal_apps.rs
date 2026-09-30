@@ -15,7 +15,9 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use crate::actions::{SETTINGS_ACTION_TYPE, SettingsAction, set_text_action};
+use crate::i18n::{t, t_args};
 use crate::widgets::{caption, card, choice_row_described, rows, value_row};
+use ui::i18n::ArgValue;
 
 pub struct PersonalAppsPane {
     candidates: Vec<AppCandidate>,
@@ -53,6 +55,22 @@ impl PersonalAppsPane {
             actions: crate::resource::ActionSink::default(),
             composed: None,
             rect: Rect::ZERO,
+        }
+    }
+
+    fn resource_label(resource: &ResourceKind) -> String {
+        if let Some(ext) = resource.extension_name() {
+            t_args(
+                "settings-personal-apps-ext-files",
+                &[("ext", ArgValue::Text(ext.to_string()))],
+            )
+        } else if let Some(scheme) = resource.scheme_name() {
+            t_args(
+                "settings-personal-apps-scheme-links",
+                &[("scheme", ArgValue::Text(scheme.to_string()))],
+            )
+        } else {
+            resource.display_label()
         }
     }
 
@@ -107,38 +125,36 @@ impl PersonalAppsPane {
                     || options.first().cloned().unwrap_or_default(),
                     |a| Self::option(a),
                 );
-            let label = resource.display_label();
+            let label = Self::resource_label(resource);
             let picker_path = Self::draft_key(&Self::key(resource));
             let picker = Dropdown::new(options, &picker_path)
                 .with_id(&format!("personal-default.{}", resource.as_str()))
                 .with_placeholder(&current);
             file_rows.push(choice_row_described(
                 &label,
-                "Your choice follows you unless this workspace chooses another app.",
+                &t("settings-personal-apps-choice-follows"),
                 Box::new(picker),
             ));
         }
         let body = if file_rows.is_empty() {
-            rows(vec![caption(
-                "No installed application currently declares a supported file or link type. Defaults appear here as apps are installed.",
-            )])
+            rows(vec![caption(&t("settings-personal-apps-empty"))])
         } else {
             rows(file_rows)
         };
         let scope = card(
-            "Personal",
+            &t("settings-personal-apps-scope"),
             rows(vec![
-                value_row("Applies to", "Your identity on every device"),
-                caption(
-                    "A workspace may set a shared choice. In Workspace Settings you can follow it, return to this personal choice, or select a different app for that workspace.",
+                value_row(
+                    &t("settings-personal-apps-applies-to"),
+                    &t("settings-personal-apps-applies-value"),
                 ),
+                caption(&t("settings-personal-apps-scope-caption")),
                 Box::new(
                     Button::new(
                         "open-workspace-app-defaults",
-                        "Open current workspace app rules",
+                        &t("settings-personal-apps-open-workspace"),
                         None,
                     )
-                    .with_size(236.0, 40.0)
                     .on_effect(|| {
                         let _ = os_actions::open_tool(os_actions::ToolIntent::WorkspaceSettings {
                             route: os_actions::WorkspaceSettingsRoute::AppsFiles,
@@ -147,7 +163,10 @@ impl PersonalAppsPane {
                 ),
             ]),
         );
-        crate::widgets::cards(vec![scope, card("Open files and links with", body)])
+        crate::widgets::cards(vec![
+            scope,
+            card(&t("settings-personal-apps-files-title"), body),
+        ])
     }
 
     fn draft_key(canonical: &str) -> String {
@@ -418,8 +437,8 @@ impl ui::undo::UndoPoints for PersonalAppsPane {
         crate::panes::preference_commit_context(
             pending,
             "personal-apps",
-            "Personal app defaults",
-            "Change default apps",
+            &t("settings-personal-apps-undo-name"),
+            &t("settings-personal-apps-undo-action"),
         )
     }
 }
@@ -434,6 +453,22 @@ mod tests {
             resources: [ResourceKind::extension(ext).unwrap()].into(),
         }
     }
+    #[test]
+    fn personal_apps_copy_comes_from_the_catalogue() {
+        assert_eq!(
+            t("settings-personal-apps-files-title"),
+            "Open files and links with"
+        );
+        assert_eq!(
+            PersonalAppsPane::resource_label(&ResourceKind::extension("pdf").unwrap()),
+            ".pdf files"
+        );
+        assert_eq!(
+            PersonalAppsPane::resource_label(&ResourceKind::scheme("https").unwrap()),
+            "https: links"
+        );
+    }
+
     /// Dropdown choices persist and MIME/scheme claims are personal defaults.
     #[test]
     fn personal_default_apps_persist_and_expose_claims() {

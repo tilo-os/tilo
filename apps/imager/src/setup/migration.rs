@@ -250,8 +250,8 @@ fn preserve_directory_times(directory: &PinnedDirectory, original: &Metadata) ->
 
 pub(super) fn preserve_directory_times_values(
     directory: &PinnedDirectory,
-    accessed: std::time::SystemTime,
-    modified: std::time::SystemTime,
+    accessed: ui::time::SystemTime,
+    modified: ui::time::SystemTime,
 ) -> io::Result<()> {
     use cap_fs_ext::OpenOptionsMaybeDirExt;
     directory.validate_destination()?;
@@ -279,8 +279,8 @@ pub(super) fn preserve_directory_times_values(
 
 pub(super) fn preserve_time_values(
     file: &File,
-    accessed: std::time::SystemTime,
-    modified: std::time::SystemTime,
+    accessed: ui::time::SystemTime,
+    modified: ui::time::SystemTime,
 ) -> io::Result<()> {
     file.set_times(
         fs::FileTimes::new()
@@ -837,8 +837,8 @@ mod tests {
                 }
                 fn times(&self) -> io::Result<CopyTimes> {
                     Ok(CopyTimes {
-                        accessed: std::time::UNIX_EPOCH,
-                        modified: std::time::UNIX_EPOCH,
+                        accessed: ui::time::UNIX_EPOCH,
+                        modified: ui::time::UNIX_EPOCH,
                     })
                 }
                 fn begin_pass(&mut self, _: CopyPass) -> io::Result<()> {
@@ -1068,7 +1068,7 @@ mod tests {
         {
             let (_temp, source, destination) = fixture();
             fs::write(source.join("hello"), b"hello").unwrap();
-            let time = std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
+            let time = ui::time::UNIX_EPOCH + std::time::Duration::from_secs(1_600_000_000);
             fs::File::options()
                 .write(true)
                 .open(source.join("hello"))

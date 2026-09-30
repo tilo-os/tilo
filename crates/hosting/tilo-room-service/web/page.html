@@ -2,11 +2,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Tilo · shared room (review page)</title>
-<!-- What the site's page does with a room, for review: the web core with the
-     relay peer and the apps from the signed registry; create a room, join it
-     as a certified device, mount the page's desktop (Books and Writer) in it,
-     pre-fill the shared Writer document through its actions, and show the
-     phone's join link and who joined. -->
+<!-- What the site's page does with a room, for review: the browser runtime
+     bundle with its certified peer and apps; create a room, join it as a
+     certified device, mount the page's desktop (Books and Writer) in it,
+     pre-fill the shared Writer document through its actions where the mount
+     offers them, and show the phone's join link and who joined. -->
 <style>body{margin:0;font:14px system-ui;background:#16181d;color:#e8e8ea;display:grid;grid-template-rows:auto 1fr;height:100vh}
 header{display:flex;gap:16px;align-items:center;padding:8px 12px;flex-wrap:wrap}#surface{min-height:0}a{color:#8ab4f8;word-break:break-all}</style>
 <header><strong>Reading group</strong><span id="state">Starting…</span><a id="join" target="_blank"></a><span id="members"></span></header>
@@ -27,11 +27,7 @@ try {
   const peer = await joinRoom({...room, ticket: room.pageTicket, label: 'Visitor'});
   await peer.whenReady();
   const mount = await peer.mountDesktop(document.querySelector('#surface'), {
-    app: 'desktop', author: 'Visitor',
-    local: {workspaces: [{title: 'Reading group', strips: [{windows: [
-      {app: BOOKS},
-      {app: WRITER, title: 'Reading group: Book I', focused: true},
-    ]}]}]},
+    apps: [BOOKS, WRITER], author: 'Visitor',
   });
   const record = await recordOf(peer, WRITER);
   // Pre-fill the shared document through Writer's own actions. A mount's
@@ -39,7 +35,7 @@ try {
   // line first: the quote, Enter above it, then the title.
   const frame = () => new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 50)));
   const act = async (action, args) => {
-    const found = mount.actions().find(candidate => candidate.address.action === action);
+    const found = mount.actions?.().find(candidate => candidate.address.action === action);
     if (!found) return;
     mount.invokeAction(found.address.resource, action, args);
     await frame();

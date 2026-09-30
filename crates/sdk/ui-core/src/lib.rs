@@ -149,7 +149,7 @@ pub mod dmabuf_import;
 pub mod dnd;
 pub mod doc;
 pub mod doc_binding;
-#[cfg(any(windows, test))]
+#[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
 mod dx12_shader_cache;
 pub mod floating_surface;
 pub mod font_catalog;
@@ -206,6 +206,7 @@ pub mod profiling;
 pub mod query_text;
 pub mod realtime_continuity;
 pub mod standalone_history_pane;
+pub mod storage;
 pub mod ux_bench;
 pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub mod text_assistance;
@@ -255,7 +256,8 @@ pub mod window_icon;
 // (`tilo_ui::portal`, `tilo_ui::host`, `tilo_ui::time`, …).
 #[doc(inline)]
 pub use tilo_host::{
-    background, capture, clipboard, host, location, mpris, notify, png, portal, secrets, time, wake,
+    background, capture, clipboard, env, host, location, mpris, notify, png, portal, secrets, time,
+    wake,
 };
 
 /// Bounds a test wait that ends as soon as its condition holds; only a hang reaches it.

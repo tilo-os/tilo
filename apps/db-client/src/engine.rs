@@ -11,7 +11,6 @@
 
 use std::sync::Arc;
 use std::thread;
-use std::time::Instant;
 
 use rusqlite::Connection;
 use rusqlite::types::ValueRef;
@@ -274,7 +273,7 @@ impl SqliteEngine {
         if trimmed.is_empty() {
             return Ok(QueryResult::default());
         }
-        let start = Instant::now();
+        let start = ui::time::now();
 
         // Decide select-vs-DML by trying to prepare and asking the column
         // count. A zero-column statement is DML/DDL.

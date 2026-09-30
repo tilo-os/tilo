@@ -59,6 +59,19 @@ ls -la $TILO_TEST_CONTROL
 
 The compositor prints `tilo compositor test_control listening on "<path>"` to stderr once the socket is ready to accept.
 
+### A headless session never touches the host's power
+
+A headless (or nested winit) session runs beside the desktop that owns the
+machine, and it reaches the same system logind. So only a `--backend drm`
+session starts the power service: headless and winit sessions do not take
+logind's lid/power-key delegation, never request suspend on idle whatever
+`power.auto_suspend` says, and neither offer nor admit Suspend, Restart,
+Shut down or Switch user from the power menu, the palette or
+`session.*` actions (`tilo::power` logs `session does not own the seat` at
+startup). Lock stays: it locks only the compositor's own scene. Test idle
+suspend through `SessionManager` and `TILO_IDLE_SUSPEND_SECS`, which exercise
+the state machine without an actuator.
+
 ### Put `TMPDIR` somewhere with room
 
 `/tmp` is a 16 GB tmpfs shared with everything else on the box, and a

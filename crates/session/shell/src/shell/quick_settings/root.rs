@@ -172,6 +172,11 @@ pub struct QuickSettingsRoot {
     // monitor) keeps the single unlabelled brightness slider.
     display_names: Vec<String>,
     keyboard_focus: Option<usize>,
+    // The root stop keyboard focus is on. `root_stops` changes while the
+    // popover is open (a slider or control appears once its device state
+    // arrives), so an index alone would move focus, or Enter, to another
+    // stop. Keyboard navigation sets it; the index follows it.
+    root_focus: Option<RootStop>,
     config: QuickSettingsConfig,
     // Hosts that inject a model (tests, screenshots and embedders) must not
     // silently rewrite the desktop user's persisted arrangement. Only the
@@ -317,6 +322,7 @@ impl QuickSettingsRoot {
             slider_drag: None,
             display_names: Vec::new(),
             keyboard_focus: None,
+            root_focus: None,
             config: config.normalised(),
             persist_config,
             edit_mode: false,
@@ -328,6 +334,7 @@ impl QuickSettingsRoot {
         // Tab selects the first stop in `root_stops` (Brightness) instead of
         // silently preselecting it and making that same Tab skip past it.
         self.keyboard_focus = None;
+        self.root_focus = None;
     }
 
     /// Named geometry for every visible root affordance. Quick Settings is
@@ -410,12 +417,12 @@ impl QuickSettingsRoot {
     /// Fit root-page spatial chrome to the available popover height while
     /// leaving text itself at the user's full theme scale. The same effective
     /// factor drives drawing and hit testing through every geometry helper.
+    ///
+    /// Chrome shrinks only when the desktop is too short for the page: a
+    /// panel with room keeps the token rhythm, because a squeezed gap is a
+    /// touch (HIG §7).
     pub fn fit_root_layout_to_height(&mut self, state: &QuickSettingsState, height: f64) {
         self.sync_displays(state);
-        // Preserve the refined root's compact footprint even when the host
-        // could offer the old 416px panel. Text remains at its full scale;
-        // only spatial chrome participates in this fit.
-        let height = height.min(320.0);
         let unscaled = self.preferred_height_at(state, 1.0);
         self.layout_scale = self.layout_scale.min((height / unscaled).clamp(0.2, 1.2));
         // Rows that had to grow for their type do not shrink with the chrome
@@ -968,7 +975,10 @@ impl QuickSettingsRoot {
     /// four destination tiles. Controls come first so the first Tab after
     /// opening reaches Brightness.
     fn root_stops(&self, state: &QuickSettingsState) -> Vec<RootStop> {
-        let mut stops: Vec<RootStop> = (0..self.slider_count()).map(RootStop::Slider).collect();
+        let mut stops: Vec<RootStop> = (0..self.slider_count())
+            .filter(|&index| self.slider_available(state, index))
+            .map(RootStop::Slider)
+            .collect();
         stops.extend(
             self.visible_controls(state)
                 .into_iter()
@@ -988,8 +998,17 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return None;
         }
-        self.keyboard_focus
-            .and_then(|index| self.root_stops(state).get(index).copied())
+        let stops = self.root_stops(state);
+        self.root_focus_index(&stops)
+            .and_then(|index| stops.get(index).copied())
+    }
+    /// Where keyboard focus is among `stops`: the focused stop's current
+    /// position, or none if that stop is gone.
+    fn root_focus_index(&self, stops: &[RootStop]) -> Option<usize> {
+        match self.root_focus {
+            Some(stop) => stops.iter().position(|s| *s == stop),
+            None => self.keyboard_focus,
+        }
     }
     fn is_focused(&self, state: &QuickSettingsState, stop: RootStop) -> bool {
         self.focused_stop(state) == Some(stop)
@@ -1048,6 +1067,7 @@ impl QuickSettingsRoot {
             RootStop::Edit => {
                 self.edit_mode = true;
                 self.keyboard_focus = None;
+                self.root_focus = None;
                 RootAction::LayoutChanged
             }
             RootStop::Tile(tile) => tile.action(),
@@ -1217,17 +1237,20 @@ impl QuickSettingsRoot {
     }
 
     pub fn focus_next(&mut self, state: &QuickSettingsState, backwards: bool) -> bool {
-        let count = if self.edit_mode {
+        let stops = (!self.edit_mode).then(|| self.root_stops(state));
+        let (count, current) = match &stops {
             // Editable rows, Reset defaults, Done. The header no longer
             // duplicates Done with an unexplained checkmark.
-            self.edit_controls(state).len().saturating_add(2)
-        } else {
-            self.root_stops(state).len()
+            None => (
+                self.edit_controls(state).len().saturating_add(2),
+                self.keyboard_focus,
+            ),
+            Some(stops) => (stops.len(), self.root_focus_index(stops)),
         };
         if count == 0 {
             return false;
         }
-        self.keyboard_focus = Some(match (self.keyboard_focus, backwards) {
+        let next = match (current, backwards) {
             (Some(i), true) => i.checked_sub(1).unwrap_or_else(|| count.saturating_sub(1)),
             (Some(i), false) => i
                 .checked_add(1)
@@ -1235,7 +1258,9 @@ impl QuickSettingsRoot {
                 .unwrap_or_default(),
             (None, true) => count.saturating_sub(1),
             (None, false) => 0,
-        });
+        };
+        self.keyboard_focus = Some(next);
+        self.root_focus = stops.and_then(|stops| stops.get(next).copied());
         true
     }
     /// Whether the next [`Self::focus_next`] in this direction would wrap
@@ -1245,9 +1270,12 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return false;
         }
-        let last = self.root_stops(state).len().saturating_sub(1);
-        match (self.keyboard_focus, backwards) {
-            (None | Some(0), true) => true,
+        let stops = self.root_stops(state);
+        let last = stops.len().saturating_sub(1);
+        match (self.root_focus_index(&stops), backwards) {
+            // No selection is not a wrap: Super+Q then Shift+Tab must land
+            // on Power. The card only intercepts wrap off a real first stop.
+            (Some(0), true) => true,
             (Some(i), false) => i >= last,
             _ => false,
         }
@@ -1289,11 +1317,12 @@ impl QuickSettingsRoot {
                 // its edit-mode index pointing at an unrelated root action
                 // (for example History/Notifications) on the next frame.
                 self.keyboard_focus = None;
+                self.root_focus = None;
                 return RootAction::LayoutChanged;
             }
             return RootAction::None;
         }
-        match self.root_stops(state).get(i).copied() {
+        match self.focused_stop(state) {
             Some(stop) => self.activate_stop(stop, state),
             None => RootAction::None,
         }
@@ -2208,12 +2237,15 @@ impl QuickSettingsRoot {
         let edit_count = active
             .len()
             .saturating_add(self.available_edit_controls(state).len());
+        // Control labels are `scale.sm` (HIG §9.6), like the rows above.
+        let label_size = type_size(text, theme.tokens.typography.scale.sm);
         Button::paint(
             scene,
             transform,
             text,
             theme,
             &ButtonFace::new(reset, &t("qs-edit-reset"))
+                .text_size(label_size)
                 .hovered(cursor.is_some_and(|p| reset.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count))
                 .accessible_name(&t("qs-edit-reset-a11y")),
@@ -2224,6 +2256,7 @@ impl QuickSettingsRoot {
             text,
             theme,
             &ButtonFace::new(done, &t("qs-edit-done"))
+                .text_size(label_size)
                 .primary()
                 .hovered(cursor.is_some_and(|p| done.contains(p)))
                 .focused(self.keyboard_focus == Some(edit_count.saturating_add(1)))
@@ -2447,11 +2480,16 @@ impl QuickSettingsRoot {
             _ => None,
         }
     }
-    pub fn focus_accessibility_path(&mut self, path: &[usize], _: &QuickSettingsState) -> bool {
+    pub fn focus_accessibility_path(&mut self, path: &[usize], state: &QuickSettingsState) -> bool {
         let [i] = path else {
             return false;
         };
         self.keyboard_focus = Some(*i);
+        self.root_focus = if self.edit_mode {
+            None
+        } else {
+            self.root_stops(state).get(*i).copied()
+        };
         true
     }
 }
@@ -2514,9 +2552,15 @@ mod tests {
     fn root_controls_reflect_present_hardware_and_migrated_config() {
         fn semantic_targets_cover_every_visible_root_control_and_edit_action() {
             let mut root = QuickSettingsRoot::default();
-            let mut state = QuickSettingsState::default();
-            state.radios.wifi_available = true;
-            state.bluetooth_available = true;
+            let state = QuickSettingsState {
+                brightness_available: true,
+                bluetooth_available: true,
+                radios: os_actions::RadioState {
+                    wifi_available: true,
+                    ..os_actions::RadioState::default()
+                },
+                ..QuickSettingsState::default()
+            };
             root.panel = PANEL;
 
             let targets = root.semantic_rects(&state);
@@ -2703,6 +2747,85 @@ mod tests {
             assert_eq!(root.keyboard_focus, Some(0));
         }
 
+        /// Super+Q then Shift+Tab must still open Power when brightness, Wi-Fi
+        /// and Bluetooth are absent. Those controls sit *before* the utility
+        /// row; hiding them must not move the last stop off Power, or the
+        /// clipboard e2e lock path (and a real user) activates History.
+        fn reverse_tab_from_no_selection_opens_power_without_hardware() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState::default();
+            root.panel = PANEL;
+            assert!(
+                !state.brightness_available && state.displays.is_empty(),
+                "default is a machine with no backlight"
+            );
+            assert!(!state.radios.wifi_available && !state.bluetooth_available);
+            root.reset_focus();
+            assert!(root.focus_next(&state, true));
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            assert_eq!(
+                root.activate_focused(PANEL, &mut state),
+                RootAction::OpenPowerMenu
+            );
+        }
+
+        /// Device state arrives while the popover is open: a slider or
+        /// control that appears or goes away changes the stop list under a
+        /// focused stop. Focus and Enter stay on the stop the user reached.
+        fn focus_stays_on_its_stop_when_stops_appear_or_vanish() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState {
+                volume_available: true,
+                ..QuickSettingsState::default()
+            };
+            root.panel = PANEL;
+            root.reset_focus();
+            assert!(root.focus_next(&state, true));
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+
+            // The volume probe fails: one stop fewer before Power.
+            state.volume_available = false;
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            // A backlight appears: one stop more.
+            state.brightness_available = true;
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            assert!(!root.focus_would_wrap(&state, true));
+            assert_eq!(
+                root.activate_focused(PANEL, &mut state),
+                RootAction::OpenPowerMenu
+            );
+
+            // Stepping continues from where focus is, not from a stale index.
+            assert!(root.focus_next(&state, true));
+            let stops = root.root_stops(&state);
+            let power = stops
+                .iter()
+                .position(|s| *s == RootStop::Tile(RootTile::Power))
+                .unwrap();
+            assert_eq!(root.focused_stop(&state), stops.get(power - 1).copied());
+
+            // A focused slider that goes away leaves nothing focused rather
+            // than handing Enter to its neighbour.
+            root.reset_focus();
+            assert!(root.focus_next(&state, false));
+            assert_eq!(root.focused_stop(&state), Some(RootStop::Slider(0)));
+            state.brightness_available = false;
+            assert_eq!(root.focused_stop(&state), None);
+            assert_eq!(root.activate_focused(PANEL, &mut state), RootAction::None);
+        }
+
         fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -2886,7 +3009,9 @@ mod tests {
         }
 
         opening_has_no_hidden_focus_and_first_tab_selects_brightness();
+        reverse_tab_from_no_selection_opens_power_without_hardware();
         normal_focus_order_matches_visible_actions_and_accessibility_paths();
+        focus_stays_on_its_stop_when_stops_appear_or_vanish();
         each_focus_stop_marks_exactly_one_accessibility_node();
         every_destination_tile_click_routes_to_its_action();
         devices_and_clipboard_rows_summarise_their_panes();
@@ -3106,13 +3231,29 @@ mod tests {
             });
             root.fit_root_layout_to_height(&state, 416.0);
             let height = root.preferred_height(&state);
-            assert!(
-                height <= 320.0,
-                "control-first root should stay materially below the old 416px panel"
-            );
+            assert!(height <= 416.0, "the root fits the height it was offered");
             let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + height);
             root.panel = panel;
             assert!(root.power_geometry(panel, &state).y1 <= panel.y1);
+        }
+
+        fn a_root_with_room_keeps_the_token_rhythm() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState::default();
+            state.radios.wifi_available = true;
+            state.bluetooth_available = true;
+            // A 1080p desktop under the top bar: nothing has to give.
+            root.fit_root_layout_to_height(&state, 1080.0 - 64.0);
+            assert_eq!(root.layout_scale, 1.0);
+            let panel = Rect::new(0.0, 48.0, 400.0, 48.0 + root.preferred_height(&state));
+            root.panel = panel;
+            let count = root.visible_controls(&state).len();
+            let first = root.control_card(panel, 0, count);
+            let second = root.control_card(panel, 1, count);
+            assert_eq!(first.x0 - panel.x0, PANEL_PAD);
+            assert_eq!(panel.x1 - second.x1, PANEL_PAD);
+            assert_eq!(second.x0 - first.x1, SIBLING_GAP);
+            assert!(panel.y1 - root.power_geometry(panel, &state).y1 >= PANEL_PAD);
         }
 
         fn power_utility_keeps_a_clear_root_target() {
@@ -3133,8 +3274,14 @@ mod tests {
 
         fn accessibility_nodes_carry_the_rects_paint_and_hit_testing_use() {
             let mut root = QuickSettingsRoot::default();
-            let mut state = QuickSettingsState::default();
-            state.radios.wifi_available = true;
+            let state = QuickSettingsState {
+                brightness_available: true,
+                radios: os_actions::RadioState {
+                    wifi_available: true,
+                    ..os_actions::RadioState::default()
+                },
+                ..QuickSettingsState::default()
+            };
             root.panel = PANEL;
             let snapshot = root.accessibility_snapshot(&state);
             assert_eq!(snapshot.bounds.map(ui::AccessBounds::to_rect), Some(PANEL));
@@ -3178,6 +3325,7 @@ mod tests {
         odd_control_count_uses_a_balanced_full_width_last_card();
         bottom_utilities_keep_independent_touch_targets();
         compact_root_reclaims_space_without_clipping_the_power_profile();
+        a_root_with_room_keeps_the_token_rhythm();
         power_utility_keeps_a_clear_root_target();
         accessibility_nodes_carry_the_rects_paint_and_hit_testing_use();
     }

@@ -56,42 +56,68 @@ pub struct Manifest {
     /// shim. Only meaningful when the entrypoint is `cli` or `both`.
     #[serde(default)]
     pub cli: Option<Cli>,
-    /// `[platform]` block — whether the app is inherently tied to one
-    /// operating system. Signed with the rest of the manifest so a store or
-    /// installer can tell portable apps from platform-specific ones.
-    #[serde(default, skip_serializing_if = "Platform::is_portable")]
-    pub platform: Platform,
     /// `[target]` block — the non-native execution target this build was
     /// packed for. Absent for native Tilo OS packages, whose target is
     /// `[package.isa]`. Written by the packer, never by the app author.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub target: Option<Target>,
+    /// `[capabilities]` block — the host capabilities the app uses. Signed
+    /// with the rest of the manifest so every host can check them before
+    /// launch.
+    #[serde(default, skip_serializing_if = "Capabilities::is_empty")]
+    pub capabilities: Capabilities,
 }
 
-/// Portability of an application package.
+/// A target an app is built and published for.
 ///
-/// Apps are portable by default: platform-specific code lives in Tilo's
-/// platform crates and the app calls their portable APIs. An app whose
-/// purpose is itself platform-specific (an OS installer, a PTY terminal)
-/// says so once, with a reason, instead of excusing individual lines:
+/// Apps run on [`DEFAULT_PLATFORMS`] unless `package.platforms` narrows the
+/// list, which always comes with a `package.platform-reason`:
 ///
 /// ```toml
-/// [platform]
-/// native = "Writes OS images to block devices and installs bootloaders."
+/// [package]
+/// platforms = ["linux", "macos"]
+/// platform-reason = "Hosts a pseudo-terminal for a login shell."
 /// ```
-#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub struct Platform {
-    /// One-line reason the app is inherently platform-specific. `None`
-    /// means the app is portable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub native: Option<String>,
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Platform {
+    Linux,
+    Macos,
+    Web,
+    /// Linux, and only under Tilo OS host services.
+    TiloOs,
 }
 
 impl Platform {
-    /// Whether the app declares no platform-specific purpose.
+    /// The manifest spelling.
     #[must_use]
-    pub fn is_portable(&self) -> bool {
-        self.native.is_none()
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Linux => "linux",
+            Self::Macos => "macos",
+            Self::Web => "web",
+            Self::TiloOs => "tilo-os",
+        }
+    }
+}
+
+/// The targets of an app that does not declare `package.platforms`.
+pub const DEFAULT_PLATFORMS: &[Platform] = &[Platform::Linux, Platform::Macos, Platform::Web];
+
+/// `[capabilities]` — host capabilities by name (`network.http`,
+/// `notifications`, `files.save`, ...). A `required` capability that a host
+/// cannot provide stops the launch; an `optional` one degrades.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Capabilities {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub required: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub optional: Vec<String>,
+}
+
+impl Capabilities {
+    fn is_empty(&self) -> bool {
+        self.required.is_empty() && self.optional.is_empty()
     }
 }
 
@@ -165,6 +191,17 @@ pub struct Package {
     /// produce e.g. `API` from `api-tester`.
     #[serde(default)]
     pub name: Option<String>,
+    /// The name in other languages, keyed by BCP 47 tag:
+    ///
+    /// ```toml
+    /// [package.names]
+    /// de = "Dateien"
+    /// ```
+    ///
+    /// Search matches every one of them, so an app is found by its name
+    /// in either the desktop's language or English.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub names: std::collections::BTreeMap<String, String>,
     /// Freedesktop-style menu category (`Office`, `Development`, ...);
     /// the shell's Applications search provider surfaces packages by category.
     #[serde(default)]
@@ -177,6 +214,18 @@ pub struct Package {
     /// `None` for `kind = "runtime"`. Version must parse as semver.
     #[serde(default)]
     pub runtime: Option<String>,
+    /// Targets the app is built and published for; absent means
+    /// [`DEFAULT_PLATFORMS`]. Read it through [`Package::platforms`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platforms: Option<Vec<Platform>>,
+    /// One-line reason the app narrows `platforms`; required exactly when
+    /// the list leaves out a default platform.
+    #[serde(
+        default,
+        rename = "platform-reason",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub platform_reason: Option<String>,
     /// Minimum CPU feature-level per architecture this build's binaries
     /// require, one entry per supported architecture:
     ///
@@ -190,6 +239,44 @@ pub struct Package {
     /// `tilo-install` refuses the install with a clear error.
     #[serde(default)]
     pub isa: IsaRequirements,
+}
+
+impl Package {
+    /// The targets the app is built and published for.
+    #[must_use]
+    pub fn platforms(&self) -> &[Platform] {
+        self.platforms.as_deref().unwrap_or(DEFAULT_PLATFORMS)
+    }
+
+    /// Whether `platforms` leaves out any of [`DEFAULT_PLATFORMS`].
+    #[must_use]
+    pub fn is_platform_narrowed(&self) -> bool {
+        let platforms = self.platforms();
+        DEFAULT_PLATFORMS
+            .iter()
+            .any(|platform| !platforms.contains(platform))
+    }
+
+    /// Whether the app runs on `platform`.
+    #[must_use]
+    pub fn supports(&self, platform: Platform) -> bool {
+        self.platforms().contains(&platform)
+    }
+
+    /// Whether a build of this app may be published for a registry platform
+    /// (the registry's names are the manifest's). A Linux `.tapp` may be
+    /// published for `tilo-os` whether the app declares `linux` or
+    /// `tilo-os`; every other platform must be declared as named.
+    #[must_use]
+    pub fn publishable_as(&self, registry_platform: &str) -> bool {
+        match registry_platform {
+            "tilo-os" => self.supports(Platform::TiloOs) || self.supports(Platform::Linux),
+            "linux" => self.supports(Platform::Linux),
+            "macos" => self.supports(Platform::Macos),
+            "web" => self.supports(Platform::Web),
+            _ => false,
+        }
+    }
 }
 
 /// Per-arch minimum-feature-level requirements; every field is

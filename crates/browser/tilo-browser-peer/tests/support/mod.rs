@@ -201,6 +201,23 @@ pub fn start_peer(
     host_cert: DeviceCert,
     key: SigningKey,
 ) -> PeerHandle {
+    start_peer_with_store(
+        host,
+        cert,
+        host_cert,
+        key,
+        Arc::new(MemoryPeerStore::default()),
+    )
+}
+
+/// [`start_peer`] over `store`, as a page reloaded from its profile.
+pub fn start_peer_with_store(
+    host: Host,
+    cert: DeviceCert,
+    host_cert: DeviceCert,
+    key: SigningKey,
+    store: Arc<MemoryPeerStore>,
+) -> PeerHandle {
     PeerHandle::start(
         PeerConfig {
             host,
@@ -209,7 +226,7 @@ pub fn start_peer(
             revocations: RevocationList::new(),
         },
         Arc::new(key),
-        Arc::new(MemoryPeerStore::default()),
+        store,
     )
 }
 
@@ -228,6 +245,46 @@ pub fn route() -> DocumentRoute {
         app_id: "so.tilo.notes".into(),
         cluster_id: ROOM.into(),
         record: "note-1".into(),
+    }
+}
+
+/// An HTTPS client that counts the `/events` answers the host sent.
+pub struct Recording {
+    pub inner: Arc<https::DevHttps>,
+    /// Largest single answer.
+    pub largest_page: Arc<std::sync::atomic::AtomicUsize>,
+    /// Every answer's bytes together.
+    pub total: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl Recording {
+    pub fn new(inner: Arc<https::DevHttps>) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            largest_page: Arc::default(),
+            total: Arc::default(),
+        })
+    }
+}
+
+impl tilo_browser_peer::HttpClient for Recording {
+    fn post(
+        &self,
+        path: &str,
+        session: Option<&str>,
+        body: Vec<u8>,
+    ) -> tilo_browser_peer::HttpFuture<'_> {
+        use std::sync::atomic::Ordering;
+        let events = path.ends_with("/events");
+        let answer = self.inner.post(path, session, body);
+        Box::pin(async move {
+            let answer = answer.await;
+            if events && let Ok((_, bytes)) = &answer {
+                self.largest_page.fetch_max(bytes.len(), Ordering::Relaxed);
+                self.total.fetch_add(bytes.len(), Ordering::Relaxed);
+            }
+            answer
+        })
     }
 }
 

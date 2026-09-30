@@ -28,7 +28,7 @@ impl Exceptions {
         origin(url).is_some_and(|o| self.0.contains(&o))
     }
     fn save(&self, path: &Path) -> std::io::Result<()> {
-        atomic_file::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
+        tilo_files::native::atomic::write_creating_parent(path, &serde_json::to_vec(&self.0)?)
     }
     fn load(path: &Path) -> Self {
         if !std::fs::metadata(path).is_ok_and(|m| m.len() <= 1024 * 1024) {
@@ -45,7 +45,7 @@ impl Exceptions {
         rules
     }
 }
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::{
     LocalState,
     tokens::TextRole,
@@ -100,7 +100,7 @@ impl Default for SiteControls {
             query: None,
             action: None,
             pending_reload: None,
-            next_poll: Instant::now(),
+            next_poll: ui::time::now(),
             notice: String::new(),
             filters: crate::native_blocker::status(),
             persistent: false,
@@ -141,7 +141,7 @@ impl SiteControls {
         self.pending_reload = None;
         self.pending.set(None);
         self.notice.clear();
-        self.next_poll = Instant::now();
+        self.next_poll = ui::time::now();
     }
     pub fn close(&mut self) {
         self.open = false;
@@ -212,7 +212,7 @@ impl SiteControls {
                     // replaceable button-intent slot. Dismissal must not lose it.
                     self.pending_reload = Some((origin, generation));
                 }
-                self.next_poll = Instant::now();
+                self.next_poll = ui::time::now();
                 true
             }
             _ => false,
@@ -247,7 +247,7 @@ impl SiteControls {
         if kind != "reload" {
             self.notice = "Working…".into();
         }
-        self.action = Some((request_id, origin, generation, kind, Instant::now()));
+        self.action = Some((request_id, origin, generation, kind, ui::time::now()));
         true
     }
     pub fn sync(&mut self, engine: &SharedEngine) -> bool {
@@ -264,7 +264,7 @@ impl SiteControls {
                 Pending::Open(information) => {
                     self.open = true;
                     self.information = information;
-                    self.next_poll = Instant::now();
+                    self.next_poll = ui::time::now();
                     self.notice.clear();
                 }
                 Pending::Close => self.close(),
@@ -283,7 +283,7 @@ impl SiteControls {
             self.filters = filters;
             dirty |= self.open;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         if self.open && now >= self.next_poll {
             self.next_poll = now + Duration::from_secs(1);
             if self
@@ -631,7 +631,7 @@ mod tests {
                 "https://private.test".into(),
                 3,
                 "disable".into(),
-                Instant::now(),
+                ui::time::now(),
             ));
             assert!(first.apply(WebViewEvent::SiteResult {
                 request_id: 7,
@@ -677,7 +677,7 @@ mod tests {
             let mut controls = SiteControls::default();
             controls.open = true;
             controls.committed = Some("https://one.test".into());
-            controls.query = Some((7, Instant::now()));
+            controls.query = Some((7, ui::time::now()));
             controls.notice = "old notice".into();
             controls.navigation("https://two.test/page");
             assert!(!controls.open);
@@ -843,7 +843,13 @@ mod tests {
                 expires: 0.0,
                 permissions: Vec::new(),
             }),
-            action: Some((7, "https://one.test".into(), 3, kind.into(), Instant::now())),
+            action: Some((
+                7,
+                "https://one.test".into(),
+                3,
+                kind.into(),
+                ui::time::now(),
+            )),
             ..SiteControls::default()
         }
     }

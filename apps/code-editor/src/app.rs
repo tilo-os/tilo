@@ -37,7 +37,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fmt::Write as _;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 mod file_workflow;
@@ -908,7 +908,7 @@ impl CodeApp {
             next_new_file_id,
             next_new_folder_id,
             flap: FlapState::open_when_docked(),
-            flap_tick: Instant::now(),
+            flap_tick: ui::time::now(),
             // Seed wide so the first frame of a desktop window (and `--shots`,
             // 1280px) docks the sidebar; corrected from the real width once
             // `apply_layout` measures the window.
@@ -1044,7 +1044,7 @@ impl CodeApp {
     /// still animating (so the host keeps pumping frames). Called once per
     /// draw, mirroring the proven weather/chat pattern.
     fn tick_flap(&mut self) -> bool {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.flap_tick).as_secs_f64().min(0.1);
         self.flap_tick = now;
         self.flap.reconcile(self.sidebar_layout());
@@ -1670,7 +1670,7 @@ impl CodeApp {
         // (a caret move, a save flip, an indexing tick) — refresh_status runs
         // every frame, so poking unconditionally would pin the bubble open.
         if changed {
-            self.status_bubble.poke(Instant::now());
+            self.status_bubble.poke(ui::time::now());
         }
     }
 
@@ -1680,7 +1680,7 @@ impl CodeApp {
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.refresh_status();
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Draw the transient floating status bubble at the bottom-right of the
@@ -1694,7 +1694,7 @@ impl CodeApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status.bubble_text();
         if label.is_empty() {
             return;
@@ -2793,8 +2793,8 @@ impl CodeApp {
     /// frame shows genuine hits from the genuine walk rather than canned rows.
     pub fn shots_project_search(&mut self, needle: &str) {
         self.start_project_search(search::Query::new(needle));
-        let deadline = Instant::now() + std::time::Duration::from_secs(20);
-        while self.search_job.is_some() && Instant::now() < deadline {
+        let deadline = ui::time::now() + std::time::Duration::from_secs(20);
+        while self.search_job.is_some() && ui::time::now() < deadline {
             self.poll_search();
             std::thread::sleep(std::time::Duration::from_millis(20));
         }
@@ -4271,7 +4271,7 @@ impl Widget for CodeApp {
             || self.lsp_status.is_working()
             // Keep frames coming while the floating status bubble is lingering
             // / fading, so it hides itself without needing a stray pointer event.
-            || self.status_bubble.needs_frame(Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn take_structure_dirty(&mut self) -> bool {

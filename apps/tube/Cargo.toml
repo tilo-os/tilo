@@ -13,11 +13,16 @@ path = "src/lib.rs"
 name = "tube"
 path = "src/main.rs"
 
+# The page build keeps playback (`media`) and drops the extractors, which
+# run subprocesses, and Grayjay sync, which needs raw TCP.
+[package.metadata.tilo]
+web-features = ["media"]
+
 [dependencies]
 fnv.workspace = true
 hex.workspace = true
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-xdg-paths = { path = "../../crates/system/xdg-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 runtime-identity = { path = "../../crates/runtime/runtime-identity" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -40,13 +45,12 @@ taffy.workspace = true
 anyhow.workspace = true
 # Live fetch (Invidious / SponsorBlock / DeArrow), driven by a background
 # worker and excluded from the shots path.
-# rustls-tls because the distrobox image has no openssl/native-tls.
-reqwest = { workspace = true, features = ["blocking", "json", "query"] }
-tilo-net = { path = "../../crates/platform/tilo-net", features = ["blocking"] }
-bounded-command = { path = "../../crates/system/bounded-command" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "json"] }
+# The owner-only watch history file.
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
+bounded-command = { path = "../../crates/system/bounded-command", optional = true }
 blake3.workspace = true
-private-fs = { path = "../../crates/system/private-fs" }
 
 # Live YouTube backend (off by default): rustypipe handles InnerTube requests
 # and botguard tokens without ffmpeg or yt-dlp.
@@ -61,11 +65,12 @@ rustypipe = { workspace = true, optional = true, features = ["rustls-no-provider
 snow = { version = "0.9", optional = true }
 flate2 = { workspace = true, optional = true }
 base64 = { workspace = true, optional = true }
-runtime-portal-xdg = { path = "../../crates/runtime/runtime-portal-xdg", optional = true }
+# The device key's seed lives in the system secret store.
+tilo-secrets = { path = "../../crates/platform/tilo-secrets", optional = true }
+getrandom = { workspace = true, optional = true }
 sha2 = { workspace = true, optional = true }
 zeroize = { workspace = true, optional = true }
 wire-frame = { path = "../../crates/system/wire-frame", optional = true }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 # Encoding-level assertions for the video-surface test; version matches `vello`.
@@ -79,10 +84,10 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 thin = ["dep:runtime-dylib"]
 # The default app includes live YouTube and media features. Shots/tests remain
 # hermetic at runtime because their live workers are not spawned; Grayjay sync
-# also fails closed if the host secret broker is unavailable.
+# also fails closed if the system secret store is unavailable.
 default = ["live", "media", "grayjay-sync"]
 # YouTube data via yt-dlp with rustypipe as a fallback source.
-live = ["dep:rustypipe"]
+live = ["dep:rustypipe", "dep:bounded-command"]
 # Video decode, playback, and audio through the shared GStreamer media engine.
 # The watch-page player publishes now-playing and accepts media keys through
 # the toolkit's MPRIS service, which `ui` always provides.
@@ -90,10 +95,12 @@ media = ["media/decode"]
 # Grayjay account/device sync over Noise (TCP 12315 + pairing), including its
 # portal-backed lifecycle.
 grayjay-sync = [
+    "tilo-net/sockets",
     "dep:snow",
     "dep:flate2",
     "dep:base64",
-    "dep:runtime-portal-xdg",
+    "dep:tilo-secrets",
+    "dep:getrandom",
     "dep:sha2",
     "dep:zeroize",
     "dep:wire-frame",
@@ -101,3 +108,7 @@ grayjay-sync = [
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

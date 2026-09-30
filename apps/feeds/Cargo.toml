@@ -19,6 +19,7 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 quick-xml.workspace = true
 fnv.workspace = true
+tilo-files = { path = "../../crates/platform/tilo-files" }
 hex.workspace = true
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -36,21 +37,21 @@ taffy.workspace = true
 # RSS/Atom/JSON-feed parsing; pure-Rust TLS avoids a
 # system OpenSSL build dep inside the distrobox.
 feed-rs = "2.4"
-reqwest = { workspace = true, features = ["gzip", "brotli"] }
-tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
-tokio = { workspace = true, features = ["rt", "net", "time", "io-util", "sync", "macros"] }
+# HTTP everywhere, and the raw TLS socket gemini:// needs on the desktop.
+tilo-net = { path = "../../crates/platform/tilo-net", features = ["http", "sockets"] }
 # org.freedesktop.portal.FileChooser (via ashpd) — an app never draws its own
 # file picker; OPML import goes through the host portal so the compositor's
 # picker + per-cluster sandbox prompt is the security boundary. The D-Bus call
 # runs off the UI thread on its own small Tokio runtime and the chosen path is
 # handed back over a channel.
 chrono = { workspace = true, features = ["clock", "std", "alloc"] }
-# Raw TLS for the gemini:// fetcher (TOFU, accepts self-signed certs).
-tokio-rustls.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

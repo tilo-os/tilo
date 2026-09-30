@@ -24,7 +24,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use code_editor::lsp::{LspClient, LspEvent};
 use code_editor::model::Language;
@@ -66,9 +66,9 @@ fn pump_until(client: &mut LspClient, want: impl Fn(&[LspEvent]) -> bool) -> (Ve
         clippy::arithmetic_side_effects,
         reason = "test value, cannot overflow: BUDGET is a fixed few-minute Duration added to the current Instant"
     )]
-    let deadline = Instant::now() + BUDGET;
+    let deadline = ui::time::now() + BUDGET;
     let mut seen = Vec::new();
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         for ev in client.poll() {
             // Fold progress through the client the way the app does, so the
             // task table under test is the one the status bar reads.

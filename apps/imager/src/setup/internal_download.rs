@@ -864,7 +864,7 @@ impl<F: FnMut(Progress)> Events<F> {
                 received: self.received,
                 verified,
             });
-            self.last = Some(Instant::now());
+            self.last = Some(ui::time::now());
         }
     }
 }

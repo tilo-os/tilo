@@ -17,11 +17,9 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-xdg-paths = { path = "../../crates/system/xdg-paths" }
-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# One owner for ~/.config/tilo/settings.json.
-settings-store = { path = "../../crates/system/settings-store" }
 # The Tilo action model: doc-mutating operations are replayable, undoable actions.
 tilo-actions = { path = "../../crates/collab/actions" }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
@@ -38,13 +36,17 @@ anyhow.workspace = true
 tilo-doc = { path = "../../crates/doc/tilo-doc" }
 tilo-doc-codecs = { path = "../../crates/doc/tilo-doc-codecs", default-features = false, features = ["xlsx", "ods"] }
 uuid.workspace = true
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # Builds real-world-shaped .xlsx/.ods fixtures and inspects exported packages.
 zip.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
+tempfile.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

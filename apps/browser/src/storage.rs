@@ -40,17 +40,17 @@ pub fn explicit_root() -> Option<&'static Path> {
 pub fn data_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| xdg_paths::data_dir().map(|p| p.join("tilo-browser")))
+        .or_else(|| tilo_paths::data_dir().map(|p| p.join("tilo-browser")))
 }
 pub fn config_dir() -> Option<PathBuf> {
     ROOT.get()
         .cloned()
-        .or_else(|| xdg_paths::config_dir().map(|p| p.join("tilo-browser")))
+        .or_else(|| tilo_paths::config_dir().map(|p| p.join("tilo-browser")))
 }
 pub fn cache_dir() -> Option<PathBuf> {
     ROOT.get()
         .map(|p| p.join("cache"))
-        .or_else(|| xdg_paths::cache_dir().map(|p| p.join("tilo-browser")))
+        .or_else(|| tilo_paths::cache_dir().map(|p| p.join("tilo-browser")))
 }
 
 /// Create and mark an isolated private-storage directory.

@@ -14,6 +14,9 @@ exclude = [
     "vendor/google-cast-protocol",
     "vendor/libspa-sys",
     "vendor/winit",
+    "crates/forks/winit",
+    "vendor/accesskit_winit",
+    "vendor/wgpu",
     "vendor/wgpu-hal",
     "vendor/wayland-backend",
     "vendor/web-transport-quinn",
@@ -33,22 +36,18 @@ default-members = [
     "crates/runtime/runtime",
 ]
 members = [
-    "crates/agent/control-protocol",
-    "crates/agent/control-service",
     "crates/collab/tilo-action-broker",
     "crates/session/desktop",
     "crates/collab/tilo-peer-state",
     "crates/browser/tilo-browser-runtime",
     "crates/browser/tilo-browser-peer",
-    "crates/hosting/tilo-device-host",
     "crates/hosting/tilo-room-service",
-    "crates/hosting/tilo-workspace-host",
     "crates/hosting/tilo-moq",
-    "crates/hosting/tilo-cloud-host",
     "apps/hot-reload-demo",
     "crates/session/tilo-ntfs-helper",
     "crates/session/tilo-ntfs-protocol",
     "crates/browser/chromium-blocker",
+    "crates/browser/tilo-web-desktop",
     # Core product surfaces
     "crates/session/shell",
     "crates/sdk/ui-core",
@@ -112,13 +111,17 @@ members = [
     "apps/word-processor",
 
     # Agent
+    "crates/agent/agent-participant",
     "crates/agent/local-model-service",
     "crates/agent/model-gateway",
     "crates/agent/provider-config",
 
     # SDK
     "crates/sdk/font-catalog",
+    "crates/sdk/runner-native",
+    "crates/sdk/runner-web",
     "crates/sdk/tilo-app",
+    "crates/sdk/tilo-caps",
     "crates/sdk/tilo-host",
     "crates/sdk/tilo-resource",
     "crates/sdk/tilo-resource-macros",
@@ -167,7 +170,6 @@ members = [
     "crates/doc/tilo-automerge-isolate",
 
     # Hosting
-    "crates/hosting/tilo-cloud-enrollment",
     "crates/hosting/tilo-delivery-protocol",
     "crates/hosting/tilo-relay",
     "crates/hosting/tilo-relay-client",
@@ -230,6 +232,7 @@ members = [
     "crates/platform/tilo-rt",
     "crates/platform/tilo-secrets",
     "crates/platform/tilo-sandbox",
+    "crates/platform/tilo-typst-fonts",
 
     # Runtime
     "crates/runtime/cli",
@@ -251,6 +254,8 @@ members = [
     # Session
     "crates/session/console-control",
     "crates/session/desktop-model",
+    "crates/session/desktop-search",
+    "crates/session/desktop-surface",
     "crates/session/greetd-client",
     "crates/session/greeter",
     "crates/session/installer",
@@ -403,14 +408,23 @@ must_use_candidate = "allow"
 # Prefer the re-exports in `crates/sdk/ui-core/src/lib.rs`. Direct dependencies must use
 # compatible versions to share types such as `vello::Scene`.
 # ---------------------------------------------------------------------------
-vello = "0.9"
-vello_encoding = "0.9"
+# Tilo's vello fork (vendor/PATCHES.md), published under its own names; the
+# libraries keep upstream's names.
+vello = { package = "tilo-vello", version = "0.9.0", path = "vendor/vello" }
+vello_encoding = { package = "tilo-vello-encoding", version = "0.9.0", path = "vendor/vello_encoding" }
 wgpu = "29"
 taffy = "0.10.1"
-# The default `wayland-csd-adwaita` draws titles through ab_glyph and
-# owned_ttf_parser; `-notitle` keeps the client-side frame without that stack.
-winit = { version = "0.30.13", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
-automerge = "0.12.0"
+# Tilo's winit fork, published as tilo-winit; the library keeps its name.
+# crates.io crates reach it through the `[patch]` facade below. The default
+# `wayland-csd-adwaita` draws titles through ab_glyph and owned_ttf_parser;
+# `-notitle` keeps the client-side frame without that stack.
+winit = { package = "tilo-winit", version = "0.30.13", path = "vendor/winit", default-features = false, features = ["rwh_06", "x11", "wayland", "wayland-dlopen", "wayland-csd-adwaita-notitle"] }
+# Automerge 0.12.0 folded the formatting changes of several text objects in
+# one diff into a single patch on the first of them, so undoing a mark set
+# across several paragraphs cleared it from the first alone. Tilo's fork keeps
+# a mark change on its own object (vendor/automerge/TILO-PATCH.md) and is
+# published under its own name; the library keeps upstream's.
+automerge = { package = "tilo-automerge-fork", version = "0.12.0", path = "vendor/automerge" }
 # Every AutoCommit that takes in changes goes through its `ApplyIncoming`.
 tilo-automerge = { version = "0.1.0", path = "crates/doc/tilo-automerge" }
 tilo-automerge-isolate = { path = "crates/doc/tilo-automerge-isolate" }
@@ -465,7 +479,7 @@ serde_bytes = "0.11"
 postcard = "1.1.3"
 toml = "1.0"
 quick-xml = "0.41.0"
-roxmltree = "0.20"
+roxmltree = "0.21"
 capnp = "0.26"
 capnp-rpc = "0.26"
 capnpc = "0.26"
@@ -616,11 +630,11 @@ debug = "line-tables-only"
 
 # Optimise the CRDT dependencies in development and test builds; their generic
 # data structures are otherwise disproportionately slow in workspace tests.
-[profile.dev.package.automerge]
+[profile.dev.package.tilo-automerge-fork]
 opt-level = 3
 [profile.dev.package.hexane]
 opt-level = 3
-[profile.test.package.automerge]
+[profile.test.package.tilo-automerge-fork]
 opt-level = 3
 [profile.test.package.hexane]
 opt-level = 3
@@ -772,6 +786,17 @@ overflow-checks = false
 debug = "line-tables-only"
 incremental = false
 
+# The browser bundles' release build (`build.sh --profile release`), measured
+# in crates/browser/tilo-web-desktop/SIZE.md. Fat LTO, one codegen unit and
+# stripped symbols come from `release`. `panic = "abort"` is the only panic
+# strategy wasm32-unknown-unknown has on stable: the runtime's panic hook
+# reports the message, then the module traps and the page must reload.
+# No debug info: `strip` would drop it after the linker had written it.
+[profile.wasm-release]
+inherits = "release"
+opt-level = 3
+debug = false
+
 # Thin-app profile: release settings minus those incompatible with dynamic SDK
 # linking.
 #
@@ -832,11 +857,17 @@ web-transport-quinn = { path = "vendor/web-transport-quinn" }
 # narrower wrapper.h. Keep the missing direct includes locally until upstream
 # ships the same fix; clean Fedora 44 builds otherwise fail in static_fns.c.
 libspa-sys = { path = "vendor/libspa-sys" }
-# Pinned DX12 shader cache and opt-in Metal presentation feedback.
+# Pinned DX12 shader cache and opt-in Metal presentation feedback; a device-loss
+# switch that lets tests reset a Vulkan device. See vendor/wgpu-hal/TILO-PATCH.md.
 wgpu-hal = { path = "vendor/wgpu-hal" }
+# `Device::poll` reports a lost device instead of panicking, so the compositor
+# survives a GPU reset. See vendor/wgpu/TILO-PATCH.md.
+wgpu = { path = "vendor/wgpu" }
 genawaiter-proc-macro = { path = "vendor/genawaiter-proc-macro" }
 rustls-native-certs = { path = "crates/system/tilo-native-certs" }
-winit = { path = "vendor/winit" }
+# crates.io crates that depend on winit (accesskit_winit, smithay) get the
+# fork through a re-exporting facade, so they share its types.
+winit = { path = "crates/forks/winit" }
 # The pure-Rust server used by Smithay used to panic if a client disappeared
 # from inside a request callback which had just created a child object. OAuth
 # browser launches make that race easy to hit: a probing helper can connect,
@@ -844,16 +875,6 @@ winit = { path = "vendor/winit" }
 # compositor alive and treat the vanished object as a disconnected client.
 # See vendor/wayland-backend/TILO-PATCH.md.
 wayland-backend = { path = "vendor/wayland-backend" }
-# Automerge 0.12.0 folded the formatting changes of several text objects in
-# one diff into a single patch on the first of them, so undoing a mark set
-# across several paragraphs cleared it from the first alone. Keep a mark
-# change on its own object. See vendor/automerge/TILO-PATCH.md.
-automerge = { path = "vendor/automerge" }
-# Vendored vello variants size scratch buffers from the current scene and
-# include the matching shader/encoding changes.
-vello_encoding = { path = "vendor/vello_encoding" }
-vello_shaders = { path = "vendor/vello_shaders" }
-vello = { path = "vendor/vello" }
 # Members depend on `workspace-hack = "0.1"`; this workspace builds the local
 # crate, while workspaces outside it get crates.io's empty stub (.config/hakari.toml).
 workspace-hack = { path = "crates/workspace-hack" }

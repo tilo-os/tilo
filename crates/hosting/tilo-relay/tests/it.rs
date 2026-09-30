@@ -10,6 +10,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+// Integration tests re-exec this binary as the automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 #[path = "common/mod.rs"]
 mod common;
 
@@ -23,6 +26,8 @@ mod browser_transport;
 mod client_owns_its_endpoint;
 #[path = "coedit_through_host.rs"]
 mod coedit_through_host;
+#[path = "commit_dedup.rs"]
+mod commit_dedup;
 #[path = "compute_session.rs"]
 mod compute_session;
 #[path = "cross_user_workspace_host.rs"]
@@ -45,6 +50,8 @@ mod federation_three_node_chain;
 mod federation_two_relays;
 #[path = "federation_workspace_shard.rs"]
 mod federation_workspace_shard;
+#[path = "governed_rooms.rs"]
+mod governed_rooms;
 #[path = "governed_workspace_access.rs"]
 mod governed_workspace_access;
 #[path = "interactive_workspace_owner.rs"]

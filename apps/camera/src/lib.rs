@@ -37,6 +37,7 @@ pub mod actions;
 pub mod app;
 pub mod doc;
 pub mod document_scan;
+mod files;
 pub mod frame;
 pub mod library;
 pub mod media;
@@ -59,6 +60,13 @@ use ui::widget::Widget;
 /// needs a real camera.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(CameraApp::disk())
+}
+
+/// The app as every host mounts it: the live camera and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.camera", app_root)
+        .component_actions(actions::register)
+        .as_definition("Camera")
 }
 
 /// Build the hermetic app used by `--shots` and integration harnesses:

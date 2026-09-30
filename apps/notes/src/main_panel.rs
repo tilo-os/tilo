@@ -1994,17 +1994,22 @@ impl Widget for MainPanel {
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         use ui::a11y::{AccessNode, AccessState, Role};
         if self.page_id.is_none() {
-            return Some(
-                AccessNode::new(Role::Button)
-                    .with_name("New note")
-                    .with_description("Create the first note in this workspace")
-                    .with_action_target("notes.first_note")
-                    .with_state(AccessState {
-                        focusable: true,
-                        focused: self.empty_action_focused,
-                        ..Default::default()
-                    }),
-            );
+            let button = AccessNode::new(Role::Button)
+                .with_name("New note")
+                .with_description("Create the first note in this workspace")
+                .with_action_target("notes.first_note")
+                .with_state(AccessState {
+                    focusable: true,
+                    focused: self.empty_action_focused,
+                    ..Default::default()
+                });
+            // Only the painted pill takes the click; without its own bounds
+            // the button would claim the whole panel, whose centre is empty.
+            return Some(if self.empty_action_rect.width() > 0.0 {
+                button.with_bounds(self.empty_action_rect)
+            } else {
+                button
+            });
         }
         let mut children = vec![
             AccessNode::new(Role::TextInput)

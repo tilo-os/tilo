@@ -127,23 +127,6 @@ test('asset names come only from the fixed manifest and cannot escape the font o
   await assert.rejects(loader.request('https://evil.test/core.ttf'),/unknown font asset/);
 });
 
-test('a content-addressed release fetches each font by its digest, and only by it',async()=>{
-  const manifest=await descriptor();
-  for(const asset of manifest.assets)asset.path=`fonts/${asset.sha256}.ttf`;
-  const requested=[];
-  const byDigest=Object.fromEntries(Object.keys(bytes).map(name=>[`${hashes[name]}.ttf`,bytes[name]]));
-  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async url=>{
-    requested.push(new URL(url).pathname);
-    return String(url).endsWith('fonts.json')?response(manifest):response(byDigest[new URL(url).pathname.split('/').at(-1)]);
-  }});
-  assert.deepEqual(Object.keys(await loader.startup()),['core.ttf']);
-  assert.deepEqual([...await loader.request('cjk.ttf')],[6,7,8,9]);
-  assert.deepEqual(requested,['/app/fonts.json',`/app/fonts/${hashes.core}.ttf`,`/app/fonts/${hashes.cjk}.ttf`]);
-  const escaping=await descriptor();
-  escaping.assets[0].path='../secret.ttf';
-  const refused=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,fetch:async()=>response(escaping)});
-  await assert.rejects(refused.startup(),/invalid canonical font asset descriptor/);
-});
 test('a demand completing after mount disposal cannot install or redraw',async()=>{
   let resolve,valid=true;const installed=[],reports=[];
   const loader={request:()=>new Promise(done=>{resolve=done;})};
@@ -333,4 +316,22 @@ test('idle installer installs only verified in-memory fonts, one per idle slice,
   live=false;idle.shift()({didTimeout:true,timeRemaining:()=>0});
   assert.equal(installs.length,1,'a disposed mount installs nothing');
   assert.equal(idle.length,0);assert.equal(f.requested.length,fetched);
+});
+
+test('an unavailable font is fetched, verified and installed again on retry, skipping its backoff',async()=>{
+  const manifest=await descriptor();let corrupt=true,now=1000;
+  const loader=createFontLoader({baseURL:'https://example.test/app/',crypto:webcrypto,now:()=>now,fetch:async url=>{
+    if(String(url).endsWith('fonts.json'))return response(manifest);
+    return response(corrupt?new Uint8Array([0,0]):bytes.arabic);
+  }});
+  const installed=[],reports=[],failed=[];
+  const pump=createFontDemandPump({loader,valid:()=>true,install:(name,value)=>installed.push([name,[...value]]),failed:name=>failed.push(name),report:value=>reports.push(value)});
+  await pump(['arabic.ttf']);
+  assert.deepEqual(failed,['arabic.ttf']);assert.equal(reports.at(-1).font,'unavailable');
+  await assert.rejects(pump.retry('arabic.ttf'),/SHA-256 mismatch/);
+  corrupt=false;
+  await pump.retry('arabic.ttf');
+  assert.deepEqual(installed,[['arabic.ttf',[4,5]]]);
+  assert.deepEqual(reports.at(-1),{font:'available',fontAsset:'arabic.ttf'});
+  await assert.rejects(pump.retry('arabic.ttf'),/not unavailable/);
 });

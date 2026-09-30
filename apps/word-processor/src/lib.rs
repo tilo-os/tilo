@@ -59,6 +59,17 @@ pub mod widget;
 pub mod word_processor;
 pub use styles::{StyleProps, StyleSheet};
 pub use widget::WordProcessorWidget;
+
+/// A new, empty document's editor, keeping embedded media in the app's
+/// content store.
+pub fn app_root() -> Box<dyn ui::widget::Widget> {
+    let mut widget = WordProcessorWidget::new();
+    widget
+        .model_mut()
+        .set_content_store(tilo_content::ContentStore::for_app());
+    Box::new(widget)
+}
+
 pub use word_processor::WordProcessor;
 
 use automerge::{AutoCommit, ObjId};
@@ -303,7 +314,8 @@ pub fn open_document_with_records(
         ui::RecordKind::new(RECORD_KIND),
     );
     let history = reader.read(&want).map_err(invalid_data)?;
-    let bytes = std::fs::read(path)?;
+    let (dir, name) = tilo_files::file_at(path).map_err(std::io::Error::other)?;
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(std::io::Error::other)?;
     let format = WpFormat::from_path(path);
     let mut state = ui::State::new();
     let mut widget = WordProcessorWidget::new();
@@ -452,7 +464,9 @@ pub fn save_document(
     let bytes = format
         .export(dr, content)
         .map_err(|e| std::io::Error::other(e.to_string()))?;
-    atomic_file::write_preserving_target(path, &bytes)
+    tilo_files::file_at(path)
+        .and_then(|(dir, name)| tilo_files::blocking::save_document(&dir, &name, &bytes))
+        .map_err(std::io::Error::other)
 }
 
 // ---- autosave / crash-recovery -------------------------------------------
@@ -468,25 +482,41 @@ pub fn save_document(
 pub mod recovery {
     use std::path::{Path, PathBuf};
 
+    use tilo_files::{Dir, Location, VPath, blocking};
+    use tilo_paths::AppPaths;
+
     /// Environment override for the recovery base directory. Set by tests (and
     /// available to callers that want to relocate the store) so recovery never
     /// touches the real `$HOME` / `$XDG_STATE_HOME` during a test run.
     pub const RECOVERY_BASE_ENV: &str = "TILO_WP_RECOVERY_DIR";
 
-    /// The directory recovery copies live in. Resolution order:
-    /// 1. `$TILO_WP_RECOVERY_DIR` (test / explicit override), used verbatim;
-    /// 2. the per-user state directory (`$XDG_STATE_HOME`, else
-    ///    `$HOME/.local/state`; Windows: `%LOCALAPPDATA%`), joined with
-    ///    `tilo/word-processor/recovery`;
-    /// 3. `./.tilo-wp-recovery` as a last resort (no home directory at all).
+    /// The directory recovery copies live in, natively: [`store`]'s
+    /// directory, or `./.tilo-wp-recovery` when the user has no state
+    /// directory (copies are then kept in memory).
     pub fn base_dir() -> PathBuf {
-        if let Some(dir) = std::env::var_os(RECOVERY_BASE_ENV) {
-            return PathBuf::from(dir);
-        }
-        match xdg_paths::state_home_or_local_app_data() {
-            Some(p) => p.join("tilo").join("word-processor").join("recovery"),
-            None => PathBuf::from(".tilo-wp-recovery"),
-        }
+        store()
+            .and_then(|(dir, prefix)| dir.native_path(&prefix).ok())
+            .unwrap_or_else(|| PathBuf::from(".tilo-wp-recovery"))
+    }
+
+    /// The store recovery copies live in, and the directory in it:
+    /// `$TILO_WP_RECOVERY_DIR` when set, else `word-processor/recovery` in
+    /// the shared `tilo` state location (on the web, the page's profile).
+    pub fn store() -> Option<(Dir, VPath)> {
+        let (location, prefix) = match std::env::var_os(RECOVERY_BASE_ENV) {
+            Some(dir) => (Location::Native(PathBuf::from(dir)), VPath::root()),
+            None => (
+                AppPaths::for_app("tilo").state(),
+                VPath::new("word-processor/recovery").ok()?,
+            ),
+        };
+        Some((Dir::open(location).ok()?, prefix))
+    }
+
+    /// A recovery copy's file in [`store`].
+    fn slot(doc_path: Option<&Path>) -> Option<(Dir, VPath)> {
+        let (dir, prefix) = store()?;
+        Some((dir, prefix.join(&VPath::new(&slot_name(doc_path)).ok()?)))
     }
 
     /// A deterministic 64-bit FNV-1a hash. Used to derive
@@ -504,13 +534,18 @@ pub mod recovery {
     /// The on-disk name is `<16-hex-hash>.md`, hashed from the absolute path
     /// string (or the `:untitled:` sentinel) — short and filesystem-safe.
     pub fn recovery_path_for(doc_path: Option<&Path>) -> PathBuf {
+        base_dir().join(slot_name(doc_path))
+    }
+
+    /// The file name of `doc_path`'s recovery copy.
+    pub fn slot_name(doc_path: Option<&Path>) -> String {
         let key = match doc_path {
             Some(p) => {
                 // Preserve the canonical identity of existing files, and resolve
                 // symlinked ancestors before a new file (or directory) exists.
                 // Otherwise first save can change /var/... into /private/var/...
                 // and strand the recovery copy under its former hash.
-                let abs = std::fs::canonicalize(p).unwrap_or_else(|_| {
+                let abs = tilo_files::canonicalize(p).unwrap_or_else(|_| {
                     let absolute = if p.is_absolute() {
                         p.to_path_buf()
                     } else {
@@ -525,7 +560,7 @@ pub mod recovery {
                             }
                             component => {
                                 resolved.push(component.as_os_str());
-                                if let Ok(canonical) = std::fs::canonicalize(&resolved) {
+                                if let Ok(canonical) = tilo_files::canonicalize(&resolved) {
                                     resolved = canonical;
                                 }
                             }
@@ -539,7 +574,7 @@ pub mod recovery {
             }
             None => ":untitled:".to_string(),
         };
-        base_dir().join(format!("{:016x}.md", fnv1a(key.as_bytes())))
+        format!("{:016x}.md", fnv1a(key.as_bytes()))
     }
 
     #[cfg(unix)]
@@ -576,28 +611,28 @@ pub mod recovery {
     /// the base directory if needed and swallows any I/O error. Returns the path
     /// it wrote to on success (for the caller's bookkeeping / tests).
     pub fn write(doc_path: Option<&Path>, markdown: &[u8]) -> Option<PathBuf> {
-        let path = recovery_path_for(doc_path);
-        if let Some(parent) = path.parent()
-            && std::fs::create_dir_all(parent).is_err()
-        {
-            return None;
-        }
-        atomic_file::write(&path, markdown).ok().map(|()| path)
+        let (dir, name) = slot(doc_path)?;
+        blocking::write_atomic(&dir, &name, markdown)
+            .ok()
+            .map(|()| recovery_path_for(doc_path))
     }
 
     /// Read back a recovery copy's Markdown bytes for `doc_path`, if one exists.
     pub fn read(doc_path: Option<&Path>) -> Option<Vec<u8>> {
-        std::fs::read(recovery_path_for(doc_path)).ok()
+        let (dir, name) = slot(doc_path)?;
+        blocking::read(&dir, &name).ok()
     }
 
     /// Whether a recovery copy currently exists for `doc_path`.
     pub fn exists(doc_path: Option<&Path>) -> bool {
-        recovery_path_for(doc_path).exists()
+        slot(doc_path).is_some_and(|(dir, name)| blocking::metadata(&dir, &name).is_ok())
     }
 
     /// Delete the recovery copy for `doc_path` (best-effort; absence is success).
     pub fn clear(doc_path: Option<&Path>) {
-        let _ = std::fs::remove_file(recovery_path_for(doc_path));
+        if let Some((dir, name)) = slot(doc_path) {
+            let _ = blocking::remove(&dir, &name);
+        }
     }
 
     /// Render the document currently in `state` to Markdown bytes for a recovery

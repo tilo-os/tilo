@@ -18,8 +18,8 @@
               test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionAddress, Resource};
@@ -256,7 +256,7 @@ fn drive_peer_to_table(
     // their delivery is intentionally not globally ordered. Keep draining
     // until both guarantees have been observed instead of treating a fast
     // document update as permission to stop listening for presence.
-    while Instant::now() < deadline && !(done && saw_scribe_presence) {
+    while ui::time::now() < deadline && !(done && saw_scribe_presence) {
         let Some(event) = recv(&mut peer) else {
             continue;
         };
@@ -457,7 +457,7 @@ fn the_agent_inserts_a_table_on_its_own_documents_replica_even_among_others() {
         // history evidence must arrive even though the user-facing work already
         // looks complete.
         let deadline = tilo_test_env::hang_deadline();
-        while Instant::now() < deadline && ui::read_runs(&replica).is_empty() {
+        while ui::time::now() < deadline && ui::read_runs(&replica).is_empty() {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };
@@ -683,7 +683,7 @@ fn drive_files_peer(
 ) {
     files_peer.set_read_timeout(Some(Duration::from_millis(50)));
     let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline
+    while ui::time::now() < deadline
         && matches!(stop.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty))
     {
         let Some(event) = recv(&mut files_peer) else {
@@ -706,7 +706,7 @@ fn drive_word_processor_to_table(
     let deadline = tilo_test_env::hang_deadline();
     let mut done = false;
     let mut answered = false;
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
         };
@@ -806,7 +806,7 @@ fn an_unanswered_address_is_reported_rather_than_waited_on() {
     };
     let mut session = Session::connect(cfg).expect("agent connects");
 
-    let began = Instant::now();
+    let began = ui::time::now();
     let err = session
         .run()
         .expect_err("an unanswered address must not report success");
@@ -885,7 +885,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         peer.set_read_timeout(Some(Duration::from_millis(200)));
         let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
-        while Instant::now() < deadline && !done {
+        while ui::time::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };
@@ -1022,7 +1022,7 @@ fn a_sequence_in_one_instruction_runs_whole_in_order_or_is_refused_untouched() {
         peer.set_read_timeout(Some(Duration::from_millis(200)));
         let deadline = tilo_test_env::hang_deadline();
         let mut done = false;
-        while Instant::now() < deadline && !done {
+        while ui::time::now() < deadline && !done {
             let Some(event) = recv(&mut peer) else {
                 continue;
             };

@@ -10,7 +10,7 @@
 use std::fs;
 use std::path::Path;
 use std::process::{Child, Command, Stdio};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use git2::{Repository, Signature};
 use ui::widget::Widget;
@@ -73,7 +73,7 @@ fn start_server_with_tls(root: &Path, tls: bool) -> (Server, String) {
     let ready = root.join("ready.json");
     while !ready.exists() {
         assert!(
-            server.0.try_wait().unwrap().is_none() && Instant::now() < deadline,
+            server.0.try_wait().unwrap().is_none() && ui::time::now() < deadline,
             "Git HTTP fixture failed: {}",
             fs::read_to_string(root.join("server.log")).unwrap()
         );
@@ -405,7 +405,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
     let request_deadline = tilo_test_env::hang_deadline();
     while !root.path().join("request-started").exists() {
         assert!(
-            Instant::now() < request_deadline,
+            ui::time::now() < request_deadline,
             "worker never contacted the server"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -488,7 +488,7 @@ fn remote_fetch_keeps_app_responsive_and_reports_completion_after_sync() {
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "remote operation did not complete"
         );
         std::thread::sleep(Duration::from_millis(10));
@@ -585,7 +585,7 @@ fn remote_failure_is_reported_to_the_invocation_and_visible_status() {
             assert_eq!(app.test_last_error(), Some(error.message.as_str()));
             break;
         }
-        assert!(Instant::now() < deadline, "failure was not delivered");
+        assert!(ui::time::now() < deadline, "failure was not delivered");
         std::thread::sleep(Duration::from_millis(10));
     }
     assert!(!app.needs_animation_frame());

@@ -34,6 +34,21 @@ pub trait PeerPublishSink: Send + Sync {
 
     /// Ask the room whether anyone still holds a range of history.
     fn scrollback_request(&self, artifact: ArtifactId, before_seq: u64, max: u16);
+
+    /// Also show typed presence on the room's live plane, where browsers and
+    /// agents draw it in `record_id` (empty when the app announced none).
+    fn app_live_presence(
+        &self,
+        _app_id: &str,
+        _cluster_id: &str,
+        _record_id: &str,
+        _presence: &PeerPresence,
+    ) {
+    }
+
+    /// A local app joined this route, so peers' documents for it must be
+    /// routable here, including the history this device dropped before.
+    fn local_route(&self, _app_id: &str, _cluster_id: &str, _record_id: &str) {}
 }
 
 /// The one place a local payload becomes a peer publish. Construct with
@@ -175,8 +190,23 @@ impl PeerPublisher {
         let Some(sink) = self.ready_quietly(route, "presence") else {
             return false;
         };
+        sink.app_live_presence(
+            &route.app_id,
+            &route.cluster_id,
+            &route.record_id,
+            &presence,
+        );
         sink.app_presence(route.app_id.clone(), route.cluster_id.clone(), presence);
         true
+    }
+
+    /// Tell the network a local app holds `route`.
+    pub fn local_route(&self, route: &CrdtRoute) {
+        if let Some(sink) = self.sink.as_ref()
+            && !route.record_id.is_empty()
+        {
+            sink.local_route(&route.app_id, &route.cluster_id, &route.record_id);
+        }
     }
 
     /// Routed like any other outbound: a connection that never announced

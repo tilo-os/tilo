@@ -8,7 +8,7 @@
 //! ephemeral, time-driven animation layered on top.
 
 use std::collections::{HashMap, HashSet};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -72,7 +72,7 @@ impl TransferHistory {
     const MIN_DT: f64 = 0.5;
 
     fn push(&mut self, xfer: Transfer) {
-        let now = Instant::now();
+        let now = ui::time::now();
         if let Some(last) = self.samples.last()
             && now.duration_since(last.at).as_secs_f64() < Self::MIN_DT
         {
@@ -610,7 +610,7 @@ impl VpnApp {
         if !config::exec_allowed() || self.demo_mode {
             return;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         if let Some(prev) = self.last_reconcile
             && now.duration_since(prev).as_secs_f64() < 1.0
         {

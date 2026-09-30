@@ -310,6 +310,8 @@ COPY examples /build/examples
 COPY vendor /build/vendor
 COPY dist /build/dist
 COPY tools/ci/rustc-thin-app-wrapper.sh /build/tools/ci/rustc-thin-app-wrapper.sh
+COPY tools/policy/app_portability_rules.toml /build/tools/policy/app_portability_rules.toml
+COPY tools/policy/app_capability_usage.toml /build/tools/policy/app_capability_usage.toml
 COPY os/usr/share/tilo/installer-locales.txt /build/os/usr/share/tilo/installer-locales.txt
 COPY \
     os/scripts/cargo-freshness.sh \
@@ -676,13 +678,13 @@ RUN --mount=type=cache,target=/build/.cargo-home \
          BROWSER_PKG="-p browser --bin browser --features browser/wpe"; \
        fi \
     && THIN_EXCLUDES="browser" \
-    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
+    && APP_FEATURES="music/audio,music/live,video-player/decode,camera/live-capture,tube/live,tube/media,tube/grayjay-sync,chat/live-media,mail/live,disks/live,video-editor/decode,video-editor/gst" \
     && if [ "${TILO_PREBUILT_DESKTOP}" = 1 ]; then \
          DESKTOP_RELEASE_ARGS=""; \
        else \
          DESKTOP_RELEASE_ARGS="-p shell --bin shell -p launcher --bin tilo-launcher -p tilo-unlock-helper --bin tilo-unlock-helper"; \
        fi \
-    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
+    && RELEASE_ARGS="${DESKTOP_RELEASE_ARGS} -p tilo-fs -p terminal -p file-explorer -p settings -p greeter -p installer -p runtime-bundle -p tilo-rollback -p tilo-crypto -p tilo-user-identity -p tilo-cli -p app-cli -p ush -p tilo-projector -p tilo-pdf -p tilo-app-package-cli -p install -p cli-shim -p app-host -p local-model-service -p tilo-model-gateway -p system-extension -p compat-service -p account-custody" \
     # Select the shipped executables explicitly: --bins also links shell dev tools.
     && RELEASE_BINS="--bin fs --bin terminal --bin file-explorer --bin settings --bin tilo-model-manager --bin tilo-model-gateway --bin tilo-greeter --bin tilo-installer --bin tilo-runtime-bundle --bin tilo-app-host --bin tilo-rollback --bin tilo-crypto --bin tilo-image-trust --bin tilo-device-key-init --bin tilo --bin app --bin tilo-app-package --bin tilo-install --bin tilo-cli-shim --bin tilo-ush --bin tilo-projector --bin tilo-pdf-helper --bin tilo-system-extension-manager --bin tilo-windows-runtime --bin tilo-relay --bin tilo-relay-admin --bin tilo-enroll --bin tilo-home-peer-control --bin tilo-account-credential" \
     && build_phase rust-release \
@@ -1387,7 +1389,8 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/repo dnf install -y --setop
     && test "$(readlink /etc/resolv.conf)" = ../run/NetworkManager/resolv.conf \
     && installed="$(rpm -qa --qf '%{NAME}\n')" \
     && ! printf '%s\n' "$installed" | grep -Eq '^systemd-(coredump|networkd|resolved)$' \
-    && dnf clean all && ${FINALIZE_RPMDB}
+    && dnf clean all && ${FINALIZE_RPMDB} \
+    && rm -rf /var/cache/swcatalog
 
 # xdg-desktop-portal — the frontend that proxies sandboxed-app
 # capability requests (FileChooser, ScreenCast, Camera) to our
@@ -2557,6 +2560,7 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
     --mount=type=bind,from=kernel-rpms,source=/repo,target=/qkernel-repo \
     --mount=type=bind,source=os/hardware/firmware,target=/run/tilo-hardware-firmware \
     --mount=type=bind,source=os/dev/prepare-hardware-profile.py,target=/run/tilo-prepare-hardware-profile.py \
+    --mount=type=bind,source=os/scripts/build-initramfs.sh,target=/run/tilo-build-initramfs.sh \
     --mount=type=bind,source=os/dev/hardware_profile.py,target=/run/hardware_profile.py \
     --mount=type=bind,source=os/hardware/profiles,target=/run/tilo-hardware-profiles \
     set -eux; \
@@ -2630,58 +2634,9 @@ RUN --mount=type=bind,from=rpms,source=/repo,target=/frozen-repo \
         --profiles-dir /run/tilo-hardware-profiles \
         --firmware-dir "/run/tilo-hardware-firmware/$TILO_HARDWARE_PROFILE" \
         --target-update-ref "$TILO_TARGET_IMGREF"; \
-    # --add rather than trusting the base's drop-ins to pull these in: the same
-    # invocation produced an initramfs WITH the crypt modules locally and WITHOUT
-    # them under the CI builder, silently, and a missing module here is a root
-    # that cannot be unlocked. Naming them makes dracut fail instead of omit.
-    # Tilo installs only onto a local block device and supports passphrase,
-    # TPM2, and FIDO2 unlock. Network roots and network-bound disk encryption
-    # add DHCP/TLS/NFS/iSCSI parsers plus startup work to every signed UKI with
-    # no supported way to use them. The supported root is Btrfs; keep Ext4 and
-    # XFS as signed modules for rescue/secondary filesystems after pivot_root,
-    # but do not copy either parser into the pre-authentication initramfs.
-    # Omit the consumers as well as their parents: bootc explicitly adds
-    # clevis-pin-tpm2, and dracut can auto-select the other Clevis pins and
-    # network-root transports. Omitting only clevis/network leaves their
-    # dependencies unsatisfied. Local TPM unlock uses systemd-cryptsetup and
-    # tpm2-tss; local NVMe does not require the nvmf network-root module.
-    find "/usr/lib/modules/$kver" -type f -path '*/fs/ext4/ext4.ko*' -print -quit \
-      | grep -q . || { echo 'signed Ext4 rescue module is missing' >&2; exit 1; }; \
-    find "/usr/lib/modules/$kver" -type f -path '*/fs/xfs/xfs.ko*' -print -quit \
-      | grep -q . || { echo 'signed XFS rescue module is missing' >&2; exit 1; }; \
-    # ldconfig -r in dracut requires absolute include patterns. Fedora's
-    # default relative pattern resolves to the same directory without -r.
-    sed -i 's@^include ld\.so\.conf\.d/\*\.conf$@include /etc/ld.so.conf.d/*.conf@' /etc/ld.so.conf; \
-    # Build containers do not guarantee a writable /dev/log. Keep -v stderr
-    # diagnostics while disabling the distro's default syslog sink.
-    printf 'sysloglvl=0\n' > /etc/dracut.conf.d/99-tilo-build-logging.conf; \
-    dracut --force --reproducible --compress zstd -v --kver "$kver" \
-        --omit "network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh" \
-        --omit-drivers "ext4 xfs" \
-        --add "crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback" \
-        "/usr/lib/modules/$kver/initramfs.img" > /tmp/dracut.log 2>&1 \
-      || { cat /tmp/dracut.log >&2; exit 1; }; \
-    test -s "/usr/lib/modules/$kver/initramfs.img"; \
-    # Record what dracut says it included, and check THAT rather than reading the
-    # image back. dracut wraps the contents in a squashfs, and listing one needs
-    # privileges an unprivileged image builder does not have — so inspecting the
-    # artefact reports "no cryptsetup" for an initramfs that has it. dracut's own
-    # report is the same fact without the privilege dependency, and shipping the
-    # list lets the runtime check use it too.
-    mkdir -p /usr/lib/tilo; \
-    sed -n 's/.*Including module: \([a-z0-9_-]*\).*/\1/p' /tmp/dracut.log \
-      | sort -u > /usr/lib/tilo/initramfs-modules.txt; \
-    printf '%s\n' ext4 xfs > /usr/lib/tilo/initramfs-omitted-drivers.txt; \
-    for m in crypt systemd-cryptsetup tpm2-tss plymouth tilo-rollback; do \
-      grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || { \
-        echo "dracut did not include the $m module; an encrypted root could not be opened" >&2; \
-        cat /usr/lib/tilo/initramfs-modules.txt >&2; exit 1; }; \
-    done; \
-    for m in network network-legacy network-manager nfs iscsi nvmf nbd fcoe fcoe-uefi nbde clevis clevis-pin-null clevis-pin-sss clevis-pin-tang clevis-pin-tpm2 crypt-ssh; do \
-      ! grep -qx "$m" /usr/lib/tilo/initramfs-modules.txt || { \
-        echo "unsupported initramfs module $m was included" >&2; exit 1; }; \
-    done; \
-    rm -f /tmp/dracut.log; \
+    # The initramfs recipe and its checks, shared with the dev image's board
+    # layer.
+    bash /run/tilo-build-initramfs.sh "$kver"; \
     # /boot belongs to the deployment, not the image: whatever the kernel
     # packages dropped there is now duplicated under the modules directory.
     rm -f /boot/vmlinuz-* /boot/initramfs-* /boot/System.map-* /boot/config-*; \

@@ -411,10 +411,13 @@ impl Desk {
 
     /// Drag from `from` to `to` in steps, with the pointer or one finger,
     /// and let go.
+    /// A finger grabs the group with a short downward pull first: a swipe
+    /// that starts sideways on the tab bar pans the strip instead.
     fn drag(&mut self, from: Point, to: Point, touch: bool) {
         use winit::event::TouchPhase;
         if touch {
             self.finger(TouchPhase::Started, from);
+            self.finger(TouchPhase::Moved, Point::new(from.x, from.y + 12.0));
         } else {
             self.cursor_to(from);
             self.button(ElementState::Pressed);
@@ -1257,4 +1260,93 @@ fn a_mirrored_pair_beside_a_monitor_is_two_displays() {
         vec![(0, ON_PRIMARY.to_vec()), (1, ON_SECOND.to_vec())],
         "each monitor keeps its own windows"
     );
+}
+
+/// A desktop-wide overlay opens on the display in use rather than centred
+/// on the seam between two: the palette and toasts on the focused display,
+/// Quick Settings under the tray on the primary's full top bar.
+#[test]
+fn overlays_open_on_the_focused_display() {
+    let mut desk = Desk::fixture("docked-laptop");
+    let primary = desk.display(0);
+    let second = desk.display(1);
+    let within = |outer: Rect, inner: Rect| {
+        inner.width() > 0.0
+            && inner.x0 >= outer.x0 - 0.5
+            && inner.x1 <= outer.x1 + 0.5
+            && inner.y0 >= outer.y0 - 0.5
+            && inner.y1 <= outer.y1 + 0.5
+    };
+    for (group, display) in [(ON_SECOND[0], second), (ON_PRIMARY[0], primary)] {
+        desk.focus(group);
+        let area = desk.fb.host().overlay_area();
+        assert!(
+            (area.x0 - display.x0).abs() < 0.5 && (area.x1 - display.x1).abs() < 0.5,
+            "overlays follow focus to {display:?}: {area:?}"
+        );
+        desk.fb.host_mut().set_palette_visible(true);
+        desk.fb.host_mut().force_palette_settled();
+        desk.settle();
+        let card = desk.fb.host().palette_rect_for_tests();
+        assert!(
+            within(display, card),
+            "the palette {card:?} is on the focused display {display:?}"
+        );
+        assert!(
+            (card.center().x - display.center().x).abs() < 1.0,
+            "the palette {card:?} centres on {display:?}"
+        );
+        desk.fb.host_mut().set_palette_visible(false);
+        desk.settle();
+        let quick_settings = desk.fb.host().quick_settings_rect_for_tests();
+        assert!(
+            within(primary, quick_settings),
+            "Quick Settings {quick_settings:?} hangs from the tray on {primary:?}"
+        );
+    }
+}
+
+/// Super+Shift+arrow reorders within a display until the group is its
+/// outermost one; one more press carries it across the seam, where it
+/// lands beside the seam rather than at its old place in the strip order.
+#[test]
+fn reordering_past_a_displays_edge_carries_the_group_across() {
+    let mut desk = Desk::fixture("docked-laptop");
+    let on = |desk: &Desk, display: u32| -> Vec<GroupId> {
+        desk.fb
+            .host()
+            .display_partition_summary()
+            .into_iter()
+            .find(|(d, _)| *d == display)
+            .map(|(_, groups)| groups)
+            .expect("display")
+    };
+    // Give the second display a group that comes first in the strip, so
+    // the strip order and the seam disagree.
+    desk.focus(ON_PRIMARY[0]);
+    let across = ModifiersState::SUPER | ModifiersState::CONTROL | ModifiersState::SHIFT;
+    desk.press(NamedKey::ArrowRight, across);
+    assert_eq!(on(&desk, 1)[0], ON_PRIMARY[0]);
+
+    let moving = ON_SECOND[2];
+    desk.focus(moving);
+    let reorder = ModifiersState::SUPER | ModifiersState::SHIFT;
+    for _ in 0..3 {
+        desk.press(NamedKey::ArrowLeft, reorder);
+    }
+    assert_eq!(desk.display_of(moving), Some(1), "still reordering within");
+    assert_eq!(on(&desk, 1)[0], moving, "outermost on the second display");
+
+    desk.press(NamedKey::ArrowLeft, reorder);
+    assert_eq!(desk.display_of(moving), Some(0), "carried across the seam");
+    assert_eq!(desk.focused_display(), Some(0), "focus went along");
+    assert_eq!(
+        on(&desk, 0),
+        vec![ON_PRIMARY[1], ON_PRIMARY[2], moving],
+        "it lands beside the seam it crossed"
+    );
+
+    desk.press(NamedKey::ArrowRight, reorder);
+    assert_eq!(desk.display_of(moving), Some(1), "and back");
+    assert_eq!(on(&desk, 1)[0], moving, "first again beside the seam");
 }

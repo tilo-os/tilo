@@ -14,7 +14,7 @@ use std::path::{Path, PathBuf};
 /// config dir can be resolved (headless/no-HOME environments) — callers then
 /// fall back to in-memory defaults and simply don't persist.
 pub fn config_dir() -> Option<PathBuf> {
-    xdg_paths::AppDirs::new("tilo-files").config()
+    tilo_paths::AppDirs::new("tilo-files").config()
 }
 
 /// Smallest / largest zoom step. Level `0` is the default (scale `1.0`); each

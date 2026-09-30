@@ -734,7 +734,9 @@ impl<C: Widget> FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    self.place_content(&theme, &mut TextRenderer::new());
+                    crate::text_render::with_layout_renderer(1.0, |tr| {
+                        self.place_content(&theme, tr)
+                    });
                 }
                 true
             }
@@ -777,7 +779,7 @@ impl<C: Widget> FloatingWindow<C> {
         self.rect = Rect::from_origin_size(origin, self.rect.size());
         self.clamp_into_bounds();
         let theme = self.layout_theme.clone();
-        self.place_content(&theme, &mut TextRenderer::new());
+        crate::text_render::with_layout_renderer(1.0, |tr| self.place_content(&theme, tr));
         true
     }
 }
@@ -816,9 +818,8 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
         }
         let bounds = self.bounds;
         self.layout_within(bounds);
-        let mut tr = TextRenderer::new();
         let theme = self.layout_theme.clone();
-        self.place_content(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(1.0, |tr| self.place_content(&theme, tr));
     }
 
     #[allow(
@@ -1080,7 +1081,9 @@ impl<C: Widget + 'static> Widget for FloatingWindow<C> {
                     self.apply_drag(drag, pt);
                     self.last_cursor = pt;
                     let theme = self.layout_theme.clone();
-                    self.place_content(&theme, &mut TextRenderer::new());
+                    crate::text_render::with_layout_renderer(1.0, |tr| {
+                        self.place_content(&theme, tr)
+                    });
                     *ctx.handled = true;
                     return;
                 }

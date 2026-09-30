@@ -460,7 +460,7 @@ fn validate_digest(digest: &str) -> Result<(), String> {
 }
 
 fn cache_root() -> PathBuf {
-    xdg_paths::cache_dir()
+    tilo_paths::cache_dir()
         .unwrap_or_else(std::env::temp_dir)
         .join("tilo-imager")
 }

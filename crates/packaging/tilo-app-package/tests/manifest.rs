@@ -13,7 +13,8 @@
 
 use crate::fixtures;
 use tilo_app_package::manifest::{
-    Manifest, PortalPolicy, Requirement, ServiceReq, ServiceReqParseError,
+    DEFAULT_PLATFORMS, Manifest, Platform, PortalPolicy, Requirement, ServiceReq,
+    ServiceReqParseError,
 };
 use tilo_app_package::validate::{ManifestError, validate_manifest};
 
@@ -323,38 +324,166 @@ fn service_requirements_and_portal_policy_parse_strictly() {
     }
 }
 
-#[test]
-fn platform_native_declaration_roundtrips_and_defaults_to_portable() {
-    let src = render_with_dummy_key();
-    let portable = Manifest::from_toml_str(&src).expect("decode");
-    assert!(portable.platform.is_portable());
-    assert!(
-        !portable
-            .to_toml_string()
-            .expect("encode")
-            .contains("[platform]")
-    );
-
-    let native = format!("{src}\n[platform]\nnative = \"Hosts a PTY for a login shell.\"\n");
-    let m = Manifest::from_toml_str(&native).expect("decode native");
-    assert_eq!(
-        m.platform.native.as_deref(),
-        Some("Hosts a PTY for a login shell.")
-    );
-    validate_manifest(&m).expect("a one-line reason is valid");
-    let again = Manifest::from_toml_str(&m.to_toml_string().expect("encode")).expect("decode-2");
-    assert_eq!(m, again, "platform declaration round-trips");
+/// The sample manifest with `lines` added to its `[package]` table.
+fn with_package_keys(lines: &str) -> String {
+    render_with_dummy_key().replacen("[package]\n", &format!("[package]\n{lines}\n"), 1)
 }
 
 #[test]
-fn platform_native_requires_a_one_line_reason() {
-    let src = render_with_dummy_key();
-    for reason in ["\"  \"", "\"\"\"\nfirst\nsecond\"\"\""] {
-        let m = Manifest::from_toml_str(&format!("{src}\n[platform]\nnative = {reason}\n"))
+fn platforms_default_to_linux_macos_and_web_and_stay_unserialized() {
+    let m = Manifest::from_toml_str(&render_with_dummy_key()).expect("decode");
+    assert_eq!(m.package.platforms(), DEFAULT_PLATFORMS);
+    assert!(!m.package.is_platform_narrowed());
+    assert!(m.package.supports(Platform::Web));
+    validate_manifest(&m).expect("the default needs no reason");
+    let encoded = m.to_toml_string().expect("encode");
+    assert!(!encoded.contains("platforms"), "{encoded}");
+    assert!(!encoded.contains("[capabilities]"), "{encoded}");
+
+    let explicit = with_package_keys("platforms = [\"web\", \"linux\", \"macos\"]");
+    let m = Manifest::from_toml_str(&explicit).expect("decode explicit default");
+    assert!(!m.package.is_platform_narrowed());
+    validate_manifest(&m).expect("spelling out the default needs no reason");
+}
+
+#[test]
+fn narrowed_platforms_roundtrip_with_their_reason() {
+    let src = with_package_keys(
+        "platforms = [\"linux\", \"macos\"]\n\
+         platform-reason = \"Hosts a PTY for a login shell.\"",
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    assert_eq!(m.package.platforms(), [Platform::Linux, Platform::Macos]);
+    assert!(m.package.is_platform_narrowed());
+    assert!(!m.package.supports(Platform::Web));
+    assert_eq!(
+        m.package.platform_reason.as_deref(),
+        Some("Hosts a PTY for a login shell.")
+    );
+    validate_manifest(&m).expect("a narrowed list with a reason is valid");
+    let encoded = m.to_toml_string().expect("encode");
+    assert!(encoded.contains("platform-reason = "), "{encoded}");
+    let again = Manifest::from_toml_str(&encoded).expect("decode-2");
+    assert_eq!(m, again, "platform declaration round-trips");
+
+    let tilo_os = with_package_keys(
+        "platforms = [\"tilo-os\"]\nplatform-reason = \"Wayland input-method client.\"",
+    );
+    let m = Manifest::from_toml_str(&tilo_os).expect("decode tilo-os");
+    assert_eq!(m.package.platforms(), [Platform::TiloOs]);
+    validate_manifest(&m).expect("tilo-os with a reason is valid");
+}
+
+#[test]
+fn registry_platforms_follow_the_declared_platforms() {
+    let m = Manifest::from_toml_str(&render_with_dummy_key()).expect("decode");
+    for platform in ["tilo-os", "linux", "macos", "web"] {
+        assert!(m.package.publishable_as(platform), "{platform}");
+    }
+    assert!(!m.package.publishable_as("windows"));
+
+    let tilo_os = with_package_keys(
+        "platforms = [\"tilo-os\"]\nplatform-reason = \"Wayland input-method client.\"",
+    );
+    let m = Manifest::from_toml_str(&tilo_os).expect("decode tilo-os");
+    assert!(m.package.publishable_as("tilo-os"));
+    for platform in ["linux", "macos", "web"] {
+        assert!(!m.package.publishable_as(platform), "{platform}");
+    }
+}
+
+#[test]
+fn platform_reason_is_required_exactly_when_platforms_are_narrowed() {
+    let missing =
+        Manifest::from_toml_str(&with_package_keys("platforms = [\"linux\"]")).expect("decode");
+    assert_eq!(
+        validate_manifest(&missing),
+        Err(ManifestError::MissingPlatformReason {
+            missing: "macos, web".to_owned()
+        })
+    );
+
+    let unneeded =
+        Manifest::from_toml_str(&with_package_keys("platform-reason = \"Portable anyway.\""))
             .expect("decode");
-        assert!(matches!(
-            validate_manifest(&m),
-            Err(ManifestError::BadPlatformNative)
-        ));
+    assert_eq!(
+        validate_manifest(&unneeded),
+        Err(ManifestError::UnneededPlatformReason)
+    );
+
+    for reason in ["\"  \"", "\"\"\"\nfirst\nsecond\"\"\""] {
+        let bad = Manifest::from_toml_str(&with_package_keys(&format!(
+            "platforms = [\"linux\"]\nplatform-reason = {reason}"
+        )))
+        .expect("decode");
+        assert_eq!(
+            validate_manifest(&bad),
+            Err(ManifestError::BadPlatformReason)
+        );
+    }
+
+    let empty = Manifest::from_toml_str(&with_package_keys(
+        "platforms = []\nplatform-reason = \"Nothing.\"",
+    ))
+    .expect("decode");
+    assert_eq!(
+        validate_manifest(&empty),
+        Err(ManifestError::EmptyPlatforms)
+    );
+
+    let repeated = Manifest::from_toml_str(&with_package_keys(
+        "platforms = [\"linux\", \"linux\"]\nplatform-reason = \"Twice.\"",
+    ))
+    .expect("decode");
+    assert_eq!(
+        validate_manifest(&repeated),
+        Err(ManifestError::DuplicatePlatform("linux".to_owned()))
+    );
+
+    assert!(
+        Manifest::from_toml_str(&with_package_keys("platforms = [\"windows\"]")).is_err(),
+        "unknown platforms fail to decode"
+    );
+}
+
+#[test]
+fn capabilities_roundtrip_and_reject_blank_or_repeated_names() {
+    let src = format!(
+        "{}\n[capabilities]\nrequired = [\"network.http\"]\noptional = [\"notifications\", \"files.save\"]\n",
+        render_with_dummy_key()
+    );
+    let m = Manifest::from_toml_str(&src).expect("decode");
+    assert_eq!(m.capabilities.required, ["network.http"]);
+    assert_eq!(m.capabilities.optional, ["notifications", "files.save"]);
+    validate_manifest(&m).expect("named capabilities are valid");
+    let again = Manifest::from_toml_str(&m.to_toml_string().expect("encode")).expect("decode-2");
+    assert_eq!(m, again, "capabilities round-trip");
+
+    for (body, expected) in [
+        (
+            "required = [\"\"]",
+            ManifestError::BadCapabilityName {
+                list: "required",
+                name: String::new(),
+            },
+        ),
+        (
+            "optional = [\" secrets\"]",
+            ManifestError::BadCapabilityName {
+                list: "optional",
+                name: " secrets".to_owned(),
+            },
+        ),
+        (
+            "required = [\"secrets\"]\noptional = [\"secrets\"]",
+            ManifestError::DuplicateCapability("secrets".to_owned()),
+        ),
+    ] {
+        let m = Manifest::from_toml_str(&format!(
+            "{}\n[capabilities]\n{body}\n",
+            render_with_dummy_key()
+        ))
+        .expect("decode");
+        assert_eq!(validate_manifest(&m), Err(expected), "{body}");
     }
 }

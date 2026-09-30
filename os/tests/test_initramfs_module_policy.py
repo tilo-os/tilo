@@ -131,7 +131,7 @@ exec bash "$gate"
                     self.assertIn('initramfs has no ' + module + ' module', failures[0])
         restart_fixture(self)
         with self.subTest(phase="production_dracut_omits_dependency_consumers"):
-            source = (OS / 'Containerfile').read_text(encoding='utf-8')
+            source = (OS / 'scripts/build-initramfs.sh').read_text(encoding='utf-8')
             logical_lines = re.sub(r'\\\r?\n\s*', ' ', source)
             command = re.search(r'\bdracut\s+--force\b[^\n]*', logical_lines)
             self.assertIsNotNone(command, 'production dracut invocation is missing')

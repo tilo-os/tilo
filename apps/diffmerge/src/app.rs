@@ -12,7 +12,6 @@
 //!   roots).
 
 use std::collections::HashMap;
-use std::fs;
 use std::path::Path;
 use ui::widget::{AppModel, ModelPath};
 
@@ -25,7 +24,9 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+};
 use ui::presence::PresenceCtx;
 use ui::text_render::{TextRenderer, TextWeight};
 use ui::theme::Theme;
@@ -111,6 +112,8 @@ pub struct DiffMergeApp {
     /// once per frame in [`Widget::sync`]. `None` when no picker is in flight —
     /// the app never draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    portal_contents_rx: Option<ContentsChannel>,
     /// Files chosen but not yet paired (first of a two-file diff selection).
     pending_left: Option<(String, String)>,
     /// A human-readable reason the last host-portal open failed, surfaced in
@@ -163,7 +166,20 @@ impl DiffMergeApp {
     /// The live app: starts EMPTY (blank panes + the "Open files" / "Load
     /// sample" toolbar actions), never a fabricated diff.
     pub fn new() -> Self {
-        Self::build(false)
+        let mut app = Self::build(false);
+        // Where files have no path, the pair last compared.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+            && file.name == "pair"
+            && let Ok([(left_label, left), (right_label, right)]) =
+                serde_json::from_slice::<[(String, String); 2]>(&file.bytes)
+        {
+            app.diff
+                .set_inputs(&left_label, &left, &right_label, &right);
+            app.mode = Mode::Diff;
+            app.structure_dirty = true;
+        }
+        app
     }
 
     /// The hermetic `--shots` / demo build: seeded with a sample diff + a
@@ -237,6 +253,7 @@ impl DiffMergeApp {
             tool_hits: Vec::new(),
             cursor: Point::ZERO,
             portal_rx: None,
+            portal_contents_rx: None,
             pending_left: None,
             load_error: None,
             resource_invocation: None,
@@ -259,7 +276,7 @@ impl DiffMergeApp {
     /// headless frame captures it (no live pointer hovers the reveal zone).
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     fn content_rect(&self) -> Rect {
@@ -492,11 +509,15 @@ impl DiffMergeApp {
     /// file after the left is picked. A second request while one is in flight
     /// is ignored, so a double-click can't stack two host dialogs.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() {
+        if self.portal_rx.is_some() || self.portal_contents_rx.is_some() {
             return;
         }
         self.load_error = None;
-        self.portal_rx = Some(diff_open_request().send());
+        if crate::web_file::native_paths() {
+            self.portal_rx = Some(diff_open_request().send());
+        } else {
+            self.portal_contents_rx = Some(diff_open_request().send_contents());
+        }
         self.dirty = true;
     }
 
@@ -506,17 +527,72 @@ impl DiffMergeApp {
     /// status bar, and clears the in-flight channel. Never blocks — a still
     /// pending picker leaves the channel installed for the next frame.
     fn drain_portal(&mut self) {
+        if let Some(rx) = self.portal_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(outcome) => {
+                    self.portal_contents_rx = None;
+                    let outcome = match outcome {
+                        ContentsOutcome::Picked(files) => match files.into_iter().next() {
+                            Some(file) => Pick::Opened(
+                                String::from_utf8(file.bytes)
+                                    .map(|text| (file.name.clone(), text))
+                                    .map_err(|_| format!("{}: not UTF-8 text", file.name)),
+                            ),
+                            None => Pick::Cancelled,
+                        },
+                        ContentsOutcome::Cancelled => Pick::Cancelled,
+                        ContentsOutcome::Failed(reason) => Pick::Failed(reason),
+                    };
+                    self.apply_pick(outcome);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.portal_contents_rx = None;
+                    self.apply_pick(Pick::Failed("file picker disconnected".into()));
+                }
+            }
+        }
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
         match rx.try_recv() {
             Ok(outcome) => {
                 self.portal_rx = None;
+                let outcome = match outcome {
+                    PortalOutcome::Opened(path) => Pick::Opened(label_and_text(&path)),
+                    PortalOutcome::Cancelled => Pick::Cancelled,
+                    PortalOutcome::Failed(reason) => Pick::Failed(reason),
+                };
+                self.apply_pick(outcome);
+            }
+            // Still waiting on the host dialog, or the worker vanished.
+            Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.portal_rx = None;
+                if let Some(invocation) = self.resource_invocation.take() {
+                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
+                        invocation,
+                        error: tilo_actions::ActionFailure {
+                            code: "diffmerge.portal_disconnected".into(),
+                            message: "file picker disconnected".into(),
+                            details: None,
+                            retryable: false,
+                        },
+                    });
+                }
+            }
+        }
+    }
+
+    /// Apply one chooser answer to the two-file selection.
+    fn apply_pick(&mut self, outcome: Pick) {
+        {
+            {
                 match outcome {
-                    PortalOutcome::Opened(path) => {
+                    Pick::Opened(picked) => {
                         // A `true` return means the left file just landed and
                         // the right one is still needed — fire a fresh request.
-                        match self.consume_pick(&path) {
+                        match picked.map(|(label, text)| self.consume_text(label, text)) {
                             Ok(true) => self.request_open_via_portal(),
                             Ok(false) => {
                                 if let Some(invocation) = self.resource_invocation.take() {
@@ -546,7 +622,7 @@ impl DiffMergeApp {
                         self.dirty = true;
                     }
                     // A cancel abandons an in-progress two-file selection.
-                    PortalOutcome::Cancelled => {
+                    Pick::Cancelled => {
                         self.pending_left = None;
                         if let Some(invocation) = self.resource_invocation.take() {
                             self.resource_result =
@@ -557,7 +633,7 @@ impl DiffMergeApp {
                         }
                         self.dirty = true;
                     }
-                    PortalOutcome::Failed(reason) => {
+                    Pick::Failed(reason) => {
                         self.pending_left = None;
                         self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
                         if let Some(invocation) = self.resource_invocation.take() {
@@ -575,22 +651,6 @@ impl DiffMergeApp {
                     }
                 }
             }
-            // Still waiting on the host dialog, or the worker vanished.
-            Err(std::sync::mpsc::TryRecvError::Empty) => {}
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.portal_rx = None;
-                if let Some(invocation) = self.resource_invocation.take() {
-                    self.resource_result = Some(tilo_actions::InvocationUpdate::Failed {
-                        invocation,
-                        error: tilo_actions::ActionFailure {
-                            code: "diffmerge.portal_disconnected".into(),
-                            message: "file picker disconnected".into(),
-                            details: None,
-                            retryable: false,
-                        },
-                    });
-                }
-            }
         }
     }
 
@@ -599,33 +659,39 @@ impl DiffMergeApp {
     /// the second file completes the diff and switches to Diff mode, returning
     /// `false`. Pure w.r.t. the portal (reads the file, mutates model state) so
     /// the two-file flow is unit-testable without a host dialog.
+    #[cfg(test)]
     fn consume_pick(&mut self, path: &Path) -> Result<bool, String> {
-        let label = path.file_name().map_or_else(
-            || path.display().to_string(),
-            |n| n.to_string_lossy().to_string(),
-        );
-        let content = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        let (label, content) = label_and_text(path)?;
+        Ok(self.consume_text(label, content))
+    }
+
+    /// As [`Self::consume_pick`], for a file already read.
+    fn consume_text(&mut self, label: String, content: String) -> bool {
         match self.pending_left.take() {
             None => {
                 // First file picked — stash and ask for the second.
                 self.pending_left = Some((label, content));
-                Ok(true)
+                true
             }
             Some((left_label, left_content)) => {
                 self.diff
                     .set_inputs(&left_label, &left_content, &label, &content);
+                if !crate::web_file::native_paths()
+                    && let Ok(pair) =
+                        serde_json::to_vec(&[(&left_label, &left_content), (&label, &content)])
+                {
+                    crate::web_file::remember("pair", &pair);
+                }
                 self.mode = Mode::Diff;
                 self.structure_dirty = true;
-                Ok(false)
+                false
             }
         }
     }
 
     fn load_paths(&mut self, left: &Path, right: &Path) -> Result<(), String> {
-        let left_content =
-            fs::read_to_string(left).map_err(|e| format!("{}: {e}", left.display()))?;
-        let right_content =
-            fs::read_to_string(right).map_err(|e| format!("{}: {e}", right.display()))?;
+        let left_content = read_text(left)?;
+        let right_content = read_text(right)?;
         let label = |path: &Path| {
             path.file_name().map_or_else(
                 || path.display().to_string(),
@@ -858,7 +924,7 @@ impl DiffMergeApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let raw_label = self.status_text();
         // Poke only on a genuine change to the summary, never every frame.
         if raw_label != self.last_status {
@@ -1561,7 +1627,7 @@ impl Widget for DiffMergeApp {
         // Keep frames coming while a host-portal open is in flight, and while
         // the floating status bubble is lingering / fading (so it animates out
         // and hides on its own). Idle otherwise.
-        self.portal_rx.is_some() || self.status_bubble.needs_frame(std::time::Instant::now())
+        self.portal_rx.is_some() || self.status_bubble.needs_frame(ui::time::now())
     }
 
     fn mark_drawn(&mut self) {
@@ -1717,6 +1783,29 @@ impl DiffMergeApp {
         }
         Ok(Some(ui::widget::ResourceOperationStart::Accepted))
     }
+}
+
+/// What the chooser answered.
+enum Pick {
+    /// A file's label and text, or why it could not be read.
+    Opened(Result<(String, String), String>),
+    Cancelled,
+    Failed(String),
+}
+
+fn label_and_text(path: &Path) -> Result<(String, String), String> {
+    let label = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |n| n.to_string_lossy().to_string(),
+    );
+    Ok((label, read_text(path)?))
+}
+
+fn read_text(path: &Path) -> Result<String, String> {
+    let failed = |error: &dyn std::fmt::Display| format!("{}: {error}", path.display());
+    let (dir, name) = tilo_files::file_at(path).map_err(|e| failed(&e))?;
+    let bytes = tilo_files::blocking::read(&dir, &name).map_err(|e| failed(&e))?;
+    String::from_utf8(bytes).map_err(|e| failed(&e))
 }
 
 #[cfg(test)]

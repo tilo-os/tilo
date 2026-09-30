@@ -9,6 +9,7 @@ use crate::{
     identity_broker,
     shell::{
         collab_broker::{self, BrokerHandle},
+        network::ShellNetwork,
         persist,
         state::WorkspaceTree,
     },
@@ -17,6 +18,11 @@ use std::{
     io,
     path::{Path, PathBuf},
     process::{Child, Command},
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
 };
 use tilo_runtime::RuntimeServices;
 use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
@@ -26,6 +32,7 @@ use tilo_runtime::{BLOB_SOCKET, COLLAB_SOCKET, IDENTITY_SOCKET, unix};
 /// starting any threads when using an isolated profile.
 pub struct Session {
     pub broker: BrokerHandle,
+    _peer_sync: Option<PeerSync>,
     _identity: identity_broker::IdentityBrokerHandle,
     pub room: String,
     pub actor: String,
@@ -91,13 +98,19 @@ impl Session {
         let identity =
             identity_broker::spawn(identity_socket.clone(), tree.clone(), channel_keys.clone())?;
         stage("starting the collaboration broker");
-        let broker = collab_broker::spawn_native(root.join(COLLAB_SOCKET), &None, tree.clone())?;
+        let peer_sync = PeerSync::start(&tree);
+        let broker = collab_broker::spawn_native(
+            root.join(COLLAB_SOCKET),
+            &peer_sync.as_ref().map(|sync| Arc::clone(&sync.network)),
+            tree.clone(),
+        )?;
         channel_keys.set(broker.channel_encryption());
         let blob_socket = root.join(BLOB_SOCKET);
         stage("opening the content store");
         let media = tilo_runtime::profile::MediaHost::start(&root.join("content"), &blob_socket)?;
         Ok(Self {
             broker,
+            _peer_sync: peer_sync,
             _identity: identity,
             room: room_id,
             actor,
@@ -168,6 +181,66 @@ impl RuntimeServices for Session {
 
     fn launch(&self, app_id: &str, command: Command) -> io::Result<Child> {
         Self::launch(self, app_id, command)
+    }
+}
+
+/// The desktop's peer network, attached when `TILO_COLLAB_HOST(S)` names a
+/// workspace host, so apps of this session share their rooms with the
+/// host's other devices (other shells, browsers, agents). Without a host the
+/// session stays local, as before.
+struct PeerSync {
+    network: Arc<ShellNetwork>,
+    stop: Arc<AtomicBool>,
+    pump: Option<std::thread::JoinHandle<()>>,
+}
+
+impl PeerSync {
+    /// How often the actor's events are drained into the replica and the
+    /// broker's inbound queues; the compositor does this every frame.
+    const TICK: Duration = Duration::from_millis(16);
+
+    fn start(tree: &crate::shell::state::WorkspaceTreeHandle) -> Option<Self> {
+        if !crate::shell::network::collab_host_configured() {
+            return None;
+        }
+        let network =
+            match ShellNetwork::spawn(tree.clone(), &crate::shell::network::peer_key_path()) {
+                Ok(network) => Arc::new(network),
+                Err(error) => {
+                    tracing::warn!(%error, "peer-sync: spawn failed; the session stays local");
+                    return None;
+                }
+            };
+        let _ = network.join_default_workspace();
+        let stop = Arc::new(AtomicBool::new(false));
+        let pump = {
+            let network = Arc::clone(&network);
+            let stop = Arc::clone(&stop);
+            std::thread::Builder::new()
+                .name("tilo-peer-sync".into())
+                .spawn(move || {
+                    while !stop.load(Ordering::Relaxed) {
+                        network.tick();
+                        std::thread::sleep(Self::TICK);
+                    }
+                })
+                .ok()
+        };
+        tracing::info!("peer-sync: attached to the configured workspace host");
+        Some(Self {
+            network,
+            stop,
+            pump,
+        })
+    }
+}
+
+impl Drop for PeerSync {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(pump) = self.pump.take() {
+            let _ = pump.join();
+        }
     }
 }
 

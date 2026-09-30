@@ -16,7 +16,7 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 use std::sync::mpsc::{Receiver, TryRecvError};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -466,17 +466,17 @@ impl BackupsApp {
     }
 
     fn toast_now(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Success, Instant::now()));
+        self.toast = Some((msg.into(), ToastKind::Success, ui::time::now()));
     }
 
     /// Errors must read as errors — a green success toast after a rejected
     /// restore is actively misleading and can make recovery unsafe.
     fn toast_error(&mut self, msg: impl Into<String>) {
-        self.toast = Some((msg.into(), ToastKind::Error, Instant::now()));
+        self.toast = Some((msg.into(), ToastKind::Error, ui::time::now()));
     }
 
     fn config_path() -> Option<PathBuf> {
-        Some(xdg_paths::xdg::state_home()?.join("tilo/backups/config.json"))
+        Some(tilo_paths::xdg::state_home()?.join("tilo/backups/config.json"))
     }
 
     fn read_config() -> Option<(PathBuf, PathBuf)> {
@@ -498,7 +498,7 @@ impl BackupsApp {
         };
         let value = serde_json::json!({ "source": source, "destination": destination });
         if let Ok(bytes) = serde_json::to_vec_pretty(&value) {
-            let _ = atomic_file::write_creating_parent(&path, &bytes);
+            let _ = tilo_files::native::atomic::write_creating_parent(&path, &bytes);
         }
     }
 
@@ -1210,7 +1210,7 @@ impl BackupsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let label = self.status_label();
         // Poke only on a genuine change — draw runs every frame, so an
         // unconditional poke would pin the bubble open forever.
@@ -1251,7 +1251,7 @@ impl BackupsApp {
     /// frame captures the floating pill.
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Stage deterministic non-destructive states for screenshot coverage.
@@ -5169,7 +5169,7 @@ impl Widget for BackupsApp {
             || self.picker.is_some()
             || self.job.is_some()
             || self.drawer.is_animating()
-            || self.status_bubble.needs_frame(Instant::now())
+            || self.status_bubble.needs_frame(ui::time::now())
     }
 }
 

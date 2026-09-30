@@ -157,16 +157,3 @@ export function createStorageAccess({createWorker=defaultCreateWorker,inline,eve
 }
 const access=createStorageAccess();
 export const acquireStorage=access.acquireStorage;
-
-/** Client-only key material; success is acknowledged at strict transaction commit. */
-export function createIdentityStore({idb=globalThis.indexedDB}={}){
- // v2 adds a locator index so a restarted browser (fresh sessionStorage) can
- // adopt an unlocked identity it already holds instead of minting a new device.
- async function open(){const request=idb.open('tilo-certified-identities-v2',2);request.onupgradeneeded=()=>{const db=request.result;if(!db.objectStoreNames.contains('identities'))db.createObjectStore('identities');if(!db.objectStoreNames.contains('locators'))db.createObjectStore('locators');};return requestResult(request);}
- return {
-  async candidates(locator){const db=await open();try{const tx=db.transaction('locators','readonly');const done=transactionComplete(tx);const value=await requestResult(tx.objectStore('locators').get(locator));await done;return Array.isArray(value?.keys)?value.keys.filter(row=>typeof row?.key==='string'&&row.key.length>0&&row.key.length<=128&&Number.isSafeInteger(row.usedAtMs)).sort((a,b)=>b.usedAtMs-a.usedAtMs).map(row=>row.key):[];}finally{db.close();}},
-  async remember(locator,key){const db=await open();try{const tx=db.transaction('locators','readwrite',{durability:'strict'});const done=transactionComplete(tx);const store=tx.objectStore('locators');const value=await requestResult(store.get(locator));const keys=(Array.isArray(value?.keys)?value.keys:[]).filter(row=>row?.key!==key).slice(-31);keys.push({key,usedAtMs:Date.now()});store.put({keys},locator);await done;}finally{db.close();}},
-  async load(key){const db=await open();try{const tx=db.transaction('identities','readonly');const done=transactionComplete(tx);const value=await requestResult(tx.objectStore('identities').get(key));await done;return value;}finally{db.close();}},
-  async save(key,material){const db=await open();try{const tx=db.transaction('identities','readwrite',{durability:'strict'});const done=transactionComplete(tx);tx.objectStore('identities').put(material,key);await done;}finally{db.close();}}
- };
-}

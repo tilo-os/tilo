@@ -4,7 +4,7 @@
 //!   * [`model`]  — pure data + the in-memory [`model::Store`].
 //!   * [`doc`]    — Automerge mapping; converging state lives here.
 //!   * [`sample`] — bundled offline fixture used only by `--shots` and tests.
-//!   * [`fetch`]  — off-thread HTTP (reqwest + feed-rs) and gemini (TLS).
+//!   * [`fetch`]  — HTTP (`tilo_net` + feed-rs) and gemini (TLS) on the app runtime.
 //!   * [`html`] / [`gemtext`] — body → renderable [`model::ContentBlock`]s.
 //!   * [`opml`]   — subscription import/export.
 //!   * [`app`]    — the three-pane root [`app::FeedsApp`] widget.
@@ -61,6 +61,13 @@ use ui::widget::Widget;
 /// Build and return the app's root widget tree.
 pub fn app_root() -> Box<dyn Widget> {
     Box::new(FeedsApp::new())
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.feeds", app_root)
+        .component_actions(actions::register)
+        .as_definition("Feeds")
 }
 
 /// Like [`app_root`] but staged for a named `--shots` scenario. Used to

@@ -176,8 +176,20 @@ impl Registry {
             path: path.display().to_string(),
             detail: e.to_string(),
         })?;
-        atomic_file::write_creating_parent(path, text.as_bytes())
-            .map_err(CliError::io(format!("write {}", path.display())))
+        let context = format!("write {}", path.display());
+        #[cfg(windows)]
+        {
+            // This host's NTFS rejects the native POSIX rename with ERROR_INVALID_PARAMETER.
+            // The VM registry is recoverable development state; a sibling-file
+            // rename still avoids exposing a partially written TOML document.
+            std::fs::create_dir_all(path.parent().unwrap_or_else(|| Path::new(".")))
+                .map_err(CliError::io(context.clone()))?;
+            atomic_file::write_regenerable(path, text.as_bytes()).map_err(CliError::io(context))
+        }
+        #[cfg(not(windows))]
+        {
+            atomic_file::write_creating_parent(path, text.as_bytes()).map_err(CliError::io(context))
+        }
     }
 
     pub fn min_free_bytes(&self) -> u64 {

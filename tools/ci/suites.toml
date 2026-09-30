@@ -45,12 +45,16 @@ suites = [
   "os/dev/test-install-copy-scratch.py",
   "os/kernel/tests/test-cc-wrapper.sh",
   "os/kernel/tests/test-signing-identity.py",
+  "os/tests/composefs_digest_parse.sh",
   "os/tests/containerfile_copy_invariants.sh",
   "os/tests/disk_image_firstboot_seed.sh",
   "os/tests/disk_image_mirror_policy.sh",
   "os/tests/disk_image_mtools_esp.sh",
   "os/tests/disk_image_root_podman_store.sh",
   "os/tests/disk_image_user_labels.sh",
+  "os/tests/rockchip_boot_gap.sh",
+  "os/tests/rockchip_loader_test.py",
+  "os/tests/release_sbom_verification.sh",
   "os/tests/dracut_tilo_root_contract.sh",
   "os/tests/encrypted_boot_mount_contract.sh",
   "os/tests/airplay_encrypted_session_test.sh",
@@ -290,6 +294,7 @@ suites = [
   "dist/local-models/smolvlm2-500m/contract-test.sh",
   "dist/rpm/test-app-store-stage.sh",
   "dist/rpm/test-build-target-dir.sh",
+  "dist/rpm/test-host-update.sh",
   "dist/rpm/test-rename-contract.sh",
 ]
 
@@ -373,51 +378,25 @@ name = "browser-runtime-web"
 # app catalogue.
 inputs = ["crates/browser/tilo-browser-runtime/"]
 suites = [
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/abi.test.mjs",
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/bundle-glue.test.mjs",
-  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-client.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-palette-bridge.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/action-ticket.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/agent-reads-client.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/app-directory.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/app-installer.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/automerge-check.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/clipboard.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-identity-custody.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/actions.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/agents.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/app-crash.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/data-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-machine-linking.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-peer-session.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/cloud-peer-source.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/core-loader.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-command-bridge.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-launch-focus.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/durable-host.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/host-core-wheel.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-cursors.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/webgpu-safety.test.mjs",
+  "crates/browser/tilo-browser-runtime/scripts/web-runtime/external-workspace.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/asset-recovery.test.mjs",
   "crates/browser/tilo-browser-runtime/web/desktop-navigation.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/desktop-speculation.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/dylink.test.mjs",
   "crates/browser/tilo-browser-runtime/web/font-loader.test.mjs",
   "crates/browser/tilo-browser-runtime/web/host-input.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/host.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/identity-storage.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-identity-custody.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-peer-session.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/invited-peer-source.test.mjs",
   "crates/browser/tilo-browser-runtime/web/legacy-windows.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/live-overlay.test.mjs",
   "crates/browser/tilo-browser-runtime/web/live-presence.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-audio-codecs.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-audio.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-buffers.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/media-session.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/live-speakers.test.mjs",
   "crates/browser/tilo-browser-runtime/web/media-voice-profile.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/open-file.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-delivery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-media.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-persistence.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/peer-recovery.test.mjs",
-  "crates/browser/tilo-browser-runtime/web/relay-live.test.mjs",
   "crates/browser/tilo-browser-runtime/web/storage-revision.test.mjs",
 ]
 
@@ -503,10 +482,21 @@ package = "tilo-app-cli"
 # `--from-example` embeds the example apps, and a test checks them and their index.
 inputs = [
   "crates/sdk/tilo-app/Cargo.toml", "crates/sdk/ui-core/Cargo.toml", "crates/dev/ui-builder/Cargo.toml",
-  "Cargo.toml", "Cargo.lock", "rust-toolchain.toml", ".cargo/config.toml",
+  ".cargo/config.toml",
   "examples/apps/", "examples/README.md", "docs/examples.md",
+  # The portability lint compiles in the policy gate's rules table, and the
+  # capability check the table of what each capability's code uses.
+  "tools/policy/app_portability_rules.toml", "tools/policy/app_capability_usage.toml",
+  # Standalone apps take the SDK's toolchain and lock file.
+  "rust-toolchain.toml", "Cargo.lock",
+  # The outside-repository test builds a generated app against the checkout.
+  "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
 ]
-readers = ["crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/standalone.rs"]
+readers = [
+  "crates/dev/tilo-app-cli/src/tests.rs", "crates/dev/tilo-app-cli/src/portability.rs",
+  "crates/dev/tilo-app-cli/src/standalone.rs", "crates/dev/tilo-app-cli/tests/outside_repo.rs",
+  "crates/dev/tilo-app-cli/src/capability_usage.rs",
+]
 
 [[cargo]]
 package = "tilo-app-template-smoke"
@@ -519,7 +509,7 @@ inputs = ["os/usr/lib/systemd/system/tilo-device-key-init.service"]
 readers = ["crates/collab/tilo-user-identity/src/bin/tilo-device-key-init.rs"]
 
 [[cargo]]
-package = "fs"
+package = "tilo-fs"
 inputs = [
   "os/Containerfile", "os/usr/lib/systemd/system/fs.service", "os/usr/lib/tmpfiles.d/tilo.conf",
   "os/usr/share/tilo/fs-capabilities.json", "crates/doc/fixtures/sample.docx",
@@ -594,6 +584,19 @@ readers = [
 ]
 
 [[cargo]]
+package = "tilo-agent-participant"
+# The session tests mount apps against the controlled font fixture and share
+# the browser peer's relay test support.
+inputs = ["crates/sdk/ui-core/assets/fonts/", "crates/browser/tilo-browser-peer/tests/support/"]
+readers = [
+  "crates/agent/agent-participant/tests/common/mod.rs",
+  "crates/agent/agent-participant/tests/room_actions.rs",
+  "crates/agent/agent-participant/tests/host_agents.rs",
+  "crates/agent/agent-participant/tests/session_coverage.rs",
+  "crates/agent/agent-participant/tests/shared_session.rs",
+]
+
+[[cargo]]
 package = "format-host"
 inputs = ["docs/app-model/formats.md"]
 readers = ["crates/doc/format-host/tests/integration.rs"]
@@ -613,9 +616,14 @@ readers = ["apps/ebook/src/app/interaction_tests.rs"]
 
 [[cargo]]
 package = "shell"
-inputs = ["crates/sdk/ui-core/assets/fonts/", "docs/shell-navigation-keyboard-map.md"]
+inputs = [
+  "crates/sdk/ui-core/assets/fonts/",
+  "dist/VERSION",
+  "docs/shell-navigation-keyboard-map.md",
+]
 readers = [
   "crates/session/shell/examples/support/populated_shell_fixture.rs",
+  "crates/session/shell/src/linux_main.rs",
   "crates/session/shell/src/shell/fixed_chords.rs",
   "crates/session/shell/src/shell/fixture_inputs.rs",
   "crates/session/shell/src/shell/notes_app.rs",
@@ -693,30 +701,10 @@ inputs = ["crates/sdk/ui-core/assets/fonts/"]
 readers = ["crates/session/desktop/src/topbar.rs"]
 
 [[cargo]]
-package = "tilo-cloud-host"
-# Owner-commit fixtures are a shared contract with tilo-peer-state.
-inputs = ["crates/collab/tilo-peer-state/src/owner_commit/fixtures/"]
-readers = [
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/effects/tests.rs",
-  "crates/hosting/tilo-cloud-host/src/agent_runtime_owner/tests.rs",
-]
-
-[[cargo]]
 package = "tilo-moq"
 # The voice test checks the browser's voice profile against the native one.
 inputs = ["crates/browser/tilo-browser-runtime/web/media-voice-profile.mjs"]
 readers = ["crates/hosting/tilo-moq/tests/voice.rs"]
-
-[[cargo]]
-package = "tilo-device-host"
-# The ignored regeneration test rewrites tilo-relay's checked-in fixture.
-inputs = ["crates/hosting/tilo-relay/tests/fixtures/shell-selection/"]
-readers = ["crates/hosting/tilo-device-host/tests/publication.rs"]
-
-[[cargo]]
-package = "tilo-workspace-host"
-inputs = ["apps/settings/shots/settings.png"]
-readers = ["crates/hosting/tilo-workspace-host/src/action_host/scoped_fixture/notes.rs"]
 
 [[cargo]]
 package = "tilo-relay-protocol"
@@ -850,6 +838,11 @@ workflow = "release-desktop.yml"
 [[unrequired]]
 suite = "os/dev/test-encrypted-install.sh"
 reason = "boots VMs (KVM) from a built installer image"
+
+[[unrequired]]
+suite = "os/tests/validation_drive_qemu.sh"
+reason = "requires a native ARM KVM host and QEMU"
+workflow = "build-image.yml"
 
 [[unrequired]]
 suite = "os/dev/test-installer-cycle.sh"
@@ -1162,10 +1155,6 @@ suite = "tools/tests/test_vendor_history.sh"
 reason = "needs the vendor-upstream refs fetched from the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/action-storage.browser.test.mjs"
-reason = "drives a real browser through Playwright, which the ci-fast image does not carry"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-client.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
@@ -1174,15 +1163,7 @@ suite = "crates/browser/tilo-browser-runtime/web/live-fake-relay.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/live-fallback.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/live-transport.test.mjs"
-reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/media-moq.test.mjs"
 reason = "imports media-moq-library.mjs, which scripts/moq-browser bundles from npm packages fetched over the network"
 
 [[unrequired]]
@@ -1190,15 +1171,7 @@ suite = "scripts/moq-browser/bundle.test.mjs"
 reason = "a bun test of the MoQ bundle, which needs its npm dependencies installed from the network"
 
 [[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/action-storage.test.mjs"
-reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
 suite = "crates/browser/tilo-browser-runtime/web/close-recovery.test.mjs"
-reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
-
-[[unrequired]]
-suite = "crates/browser/tilo-browser-runtime/web/peer-session.test.mjs"
 reason = "its fake persistence workers need Node 24's worker messaging; the ci-fast image's nodejs is Node 22"
 
 [[unrequired]]

@@ -24,7 +24,7 @@ use crate::xlsx::SheetTable;
 /// (including one over the zip-bomb bounds or carrying a DTD), or a tab
 /// spans more than [`crate::xlsx::MAX_MATERIALIZED_SLOTS`].
 pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
-    let parsed = OdsCodec::parse(&std::fs::read(path)?)?;
+    let parsed = OdsCodec::parse(&crate::xlsx::read_file(path)?)?;
     // ODF types dates explicitly (they arrive as ISO text), so no style marks
     // a number as a date.
     crate::xlsx::tables_from_parsed(parsed.sheets, &BTreeSet::new())
@@ -39,7 +39,7 @@ pub fn read_ods(path: &Path) -> anyhow::Result<Vec<SheetTable>> {
 pub fn write_ods(path: &Path, tables: &[SheetTable]) -> anyhow::Result<()> {
     let snap = crate::xlsx::snapshot_of(tables, cell_style, to_ods_formula);
     let preserved = BTreeMap::from([("styles.xml".to_string(), common_styles_part(NUMBER_STYLES))]);
-    std::fs::write(path, OdsCodec::export_snapshot(&snap, &preserved)?)?;
+    crate::xlsx::write_file(path, &OdsCodec::export_snapshot(&snap, &preserved)?)?;
     Ok(())
 }
 

@@ -393,6 +393,12 @@ pub fn run() -> std::process::ExitCode {
     if let Some(code) = tilo_automerge_isolate::dispatch_early() {
         return std::process::ExitCode::from(code);
     }
+    // Answered before identity, GPU or session setup, so asking a host what
+    // it has installed touches none of them.
+    if let Some(version) = version_request(std::env::args().skip(1)) {
+        println!("{version}");
+        return std::process::ExitCode::SUCCESS;
+    }
     // `init()` is a no-op unless the env var is set, so production boots pay
     // zero cost; the scope guard dumps recorded events to disk when `main` returns.
     tilo_startup_metrics::init();
@@ -610,9 +616,30 @@ fn run_portal_server_only() -> std::process::ExitCode {
     })
 }
 
+/// The session release, as packaged (`dist/VERSION`), for a lone
+/// `--version` or `-V`.
+fn version_request(mut args: impl Iterator<Item = String>) -> Option<String> {
+    let first = args.next()?;
+    (matches!(first.as_str(), "--version" | "-V") && args.next().is_none()).then(|| {
+        let version = include_str!("../../../../dist/VERSION").trim();
+        format!("tilo-shell {version}")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::{ExistingIdentityFailureAction, existing_identity_failure_action};
+
+    #[test]
+    fn version_is_answered_alone_and_names_the_packaged_release() {
+        let ask = |args: &[&str]| super::version_request(args.iter().map(|a| (*a).to_string()));
+        let packaged = include_str!("../../../../dist/VERSION").trim();
+        assert_eq!(ask(&["--version"]), Some(format!("tilo-shell {packaged}")));
+        assert_eq!(ask(&["-V"]), Some(format!("tilo-shell {packaged}")));
+        assert_eq!(ask(&[]), None);
+        assert_eq!(ask(&["--backend", "drm"]), None);
+        assert_eq!(ask(&["--version", "--backend"]), None);
+    }
     use shell::compositor::Mode;
     use std::io;
 

@@ -11,6 +11,10 @@ use std::path::Path;
 use serde_json::{Map, Value};
 
 const SECTION: &str = "video_player";
+
+fn settings() -> ui::storage::Settings {
+    ui::storage::Settings::section(SECTION)
+}
 const AUTOPLAY: &str = "autoplay";
 const LOOP_ENABLED: &str = "loop_enabled";
 const RECENT_HISTORY: &str = "recent_history";
@@ -78,15 +82,19 @@ impl PlaybackPreferences {
     /// Load the app's device-local preferences. A missing, malformed, or
     /// wrong-typed value safely uses the default for that individual key.
     pub fn load() -> Self {
-        Self::from_document(&settings_store::load())
+        Self::from_section(&settings().load())
     }
 
-    fn from_document(document: &Map<String, Value>) -> Self {
+    fn from_section(section: &Map<String, Value>) -> Self {
         let defaults = Self::default();
         Self {
-            autoplay: settings_store::bool_at(document, SECTION, AUTOPLAY)
+            autoplay: section
+                .get(AUTOPLAY)
+                .and_then(Value::as_bool)
                 .unwrap_or(defaults.autoplay),
-            loop_enabled: settings_store::bool_at(document, SECTION, LOOP_ENABLED)
+            loop_enabled: section
+                .get(LOOP_ENABLED)
+                .and_then(Value::as_bool)
                 .unwrap_or(defaults.loop_enabled),
         }
     }
@@ -94,7 +102,7 @@ impl PlaybackPreferences {
     /// Persist only this app's two settings, preserving unrelated settings and
     /// unknown keys in the Video Player section.
     pub fn save(self) -> std::io::Result<()> {
-        settings_store::update_section(SECTION, self.values())
+        settings().update(self.values())
     }
 
     fn values(self) -> Map<String, Value> {
@@ -108,12 +116,12 @@ impl PlaybackPreferences {
 
     #[cfg(test)]
     fn load_at(path: &Path) -> Self {
-        Self::from_document(&settings_store::load_at(path))
+        Self::from_section(&settings().in_file(path).load())
     }
 
     #[cfg(test)]
     fn save_at(self, path: &Path) -> std::io::Result<()> {
-        settings_store::update_section_at(path, SECTION, self.values())
+        settings().in_file(path).update(self.values())
     }
 }
 
@@ -121,7 +129,8 @@ impl PlaybackPreferences {
 /// ignored; a malformed settings file yields an empty history like every
 /// other Tilo preference reader.
 pub fn load_recent_history() -> Vec<RecentMedia> {
-    settings_store::load_section(SECTION)
+    settings()
+        .load()
         .get(RECENT_HISTORY)
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |items| {
@@ -149,18 +158,18 @@ fn save_recent_history_to(entries: &[RecentMedia], path: Option<&Path>) -> std::
         .into_iter()
         .collect();
     if let Some(path) = path {
-        settings_store::update_section_at(path, SECTION, values)
+        settings().in_file(path).update(values)
     } else {
-        settings_store::update_section(SECTION, values)
+        settings().update(values)
     }
 }
 
 #[cfg(test)]
 fn load_recent_history_at(path: &Path) -> Vec<RecentMedia> {
-    settings_store::load_at(path)
-        .get(SECTION)
-        .and_then(Value::as_object)
-        .and_then(|section| section.get(RECENT_HISTORY))
+    settings()
+        .in_file(path)
+        .load()
+        .get(RECENT_HISTORY)
         .and_then(Value::as_array)
         .map_or_else(Vec::new, |items| {
             items
@@ -187,8 +196,8 @@ mod tests {
         std::env::temp_dir().join(format!(
             "tilo-video-player-preferences-{}-{}-{}.json",
             std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
+            ui::time::wall()
+                .duration_since(ui::time::UNIX_EPOCH)
                 .expect("system clock after epoch")
                 .as_nanos(),
             SEQUENCE.fetch_add(1, Ordering::Relaxed),
@@ -205,18 +214,21 @@ mod tests {
                 loop_enabled: true,
             };
             initial.save_at(&path).expect("save preferences");
-            settings_store::update_section_at(
-                &path,
-                "appearance",
-                [("theme".to_string(), Value::String("dark".to_string()))]
-                    .into_iter()
-                    .collect(),
-            )
-            .expect("save unrelated section");
+            ui::storage::Settings::section("appearance")
+                .in_file(&path)
+                .update(
+                    [("theme".to_string(), Value::String("dark".to_string()))]
+                        .into_iter()
+                        .collect(),
+                )
+                .expect("save unrelated section");
 
             assert_eq!(PlaybackPreferences::load_at(&path), initial);
             assert_eq!(
-                settings_store::str_at(&settings_store::load_at(&path), "appearance", "theme"),
+                ui::storage::Settings::section("appearance")
+                    .in_file(&path)
+                    .string("theme")
+                    .as_deref(),
                 Some("dark")
             );
             std::fs::remove_file(path).ok();

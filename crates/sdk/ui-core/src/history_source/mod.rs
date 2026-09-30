@@ -50,7 +50,7 @@ pub use authors::{
 pub use compare::{CompareError, HistoryComparison, compare_entries};
 pub use detail::{HistoryResourceTarget, HistorySelectionDetail};
 pub use digest::{ActivityBrief, ActivityBriefAction, ActivityDigest};
-pub use facets::HistoryFacetIndex;
+pub use facets::{HistoryFacetIndex, op_class_label};
 pub use groups::{
     GROUPS_KEY, clear_name, close_range, is_group_marker, merge_named_ranges, move_named_boundary,
     name_range, read_named_ranges, split_named_range,

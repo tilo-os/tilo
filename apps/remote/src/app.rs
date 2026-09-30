@@ -735,7 +735,7 @@ pub struct RemoteApp {
     rail_snap: Option<bool>,
     /// Wall-clock of the last rail animation advance, so the eased slide is
     /// frame-rate independent regardless of how often the host repaints.
-    last_tick: std::time::Instant,
+    last_tick: ui::time::Instant,
     /// System motion preference. The rail keeps the same spatial model, but
     /// snaps between endpoints when motion is reduced.
     motion_reduced: bool,
@@ -1003,7 +1003,7 @@ impl RemoteApp {
             rail: FlapState::open_when_docked(),
             rail_layout: SplitLayout::Docked,
             rail_snap: None,
-            last_tick: std::time::Instant::now(),
+            last_tick: ui::time::now(),
             motion_reduced: false,
             tooltips: TooltipHost::new(),
         }
@@ -1567,7 +1567,7 @@ impl RemoteApp {
                     Err(e) => return LiveSession::Error(e.to_string()),
                 };
                 let user = if c.user.is_empty() {
-                    std::env::var("USER").unwrap_or_else(|_| "root".into())
+                    tilo_paths::session::user_name().unwrap_or_else(|| "root".into())
                 } else {
                     c.user.clone()
                 };
@@ -2708,7 +2708,7 @@ impl Widget for RemoteApp {
         // settling, keep the repaint gate open so the host pumps the next
         // frame; the dt is real elapsed time so the slide is frame-rate
         // independent.
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let dt = (now - self.last_tick).as_secs_f64().min(0.1);
         self.last_tick = now;
         if self.motion_reduced {
@@ -3908,7 +3908,7 @@ impl RemoteApp {
                 }),
                 _ => None,
             });
-        if self.tooltips.on_pointer(tip, std::time::Instant::now()) {
+        if self.tooltips.on_pointer(tip, ui::time::now()) {
             self.dirty = true;
         }
         // A focused field tracks the pointer so a drag extends its

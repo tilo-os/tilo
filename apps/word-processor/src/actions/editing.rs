@@ -34,7 +34,7 @@ use tilo_actions::{
     ExecutionLocus, ParamType, Resource,
 };
 
-use tilo_document::BodyOrder;
+use tilo_document::{BodyOrder, ClipAttr};
 
 use super::participant::{FindState, ParticipantView, PendingCaret, ViewPoint};
 use super::{
@@ -787,15 +787,21 @@ impl MarkTarget {
 
     fn toggle(&self, mark: InlineMark) -> EditOutcome {
         let active = self.active.get(mark.index()).copied().unwrap_or(false);
-        let value = (!active).then_some(MarkVal::Bool(true));
+        self.turn(mark, !active)
+    }
+
+    /// Turn `mark` on or off over the selection whatever it covers now, so
+    /// repeating it changes nothing.
+    fn turn(&self, mark: InlineMark, on: bool) -> EditOutcome {
+        let value = on.then_some(MarkVal::Bool(true));
         let (ranges, also_clear) = match mark.sibling() {
             None => (&self.selection_blocks, Vec::new()),
             Some(sibling) => (
                 &self.font_ranges,
-                if active {
-                    Vec::new()
-                } else {
+                if on {
                     vec![sibling.name().to_owned()]
+                } else {
+                    Vec::new()
                 },
             ),
         };
@@ -1500,7 +1506,7 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
             .map_err(|error| EditingError::Invalid(format!("Markdown: {error}")))?;
     }
     let snapshot = tilo_doc::model::materialize(&scratch, &containers);
-    let blocks: Vec<ClipBlock> = snapshot
+    let mut blocks: Vec<ClipBlock> = snapshot
         .blocks
         .into_iter()
         .map(|block| {
@@ -1512,7 +1518,20 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                 Some(tilo_doc::AttrVal::Bool(value)) => Some(*value),
                 _ => None,
             };
-            let text_kind = matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item");
+            let cell = block.kind == "cell";
+            let mut attrs = std::collections::BTreeMap::default();
+            if cell {
+                if let Some(tilo_doc::AttrVal::Str(table)) = block.attrs.get("table") {
+                    attrs.insert("table".to_owned(), ClipAttr::Str(table.clone()));
+                }
+                for key in ["row", "col"] {
+                    if let Some(value) = int(key) {
+                        attrs.insert(key.to_owned(), ClipAttr::Int(value));
+                    }
+                }
+            }
+            let text_kind =
+                cell || matches!(block.kind.as_str(), "paragraph" | "heading" | "list_item");
             ClipBlock {
                 kind: if text_kind {
                     block.kind.clone()
@@ -1531,13 +1550,25 @@ fn markdown_clip_blocks(markdown: &str) -> Result<Vec<ClipBlock>, EditingError> 
                 level: int("level"),
                 ordered: flag("ordered"),
                 align: None,
-                attrs: std::collections::BTreeMap::default(),
+                attrs,
                 text: block.text,
             }
         })
         .collect();
     if blocks.is_empty() {
         return Err(EditingError::Invalid("nothing to paste".into()));
+    }
+    // What followed the caret continues below the table, not in its last cell.
+    if blocks.last().is_some_and(|block| block.kind == "cell") {
+        blocks.push(ClipBlock {
+            kind: "paragraph".to_owned(),
+            text: String::new(),
+            marks: Vec::new(),
+            level: None,
+            ordered: None,
+            align: None,
+            attrs: std::collections::BTreeMap::default(),
+        });
     }
     Ok(blocks)
 }
@@ -1817,7 +1848,7 @@ pub(super) fn add_operations(
                 },
             )
             .with_description(
-                "Bold/italic/underline/strike your selection (super/sub also the caret paragraph)",
+                "Flip bold/italic/underline/strike on your selection, off where it covers all of it (super/sub also the caret paragraph); set-mark with on sets it without flipping",
             ),
         ),
         "toggle-mark.v1",
@@ -1830,12 +1861,17 @@ pub(super) fn add_operations(
             ActionSpec::typed(
                 op::SET_MARK,
                 "Set text format",
-                "font, size, color or highlight",
+                "strong, em, underline, strike, super or sub with on; font, size, color or highlight with value",
                 locus(),
                 vec![
-                    ActionParam::required_owned("name", ParamType::Text, "The valued inline mark")
-                        .with_choices(VALUED_MARKS),
-                    ActionParam::required_owned(
+                    ActionParam::required_owned("name", ParamType::Text, "The inline mark")
+                        .with_choices(InlineMark::ALL.map(InlineMark::name).into_iter().chain(VALUED_MARKS)),
+                    ActionParam::optional_owned(
+                        "on",
+                        ParamType::Boolean,
+                        "strong, em, underline, strike, super, sub: true sets it, false removes it",
+                    ),
+                    ActionParam::optional_owned(
                         "value",
                         ParamType::Text,
                         "font: sans|serif|mono; size: points 6-200; color/highlight: #rrggbb",
@@ -1846,6 +1882,17 @@ pub(super) fn add_operations(
                         return refused(ContextRequirement::Caret);
                     };
                     let name = args.text("name").unwrap_or_default();
+                    if let Some(mark) = InlineMark::from_name(name) {
+                        let Some(on) = args.boolean("on") else {
+                            return invalid("on is required: true sets the mark, false removes it");
+                        };
+                        return match setter.turn(mark, on) {
+                            (actions, _) if actions.is_empty() => {
+                                refused(ContextRequirement::Selection)
+                            }
+                            outcome => single(Ok(outcome), "nothing to format"),
+                        };
+                    }
                     match mark_value(name, args.text("value").unwrap_or_default()) {
                         Ok(value) => single(Ok(setter.set(name, Some(value))), "nothing to format"),
                         Err(reason) => invalid(reason),
@@ -1853,7 +1900,7 @@ pub(super) fn add_operations(
                 },
             )
             .with_description(
-                "Set font, size, colour or highlight on your selection, or the caret paragraph",
+                "Set formatting on your selection whatever it has now: bold/italic/underline/strike on or off, or font, size, colour or highlight (super/sub and valued marks also the caret paragraph)",
             ),
         ),
         "set-mark.v1",
@@ -2019,7 +2066,7 @@ pub(super) fn add_operations(
                     }
                 },
             )
-            .with_description("Paste text or Markdown at your caret, replacing your selection"),
+            .with_description("Paste text or Markdown (headings, lists, pipe tables) at your caret, replacing your selection"),
         ),
         "paste.v1",
     );
@@ -3377,6 +3424,65 @@ mod tests {
     }
 
     #[test]
+    fn markdown_table_pastes_as_a_table_of_this_document() {
+        let (mut state, _, ids) = writer(&["intro outro"]);
+        let md = "| Person | Blocked |\n| --- | --- |\n| Maya | no |\n";
+        for _ in 0..2 {
+            let (actions, _) = paste(
+                &at(&ids[0], 6),
+                &state.doc,
+                &PasteContent::Markdown(md.into()),
+            )
+            .unwrap();
+            apply_all(&mut state.doc, &actions);
+        }
+        let c = tilo_doc::model::open(&state.doc, &automerge::ROOT).unwrap();
+        let blocks = tilo_doc::model::materialize(&state.doc, &c).blocks;
+        let rows: Vec<_> = blocks
+            .iter()
+            .map(|block| {
+                let attr = |key: &str| match block.attrs.get(key) {
+                    Some(tilo_doc::AttrVal::Int(value)) => value.to_string(),
+                    Some(tilo_doc::AttrVal::Str(value)) => value.clone(),
+                    _ => String::new(),
+                };
+                (
+                    block.kind.as_str(),
+                    block.text.as_str(),
+                    attr("row"),
+                    attr("col"),
+                )
+            })
+            .collect();
+        let cell = |text, row: &str, col: &str| ("cell", text, row.to_owned(), col.to_owned());
+        let para = |text| ("paragraph", text, String::new(), String::new());
+        assert_eq!(
+            rows,
+            [
+                para("intro "),
+                cell("Person", "0", "0"),
+                cell("Blocked", "0", "1"),
+                cell("Maya", "1", "0"),
+                cell("no", "1", "1"),
+                para(""),
+                cell("Person", "0", "0"),
+                cell("Blocked", "0", "1"),
+                cell("Maya", "1", "0"),
+                cell("no", "1", "1"),
+                para("outro"),
+            ]
+        );
+        let tables: std::collections::BTreeSet<_> = blocks
+            .iter()
+            .filter_map(|block| match block.attrs.get("table") {
+                Some(tilo_doc::AttrVal::Str(table)) => Some(table.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tables.len(), 2, "each paste is its own table: {tables:?}");
+    }
+
+    #[test]
     fn spelling_suggestion_is_one_splice_and_moves_a_later_caret() {
         let (mut state, _, ids) = writer(&["teh cat sat"]);
         let view = at(&ids[0], 7);
@@ -3461,6 +3567,65 @@ mod tests {
     }
 
     #[test]
+    fn set_mark_on_keeps_bold_that_a_toggle_would_remove() {
+        let (mut state, _, ids) = writer(&["Deadline"]);
+        let view = sel((&ids[0], 0), (&ids[0], 8));
+        let (bold, _) = toggle_mark(&view, &state.doc, InlineMark::Strong).unwrap();
+        apply_all(&mut state.doc, &bold);
+        let doc = &state.doc;
+        let line = vec![Span {
+            block: ids[0].clone(),
+            start: 0,
+            end: 8,
+        }];
+        let strong = |value| {
+            encode(&set_mark_action(
+                RegionKind::Body,
+                line.clone(),
+                "strong",
+                value,
+                vec![],
+            ))
+        };
+        let set = |on| {
+            invoke(
+                &view,
+                doc,
+                op::SET_MARK,
+                serde_json::json!({"name": "strong", "on": on}),
+            )
+        };
+        assert_eq!(set(true), strong(Some(MarkVal::Bool(true))));
+        assert_eq!(
+            invoke(
+                &view,
+                doc,
+                op::TOGGLE_MARK,
+                serde_json::json!({"mark": "strong"})
+            ),
+            strong(None)
+        );
+        assert_eq!(set(false), strong(None));
+        let missing = invoke(
+            &view,
+            doc,
+            op::SET_MARK,
+            serde_json::json!({"name": "strong"}),
+        );
+        assert_eq!(
+            missing.type_id,
+            tilo_actions::resource::INVALID_ARGUMENTS_TYPE
+        );
+        let caret_only = invoke(
+            &at(&ids[0], 1),
+            doc,
+            op::SET_MARK,
+            serde_json::json!({"name": "em", "on": true}),
+        );
+        assert!(caret_only.payload.starts_with(b"needs-selection"));
+    }
+
+    #[test]
     fn valued_and_exclusive_marks_fall_back_to_the_caret_block() {
         let (state, _, ids) = writer(&["alpha", "beta"]);
         let view = at(&ids[1], 2);
@@ -3541,14 +3706,14 @@ mod tests {
         doc.commit();
         let doc = &doc;
         let view = at(&ids[400], 4);
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..30 {
             type_text(&view, doc, "x").unwrap();
             delete(&view, doc, DeleteDirection::Backward, 1).unwrap();
             delete(&view, doc, DeleteDirection::Forward, 1).unwrap();
         }
         let local = started.elapsed();
-        let started = std::time::Instant::now();
+        let started = ui::time::now();
         for _ in 0..20 {
             let c = tilo_doc::model::open(doc, &automerge::ROOT).unwrap();
             std::hint::black_box(tilo_doc::model::region_blocks_in_order(

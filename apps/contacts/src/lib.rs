@@ -52,6 +52,14 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(ContactsApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.contacts", app_root)
+        .history(&framework_history::HISTORY)
+        .component_actions(actions::register)
+        .as_definition("Contacts")
+}
+
 #[cfg(test)]
 mod framework_history_tests;
 

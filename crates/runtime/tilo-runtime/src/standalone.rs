@@ -90,6 +90,7 @@ impl Standalone {
         workspace.adopt(&actor)?;
         let workspace = Arc::new(workspace);
         let apps = Arc::new(apps::Apps::from_env(root, &room_id));
+        serve_device_grants(root, &apps);
         let channels = Arc::new(Mutex::new(channels(root)));
         let fanout = Arc::new(FanoutState::new());
         stage("opening the joined rooms and channel keys");
@@ -291,6 +292,23 @@ impl tilo_action_broker::peer_actions::CertificateAuthority for Certificates {
     fn governs(&self, room: uuid::Uuid, device: Option<&[u8; 32]>) -> bool {
         uuid::Uuid::parse_str(&self.room) == Ok(room) && device.is_none_or(|d| *d == self.device)
     }
+}
+
+/// The person's camera and microphone decisions, as actions on the
+/// profile's console socket (macOS, where the runtime brokers capture). A
+/// socket that cannot be served leaves the runtime running without it.
+fn serve_device_grants(root: &Path, apps: &apps::Apps) {
+    #[cfg(target_os = "macos")]
+    {
+        let served = apps.device_grants().and_then(|grants| {
+            crate::device_grants::serve(grants, &root.join(crate::CONSOLE_SOCKET))
+        });
+        if let Err(error) = served {
+            tracing::warn!(%error, "the device grants are not served on the console socket");
+        }
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (root, apps);
 }
 
 /// The broker's channel state, with the profile's durable collaboration

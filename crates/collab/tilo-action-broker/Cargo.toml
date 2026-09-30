@@ -7,13 +7,12 @@ publish.workspace = true
 [features]
 test-support = []
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 # Saves the launchable action catalogue across restarts.
-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
+tilo-atomic-file = { path = "../../system/atomic-file", features = ["json"] }
 wire-frame = { path = "../../system/wire-frame", features = ["tokio"] }
 launcher = { path = "../../packaging/launcher" }
-tilo-agent-control-protocol = { path = "../../agent/control-protocol" }
 parking_lot.workspace = true
 automerge.workspace = true
 runtime-identity = { path = "../../runtime/runtime-identity" }
@@ -56,7 +55,6 @@ workspace-hack = { version = "0.1" }
 iroh.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../dev/test-env" }
-tilo-workspace-host = { path = "../../hosting/tilo-workspace-host" }
 word-processor = { path = "../../../apps/word-processor" }
 ed25519-dalek.workspace = true
 tilo-automerge.workspace = true

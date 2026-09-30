@@ -117,7 +117,7 @@ impl SessionStore {
         if bytes.len() > 300_000 {
             return Err("Saved browser session exceeds size limit".into());
         }
-        atomic_file::write_with_mode(&self.root.join("session.json"), &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(&self.root.join("session.json"), &bytes, 0o600)
             .map_err(|e| e.to_string())
     }
 }

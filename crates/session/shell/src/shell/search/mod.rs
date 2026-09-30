@@ -680,7 +680,9 @@ impl SearchRegistry {
     /// Resolve one exact provider-local id under the same scope and kind
     /// routing used by search. This keeps invocation attached to the source
     /// that disclosed the id while allowing that provider to revalidate its
-    /// current retained state.
+    /// current retained state: its index is refreshed first, because an
+    /// invocation need not follow any search or open palette that would
+    /// otherwise take in a finished build.
     pub fn resolve(
         &self,
         provider_id: &str,
@@ -707,22 +709,17 @@ impl SearchRegistry {
         if wanted.is_empty() {
             return None;
         }
-        provider
-            .resolve(
-                id,
-                SearchContext {
-                    needle: "",
-                    wanted: &wanted,
-                    chrome: args.chrome,
-                    doc: args.doc,
-                    doc_root: args.doc_root,
-                },
-            )
-            .filter(|result| {
-                result.provider_id == provider_id
-                    && result.id == id
-                    && wanted.contains(&result.kind)
-            })
+        let ctx = SearchContext {
+            needle: "",
+            wanted: &wanted,
+            chrome: args.chrome,
+            doc: args.doc,
+            doc_root: args.doc_root,
+        };
+        provider.refresh_search_index(&ctx);
+        provider.resolve(id, ctx).filter(|result| {
+            result.provider_id == provider_id && result.id == id && wanted.contains(&result.kind)
+        })
     }
 
     /// Poll/start retained index maintenance without routing a query. This is
@@ -1117,9 +1114,67 @@ impl SearchRegistry {
     /// ~10 rows, and an outscoring kind (forty file hits) can otherwise
     /// push a correctly-ranked app off the bottom. A lone group is exempt
     /// — narrowing to one kind means "show me all of these".
+    ///
+    /// With nothing typed and no kind chosen, the desktop-wide palette offers
+    /// [`jump_back_in`] instead of listing everything; scoped to one app it
+    /// still lists that app's commands.
     pub fn query_grouped(&self, args: &QueryArgs<'_>, row_budget: usize) -> Vec<KindGroup> {
+        if args.needle.trim().is_empty()
+            && args.wanted_kinds.is_empty()
+            && args.scope != SearchScope::ActiveApp
+        {
+            return jump_back_in(&self.query(args));
+        }
         system::group(self.query(args), row_budget)
     }
+}
+
+/// Rows per group the empty palette shows.
+const JUMP_BACK_IN_GROUP_ROWS: usize = 4;
+
+/// The starting points the empty palette offers after windows and apps.
+const JUMP_BACK_IN_SUGGESTIONS: [&str; 3] =
+    ["room.activity.open", "peer.invite", "shortcut-help.toggle"];
+
+/// The palette before anything is typed: windows to go back to, apps, and a
+/// few ways in. It is never the full inventory, and never offers a row that
+/// changes something: close, move and revoke need their verb typed. Agents
+/// still enumerate everything through [`SearchRegistry::query_exhaustive`].
+fn jump_back_in(rows: &[SearchResult]) -> Vec<KindGroup> {
+    let windows = rows
+        .iter()
+        .filter(|row| matches!(row.kind, ResourceKind::Tab | ResourceKind::WindowGroup))
+        .filter(|row| row.operation_kind == tilo_actions::OperationKind::View)
+        .take(JUMP_BACK_IN_GROUP_ROWS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let apps = rows
+        .iter()
+        .filter(|row| row.kind == ResourceKind::Application)
+        .take(JUMP_BACK_IN_GROUP_ROWS)
+        .cloned()
+        .collect::<Vec<_>>();
+    let suggestions = JUMP_BACK_IN_SUGGESTIONS
+        .iter()
+        .filter_map(|id| {
+            rows.iter()
+                .find(|row| row.kind == ResourceKind::Action && row.id == *id)
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    [
+        (ResourceKind::Tab, windows),
+        (ResourceKind::Application, apps),
+        (ResourceKind::Action, suggestions),
+    ]
+    .into_iter()
+    .filter(|(_, results)| !results.is_empty())
+    .map(|(kind, results)| KindGroup {
+        kind,
+        total: results.len(),
+        results,
+    })
+    .collect()
 }
 
 fn scope_allows(

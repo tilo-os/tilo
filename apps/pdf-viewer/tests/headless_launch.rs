@@ -121,7 +121,7 @@ fn run(root: &Path, name: &str, source: &Path, extra: Vec<Value>) -> (Value, Val
         if let Some(status) = child.try_wait().unwrap() {
             break status;
         }
-        if std::time::Instant::now() >= deadline {
+        if ui::time::now() >= deadline {
             child.kill().unwrap();
             child.wait().unwrap();
             panic!(

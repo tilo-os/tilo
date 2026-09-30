@@ -37,6 +37,8 @@ use ui::{
 };
 
 const COMPACT_TOOLBAR_BREAKPOINT: f64 = 1_060.0;
+/// The operation a toolkit button's invocation carries.
+const CONTROL_OPERATION_TYPE: &str = "tilo.ui.control.invoke";
 
 fn compact_toolbar_for(width: f64) -> bool {
     width < COMPACT_TOOLBAR_BREAKPOINT
@@ -71,6 +73,9 @@ pub struct ImageEditorApp {
     serial: u64,
     notice: String,
     picker: Option<ui::portal::PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    contents_picker: Option<ui::portal::ContentsChannel>,
+    save_contents: Option<ui::portal::SaveChannel>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_result: Option<tilo_actions::InvocationUpdate>,
     preview: Option<Image>,
@@ -188,6 +193,8 @@ impl ImageEditorApp {
             serial: 0,
             notice: "Every step is editable. Changes update the final image automatically.".into(),
             picker: None,
+            contents_picker: None,
+            save_contents: None,
             resource_invocation: None,
             resource_result: None,
             preview: None,
@@ -677,11 +684,53 @@ impl ImageEditorApp {
         self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
         true
     }
+    /// Adopt an image chosen by contents: kept in the app's state and named
+    /// by the project's source step.
+    fn open_contents(&mut self, state: &mut AutoCommit, name: &str, bytes: &[u8]) -> bool {
+        let readable = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()
+            .and_then(|reader| reader.into_dimensions().ok())
+            .is_some();
+        if !readable {
+            self.notice = "That file is not a supported image".into();
+            return false;
+        }
+        crate::web_file::remember(name, bytes);
+        self.checkpoint();
+        if let Some(Operation::Source { path: source }) = self.project.operations.get_mut("source")
+        {
+            *source = format!("{}{name}", crate::engine::OPENED_SOURCE);
+        }
+        self.project.name = std::path::Path::new(name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("Untitled image")
+            .into();
+        ProjectDoc::write(state, &self.project);
+        // The kept bytes may be a new image under the same name.
+        self.rendered_project = None;
+        self.notice = "Image opened. Add an adjustment or revise any existing step.".into();
+        true
+    }
     fn request_open(&mut self) {
-        if self.picker.is_some() {
+        if self.picker.is_some() || self.contents_picker.is_some() {
             return;
         }
         self.notice = "Waiting for the system file picker…".into();
+        if !crate::web_file::native_paths() {
+            self.contents_picker = Some(
+                ui::portal::PickRequest::open("Open an image", "Open")
+                    .filter(
+                        ui::portal::FileFilter::new("Images")
+                            .mimetype("image/png")
+                            .mimetype("image/jpeg")
+                            .mimetype("image/webp"),
+                    )
+                    .send_contents(),
+            );
+            return;
+        }
         self.picker = Some(
             ui::portal::PickRequest::open("Open an image", "Open")
                 .thread_name("image-editor-portal-open")
@@ -695,7 +744,48 @@ impl ImageEditorApp {
                 .send(),
         );
     }
+    fn poll_contents(&mut self, state: &mut AutoCommit) {
+        if let Some(rx) = self.contents_picker.as_ref() {
+            match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(ui::portal::ContentsOutcome::Picked(files)) => {
+                    self.contents_picker = None;
+                    if let Some(file) = files.into_iter().next() {
+                        let _ = self.open_contents(state, &file.name, &file.bytes);
+                    }
+                }
+                Ok(ui::portal::ContentsOutcome::Cancelled) => {
+                    self.contents_picker = None;
+                    self.notice = "Open cancelled".into();
+                }
+                Ok(ui::portal::ContentsOutcome::Failed(message)) => {
+                    self.contents_picker = None;
+                    self.notice = format!("Could not open file picker: {message}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.contents_picker = None,
+            }
+        }
+        if let Some(rx) = self.save_contents.as_ref() {
+            match rx.try_recv() {
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Ok(ui::portal::SaveOutcome::Saved) => {
+                    self.save_contents = None;
+                    self.notice = "Exported".into();
+                }
+                Ok(ui::portal::SaveOutcome::Cancelled) => {
+                    self.save_contents = None;
+                    self.notice = "Export cancelled".into();
+                }
+                Ok(ui::portal::SaveOutcome::Failed(message)) => {
+                    self.save_contents = None;
+                    self.notice = format!("Export failed: {message}");
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.save_contents = None,
+            }
+        }
+    }
     fn poll_picker(&mut self, state: &mut AutoCommit) {
+        self.poll_contents(state);
         let Some(rx) = self.picker.as_ref() else {
             return;
         };
@@ -774,6 +864,21 @@ impl ImageEditorApp {
     }
 
     fn export_and_notice(&mut self) {
+        if !crate::web_file::native_paths() {
+            if self.save_contents.is_none() {
+                match crate::engine::export_png(&self.project) {
+                    Ok(bytes) => {
+                        let name = format!("{}-edited.png", self.project.name);
+                        self.save_contents = Some(
+                            ui::portal::PickRequest::save("Export image", "Export", &name)
+                                .send_save_contents(bytes),
+                        );
+                    }
+                    Err(error) => self.notice = format!("Export failed: {error:?}"),
+                }
+            }
+            return;
+        }
         match self.export_beside_source() {
             Ok(notice) => self.notice = notice,
             Err(error) => self.notice = error,
@@ -790,8 +895,7 @@ impl ImageEditorApp {
         });
         self.original_preview = match self.project.operations.get("source") {
             Some(Operation::Source { path }) if !path.is_empty() => {
-                image::open(path).ok().map(|image| {
-                    let rgba = image.into_rgba8();
+                crate::engine::open_source(path).ok().map(|rgba| {
                     let (w, h) = rgba.dimensions();
                     Image::from_rgba(std::sync::Arc::from(rgba.into_raw()), w, h)
                         .with_alt("Original image preview")
@@ -1200,6 +1304,22 @@ impl ImageEditorApp {
             },
         );
     }
+    /// The toolbar and empty-state buttons, which the app holds rather than
+    /// exposing as children; the host reaches their actions through these.
+    fn retained_buttons(&self) -> Vec<&Button> {
+        self.toolbar
+            .iter()
+            .map(|(_, button)| button)
+            .chain(std::iter::once(&self.empty_open))
+            .collect()
+    }
+    fn retained_buttons_mut(&mut self) -> Vec<&mut Button> {
+        self.toolbar
+            .iter_mut()
+            .map(|(_, button)| button)
+            .chain(std::iter::once(&mut self.empty_open))
+            .collect()
+    }
     fn run_toolbar(&mut self, state: &mut AutoCommit, command: ToolbarCommand) {
         if self.more_open && !matches!(command, ToolbarCommand::More) {
             self.more_open = false;
@@ -1257,6 +1377,10 @@ impl Widget for ImageEditorApp {
         if self.indexed_project != self.project {
             self.search.refresh(&self.project);
             self.indexed_project = self.project.clone();
+        }
+        // A button's action arrives through the host between events.
+        if let Some(command) = self.toolbar_pending.take() {
+            self.run_toolbar(state, command);
         }
         self.poll_picker(state);
         self.rebuild_preview();
@@ -2711,7 +2835,7 @@ impl Widget for ImageEditorApp {
         true
     }
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::actions::OPERATION_TYPE]
+        &[crate::actions::OPERATION_TYPE, CONTROL_OPERATION_TYPE]
     }
     fn start_operation(
         &mut self,
@@ -2724,6 +2848,13 @@ impl Widget for ImageEditorApp {
         };
         if let Some(started) = ui::widget::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
+        }
+        if request.type_id == CONTROL_OPERATION_TYPE {
+            for button in self.retained_buttons_mut() {
+                if let Some(started) = button.start_operation(op, doc, path)? {
+                    return Ok(Some(started));
+                }
+            }
         }
         if let Some(started) = self.admit_resource_operation(
             request.invocation,
@@ -3050,26 +3181,68 @@ impl ui::search::capability::SearchSource for ImageEditorApp {
 impl ui::resources::PublishesResources for ImageEditorApp {
     /// Standalone / `--shots` / unit tests publish through
     /// [`tilo_resource::publish`]. When the framework hosts the surface, that
-    /// door already owns the project — crop drag and in-flight export stay on
-    /// the widget and are not ActionSpec resources today.
-    fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::Resource> {
-        if self.actions.is_hosted() {
-            return Vec::new();
-        }
-        let label = if self.project.name.is_empty() {
-            "Image Editor"
+    /// door already owns the project. Toolbar buttons stay addressable either way.
+    fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
+        let mut resources = if self.actions.is_hosted() {
+            Vec::new()
         } else {
-            self.project.name.as_str()
+            let label = if self.project.name.is_empty() {
+                "Image Editor"
+            } else {
+                self.project.name.as_str()
+            };
+            vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
+                crate::actions::PROJECT_RESOURCE_ID,
+                label,
+                &self.project,
+            )]
         };
-        vec![ui::tilo_resource::publish::<crate::resource::ImageEditor>(
-            crate::actions::PROJECT_RESOURCE_ID,
-            label,
-            &self.project,
-        )]
+        resources.extend(
+            self.retained_buttons()
+                .into_iter()
+                .flat_map(|button| ui::resources::resources(button, doc)),
+        );
+        resources
     }
 }
 
 impl ui::widget::controls::ActionControls for ImageEditorApp {
+    /// The toolbar's retained buttons are not all laid-out children.
+    fn install_control_custody(
+        &mut self,
+        domain: &ui::ControlDomain,
+        attachment: ui::control_custody::CustodyAttachment,
+    ) {
+        for button in self.retained_buttons_mut() {
+            ui::widget::controls::install_control_custody(button, domain, attachment);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::install_control_custody(child, domain, attachment);
+        }
+    }
+    fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
+        if let Some(invocation) = self
+            .retained_buttons_mut()
+            .into_iter()
+            .find_map(|button| ui::widget::controls::take_control_invocation(button))
+        {
+            return Some(invocation);
+        }
+        self.children_mut()
+            .into_iter()
+            .find_map(ui::widget::controls::take_control_invocation)
+    }
+    fn refresh_control_action_availability(
+        &mut self,
+        allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
+    ) {
+        for button in self.retained_buttons_mut() {
+            ui::widget::controls::refresh_control_action_availability(button, allowed);
+        }
+        for child in self.children_mut() {
+            ui::widget::controls::refresh_control_action_availability(child, allowed);
+        }
+    }
     fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let mut bindings = ui::widget::semantic_action_bindings(self.accessibility());
         for (_, button) in &self.toolbar {
@@ -3223,6 +3396,28 @@ mod portal_tests {
             &automerge::ROOT,
         ));
         assert!(app.picker.is_some());
+    }
+
+    #[test]
+    fn clicking_open_through_the_host_asks_for_an_image() {
+        let (services, recorder) = ui::host::HostServices::recording();
+        let _host = ui::host::enter(&services);
+        let mut harness = ui::headless::FrameHarness::new(
+            ui::State::new(),
+            Box::new(ImageEditorApp::new()),
+            (1280, 800),
+        );
+        harness.relayout();
+        let centre = harness
+            .controls()
+            .into_iter()
+            .find(|control| control.name.as_deref() == Some("Open image"))
+            .and_then(|control| control.bounds)
+            .expect("the empty state's Open image button is placed")
+            .center();
+        harness.click_at(centre.x, centre.y);
+        harness.relayout();
+        assert_eq!(recorder.pick_requests().len(), 1);
     }
 
     /// Mount `app` in the shared frame harness and run its first frame at

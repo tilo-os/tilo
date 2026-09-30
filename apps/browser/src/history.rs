@@ -4,7 +4,7 @@
 //! navigation calls [`History::record`], which de-duplicates by URL
 //! (bumping the visit count and refreshing the title + timestamp) so the
 //! list stays one-row-per-page. It persists as a JSON array under
-//! `xdg_paths::data_dir()/tilo-browser/history.json`.
+//! `tilo_paths::data_dir()/tilo-browser/history.json`.
 //!
 //! [`History::suggest`] powers the address-bar overlay. It fuzzy-matches
 //! the query as a case-insensitive *subsequence* of each entry's title
@@ -371,7 +371,7 @@ fn bounded_text(value: &str, limit: usize) -> String {
 }
 
 /// Absolute path to the history file:
-/// `xdg_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
+/// `tilo_paths::data_dir()/tilo-browser/history.json`. `None` when the platform
 /// exposes no data directory. The legacy directory remains the canonical
 /// default until storage migration is explicit and crash-safe.
 pub fn history_path() -> Option<PathBuf> {

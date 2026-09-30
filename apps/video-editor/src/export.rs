@@ -363,12 +363,12 @@ pub fn audio_branch_desc(container: Container, muxer_name: &str) -> Option<Strin
 #[derive(Debug)]
 struct FlushWatch {
     last_len: u64,
-    last_progress: std::time::Instant,
+    last_progress: ui::time::Instant,
 }
 
 #[cfg(any(feature = "gst", test))]
 impl FlushWatch {
-    fn new(len: u64, now: std::time::Instant) -> Self {
+    fn new(len: u64, now: ui::time::Instant) -> Self {
         Self {
             last_len: len,
             last_progress: now,
@@ -377,7 +377,7 @@ impl FlushWatch {
 
     /// Record the output's current length. Returns whether it had grown,
     /// which is also what resets the clock.
-    fn observe_len(&mut self, len: u64, now: std::time::Instant) -> bool {
+    fn observe_len(&mut self, len: u64, now: ui::time::Instant) -> bool {
         if len == self.last_len {
             return false;
         }
@@ -387,11 +387,11 @@ impl FlushWatch {
     }
 
     /// Anything on the pipeline's bus is the pipeline being alive.
-    fn observe_activity(&mut self, now: std::time::Instant) {
+    fn observe_activity(&mut self, now: ui::time::Instant) {
         self.last_progress = now;
     }
 
-    fn stalled(&self, now: std::time::Instant, limit: std::time::Duration) -> bool {
+    fn stalled(&self, now: ui::time::Instant, limit: std::time::Duration) -> bool {
         now.duration_since(self.last_progress) >= limit
     }
 }
@@ -510,7 +510,9 @@ pub fn output_path(settings: &ExportSettings, project: &Project) -> std::path::P
         return std::path::PathBuf::from(full);
     }
     let dir = std::env::var_os("TILO_VE_EXPORT_DIR")
-        .map_or_else(std::env::temp_dir, std::path::PathBuf::from);
+        .map(std::path::PathBuf::from)
+        .or_else(tilo_paths::temp_dir)
+        .unwrap_or_default();
     dir.join(settings.suggested_filename(&project.name))
 }
 
@@ -615,19 +617,17 @@ pub fn start_export(
     let project = project.clone();
     let settings = *settings;
     let state = shared.clone();
-    let handle = std::thread::Builder::new()
-        .name("video-editor-export".into())
-        .spawn(move || {
-            let result = render(&project, settings, &destination, &state);
-            let status = match result {
-                Ok(path) => ExportStatus::Done { path },
-                Err(reason) => ExportStatus::Failed { reason },
-            };
-            if let Ok(mut slot) = state.outcome.lock() {
-                *slot = Some(status);
-            }
-        })
-        .ok();
+    let handle = ui::rt::spawn_thread("video-editor-export", move || {
+        let result = render(&project, settings, &destination, &state);
+        let status = match result {
+            Ok(path) => ExportStatus::Done { path },
+            Err(reason) => ExportStatus::Failed { reason },
+        };
+        if let Ok(mut slot) = state.outcome.lock() {
+            *slot = Some(status);
+        }
+    })
+    .ok();
     if handle.is_none()
         && let Ok(mut slot) = shared.outcome.lock()
     {
@@ -811,7 +811,7 @@ mod gst_pipeline {
         let fps = settings.frame_rate.fps();
         let out = destination.to_path_buf();
         if let Some(parent) = out.parent() {
-            std::fs::create_dir_all(parent).ok();
+            crate::files::create_dir_all(parent);
         }
         let out_str = out.to_string_lossy().into_owned();
 
@@ -899,7 +899,7 @@ mod gst_pipeline {
             if state.cancel.load(Ordering::Relaxed) {
                 let _ = pipeline.set_state(gst::State::Null);
                 // A half-written file must not be left looking like a render.
-                std::fs::remove_file(&out).ok();
+                crate::files::remove(&out);
                 return Err(super::CANCELLED.to_string());
             }
             let t = plan.time_of(i);
@@ -968,8 +968,8 @@ mod gst_pipeline {
             .ok_or_else(|| "export pipeline bus".to_string())?;
         let mut result = Ok(());
         let mut watch = FlushWatch::new(
-            std::fs::metadata(&out).map_or(0, |m| m.len()),
-            std::time::Instant::now(),
+            crate::files::metadata(&out).map_or(0, |m| m.len),
+            ui::time::now(),
         );
         loop {
             use gst::MessageView;
@@ -977,10 +977,10 @@ mod gst_pipeline {
                 result = Err(super::CANCELLED.to_string());
                 break;
             }
-            if let Ok(len) = std::fs::metadata(&out).map(|m| m.len()) {
-                watch.observe_len(len, std::time::Instant::now());
+            if let Ok(len) = crate::files::metadata(&out).map(|m| m.len) {
+                watch.observe_len(len, ui::time::now());
             }
-            if watch.stalled(std::time::Instant::now(), QUIET_LIMIT) {
+            if watch.stalled(ui::time::now(), QUIET_LIMIT) {
                 result = Err(format!(
                     "the muxer stopped writing {}s ago; giving up on the export",
                     QUIET_LIMIT.as_secs(),
@@ -992,7 +992,7 @@ mod gst_pipeline {
             let Some(msg) = bus.timed_pop(gst::ClockTime::from_mseconds(200)) else {
                 continue;
             };
-            watch.observe_activity(std::time::Instant::now());
+            watch.observe_activity(ui::time::now());
             match msg.view() {
                 MessageView::Eos(_) => break,
                 MessageView::Error(e) => {
@@ -1008,7 +1008,7 @@ mod gst_pipeline {
         }
         let _ = pipeline.set_state(gst::State::Null);
         if result.is_err() {
-            std::fs::remove_file(&out).ok();
+            crate::files::remove(&out);
         }
         result?;
 
@@ -1016,7 +1016,7 @@ mod gst_pipeline {
         // stand-in fills. It is a valid container and it is not the user's
         // work, so it is removed rather than handed back as a render.
         if expects_pictures && !any_real {
-            std::fs::remove_file(&out).ok();
+            crate::files::remove(&out);
             return Err(
                 "Cannot export: none of the timeline's footage could be decoded, so the \
                  file would have held stand-in frames rather than the picture."
@@ -1025,8 +1025,8 @@ mod gst_pipeline {
         }
 
         // Never report success unless a real, non-empty file exists.
-        match std::fs::metadata(&out) {
-            Ok(m) if m.len() > 0 => Ok(out_str),
+        match crate::files::metadata(&out) {
+            Ok(m) if m.len > 0 => Ok(out_str),
             Ok(_) => Err("export produced an empty file".to_string()),
             Err(e) => Err(format!("export wrote no file: {e}")),
         }
@@ -1058,10 +1058,10 @@ mod tests {
         // took longer lost a render that had already succeeded. What separates a
         // wedged pipeline from a slow one is whether anything is happening.
         {
-            use std::time::{Duration, Instant};
+            use ui::time::Duration;
 
             let limit = Duration::from_secs(120);
-            let t0 = Instant::now();
+            let t0 = ui::time::now();
             let mut w = FlushWatch::new(0, t0);
 
             // Four minutes of steady writing — twice the old cap — never stalls.
@@ -1230,8 +1230,8 @@ mod tests {
             // the encode runs, which is the whole point of moving it off the UI.
             let mut seen_rendering = false;
             let mut last = 0.0;
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(180);
-            while job.is_running() && std::time::Instant::now() < deadline {
+            let deadline = ui::time::now() + std::time::Duration::from_secs(180);
+            while job.is_running() && ui::time::now() < deadline {
                 if let ExportStatus::Rendering { progress } = job.status() {
                     seen_rendering = true;
                     assert!(
@@ -1286,7 +1286,7 @@ mod tests {
                 out.clone(),
             );
             // Let it get going, then stop it.
-            let start = std::time::Instant::now();
+            let start = ui::time::now();
             while job.is_running() && start.elapsed() < std::time::Duration::from_secs(20) {
                 if matches!(job.status(), ExportStatus::Rendering { progress } if progress > 0.0) {
                     break;

@@ -91,7 +91,7 @@ pub fn discover() -> Vec<KnownFolder> {
 
 #[cfg(target_os = "linux")]
 fn discover_one(kind: KnownFolderKind) -> KnownFolder {
-    let config_path = xdg_paths::xdg::config_home()
+    let config_path = tilo_paths::xdg::config_home()
         .unwrap_or_default()
         .join("user-dirs.dirs");
     let config = match std::fs::read_to_string(&config_path) {

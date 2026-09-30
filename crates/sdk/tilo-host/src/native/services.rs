@@ -5,6 +5,8 @@
 //!   `system_opener()` (the XDG portal on Linux, `NSOpenPanel`/`NSWorkspace`
 //!   on macOS, the Common Item Dialogs on Windows), or with
 //!   `TILO_SAVE_DIRECTORY` set, `tilo_dialogs::unattended_picker` over them;
+//!   handed the session shell's chooser connection (a session with no
+//!   portal), `tilo_dialogs::inherited_shell_picker` in front of either;
 //! - speech: the system speech stack via [`tts::default_speaker`];
 //! - notifications: `tilo_notify::system(app_id)`;
 //! - media sessions: MPRIS on the session bus (with the `mpris` feature);
@@ -42,11 +44,15 @@ pub fn services(app_id: Option<&str>) -> HostServices {
 #[cfg(not(target_os = "android"))]
 pub(crate) fn with_native_backends(services: HostServices) -> HostServices {
     // A session nobody sits at (a provider's guest) answers choosers itself.
-    let files = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
+    let unattended = std::env::var_os(tilo_dialogs::portal::SAVE_DIRECTORY_ENV)
         .filter(|directory| !directory.is_empty())
         .and_then(|directory| {
             tilo_dialogs::unattended_picker(directory.into(), services.files.clone())
-        })
+        });
+    // A session without a desktop portal draws choosers in its shell, and
+    // hands the unattended picker the ones nobody is there to answer.
+    let files = tilo_dialogs::inherited_shell_picker(unattended.clone())
+        .or(unattended)
         .unwrap_or_else(|| services.files.clone());
     HostServices {
         files,
@@ -96,6 +102,7 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         })
     }
     let set = |name: &str| std::env::var_os(name).is_some_and(|value| !value.is_empty());
+    let ui_set = |name: &str| crate::env::var_os(name).is_some_and(|value| !value.is_empty());
     let continuity_resume = text("TILO_CONTINUITY_RESUME_HEX").and_then(|hex| {
         crate::host::environment::decode_continuation(&hex, &text("TILO_CONTINUITY_RESUME_SCHEMA")?)
     });
@@ -131,10 +138,10 @@ pub fn process_environment() -> crate::host::HostEnvironment {
         locale: crate::host::environment::locale_from_vars(|name| std::env::var(name).ok()),
         desktop: text("XDG_CURRENT_DESKTOP"),
         diagnostics: crate::host::RunnerDiagnostics {
-            debug_overlay: std::env::var_os("QUICK_UI_DEBUG").is_some(),
-            perf_log: set("QUICK_UI_PERF"),
-            disable_scroll_fast_path: set("QUICK_UI_NO_SCROLL_OPT"),
-            disable_split_cache: set("QUICK_UI_NO_SPLIT_CACHE"),
+            debug_overlay: crate::env::var_os("TILO_UI_DEBUG").is_some(),
+            perf_log: ui_set("TILO_UI_PERF"),
+            disable_scroll_fast_path: ui_set("TILO_UI_NO_SCROLL_OPT"),
+            disable_split_cache: ui_set("TILO_UI_NO_SPLIT_CACHE"),
             gpu_timestamps: std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|v| v == "1"),
             gpu_dispatch_timestamps: std::env::var("VELLO_GPU_DISPATCH_TIMESTAMPS")
                 .is_ok_and(|v| v == "1"),

@@ -4,13 +4,10 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use super::nofollow::{metadata_nofollow, open_directory_nofollow};
 use cap_std::fs::Dir;
-
-#[cfg(not(target_os = "linux"))]
-use std::process::Command;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkipReason {
@@ -143,7 +140,7 @@ pub fn scan_folder_cancellable(root: &Path, cancelled: &AtomicBool) -> Result<Fo
     let mut pending = vec![PathBuf::new()];
     let mut pending_path_bytes = path_memory_cost(Path::new(""));
     let mut examined_entries = 0_u64;
-    let started = Instant::now();
+    let started = ui::time::now();
     let mut scan = empty_scan(root);
 
     while let Some(relative_directory) = pending.pop() {
@@ -306,121 +303,6 @@ pub fn pick_folder() -> ui::PortalChannel {
     ui::PickRequest::directory("Choose folder", "Choose").send()
 }
 
-/// The file choosers off Linux, where the imager ships without the desktop
-/// portal: the platform's own folder and disk-image dialogs, run on a worker
-/// thread. It serves the two requests the imager makes — a folder, and one
-/// disk image to open.
-#[cfg(not(target_os = "linux"))]
-pub struct PlatformDialogs;
-
-#[cfg(not(target_os = "linux"))]
-impl PlatformDialogs {
-    fn answered<T: Send + 'static>(outcome: T) -> std::sync::mpsc::Receiver<T> {
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = tx.send(outcome);
-        rx
-    }
-
-    const UNSUPPORTED: &'static str = "only folder and disk-image choosing is available";
-}
-
-#[cfg(not(target_os = "linux"))]
-impl ui::host::FilePicker for PlatformDialogs {
-    fn pick(&self, request: ui::PickRequest) -> ui::PortalChannel {
-        if request.is_multiple() || request.suggested_name().is_some() {
-            return Self::answered(ui::PortalOutcome::Failed(Self::UNSUPPORTED.into()));
-        }
-        let folder = request.is_directory();
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = std::thread::Builder::new()
-            .name(request.worker_name().to_string())
-            .spawn(move || {
-                let picked = if folder {
-                    native_folder_path()
-                } else {
-                    crate::probe::native_image_path()
-                };
-                let outcome = picked.map_or_else(
-                    |error| ui::PortalOutcome::Failed(error.to_string()),
-                    |path| path.map_or(ui::PortalOutcome::Cancelled, ui::PortalOutcome::Opened),
-                );
-                let _ = tx.send(outcome);
-            });
-        rx
-    }
-
-    fn pick_multiple(&self, _request: ui::PickRequest) -> ui::portal::MultiChannel {
-        Self::answered(ui::portal::MultiOutcome::Failed(Self::UNSUPPORTED.into()))
-    }
-
-    fn open_file(&self, _request: ui::PickRequest) -> ui::portal::OpenFileChannel {
-        Self::answered(ui::portal::OpenFileOutcome::Failed(
-            Self::UNSUPPORTED.into(),
-        ))
-    }
-
-    fn launch(&self, _request: ui::portal::LaunchRequest) -> ui::portal::LaunchChannel {
-        Self::answered(ui::portal::LaunchOutcome::Failed(Self::UNSUPPORTED.into()))
-    }
-}
-
-#[cfg(target_os = "macos")]
-fn native_folder_path() -> std::io::Result<Option<PathBuf>> {
-    const SCRIPT: &str = r#"try
-set picked to choose folder with prompt "Choose folder"
-POSIX path of picked
-on error number -128
-return ""
-end try"#;
-    let output = Command::new("osascript").args(["-e", SCRIPT]).output()?;
-    if !output.status.success() {
-        return Err(std::io::Error::other("macOS folder dialog failed"));
-    }
-    path_from_dialog_stdout(&output.stdout)
-}
-
-#[cfg(target_os = "windows")]
-fn native_folder_path() -> std::io::Result<Option<PathBuf>> {
-    const SCRIPT: &str = r#"[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
-Add-Type -AssemblyName System.Windows.Forms
-$dialog = New-Object System.Windows.Forms.FolderBrowserDialog
-$dialog.Description = 'Choose folder'
-$result = $dialog.ShowDialog()
-if ($result -eq [System.Windows.Forms.DialogResult]::OK) {
-    [Console]::Out.Write($dialog.SelectedPath)
-    exit 0
-}
-if ($result -eq [System.Windows.Forms.DialogResult]::Cancel) { exit 0 }
-[Console]::Error.Write("Folder dialog returned $result")
-exit 1"#;
-    let output = Command::new("powershell.exe")
-        .args(["-NoProfile", "-STA", "-Command", SCRIPT])
-        .output()?;
-    if !output.status.success() {
-        let detail = String::from_utf8_lossy(&output.stderr);
-        let detail = detail.trim_end_matches(['\r', '\n']);
-        let message = if detail.is_empty() {
-            "Windows folder dialog failed".to_string()
-        } else {
-            format!("Windows folder dialog failed: {detail}")
-        };
-        return Err(std::io::Error::other(message));
-    }
-    path_from_dialog_stdout(&output.stdout)
-}
-
-#[cfg(not(target_os = "linux"))]
-fn path_from_dialog_stdout(stdout: &[u8]) -> std::io::Result<Option<PathBuf>> {
-    let text = std::str::from_utf8(stdout).map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            "folder dialog returned invalid UTF-8",
-        )
-    })?;
-    let text = text.trim_end_matches(['\r', '\n']);
-    Ok((!text.is_empty()).then(|| PathBuf::from(text)))
-}
-
 #[cfg(test)]
 mod tests {
     use std::fs;
@@ -541,18 +423,5 @@ mod tests {
                 open_directory_nofollow(&parent_handle, Path::new("selected"), &expected).is_err()
             );
         }
-    }
-
-    #[cfg(not(target_os = "linux"))]
-    #[test]
-    fn dialog_stdout_preserves_spaces_and_rejects_invalid_utf8() {
-        assert_eq!(
-            path_from_dialog_stdout(b"/folder/with trailing space \r\n").unwrap(),
-            Some(PathBuf::from("/folder/with trailing space "))
-        );
-        assert_eq!(
-            path_from_dialog_stdout(&[0xff]).unwrap_err().kind(),
-            std::io::ErrorKind::InvalidData
-        );
     }
 }

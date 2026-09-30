@@ -48,7 +48,7 @@ fn toast_stack_expires_caps_and_registers_its_edge() {
     // fill, at 1× on the dark and the light preset alike. The declared
     // `border_standard` it replaced sat within rounding distance of `raised`
     // on the dark preset and read as no edge at all. Set
-    // `QUICK_UI_SCREENSHOT_DIR` to dump `toast_card_{dark,light}.png`.
+    // `TILO_UI_SCREENSHOT_DIR` to dump `toast_card_{dark,light}.png`.
     {
         for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
             let mut renderer = OffscreenRenderer::new(CANVAS_W, CANVAS_H);
@@ -97,7 +97,7 @@ fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
 }
 
 fn dump(name: &str, rgba: &[u8]) {
-    let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     std::fs::create_dir_all(&dir).unwrap();

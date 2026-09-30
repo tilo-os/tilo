@@ -23,7 +23,7 @@ path = "src/lib.rs"
 dev-overrides = ["package-store/dev-overrides"]
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 bounded-command = { path = "../../system/bounded-command" }
 tilo-app-package = { path = "../tilo-app-package" }
 # The one package registry and store; this daemon keeps none of its own.

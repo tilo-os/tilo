@@ -12,6 +12,8 @@ function Get-TiloWindowsAppBuildPlan {
     $common = @('build', '--locked', '--profile', $Profile, '--jobs', "$Jobs", '--message-format=json-render-diagnostics')
     $arguments = @($common)
     foreach ($application in $applications) { $arguments += @('-p', $application) }
+    # Workspace builds have the patched wgpu-hal the DX12 shader cache needs.
+    $arguments += @('--features', 'ui/dx12-shader-cache')
     $applicationBuild = [ordered]@{ executable = 'cargo'; arguments = $arguments }
     $notificationBuild = $null
     if ('clocks' -in $applications) {

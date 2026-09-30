@@ -18,14 +18,16 @@ thin = ["dep:runtime-dylib"]
 # Live camera capture uses GStreamer's v4l2src. Sample storage used by shots and
 # tests does not enumerate or open a device.
 default = ["live-capture"]
-# Live capture via GStreamer's v4l2src. See `src/capture.rs`.
-live-capture = ["dep:gstreamer", "dep:gstreamer-app", "dep:gstreamer-video"]
+# Live capture through tilo-capture (GStreamer on the desktop, getUserMedia
+# on the web). See `src/capture.rs`.
+live-capture = ["tilo-capture/camera"]
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
-# Scanned links and the privacy-settings hand-off open through the desktop
-# OpenURI portal.
+# Scanned links and the privacy-settings hand-off open through
+# `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The Tilo ACTION model: Camera's `actions` module exports capture/scan metadata
 # operations as replayable actions the host's Ctrl+K palette dispatches.
@@ -43,21 +45,17 @@ anyhow.workspace = true
 # Default features are trimmed to formats cameras and image portals provide.
 image = { workspace = true, features = ["png", "jpeg", "webp", "gif", "bmp"] }
 # The shared preview pipeline (recent-capture peek) and bounded image decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-ocr = { path = "../../crates/media/ocr" }
 tilo-doc-pdf = { path = "../../crates/doc/tilo-doc-pdf" }
-os-actions = { path = "../../crates/system/os-actions" }
+# Cameras (live-capture) and SANE document scanners.
+tilo-capture = { path = "../../crates/platform/tilo-capture", features = ["scanner"] }
 
 # Pure-Rust QR/barcode fixtures and detection for scanner flows.
 qrcode.workspace = true
 rqrr.workspace = true
 
-# Live-capture-only (feature-gated; never compiled for the default build).
-gstreamer = { workspace = true, optional = true }
-gstreamer-app = { workspace = true, optional = true }
-gstreamer-video = { workspace = true, optional = true }
-workspace-hack = { version = "0.1" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -65,3 +63,7 @@ tilo-test-env = { path = "../../crates/dev/test-env" }
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

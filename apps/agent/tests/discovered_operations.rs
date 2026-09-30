@@ -17,8 +17,8 @@
               test run, not real user data"
 )]
 
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::Duration;
 
 use automerge::AutoCommit;
 use tilo_actions::{ActionAddress, Resource};
@@ -172,7 +172,7 @@ fn run(
     let mut done = false;
     let mut invocation_actor = None;
     let mut invocation_context = None;
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut peer) else {
             continue;
         };
@@ -712,7 +712,7 @@ fn drive_photo_peer(
     .unwrap();
     let _ = photo_ready_tx.send(());
     let mut exported = false;
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         let Some(event) = recv(&mut photo_peer) else {
             continue;
         };
@@ -848,7 +848,7 @@ fn drive_word_processor_peer(
         &CollabRequest::document_snapshot(wp_replica.save()),
     )
     .unwrap();
-    while Instant::now() < deadline && !done {
+    while ui::time::now() < deadline && !done {
         let Some(event) = recv(&mut wp_peer) else {
             continue;
         };

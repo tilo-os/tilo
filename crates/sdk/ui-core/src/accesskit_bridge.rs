@@ -853,13 +853,15 @@ struct TreeWalk<'m> {
     active_descendant: Option<AkNodeId>,
 }
 
-/// Where a synthetic node sits under its parent: the parent's id, its
-/// position among the parent's synthetic children, and whether the owning
+/// Where a synthetic node sits under its parent: the parent's id, the widget
+/// that owns it and its ordinal path below that widget (the last entry is its
+/// position among the parent's synthetic children), and whether the owning
 /// widget holds keyboard focus.
 #[derive(Clone, Copy)]
-struct SyntheticSlot {
+struct SyntheticSlot<'w, 'p> {
     parent_id: AkNodeId,
-    ordinal: usize,
+    owner: &'w dyn Widget,
+    ordinal_path: &'p [usize],
     in_focused_widget: bool,
 }
 
@@ -904,7 +906,8 @@ impl TreeWalk<'_> {
                     synth,
                     SyntheticSlot {
                         parent_id: id,
-                        ordinal,
+                        owner: w,
+                        ordinal_path: &[ordinal],
                         in_focused_widget: owns_focus,
                     },
                     hosted.remove(&ordinal).unwrap_or_default(),
@@ -956,10 +959,13 @@ impl TreeWalk<'_> {
     }
 
     /// A node with no backing [`Widget`] — a table row/cell, a clip on a timeline
-    /// track. Carries no geometry; everything else is applied as for a real node.
+    /// track. Its geometry is its own [`bounds`](AccessNode::bounds), else the
+    /// rect `slot.owner` activates it at
+    /// ([`Widget::synthetic_accessibility_rect`]); everything else is applied as
+    /// for a real node.
     ///
     /// The id chains `slot.parent_id` with the node's [`key`](AccessNode::key) —
-    /// or its `slot.ordinal` when it has none — so it survives repaints and
+    /// or its ordinal (the last of `slot.ordinal_path`) when it has none — so it survives repaints and
     /// unrelated changes elsewhere in the tree (see [`synthetic_node_id`]).
     ///
     /// Only when `slot.in_focused_widget` may a node marked
@@ -974,14 +980,16 @@ impl TreeWalk<'_> {
     ) {
         let SyntheticSlot {
             parent_id,
-            ordinal,
+            owner,
+            ordinal_path,
             in_focused_widget,
         } = slot;
+        let ordinal = ordinal_path.last().copied().unwrap_or_default();
         let id = synthetic_node_id(parent_id, access.key.unwrap_or(ordinal as u64));
 
         let mut ak = AkNode::new(map_role(access.role));
         apply_semantics_common(&mut ak, access);
-        apply_synthetic_bounds(&mut ak, access, self.scale);
+        apply_synthetic_bounds(&mut ak, access, owner, ordinal_path, self.scale);
 
         if in_focused_widget && access.state.focused && self.active_descendant.is_none() {
             self.active_descendant = Some(id);
@@ -1000,11 +1008,13 @@ impl TreeWalk<'_> {
                 nested.entry(child_index).or_default().push((path, child));
             }
             for (i, child) in access.children.iter().enumerate() {
+                let child_path = [ordinal_path, &[i]].concat();
                 self.visit_synthetic::<BOUND>(
                     child,
                     SyntheticSlot {
                         parent_id: id,
-                        ordinal: i,
+                        owner,
+                        ordinal_path: &child_path,
                         in_focused_widget,
                     },
                     nested.remove(&i).unwrap_or_default(),
@@ -1037,8 +1047,20 @@ fn apply_semantics(ak: &mut AkNode, access: &AccessNode, w: &dyn Widget, scale: 
     }
 }
 
-fn apply_synthetic_bounds(ak: &mut AkNode, access: &AccessNode, scale: f64) {
-    if let Some(bounds) = access.bounds {
+fn apply_synthetic_bounds(
+    ak: &mut AkNode,
+    access: &AccessNode,
+    owner: &dyn Widget,
+    ordinal_path: &[usize],
+    scale: f64,
+) {
+    let bounds = access.bounds.or_else(|| {
+        owner
+            .synthetic_accessibility_rect(ordinal_path)
+            .filter(|rect| rect.width() > 0.0 || rect.height() > 0.0)
+            .map(Into::into)
+    });
+    if let Some(bounds) = bounds {
         ak.set_bounds(AkRect::new(
             bounds.x0 * scale,
             bounds.y0 * scale,

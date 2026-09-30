@@ -7,7 +7,7 @@
 //! subject must fail, not skip (`CLAUDE.md`), or a headless CI without
 //! llvmpipe would report the paint paths green without ever drawing them.
 //!
-//! Set `QUICK_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
+//! Set `TILO_UI_SCREENSHOT_DIR=<path>` to write one PNG per state for
 //! by-eye inspection.
 
 #![allow(
@@ -164,7 +164,7 @@ fn pixel_hash(buf: &[u8]) -> u64 {
 }
 
 fn maybe_write_png(rgba: &[u8], w: u32, h: u32, name: &str) {
-    let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") else {
+    let Ok(dir) = tilo_ui::env::var("TILO_UI_SCREENSHOT_DIR") else {
         return;
     };
     let path = std::path::Path::new(&dir).join(format!("{name}.png"));
@@ -239,7 +239,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     // whose quiet edge is now derived from the chip fill; a light-theme frame
     // is where a declared or literal-white edge used to vanish, so the four
     // states must stay distinct there too. Writes `window_group_<state>_light.png`
-    // under `QUICK_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
+    // under `TILO_UI_SCREENSHOT_DIR` for by-eye inspection beside the dark set.
     {
         let (w, h) = (620u32, 200u32);
         let mut renderer = try_new_renderer(w, h)

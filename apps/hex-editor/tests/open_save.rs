@@ -51,8 +51,8 @@ fn tmp(name: &str) -> std::path::PathBuf {
 
 #[test]
 fn executable_opens_a_unicode_path_edits_and_saves_without_replicating_bytes() {
-    let nonce = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
+    let nonce = ui::time::wall()
+        .duration_since(ui::time::UNIX_EPOCH)
         .unwrap()
         .as_nanos();
     let directory = std::env::temp_dir().join(format!("hex_cli_{}_{nonce}", std::process::id()));

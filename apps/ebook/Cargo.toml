@@ -17,8 +17,13 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 tilo-clock = { path = "../../crates/platform/tilo-clock" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
+# "Open a book…" goes through `ui::portal`, the platform's own picker (the
+# HIG's file-access boundary), instead of a magic folder.
+ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 automerge.workspace = true
 tilo-automerge.workspace = true
 # Content-addressed book identity: the BLAKE3 hash of an EPUB's bytes is its id,
@@ -49,11 +54,8 @@ bounded-zip = { path = "../../crates/doc/bounded-zip", features = ["epub"] }
 roxmltree.workspace = true
 # Decode and downscale embedded raster covers for the shelf, through the
 # shared preview decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 unicode-bidi = "0.3.18"
-# Device-local file capabilities (opened book paths and watched roots) must
-# survive restart without entering the shared Automerge document.
-settings-store = { path = "../../crates/system/settings-store" }
 
 [dev-dependencies]
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
@@ -70,14 +72,6 @@ tempfile.workspace = true
 [lints]
 workspace = true
 
-# "Open a book…" goes through the host XDG file chooser, the
-# desktop's own picker (the HIG's file-access boundary) instead of a magic folder.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
-
-# The browser runtime embeds this app in wasm32, where the toolkit is the
-# portable build: no native desktop runner, no broker transport, no portal.
-[target.'cfg(target_arch = "wasm32")'.dependencies]
-ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", default-features = false }

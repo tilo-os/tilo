@@ -447,7 +447,7 @@ impl Catalog {
             },
             Source {
                 id: "workspace".into(),
-                path: "/var/workspace".into(),
+                path: tilo_paths::WORKSPACE_MOUNT.into(),
                 kind: SourceKind::Workspace,
                 cadence: Cadence::Hourly,
                 enabled: true,

@@ -7,13 +7,13 @@ license.workspace = true
 description = "Default-deny single Windows appliance and RemoteApp integration for Tilo"
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 quick-xml.workspace = true
-advisory-lock = { path = "../../system/advisory-lock" }
+tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 base64.workspace = true
 bounded-command = { path = "../../system/bounded-command" }
-atomic-file = { path = "../../system/atomic-file" }
+tilo-atomic-file = { path = "../../system/atomic-file" }
 hex.workspace = true
 launcher = { path = "../../packaging/launcher" }
 libc.workspace = true

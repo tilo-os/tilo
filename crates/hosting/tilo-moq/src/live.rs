@@ -623,10 +623,33 @@ impl LiveRelay {
 
     /// Standalone listener for [`LIVE_PATH`] (tests and isolated proofs).
     pub async fn serve(self, endpoint: quinn::Endpoint) {
+        self.serve_routes(endpoint, None).await;
+    }
+
+    /// Listener for [`LIVE_PATH`] and, on the same endpoint, `voice`'s
+    /// [`VOICE_PATH`](crate::relay::VOICE_PATH).
+    pub async fn serve_with_voice(self, endpoint: quinn::Endpoint, voice: crate::relay::Relay) {
+        self.serve_routes(endpoint, Some(voice)).await;
+    }
+
+    async fn serve_routes(self, endpoint: quinn::Endpoint, voice: Option<crate::relay::Relay>) {
+        const LIVE: &[&str] = &[LIVE_PATH];
+        const BOTH: &[&str] = &[LIVE_PATH, crate::relay::VOICE_PATH];
         let relay = self.clone();
-        let serving = carrier::serve_endpoint(endpoint, LIVE_PATH, move |session| {
+        let paths = if voice.is_some() { BOTH } else { LIVE };
+        let serving = carrier::serve_endpoint(endpoint, paths, move |path, session| {
             let relay = relay.clone();
-            async move { relay.serve_session(LiveRoute(()), session).await }
+            let voice = voice.clone();
+            async move {
+                match voice {
+                    Some(voice) if path == crate::relay::VOICE_PATH => {
+                        voice
+                            .serve_session(crate::relay::VoiceRoute::routed(), session)
+                            .await;
+                    }
+                    _ => relay.serve_session(LiveRoute(()), session).await,
+                }
+            }
         });
         tokio::pin!(serving);
         let mut maintenance = tokio::time::interval(Duration::from_secs(1));

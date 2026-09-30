@@ -7,9 +7,14 @@
 use std::path::Path;
 use std::process::Command;
 
-/// Stands in for Cargo: records its arguments and reports one fake
-/// executable for the requested `--bin` and `--target`.
+/// Stands in for Cargo: resolves the app with no dependencies, records its
+/// build arguments and reports one fake executable for the requested `--bin`
+/// and `--target`.
 const FAKE_CARGO: &str = r#"#!/bin/sh
+if [ "$1" = metadata ]; then
+  printf '{"packages":[],"resolve":{"root":"notes","nodes":[{"id":"notes","deps":[]}]}}\n'
+  exit 0
+fi
 printf '%s\n' "$@" > "$FAKE_CARGO_ARGS"
 while [ $# -gt 0 ]; do
   case "$1" in

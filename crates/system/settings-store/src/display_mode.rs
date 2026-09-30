@@ -410,6 +410,9 @@ fn arrange_if_overlapping(
 /// Point every other display at `target` and pick the largest resolution
 /// they all advertise, each at its own best refresh rate: the compositor
 /// samples one viewport per sink, so timings may differ but extents may not.
+/// A resolution larger than one a display is driving now is taken only when
+/// nothing smaller is shared: sinks (virtual ones especially) advertise
+/// modes they cannot scan out, and a mirror that picks one goes black.
 fn apply_mirror(
     config: &mut DisplayConfig,
     outputs: &[DisplayOutputSnapshot],
@@ -419,7 +422,7 @@ fn apply_mirror(
         .iter()
         .find(|output| output.descriptor.connector == target)
         .ok_or(DisplayLayoutError::NoCommonMirrorMode)?;
-    let extent = target_output
+    let shared: Vec<(u32, u32)> = target_output
         .descriptor
         .modes
         .iter()
@@ -433,7 +436,19 @@ fn apply_mirror(
                     .any(|mode| mode.width == width && mode.height == height)
             })
         })
-        .max_by_key(|&(width, height)| (u64::from(width).saturating_mul(u64::from(height)), width))
+        .collect();
+    let driven = |&(width, height): &(u32, u32)| {
+        outputs.iter().all(|output| {
+            width <= output.current_mode.width && height <= output.current_mode.height
+        })
+    };
+    let largest = |extents: &mut dyn Iterator<Item = (u32, u32)>| {
+        extents.max_by_key(|&(width, height)| {
+            (u64::from(width).saturating_mul(u64::from(height)), width)
+        })
+    };
+    let extent = largest(&mut shared.iter().copied().filter(driven))
+        .or_else(|| largest(&mut shared.iter().copied()))
         .ok_or(DisplayLayoutError::NoCommonMirrorMode)?;
     for output in outputs {
         let best = output
@@ -699,6 +714,39 @@ mod tests {
             active_layout(&outputs, &plan),
             Some(DisplayLayoutMode::Mirror)
         );
+    }
+
+    #[test]
+    fn mirror_never_picks_a_resolution_neither_display_is_driving() {
+        // Two virtual outputs running 1024x768 that both advertise 4K.
+        let mut outputs = vec![
+            output(
+                "Virtual-1",
+                true,
+                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+            ),
+            output(
+                "Virtual-2",
+                false,
+                &[mode(4096, 2160, 60_000), mode(1024, 768, 60_000)],
+            ),
+        ];
+        for output in &mut outputs {
+            output.current_mode = mode(1024, 768, 60_000);
+        }
+        let plan = plan_layout(
+            DisplayLayoutMode::Mirror,
+            &outputs,
+            &DisplayConfig::default(),
+        )
+        .unwrap();
+        for connector in ["Virtual-1", "Virtual-2"] {
+            assert_eq!(
+                plan.outputs[connector].mode,
+                Some(mode(1024, 768, 60_000)),
+                "{connector}"
+            );
+        }
     }
 
     #[test]

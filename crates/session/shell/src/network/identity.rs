@@ -141,6 +141,29 @@ impl PeerIdentityStore {
         inner.by_peer.get(peer).cloned()
     }
 
+    /// The certificates of `user_pubkey`'s devices the transport authenticated
+    /// and that are valid and not revoked at `now_ns`.
+    pub fn devices_of(&self, user_pubkey: &[u8; 32], now_ns: u64) -> Vec<DeviceCert> {
+        let inner = self
+            .inner
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let revoked = |device: &[u8; 32]| {
+            inner
+                .revocations
+                .get(user_pubkey)
+                .is_some_and(|list| list.is_revoked_at(device, now_ns))
+        };
+        inner
+            .by_peer
+            .values()
+            .filter(|identity| identity.user_pubkey == *user_pubkey)
+            .filter(|identity| !revoked(&identity.device_pubkey))
+            .filter(|identity| !identity.device_cert.is_expired_at(now_ns))
+            .map(|identity| identity.device_cert.clone())
+            .collect()
+    }
+
     /// Merge a user's revocation list — additive, see [`RevocationList::insert`].
     pub fn set_revocations(&self, user_pubkey: [u8; 32], list: &RevocationList) {
         let mut inner = self

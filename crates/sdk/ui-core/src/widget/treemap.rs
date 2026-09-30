@@ -255,7 +255,7 @@ impl Treemap {
     }
 
     fn tile_rect(&self, tile: Tile) -> Rect {
-        tile.rect.inset(self.style.gap / 2.0).max_size()
+        tile.rect.inset(-self.style.gap / 2.0).max_size()
     }
 
     fn palette(theme: &Theme, index: usize) -> Color {

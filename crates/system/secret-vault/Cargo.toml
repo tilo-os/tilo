@@ -1,9 +1,11 @@
 [package]
-name = "secret-vault"
+name = "tilo-secret-vault"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "Sealed local secret vaults: XChaCha20-Poly1305 files and the custody of their key"
 
 [lib]
@@ -11,20 +13,20 @@ name = "secret_vault"
 path = "src/lib.rs"
 
 [dependencies]
-private-fs = { path = "../private-fs" }
+private-fs = { version = "0.1.0", path = "../private-fs" }
 # Holds the vault key: the Secret Service on Linux, the Keychain on macOS.
-tilo-secrets = { path = "../../platform/tilo-secrets" }
+tilo-secrets = { version = "0.1.0", path = "../../platform/tilo-secrets" }
 tracing.workspace = true
 # `tilo-seal` seals the vault and mints its keys; `zeroize` wipes key
 # material read from custody and decrypted plaintext.
-tilo-seal = { path = "../tilo-seal" }
+tilo-seal = { version = "0.1.0", path = "../tilo-seal" }
 zeroize.workspace = true
 # The secret store holds the vault key as lower-case hex.
 hex.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 # Serializes key creation between processes.
-advisory-lock = { path = "../advisory-lock" }
+tilo-advisory-lock = { version = "0.1.0", path = "../advisory-lock" }
 # Draws a fresh key before DPAPI protects it.
 getrandom.workspace = true
 windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security_Cryptography"] }

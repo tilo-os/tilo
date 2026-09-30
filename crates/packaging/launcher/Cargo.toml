@@ -39,7 +39,7 @@ dev-overrides = ["package-store/dev-overrides"]
 managed-tree-test = []
 
 [dependencies]
-xdg-paths = { path = "../../system/xdg-paths" }
+tilo-xdg-paths = { path = "../../system/xdg-paths" }
 fnv.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock" }
 clap.workspace = true
@@ -78,7 +78,7 @@ desktop-entry = { package = "tilo-desktop-entry", path = "../../system/desktop-e
 runtime-identity = { path = "../../runtime/runtime-identity" }
 # Landlock ruleset construction and the baseline seccomp filter. A leaf
 # crate, so the launcher still depends on nothing in the compositor.
-sandbox-core = { path = "../../system/sandbox-core" }
+tilo-sandbox-core = { path = "../../system/sandbox-core" }
 # The egress gate and the in-sandbox relay serve their connections as tasks on
 # a bounded runtime rather than an OS thread (or two) per connection.
 tilo-rt.workspace = true
@@ -95,7 +95,7 @@ hex.workspace = true
 ed25519-dalek.workspace = true
 tempfile.workspace = true
 # Kernel probes proving the resolved seccomp profile is what the kernel enforces.
-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
+tilo-sandbox-core = { path = "../../system/sandbox-core", features = ["test-support"] }
 
 [[test]]
 name = "it"

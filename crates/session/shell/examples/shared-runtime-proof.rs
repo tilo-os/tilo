@@ -219,7 +219,7 @@ fn main() -> Result<()> {
         if benchmark {
             command
                 .env("TILO_PROFILE_OUT", root.join(format!("{id}.frames.jsonl")))
-                .env("QUICK_UI_PRESENT", "1")
+                .env("TILO_UI_PRESENT", "1")
                 .env("TILO_PROFILE_WINDOW_FRONT", "1")
                 .env("TILO_PROFILE_RESOURCES", "1")
                 .env(

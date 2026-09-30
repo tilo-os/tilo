@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use agent_provider_config::{
@@ -570,7 +570,7 @@ impl AgentModelsPane {
             confirmation: None,
             remove_confirmation: None,
             notice,
-            last_poll: Instant::now(),
+            last_poll: ui::time::now(),
             needs_seed: true,
             structure_dirty: false,
             operation_status: ui::LocalState::new(crate::actions::LocalOperationStatus::Idle),
@@ -600,7 +600,7 @@ impl AgentModelsPane {
                 self.notice = Some(format!("Could not refresh local models: {error}"));
             }
         }
-        self.last_poll = Instant::now();
+        self.last_poll = ui::time::now();
         self.structure_dirty = true;
     }
 

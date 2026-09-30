@@ -90,14 +90,16 @@ impl SenderScope {
 
 use crate::portable_storage::PortableStorage;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-use atomic_file::bounded::{
-    AdmissionError, BoundedOwnerDirectory as OwnerDirectory, ChildOpenError,
-};
-use atomic_file::lease::FileLease;
-use atomic_file::{ExistingCommitError, PublicationError, PublicationState, StorageDirectory};
-#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::ffi::OsStr;
 use std::io::{self, Read};
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+use tilo_files::native::atomic::bounded::{
+    AdmissionError, BoundedOwnerDirectory as OwnerDirectory, ChildOpenError,
+};
+use tilo_files::native::atomic::lease::FileLease;
+use tilo_files::native::atomic::{
+    ExistingCommitError, PublicationError, PublicationState, StorageDirectory,
+};
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 type OwnerDirectory = StorageDirectory;
 #[cfg(any(target_os = "macos", target_os = "linux"))]
@@ -122,15 +124,15 @@ struct Cursor {
 pub struct PrivateActionsFile {
     root: OwnerDirectory,
     directory: OwnerDirectory,
-    root_identity: atomic_file::FileIdentity,
-    child_identity: atomic_file::FileIdentity,
+    root_identity: tilo_files::native::atomic::FileIdentity,
+    child_identity: tilo_files::native::atomic::FileIdentity,
     lease: FileLease,
     cache: PortableStorage,
     workspace: [u8; 36],
     scope: SenderScope,
     selected_pending_revision: Option<u64>,
     cursor: Option<Cursor>,
-    cursor_identity: Option<atomic_file::FileIdentity>,
+    cursor_identity: Option<tilo_files::native::atomic::FileIdentity>,
 }
 #[cfg_attr(
     not(any(target_os = "macos", target_os = "linux")),
@@ -321,11 +323,13 @@ impl PrivateActionsFile {
                     .map_err(OpenError::Io)?;
                 let lease = match FileLease::try_acquire(
                     sentinel,
-                    atomic_file::lease::LeaseMode::Exclusive,
+                    tilo_files::native::atomic::lease::LeaseMode::Exclusive,
                 ) {
                     Ok(lease) => held.lease.insert(lease),
-                    Err(atomic_file::lease::AcquireError::Busy) => return Ok(None),
-                    Err(atomic_file::lease::AcquireError::Io(e)) => return Err(OpenError::Io(e)),
+                    Err(tilo_files::native::atomic::lease::AcquireError::Busy) => return Ok(None),
+                    Err(tilo_files::native::atomic::lease::AcquireError::Io(e)) => {
+                        return Err(OpenError::Io(e));
+                    }
                 };
                 let child = root
                     .open_directory_child(OsStr::new(CHILD_NAME))
@@ -336,7 +340,7 @@ impl PrivateActionsFile {
                 let named = root
                     .open_lease_existing(OsStr::new(LOCK_NAME))
                     .map_err(OpenError::Io)?;
-                if atomic_file::FileIdentity::of(&named).map_err(OpenError::Io)?
+                if tilo_files::native::atomic::FileIdentity::of(&named).map_err(OpenError::Io)?
                     != lease.identity().map_err(OpenError::Io)?
                 {
                     return Err(OpenError::Io(io::ErrorKind::InvalidData.into()));
@@ -415,7 +419,7 @@ impl PrivateActionsFile {
                 .map_err(OpenError::Child)?;
             let named = self.root.open_lease_existing(OsStr::new(LOCK_NAME))?;
             if child.identity()? != self.child_identity
-                || atomic_file::FileIdentity::of(&named)? != self.lease.identity()?
+                || tilo_files::native::atomic::FileIdentity::of(&named)? != self.lease.identity()?
             {
                 return Err(io::ErrorKind::InvalidData.into());
             }
@@ -439,12 +443,12 @@ impl PrivateActionsFile {
             Err(io::ErrorKind::Unsupported.into())
         }
     }
-    fn check_cursor(&self) -> Result<atomic_file::FileIdentity, OpenError> {
+    fn check_cursor(&self) -> Result<tilo_files::native::atomic::FileIdentity, OpenError> {
         let cursor = self
             .cursor
             .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
         let mut input = self.open_input()?;
-        let identity = atomic_file::FileIdentity::of(&input)?;
+        let identity = tilo_files::native::atomic::FileIdentity::of(&input)?;
         if self
             .cursor_identity
             .as_ref()
@@ -516,7 +520,7 @@ impl PrivateActionsFile {
                 sequence: parsed.sequence,
                 digest: *blake3::hash(&phase.bytes).as_bytes(),
             });
-            let identity = atomic_file::FileIdentity::of(&input).map_err(|e| {
+            let identity = tilo_files::native::atomic::FileIdentity::of(&input).map_err(|e| {
                 phase.error = Some(OpenError::Io(e));
                 SenderStorageCode::Io
             })?;
@@ -642,7 +646,7 @@ impl PreparedPrivateWrite {
             match self.file.directory.publish(
                 OsStr::new(FILE_NAME),
                 &self.encoded,
-                atomic_file::PublishMode::Replace,
+                tilo_files::native::atomic::PublishMode::Replace,
             ) {
                 Ok(()) => self.committed(),
                 Err(error) => PrivateWriteOutcome::Failed(FailedPrivateWrite {
@@ -773,7 +777,7 @@ impl FailedPrivateRead {
         self.file.cursor = self.candidate;
         let result = (|| -> Result<(), OpenError> {
             let input = self.input.as_ref().ok_or(io::ErrorKind::InvalidData)?;
-            self.file.cursor_identity = Some(atomic_file::FileIdentity::of(input)?);
+            self.file.cursor_identity = Some(tilo_files::native::atomic::FileIdentity::of(input)?);
             self.file.check_cursor().map(|_| ())
         })();
         if let Err(error) = result {
@@ -916,7 +920,7 @@ impl CommittedPrivateRead {
             code: SenderStorageCode::Capacity,
         };
         let fence = phase.read.file.check_cursor().and_then(|actual| {
-            if actual != atomic_file::FileIdentity::of(&phase.read.input)? {
+            if actual != tilo_files::native::atomic::FileIdentity::of(&phase.read.input)? {
                 return Err(io::ErrorKind::InvalidData.into());
             }
             Ok(())

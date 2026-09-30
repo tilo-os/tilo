@@ -3047,6 +3047,7 @@ impl App {
                 headless: _,
                 headful,
                 outputs,
+                identity,
                 ..
             } => {
                 let name = self.slot_name(name)?;
@@ -3066,7 +3067,15 @@ impl App {
                     kind,
                     owner,
                     outputs,
+                    identity,
                 })?;
+                if identity && result.identity.is_none() {
+                    return Err(CliError::Unsupported {
+                        what: "slot create --identity by this VM's tilo-vmd".into(),
+                        alternative:
+                            "tilo-vm vm upgrade --from local, or tilo-vm swap vmd --slot vm".into(),
+                    });
+                }
                 let text = slot_created_text(&name, kind, &result);
                 self.receipt.set("slot", &name);
                 Ok(Outcome::new(text, json!(result)).next(&[
@@ -4743,9 +4752,17 @@ fn slot_created_text(
         tilo_vm_protocol::Action::SetOutputs { outputs } => Some(outputs.clone()),
         _ => None,
     });
+    // The restart that gives a new identity fresh desktop state is not a
+    // start of a stopped session.
     let started = result
         .actions
         .iter()
+        .take_while(|action| {
+            !matches!(
+                action,
+                tilo_vm_protocol::Action::ProvisionTestIdentity { .. }
+            )
+        })
         .any(|action| !matches!(action, tilo_vm_protocol::Action::SetOutputs { .. }));
     let text = if result.created {
         format!(
@@ -4758,6 +4775,17 @@ fn slot_created_text(
         format!("slot {name} already exists and its session is running")
     } else {
         format!("slot {name} already exists and its session is running; nothing to do")
+    };
+    let text = match &result.identity {
+        Some(identity) if identity.created => format!(
+            "{text}\nthrowaway test identity \"{}\" minted; the session restarted with fresh desktop state",
+            identity.display_name
+        ),
+        Some(identity) => format!(
+            "{text}\nits user keeps throwaway test identity \"{}\"",
+            identity.display_name
+        ),
+        None => text,
     };
     match set_outputs {
         Some(outputs) => format!(

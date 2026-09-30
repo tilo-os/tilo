@@ -7,7 +7,7 @@ cargo build -p ui-examples --example ui-native-input-probe --profile thin-app --
 ```
 
 Set `TILO_PROFILE_PRESENTATION=1` alongside `TILO_NATIVE_SCENARIO`,
-`TILO_PROFILE_OUT`, and `QUICK_UI_PRESENT=1`. The feature is currently implemented
+`TILO_PROFILE_OUT`, and `TILO_UI_PRESENT=1`. The feature is currently implemented
 only on macOS Metal. Unsupported builds explicitly report unavailable feedback;
 absence of display records cannot qualify a workload. The normal feature-disabled
 HAL retains its original surface layout and presentation path.

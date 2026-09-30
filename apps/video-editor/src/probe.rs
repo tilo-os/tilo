@@ -127,21 +127,7 @@ pub fn probe_file(path: &Path) -> Result<ProbedMedia, ProbeError> {
     // metadata we need lives in the header + `moov`, and a faststart MP4 puts
     // `moov` up front, so the first slice suffices for the common case.
     const CAP: u64 = 96 * 1024 * 1024;
-    let len = std::fs::metadata(path)
-        .map_err(|e| ProbeError::Io(e.to_string()))?
-        .len();
-    let data = if len <= CAP {
-        std::fs::read(path).map_err(|e| ProbeError::Io(e.to_string()))?
-    } else {
-        use std::io::Read;
-        let mut f = std::fs::File::open(path).map_err(|e| ProbeError::Io(e.to_string()))?;
-        let mut buf = vec![0u8; CAP as usize];
-        let n = f
-            .read(&mut buf)
-            .map_err(|e| ProbeError::Io(e.to_string()))?;
-        buf.truncate(n);
-        buf
-    };
+    let data = crate::files::read_prefix(path, CAP).map_err(|e| ProbeError::Io(e.to_string()))?;
     probe_bytes(&data, path)
 }
 

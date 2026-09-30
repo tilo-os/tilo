@@ -35,7 +35,7 @@ pub struct DeviceHandle {
     pub device: Device,
     pub queue: Queue,
     loss: DeviceLossMonitor,
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     shader_cache: Option<crate::dx12_shader_cache::CacheSession>,
 }
 
@@ -54,7 +54,7 @@ impl DeviceLossMonitor {
 }
 
 impl DeviceHandle {
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     pub(crate) fn finish_shader_cache(&self) {
         crate::dx12_shader_cache::report(&self.device);
         if let Some(cache) = &self.shader_cache {
@@ -78,7 +78,7 @@ impl DeviceHandle {
 pub struct RenderContext {
     pub instance: Instance,
     pub devices: Vec<DeviceHandle>,
-    #[cfg(windows)]
+    #[cfg(all(windows, feature = "dx12-shader-cache"))]
     compiler_identity: Option<Arc<crate::dx12_shader_cache::CompilerIdentity>>,
 }
 
@@ -113,6 +113,21 @@ fn create_targets(width: u32, height: u32, device: &Device) -> (Texture, Texture
     (target_texture, target_view)
 }
 
+/// wgpu's defaults, except the two a renderer's scratch buffers are bound
+/// against, which come from the adapter.
+///
+/// The default `max_storage_buffer_binding_size` is 128 MiB whatever the
+/// hardware can do, and vello binds each bump buffer whole. A 5120x2880
+/// output legitimately needs more than that; asking for what the adapter
+/// supports (4 GiB on RADV) costs nothing until a buffer is allocated.
+fn required_limits(adapter: &Limits) -> Limits {
+    Limits {
+        max_storage_buffer_binding_size: adapter.max_storage_buffer_binding_size,
+        max_buffer_size: adapter.max_buffer_size,
+        ..Limits::default()
+    }
+}
+
 impl RenderContext {
     pub fn new() -> Self {
         let backend_options = wgpu::BackendOptions::from_env_or_default();
@@ -136,10 +151,10 @@ impl RenderContext {
         };
         // Every field spelled out: `InstanceDescriptor` has no `Default`, and
         // these are the values vello would have used.
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let compiler_identity =
             crate::dx12_shader_cache::CompilerIdentity::open(&backend_options.dx12.shader_compiler);
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let backend_options = {
             let mut options = backend_options;
             if let Some(compiler) = &compiler_identity {
@@ -178,7 +193,7 @@ impl RenderContext {
         Self {
             instance,
             devices: Vec::new(),
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "dx12-shader-cache"))]
             compiler_identity,
         }
     }
@@ -245,7 +260,7 @@ impl RenderContext {
             .request_device(&wgpu::DeviceDescriptor {
                 label: None,
                 required_features: (features & maybe_features) | timestamp_features,
-                required_limits: Limits::default(),
+                required_limits: required_limits(&adapter.limits()),
                 // See the module header for the default's cost. `MemoryUsage`
                 // (8 MB first block, 64 MB largest) is still not enough,
                 // because the block size doubles with every block a process
@@ -275,7 +290,7 @@ impl RenderContext {
                 *recorded = Some(format!("{reason:?}: {message}"));
             }
         });
-        #[cfg(windows)]
+        #[cfg(all(windows, feature = "dx12-shader-cache"))]
         let shader_cache =
             crate::dx12_shader_cache::CacheSession::load(&device, self.compiler_identity.clone());
         self.devices.push(DeviceHandle {
@@ -283,7 +298,7 @@ impl RenderContext {
             device,
             queue,
             loss,
-            #[cfg(windows)]
+            #[cfg(all(windows, feature = "dx12-shader-cache"))]
             shader_cache,
         });
         Some(self.devices.len().saturating_sub(1))
@@ -365,6 +380,9 @@ impl RenderContext {
         let Some(handle) = self.devices.get(surface.dev_id) else {
             return;
         };
+        // Release the old target before allocating the new one: on WebGPU a
+        // dropped texture stays resident until JavaScript collects it.
+        surface.target_texture.destroy();
         let (texture, view) = create_targets(width, height, &handle.device);
         surface.target_texture = texture;
         surface.target_view = view;

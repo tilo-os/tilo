@@ -44,6 +44,7 @@ pub mod resource;
 pub mod sample;
 pub mod search;
 pub mod view;
+mod web_file;
 
 use ui::widget::Widget;
 
@@ -78,6 +79,13 @@ pub fn app_root() -> Box<dyn Widget> {
         HexView::empty()
     };
     Box::new(view)
+}
+
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.hex-editor", app_root)
+        .component_actions(actions::register)
+        .as_definition("Hex Editor")
 }
 
 /// First positional file argument, skipping the renderer's own flags so

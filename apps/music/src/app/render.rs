@@ -758,7 +758,7 @@ fn anim_phase() -> f64 {
 fn anim_time() -> f64 {
     use std::sync::OnceLock;
     static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+    START.get_or_init(ui::time::now).elapsed().as_secs_f64()
 }
 
 /// Normalised `0..=1` heights for the 3-bar now-playing equalizer. While
@@ -1005,7 +1005,7 @@ impl Widget for MusicApp {
         _doc: &AutoCommit,
         _path: &ObjId,
     ) -> Option<tilo_actions::InvocationUpdate> {
-        self.expire_resource_stream_if_due(Instant::now());
+        self.expire_resource_stream_if_due(ui::time::now());
         self.resource_stream_results
             .iter()
             .position(|update| update.invocation() == invocation)
@@ -1700,7 +1700,7 @@ impl Widget for MusicApp {
                     self.on_focus_search();
                     self.search_input.set_text(&value);
                     self.search_cache = None;
-                    self.search_edit_at = Some(Instant::now());
+                    self.search_edit_at = Some(ui::time::now());
                     self.scroll = 0.0;
                     self.dirty = true;
                     return true;
@@ -2007,7 +2007,7 @@ impl MusicApp {
                     for id in tracks {
                         self.request_offline_download(&id)?;
                     }
-                    self.toast = Some(("Preparing offline download".into(), Instant::now()));
+                    self.toast = Some(("Preparing offline download".into(), ui::time::now()));
                     self.dirty = true;
                     return Ok(true);
                 }
@@ -2082,7 +2082,7 @@ impl MusicApp {
                 self.revealed_membership = Some((playlist, track));
                 self.toast = Some((
                     format!("Opened “{track_label}” in “{playlist_name}”"),
-                    Instant::now(),
+                    ui::time::now(),
                 ));
             }
             _ => return Ok(false),
@@ -2529,7 +2529,7 @@ impl MusicApp {
             let consumed = self.forward_to_search(event, scale_factor, modifiers, state);
             if self.search_input.value() != before {
                 // Debounce the live query a short beat after the last edit.
-                self.search_edit_at = Some(Instant::now());
+                self.search_edit_at = Some(ui::time::now());
             }
             if consumed {
                 self.dirty = true;

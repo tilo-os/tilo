@@ -185,11 +185,16 @@ needle naming several actions ("open paragraph style heading") still finds
 optional on `tilo_resolve` and `tilo_invoke`: omitted, the target resolves
 against the directory as it is now; named, a target that changed since is
 refused. `tilo_invoke` waits up to `wait_ms` (default 5 s) for the terminal
-update and answers with it; an invocation still running then is followed with
-`tilo_status`. Pass content resource references returned by one successful
-action as typed arguments to a freshly discovered action in another app. The
-runtime contains no Photos/Writer workflow branch and never treats `Accepted`
-as `Succeeded` or replays a mutation automatically.
+update and answers with it; an invocation still running then says so in
+`pending` and is followed with `tilo_status`. A number outside the range its
+action declares (`pageSize: 200` where the signature says `1..64`) fails
+validation before the action runs; the bridge then runs the call once more
+with the bound the refusal named and adds `adjusted` to the answer
+(`"pageSize 200 is out of range; used 64"`), so the caller need not retry.
+Pass content resource references returned by one successful action as typed
+arguments to a freshly discovered action in another app. The runtime contains
+no Photos/Writer workflow branch and never treats `Accepted` as `Succeeded` or
+replays a mutation automatically.
 
 ### Opening an app
 
@@ -198,7 +203,9 @@ launches an installed app and answers, once the new instance has published its
 directory, with its `peer_id` and its `directory`: the compact page of its
 top-level resources with all their actions, and the resources beneath them
 while the page stays within 12 KiB (`"truncated": true` when something was left
-for `tilo_query`). An agent acts on the reply without browsing first.
+for `tilo_query`). An agent acts on the reply without browsing first. An app
+may publish again while it starts, and a directory read in between lists
+nothing, so the reply waits up to 3 s more for one that lists a resource.
 
 `arguments: {"path": "/abs/file"}` also opens that file. The workspace's own
 launch opens content only by hash, read through an authenticated app's scope,
@@ -212,16 +219,72 @@ naming why the file is not open (the app started empty either way). Workspace
 pages list `path?` on each application's `open`. Host applications
 (`app.host:…`) open without a path.
 
+### Reading back what an action did
+
+An agent sees the result of an edit in the edit's reply and reads a
+document as text, so it needs no screenshot to check its work. A document
+action whose contract declares a JSON result gets one: after the edit
+applies, ui-core diffs the document from the edit's base heads and asks the
+app through `PublishesResources::document_action_result`.
+
+- **Word Processor.** `read-text` answers Markdown, one block per line ending
+  in its `{#block id}`: headings as `#`…`######`, list items as `- ` or `1. `
+  indented two spaces per level, and a table as a Markdown table tagged
+  `{#table id}` whose every cell, empty or not, ends in its own `{#block id}`:
+
+  ```text
+  ## Standup {#b1}
+  - review {#b2}
+    1. screen reader {#b3}
+  | Person {#c1} | Blocked {#c2} | Next {#c3} | {#table t1}
+  | --- | --- | --- |
+  | Maya {#c4} | no {#c5} | {#c6} |
+  ```
+
+  A block id is what `select-block`, `select-range` and `move-caret` take,
+  so filling a cell is `select-block {block: "c6"}` then `type-text`; the
+  table's `word-processor.table:<table id>` resource adds and deletes rows
+  and columns. It pages up to 64 blocks through `nextCursor`;
+  `format: "segments"` returns the typed segments with their text offsets.
+  `paste` (Markdown, including headings, lists and pipe tables),
+  `set-paragraph-style`, `apply-named-style`, `insert-table` and a table's
+  `append-row` and `append-column` answer with the blocks they changed,
+  rendered the same way (`2 changed:` …, at most 32 listed, each cut at 160
+  characters with `…`, then `N removed`).
+- **Slides.** The deck's `read` answers the deck as text: each slide's
+  number, layout and `{#id}`, its title as a `# ` line, its body and other
+  elements each ending in its `{#id}`, then its speaker notes. `add-slide`,
+  `set-slide-text`, `move-slide` and the element edits answer with the same
+  outline. `set-slide-text {slide, title?, body?}` replaces a slide's title
+  (first text box) and body (second, a paragraph per line); `slide` is its
+  id or its number as `read` shows it.
+- **File Explorer.** `move {entries, folder, create?}` moves several entries
+  of the current folder into `folder` in one call, creating it unless
+  `create` is false, and answers `moved N into <folder>: …`. Nothing moves
+  when an entry is not there; the error lists the folder's entries.
+  `move-to` into a missing folder names the `move` call that creates it.
+
+Only these actions declare a result: each open document publishes its
+catalogue to the broker, and the broker's catalogue reply is capped at
+256 KiB (`MAX_PRIVATE_BYTES`), which five open Word Processor documents
+already nearly fill.
+
 ### Page format
 
 `tilo_query` pages are compact (surface version 3, reported at `initialize`
 as `capabilities.experimental["so.tilo.mcp"].version`): each resource once,
 its actions as one-line signatures such as `"save-as": "Save document as
 (path?)"` (`p?` optional, `p:type` a non-text type, `a|b` the accepted values,
-`1..64` a numeric range), and string cursors. A resource id longer than 24
-characters is shown as a session handle such as `r3`; `tilo_query`'s
+`1..64` a numeric range), and string cursors. In an app instance's pages, a
+resource id longer than 24 characters is shown as a session handle such as
+`r3`; workspace pages keep their ids (`app.<app_id>`, the permission roles),
+which provisioning code and prompts spell out. `tilo_query`'s
 `parent_resource`, `tilo_resolve` and `tilo_invoke` accept a handle wherever
-they take a resource, and full ids keep working. A bound UI resource's id is
+they take a resource, and full ids keep working. In `tilo_invoke`'s
+`arguments`, a handle this session issued is replaced by its id where the
+action declares a `resource` parameter. Where the parameter is text, the handle
+goes as given, since it may be meant literally. If the action refuses it, the
+call runs once more with the id, and `adjusted` says so. A bound UI resource's id is
 about 130 characters, repeated in every call. A model reads every page again
 on each later turn, and version 1's rows repeated each resource id three times
 and each contract twice. `detail: "full"` returns version 1 rows, with full

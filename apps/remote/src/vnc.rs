@@ -13,7 +13,7 @@ use std::io::{self, Read, Write};
 use std::net::TcpStream;
 use std::sync::mpsc::{Receiver, SyncSender, TryRecvError, TrySendError, sync_channel};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use crate::rfb::{self, Framebuffer, PixelFormat, ServerInit};
 use crate::session::SessionStatus;
@@ -203,7 +203,7 @@ fn run_client(
     *lock_recover(status) = SessionStatus::Connected;
     *lock_recover(frame) = Some(fb.clone());
 
-    let mut last_request = Instant::now();
+    let mut last_request = ui::time::now();
     loop {
         // Drain any queued input first.
         loop {
@@ -226,7 +226,7 @@ fn run_client(
                 if last_request.elapsed() >= Duration::from_millis(500) {
                     stream.set_read_timeout(None)?;
                     request_update(&mut stream, true, &fb)?;
-                    last_request = Instant::now();
+                    last_request = ui::time::now();
                 }
                 continue;
             }
@@ -240,7 +240,7 @@ fn run_client(
                 rfb::decode_framebuffer_update(&mut stream, &mut fb, &fmt)?;
                 *lock_recover(frame) = Some(fb.clone());
                 request_update(&mut stream, true, &fb)?;
-                last_request = Instant::now();
+                last_request = ui::time::now();
             }
             1 => read_set_colour_map(&mut stream)?,
             2 => {} // Bell — nothing to render.
@@ -456,8 +456,8 @@ mod tests {
             .unwrap();
 
             let mut got: Option<Framebuffer> = None;
-            let deadline = Instant::now() + HANG_BOUND;
-            while Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 if let SessionStatus::Failed(e) = vnc.status() {
                     panic!("vnc connect failed: {e}")
                 }
@@ -493,8 +493,8 @@ mod tests {
             })
             .unwrap();
             let mut failed = false;
-            let deadline = Instant::now() + HANG_BOUND;
-            while Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 if let SessionStatus::Failed(_) = vnc.status() {
                     failed = true;
                     break;

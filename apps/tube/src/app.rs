@@ -14,6 +14,7 @@
 use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::rc::Rc;
+use ui::time::UNIX_EPOCH;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId, ObjType, ReadDoc, Value};
@@ -41,7 +42,11 @@ use crate::widgets::{Flex, SharedPlayer};
 pub(crate) const QUALITIES: [&str; 4] = ["1080p", "720p", "480p", "auto"];
 
 fn history_now_ms() -> u64 {
-    tilo_clock::unix_now_ms()
+    ui::time::wall()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| {
+            u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        })
 }
 
 /// Resolve the owner scope for private watch history. The runtime signing
@@ -54,28 +59,27 @@ fn resolve_history_owner() -> String {
     if let Ok(identity) = runtime_identity::load() {
         return format!("user:{}", hex::encode(identity.group_public_key()));
     }
-    let path = xdg_paths::data_local_dir()
-        .unwrap_or_else(std::env::temp_dir)
-        .join("tilo")
-        .join("tube")
-        .join("history-owner");
-    if let Ok(owner) = std::fs::read_to_string(&path)
+    // The app data location: `$XDG_DATA_HOME/tilo` natively, the page's
+    // storage on the web.
+    let store = tilo_files::Dir::open(tilo_paths::AppPaths::for_app("tilo").data())
+        .ok()
+        .zip(tilo_files::VPath::new("tube/history-owner").ok());
+    if let Some((dir, name)) = &store
+        && let Ok(bytes) = tilo_files::blocking::read(dir, name)
+        && let Ok(owner) = String::from_utf8(bytes)
         && owner.starts_with("user:")
         && owner.len() > "user:".len()
     {
         return owner;
     }
     let owner = format!("user:{}", uuid::Uuid::new_v4().simple());
-    if let Some(parent) = path.parent()
-        && std::fs::create_dir_all(parent).is_ok()
-        && std::fs::write(&path, &owner).is_ok()
+    if let Some((dir, name)) = &store
+        && tilo_files::blocking::write_atomic(dir, name, owner.as_bytes()).is_ok()
     {
         return owner;
     }
-    let user = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .unwrap_or_default();
-    let host = std::env::var("HOSTNAME").unwrap_or_default();
+    let user = tilo_paths::session::user_name().unwrap_or_default();
+    let host = tilo_paths::session::host_name().unwrap_or_default();
     let seed = format!("{user}@{host}");
     if seed == "@" {
         owner
@@ -139,10 +143,16 @@ pub struct TubeApp {
     #[cfg(feature = "grayjay-sync")]
     device_sync_seeded: bool,
 
-    /// The freshly-built shell tree (top bar + nav rail + screen). Rebuilt
-    /// in `build_layout`; raw pointers in the App's `node_map` point into
-    /// it and stay valid until the next rebuild.
+    /// The shell tree (top bar + nav rail + screen). Rebuilt in
+    /// `build_layout` only when the structure, theme or width changed; raw
+    /// pointers in the App's `node_map` point into it and stay valid until
+    /// the next rebuild.
     root_child: Option<Box<dyn Widget>>,
+    /// A structural change the host took from `take_structure_dirty` that
+    /// the next `build_layout` has not rebuilt yet.
+    shell_stale: bool,
+    /// Theme and width the current shell was built for.
+    shell_key: Option<u64>,
     child_node: Option<NodeId>,
     rect: Rect,
 
@@ -297,6 +307,8 @@ impl TubeApp {
             #[cfg(feature = "grayjay-sync")]
             device_sync_seeded: false,
             root_child: None,
+            shell_stale: true,
+            shell_key: None,
             child_node: None,
             rect: Rect::ZERO,
             structure_dirty: false,
@@ -961,7 +973,7 @@ impl TubeApp {
     /// within the budget the surface stays as-is (the poster/backdrop shows).
     #[must_use]
     pub fn with_live_frame_for_shot(mut self, video_id: &str, url: String) -> Self {
-        use std::time::{Duration, Instant};
+        use ui::time::Duration;
         self.model.route = Route::Watch(video_id.to_string());
         {
             let mut p = self.player.borrow_mut();
@@ -979,13 +991,13 @@ impl TubeApp {
                         doc: &mut automerge::AutoCommit,
                         until: &dyn Fn(&ui::widget::VideoPlayer) -> bool,
                         budget: Duration| {
-                let deadline = Instant::now() + budget;
-                while Instant::now() < deadline {
+                let deadline = ui::time::now() + budget;
+                while ui::time::now() < deadline {
                     p.sync(doc, &root);
                     if until(p) {
                         return true;
                     }
-                    std::thread::sleep(Duration::from_millis(15));
+                    let _ = ui::rt::sleep_thread(Duration::from_millis(15));
                 }
                 false
             };
@@ -1829,11 +1841,11 @@ impl TubeApp {
         if let Some(w) = &self.worker
             && let Err(error) = w.request(req)
         {
-            let rejected = match error {
-                std::sync::mpsc::TrySendError::Full(request)
-                | std::sync::mpsc::TrySendError::Disconnected(request) => request,
+            let (rejected, stopped) = match error {
+                std::sync::mpsc::TrySendError::Full(request) => (request, false),
+                std::sync::mpsc::TrySendError::Disconnected(request) => (request, true),
             };
-            self.request_rejected(&rejected);
+            self.request_rejected(&rejected, stopped);
             return false;
         }
         true
@@ -1842,24 +1854,32 @@ impl TubeApp {
     /// Make bounded-worker saturation explicit. This is a local, retryable
     /// condition, not an offline/network failure, so never falsify the source
     /// provenance while reporting it.
-    fn request_rejected(&mut self, request: &Request) {
+    fn request_rejected(&mut self, request: &Request, stopped: bool) {
         const BUSY: &str = "Too many requests are pending. Please try again.";
+        const STOPPED: &str = "Tube can't reach its sources here; it is offline.";
+        let message = if stopped { STOPPED } else { BUSY };
+        if stopped {
+            self.model.data_source = crate::model::DataSource {
+                live: false,
+                label: "offline".into(),
+            };
+        }
         match request {
             Request::Search { query } => {
                 if self.model.search_query == *query {
                     self.model.search_loading = false;
-                    self.model.search_error = Some(BUSY.to_string());
+                    self.model.search_error = Some(message.to_string());
                 }
             }
             Request::Feed => {
                 self.model.feed_loading = false;
-                self.model.feed_error = Some(BUSY.to_string());
+                self.model.feed_error = Some(message.to_string());
             }
             Request::Branding(_)
             | Request::VideoMeta(_)
             | Request::Channel(_)
             | Request::PlaylistPage(_)
-            | Request::PlayVideo(_) => self.model.push_notice(BUSY),
+            | Request::PlayVideo(_) => self.model.push_notice(message),
         }
         self.structure_dirty = true;
     }
@@ -2541,9 +2561,26 @@ impl Widget for TubeApp {
         // Remember which layout resolution this tree was seeded with, so a
         // later `apply_layout` at the true width can detect a wrong seed (the
         // first build runs before any width is known) and rebuild once.
-        self.built_overlay = Some(self.nav_is_overlay());
-        let shell = self.build_shell_themed(theme);
-        self.root_child = Some(shell);
+        // A host may lay out after every input event. Rebuilding then would
+        // drop the hover and press a click is made of.
+        let key = {
+            use std::hash::{Hash as _, Hasher as _};
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            format!("{theme:?}").hash(&mut hasher);
+            self.rect.width().to_bits().hash(&mut hasher);
+            hasher.finish()
+        };
+        if self.root_child.is_none()
+            || self.shell_stale
+            || self.structure_dirty
+            || self.shell_key != Some(key)
+        {
+            self.built_overlay = Some(self.nav_is_overlay());
+            let shell = self.build_shell_themed(theme);
+            self.root_child = Some(shell);
+            self.shell_stale = false;
+            self.shell_key = Some(key);
+        }
         #[allow(
             clippy::unwrap_used,
             reason = "root_child was just set to Some(shell) on the line above; \
@@ -2860,6 +2897,7 @@ impl Widget for TubeApp {
         if let Some(c) = &mut self.root_child {
             dirty |= c.take_structure_dirty();
         }
+        self.shell_stale |= dirty;
         dirty
     }
 
@@ -4046,9 +4084,12 @@ mod tests {
             let mut app = TubeApp::empty();
             app.model.search_query = "rust".into();
             app.model.search_loading = true;
-            app.request_rejected(&Request::Search {
-                query: "rust".into(),
-            });
+            app.request_rejected(
+                &Request::Search {
+                    query: "rust".into(),
+                },
+                false,
+            );
             assert!(!app.model.search_loading, "do not leave a stuck skeleton");
             assert!(
                 app.model
@@ -4058,7 +4099,7 @@ mod tests {
             );
 
             app.model.feed_loading = true;
-            app.request_rejected(&Request::Feed);
+            app.request_rejected(&Request::Feed, false);
             assert!(!app.model.feed_loading, "do not leave Home loading forever");
             assert!(
                 app.model

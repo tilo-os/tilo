@@ -61,7 +61,7 @@ impl ShortcutCategory {
 
 impl ShortcutAction {
     /// Every rebindable desktop action, in the order it is listed.
-    pub const ALL: [Self; 44] = [
+    pub const ALL: [Self; 46] = [
         Self::Search,
         Self::WorkspaceOverview,
         Self::Lock,
@@ -81,6 +81,8 @@ impl ShortcutAction {
         Self::AttachTabRight,
         Self::MoveGroupLeft,
         Self::MoveGroupRight,
+        Self::MoveGroupToPreviousStrip,
+        Self::MoveGroupToNextStrip,
         Self::MoveGroupToPreviousDisplay,
         Self::MoveGroupToNextDisplay,
         Self::ResizeNarrower,
@@ -131,6 +133,8 @@ impl ShortcutAction {
             Self::AttachTabRight => "attach-tab-right",
             Self::MoveGroupLeft => "move-group-left",
             Self::MoveGroupRight => "move-group-right",
+            Self::MoveGroupToPreviousStrip => "move-group-to-previous-strip",
+            Self::MoveGroupToNextStrip => "move-group-to-next-strip",
             Self::MoveGroupToPreviousDisplay => "move-group-to-previous-display",
             Self::MoveGroupToNextDisplay => "move-group-to-next-display",
             Self::ResizeNarrower => "resize-narrower",
@@ -208,6 +212,8 @@ impl ShortcutAction {
             | Self::AttachTabRight
             | Self::MoveGroupLeft
             | Self::MoveGroupRight
+            | Self::MoveGroupToPreviousStrip
+            | Self::MoveGroupToNextStrip
             | Self::MoveGroupToPreviousDisplay
             | Self::MoveGroupToNextDisplay
             | Self::ResizeNarrower

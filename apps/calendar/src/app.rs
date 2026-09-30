@@ -18,6 +18,14 @@
 //! - `handle_event` — route clicks against the hit-map, keyboard
 //!   shortcuts, and forward to the editor when notes are active.
 
+/// A user-named text file (an `.ics` in the transfer folder), whole.
+fn read_text(path: &std::path::Path) -> Result<String, tilo_files::FsError> {
+    let (dir, name) = tilo_files::file_at(path)?;
+    let bytes = tilo_files::blocking::read(&dir, &name)?;
+    String::from_utf8(bytes)
+        .map_err(|_| tilo_files::FsError::Io("the file is not UTF-8 text".into()))
+}
+
 #[cfg(test)]
 use std::cell::Cell;
 use std::collections::{HashMap, HashSet};
@@ -519,7 +527,7 @@ pub struct CalendarApp {
     force_persist: bool,
     /// When the document was last written, used to debounce note typing so a
     /// burst of keystrokes doesn't serialize the whole document every frame.
-    last_persist: std::time::Instant,
+    last_persist: ui::time::Instant,
 
     // --- responsive state ------------------------------------------------
     /// Responsive drawer state, geometry and chrome interaction.
@@ -639,33 +647,36 @@ impl CalendarApp {
     /// Rejects non-local URLs, duplicate pending imports, unreadable/non-UTF-8
     /// input, and files exceeding 8 MiB.
     pub fn queue_launch_ics(&mut self, target: &str) -> Result<(), String> {
-        use std::io::Read as _;
         const LIMIT: u64 = 8 * 1024 * 1024;
         if self.pending_launch_ics.is_some() {
             return Err("A calendar launch import is already pending".into());
         }
         let path = if target.to_ascii_lowercase().starts_with("file:") {
-            url::Url::parse(target)
-                .map_err(|error| format!("Invalid file URL: {error}"))?
-                .to_file_path()
-                .map_err(|()| "Calendar launch requires a local file URL".to_string())?
+            let url =
+                url::Url::parse(target).map_err(|error| format!("Invalid file URL: {error}"))?;
+            if url
+                .host_str()
+                .is_some_and(|host| !host.is_empty() && host != "localhost")
+            {
+                return Err("Calendar launch requires a local file URL".into());
+            }
+            PathBuf::from(ui::uri::decode(url.path()))
         } else if target.contains("://") {
             return Err("Calendar launch requires a local file".into());
         } else {
             PathBuf::from(target)
         };
-        let file = std::fs::File::open(path).map_err(|error| format!("Import failed: {error}"))?;
-        if !file
-            .metadata()
-            .map_err(|error| error.to_string())?
-            .is_file()
-        {
+        let (dir, name) =
+            tilo_files::file_at(&path).map_err(|error| format!("Import failed: {error}"))?;
+        let meta = tilo_files::blocking::metadata(&dir, &name)
+            .map_err(|error| format!("Import failed: {error}"))?;
+        if meta.kind != tilo_files::Kind::File {
             return Err("Calendar launch requires a regular file".into());
         }
-        let mut bytes = Vec::new();
-        file.take(LIMIT + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|error| error.to_string())?;
+        if meta.len > LIMIT {
+            return Err("Calendar import exceeds 8 MiB".into());
+        }
+        let bytes = tilo_files::blocking::read(&dir, &name).map_err(|error| error.to_string())?;
         if bytes.len() as u64 > LIMIT {
             return Err("Calendar import exceeds 8 MiB".into());
         }
@@ -811,7 +822,7 @@ impl CalendarApp {
             data_path,
             saved_heads: Vec::new(),
             force_persist: false,
-            last_persist: std::time::Instant::now(),
+            last_persist: ui::time::now(),
             sidebar: Sidebar::new(),
             topbar: Topbar::new(),
             text_scale: 1.0,
@@ -1056,10 +1067,18 @@ impl CalendarApp {
             return;
         }
 
-        // Live delete + push + pull on a background thread; the result lands via
-        // `poll_sync`. Remote deletions go out first (so a re-pull can't
+        // Live delete + push + pull as a task on the app runtime; the result
+        // lands via `poll_sync`. Remote deletions go out first (so a re-pull can't
         // resurrect a just-deleted event), then queued uploads, then the
         // collections are pulled.
+        let runtime = match ui::rt::try_app() {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                self.status = Some(format!("Sync unavailable: {error}"));
+                self.dirty = true;
+                return;
+            }
+        };
         let delete_jobs = self.gather_delete_jobs(doc);
         let push_jobs = self.gather_push_jobs(doc);
         let sync_tokens = CalDoc::sync_tokens(doc);
@@ -1070,9 +1089,9 @@ impl CalendarApp {
                 tracing::warn!(%error, account = id, "calendar: could not persist sync start");
             }
         }
-        std::thread::spawn(move || {
-            let delete_result = caldav::remove_jobs(&delete_jobs);
-            let push_result = caldav::push_jobs(&push_jobs);
+        drop(runtime.spawn(async move {
+            let delete_result = caldav::remove_jobs(&delete_jobs).await;
+            let push_result = caldav::push_jobs(&push_jobs).await;
             let deleted = delete_result.confirmed;
             let pushed = push_result.confirmed;
             let revisions = push_result.revisions;
@@ -1095,7 +1114,8 @@ impl CalendarApp {
                     std::slice::from_ref(input),
                     today,
                     &sync_tokens,
-                );
+                )
+                .await;
                 let reporter = accounts::AccountSyncReporter::new(id.clone());
                 let upload_failed = push_jobs
                     .iter()
@@ -1181,7 +1201,7 @@ impl CalendarApp {
                 }
             }
             let _ = tx.send((result, outcome, pushed, deleted, conflicts, revisions));
-        });
+        }));
         self.sync_rx = Some(rx);
         self.syncing = true;
         self.status = Some("Syncing…".into());
@@ -1807,7 +1827,7 @@ impl CalendarApp {
         match crate::store::save(&path, state) {
             Ok(()) => {
                 self.saved_heads = heads;
-                self.last_persist = std::time::Instant::now();
+                self.last_persist = ui::time::now();
                 self.force_persist = false;
             }
             Err(e) => tracing::warn!(error = %e, "calendar: failed to persist document"),
@@ -2224,8 +2244,7 @@ impl CalendarApp {
         let dir = crate::store::transfer_dir();
         let path = crate::store::newest_ics(&dir)
             .ok_or_else(|| format!("No .ics files found in {}", dir.display()))?;
-        let payload =
-            std::fs::read_to_string(&path).map_err(|error| format!("Import failed: {error}"))?;
+        let payload = read_text(&path).map_err(|error| format!("Import failed: {error}"))?;
         self.import_action_from_payload(&payload).ok_or_else(|| {
             format!(
                 "{} contains no new supported calendar items",
@@ -3129,10 +3148,10 @@ impl CalendarApp {
         let ics = ics::export(&self.model);
         let dir = crate::store::transfer_dir();
         let path = dir.join(ics::suggested_filename(self.anchor));
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        match std::fs::write(&path, ics) {
+        let written = tilo_files::file_at(&path).and_then(|(dir, name)| {
+            tilo_files::blocking::save_document(&dir, &name, ics.as_bytes())
+        });
+        match written {
             Ok(()) => {
                 self.status = Some(format!(
                     "Exported {} events · {} tasks to {}",
@@ -3158,7 +3177,7 @@ impl CalendarApp {
             self.dirty = true;
             return;
         };
-        let payload = match std::fs::read_to_string(&path) {
+        let payload = match read_text(&path) {
             Ok(s) => s,
             Err(e) => {
                 self.status = Some(format!("Import failed: {e}"));

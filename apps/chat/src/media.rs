@@ -249,7 +249,7 @@ pub struct MediaEngine {
     live_start_pending: bool,
     /// The live endpoint while it binds on the app runtime. It stands in for
     /// `transport` until the bound endpoint replaces it.
-    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+    #[cfg(feature = "live-media")]
     binding: Option<live::PendingBind>,
     /// Set when the bound live transport replaced the stand-in, until
     /// [`Self::take_bound`] observes it.
@@ -267,13 +267,18 @@ impl MediaEngine {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn latch_bound_for_test(&mut self) {
+        self.bound = true;
+    }
+
     /// Force the simulated transport regardless of build/environment. Used by
     /// `--shots`/tests that want the deterministic local bus.
     pub fn simulated() -> Self {
         Self {
             transport: Box::new(SimulatedTransport::default()),
             live_start_pending: false,
-            #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+            #[cfg(feature = "live-media")]
             binding: None,
             bound: false,
         }
@@ -291,14 +296,14 @@ impl MediaEngine {
             return;
         }
         self.live_start_pending = false;
-        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+        #[cfg(feature = "live-media")]
         {
             self.binding = Some(live::PendingBind::start());
         }
     }
 
     fn active(&self) -> &dyn MediaTransport {
-        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+        #[cfg(feature = "live-media")]
         if let Some(binding) = &self.binding {
             return binding;
         }
@@ -320,19 +325,20 @@ impl MediaEngine {
     /// Adopt the live endpoint if it finished binding. Returns whether a
     /// newly bound transport is waiting for [`Self::take_bound`].
     pub fn poll_binding(&mut self) -> bool {
-        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+        #[cfg(feature = "live-media")]
         if let Some(outcome) = self.binding.as_mut().and_then(live::PendingBind::try_take) {
             self.binding = None;
             match outcome {
                 live::BindOutcome::Bound(live) => {
-                    self.transport = Box::new(live);
+                    self.transport = live;
                     self.bound = true;
+                    return true;
                 }
                 // The simulator stays in place.
                 live::BindOutcome::Failed => {}
             }
         }
-        self.bound
+        false
     }
 
     /// Whether the live transport became ready since the last call. A call
@@ -344,7 +350,7 @@ impl MediaEngine {
 
     pub fn transport_mut(&mut self) -> &mut (dyn MediaTransport + Send) {
         self.poll_binding();
-        #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+        #[cfg(feature = "live-media")]
         if let Some(binding) = self.binding.as_mut() {
             return binding;
         }
@@ -363,11 +369,11 @@ impl MediaEngine {
 }
 
 fn environment_supports_media() -> bool {
-    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+    #[cfg(feature = "live-media")]
     {
         live::environment_supports_media()
     }
-    #[cfg(not(all(feature = "live-media", not(target_arch = "wasm32"))))]
+    #[cfg(not(feature = "live-media"))]
     {
         false
     }
@@ -380,24 +386,26 @@ impl Default for MediaEngine {
 }
 
 // ---------------------------------------------------------------------------
-// Live engine — compiled only under `live-media`, and only natively: the
-// browser runtime carries calls over its own MoQ media, not an iroh endpoint.
+// Live engine — compiled only under `live-media`: a peer-to-peer endpoint
+// (iroh QUIC on the desktop). A browser page cannot bind one and carries calls
+// over its own MoQ media instead.
 // ---------------------------------------------------------------------------
-#[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+#[cfg(feature = "live-media")]
 mod live {
     use super::{
         MAX_MEDIA_PAYLOAD, MAX_MEDIA_POLL, MAX_MEDIA_QUEUE, MAX_MEDIA_SENDER_BYTES, MediaObject,
         MediaTransport, Subscription, TrackKind,
     };
     use std::collections::HashMap;
-    use tokio::sync::mpsc;
+    use tilo_net::p2p;
 
     /// ALPN for the chat call media stream. Versioned so a protocol change is a
     /// clean break rather than a silent mis-parse.
     const MEDIA_ALPN: &[u8] = b"tilo-chat-media/0";
 
     /// Hard cap on a single wire frame (`DoS` guard). One audio/video access unit
-    /// is far smaller than this.
+    /// is far smaller than this. Every media object on the stream is one
+    /// frame: a little-endian `u32` length, then [`MediaObject::to_wire`].
     const MAX_FRAME: usize = 1 + 8 + 8 + 2 + MAX_MEDIA_SENDER_BYTES + 4 + MAX_MEDIA_PAYLOAD;
 
     /// Runtime probe: should the live media stack be used here? Requires a real
@@ -406,148 +414,42 @@ mod live {
     /// while the loopback test constructs [`IrohTransport`] directly and does
     /// not depend on this probe (iroh QUIC needs no session).
     pub fn environment_supports_media() -> bool {
-        session_bus_present() || std::env::var_os("WAYLAND_DISPLAY").is_some()
+        tilo_paths::session::has_desktop_session()
     }
 
-    /// A session bus address that names a socket which exists. The test
-    /// environment points the address at one that never does.
-    fn session_bus_present() -> bool {
-        let Some(address) = std::env::var_os("DBUS_SESSION_BUS_ADDRESS") else {
-            return false;
-        };
-        let address = address.to_string_lossy();
-        address
-            .split(';')
-            .any(|entry| match entry.strip_prefix("unix:path=") {
-                Some(rest) => {
-                    let path = rest.split(',').next().unwrap_or_default();
-                    std::path::Path::new(path).exists()
-                }
-                None => !entry.is_empty(),
-            })
-    }
-
-    /// Every media object on the stream: a little-endian `u32` length, then
-    /// [`MediaObject::to_wire`]. An empty frame carries nothing and is skipped.
-    const MEDIA_FRAMING: wire_frame::Framing = wire_frame::Framing::little_endian(MAX_FRAME);
-
-    #[cfg(test)]
-    mod wire_tests {
-        use super::{MAX_FRAME, MEDIA_FRAMING};
-
-        /// Peers on other builds read these bytes: a little-endian `u32`
-        /// length, then the object; an empty frame is legal.
-        #[test]
-        fn media_wire_bytes_are_pinned() {
-            let mut wire = Vec::new();
-            MEDIA_FRAMING.write(&mut wire, b"obj").unwrap();
-            MEDIA_FRAMING.write(&mut wire, b"").unwrap();
-            assert_eq!(wire, [3, 0, 0, 0, b'o', b'b', b'j', 0, 0, 0, 0]);
-            let mut reader = wire.as_slice();
-            assert_eq!(MEDIA_FRAMING.read(&mut reader).unwrap().unwrap(), b"obj");
-            assert_eq!(MEDIA_FRAMING.read(&mut reader).unwrap().unwrap(), b"");
-            let oversized = u32::try_from(MAX_FRAME + 1).unwrap().to_le_bytes();
-            assert!(MEDIA_FRAMING.read(&mut oversized.as_slice()).is_err());
-        }
-    }
-
-    /// The receive half: accepts an incoming QUIC connection, reads a stream of
-    /// length-prefixed [`MediaObject`]s and forwards each decoded object to the
-    /// transport's inbound channel, which [`IrohTransport::poll`] drains.
-    #[derive(Clone)]
-    struct MediaProtocol {
-        inbound: mpsc::Sender<MediaObject>,
-    }
-
-    impl std::fmt::Debug for MediaProtocol {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("MediaProtocol")
-        }
-    }
-
-    impl iroh::protocol::ProtocolHandler for MediaProtocol {
-        async fn accept(
-            &self,
-            connection: iroh::endpoint::Connection,
-        ) -> Result<(), iroh::protocol::AcceptError> {
-            let recv = connection.accept_uni().await?;
-            let mut frames = wire_frame::FrameReader::new(recv, MEDIA_FRAMING);
-            loop {
-                match frames.read_frame_async().await {
-                    Ok(Some([])) => {}
-                    Ok(Some(buf)) => {
-                        if let Some(obj) = MediaObject::from_wire(buf) {
-                            // Bounded, non-blocking admission: never let a
-                            // fast peer grow memory or make the receive task
-                            // wait indefinitely behind the UI. A realtime
-                            // frame dropped under pressure is preferable to a
-                            // stale one arriving seconds later.
-                            match self.inbound.try_send(obj) {
-                                Ok(()) | Err(mpsc::error::TrySendError::Full(_)) => {}
-                                // The receiver belongs to a dropped transport;
-                                // continuing to read would only waste a task
-                                // and hide that the operation was cancelled.
-                                Err(mpsc::error::TrySendError::Closed(_)) => break,
-                            }
-                        }
-                    }
-                    // Clean EOF or a torn stream: the peer finished sending.
-                    Ok(None) | Err(_) => break,
-                }
-            }
-            Ok(())
-        }
-    }
-
-    /// Real transport: an iroh endpoint carrying MoQ-style objects over QUIC.
+    /// Real transport: a peer-to-peer endpoint carrying MoQ-style objects.
     ///
     /// The synchronous [`MediaTransport`] surface (called from the app's UI
-    /// thread) is bridged to iroh's async world through the app runtime
-    /// (`ui::rt::app()`) and channels: inbound objects arrive on a channel
-    /// filled by the accept loop; outbound objects are fanned to one writer
-    /// task per connected peer. Dropping the transport shuts the router and
-    /// endpoint down; each writer task ends when its channel closes.
+    /// thread) is bridged to the endpoint's async world on the runtime it was
+    /// bound on: inbound objects arrive in the endpoint's bounded queue;
+    /// outbound objects are fanned to one connection per peer. Dropping the
+    /// transport closes the endpoint and its connections.
     pub struct IrohTransport {
-        endpoint: iroh::Endpoint,
-        // Router owns the accept loop; kept alive so peers can dial us.
-        router: iroh::protocol::Router,
-        ticket: String,
-        inbound_rx: mpsc::Receiver<MediaObject>,
-        /// One outbound writer per connected peer, keyed by its ticket.
-        peers: HashMap<String, mpsc::Sender<Vec<u8>>>,
+        endpoint: p2p::Endpoint<MediaObject>,
+        /// One outbound connection per peer, keyed by its ticket.
+        peers: HashMap<String, p2p::Peer>,
         published: Vec<TrackKind>,
         subs: Vec<Subscription>,
     }
 
     impl IrohTransport {
-        /// Bind a real iroh endpoint and start accepting media connections.
-        /// Returns `None` if the endpoint can't bind (no usable network stack).
+        /// Bind a real endpoint and start accepting media connections.
+        /// Returns `None` if the endpoint can't bind (no usable network stack,
+        /// or a host that cannot accept peers).
         ///
-        /// Must run on the app runtime: the router's accept loop is spawned
-        /// onto the runtime it is polled in.
+        /// Must run on the app runtime: the endpoint's tasks run on the
+        /// runtime it is bound on.
         pub async fn bind() -> Option<Self> {
-            let (inbound_tx, inbound_rx) = mpsc::channel(MAX_MEDIA_QUEUE);
-            let endpoint = iroh::Endpoint::builder(iroh::endpoint::presets::N0)
-                .bind()
-                .await
-                .ok()?;
-            let router = iroh::protocol::Router::builder(endpoint.clone())
-                .accept(
-                    MEDIA_ALPN,
-                    MediaProtocol {
-                        inbound: inbound_tx,
-                    },
-                )
-                .spawn();
-            // Local (direct) addresses are available right after bind;
-            // relay contact is not required for LAN / loopback peers.
-            let addr = endpoint.addr();
-            let ticket = serde_json::to_string(&addr).ok()?;
+            let endpoint = p2p::Endpoint::bind(
+                MEDIA_ALPN,
+                MAX_FRAME,
+                MAX_MEDIA_QUEUE,
+                MediaObject::from_wire,
+            )
+            .await
+            .ok()?;
             Some(Self {
                 endpoint,
-                router,
-                ticket,
-                inbound_rx,
                 peers: HashMap::new(),
                 published: Vec::new(),
                 subs: Vec::new(),
@@ -559,16 +461,6 @@ mod live {
         #[cfg(test)]
         pub fn try_new() -> Option<Self> {
             ui::rt::app().block_on(Self::bind()).ok().flatten()
-        }
-    }
-
-    impl Drop for IrohTransport {
-        fn drop(&mut self) {
-            let router = self.router.clone();
-            drop(ui::rt::app().spawn(async move {
-                // Closes the accept loop, its handlers and the endpoint.
-                let _ = router.shutdown().await;
-            }));
         }
     }
 
@@ -621,13 +513,13 @@ mod live {
             for sub in self.subs.drain(..) {
                 live.subscribe(sub);
             }
-            Some(BindOutcome::Bound(live))
+            Some(BindOutcome::Bound(Box::new(live)))
         }
     }
 
     /// How a [`PendingBind`] ended.
     pub enum BindOutcome {
-        Bound(IrohTransport),
+        Bound(Box<IrohTransport>),
         /// The endpoint could not bind (no usable network stack).
         Failed,
     }
@@ -668,34 +560,19 @@ mod live {
             true
         }
         fn local_ticket(&self) -> Option<String> {
-            Some(self.ticket.clone())
+            Some(self.endpoint.ticket().to_owned())
         }
         fn connect(&mut self, ticket: &str) -> bool {
             // Don't dial ourselves, and dedupe repeat dials (this runs every
             // frame while call membership settles).
-            if ticket == self.ticket || self.peers.contains_key(ticket) {
-                return ticket != self.ticket;
+            let own = ticket == self.endpoint.ticket();
+            if own || self.peers.contains_key(ticket) {
+                return !own;
             }
-            let Ok(addr) = serde_json::from_str::<iroh::EndpointAddr>(ticket) else {
+            let Ok(peer) = self.endpoint.connect(ticket, MAX_MEDIA_QUEUE) else {
                 return false;
             };
-            let (out_tx, mut out_rx) = mpsc::channel::<Vec<u8>>(MAX_MEDIA_QUEUE);
-            let endpoint = self.endpoint.clone();
-            drop(ui::rt::app().spawn(async move {
-                let Ok(conn) = endpoint.connect(addr, MEDIA_ALPN).await else {
-                    return;
-                };
-                let Ok(mut send) = conn.open_uni().await else {
-                    return;
-                };
-                while let Some(bytes) = out_rx.recv().await {
-                    if MEDIA_FRAMING.write_async(&mut send, &bytes).await.is_err() {
-                        break;
-                    }
-                }
-                let _ = send.finish();
-            }));
-            self.peers.insert(ticket.to_string(), out_tx);
+            self.peers.insert(ticket.to_string(), peer);
             true
         }
         fn publish(&mut self, kind: TrackKind) {
@@ -715,25 +592,26 @@ mod live {
             let Some(bytes) = obj.try_to_wire() else {
                 return false;
             };
-            // Fan out to every connected peer; drop writers whose task has
+            // Fan out to every connected peer; drop connections that have
             // ended (peer left / connection died). Full per-peer queues are
             // intentionally rejected instead of becoming an unbounded latent
             // playback buffer.
             let mut accepted = false;
-            self.peers.retain(|_, tx| match tx.try_send(bytes.clone()) {
-                Ok(()) => {
-                    accepted = true;
-                    true
-                }
-                Err(mpsc::error::TrySendError::Full(_)) => true,
-                Err(mpsc::error::TrySendError::Closed(_)) => false,
-            });
+            self.peers
+                .retain(|_, peer| match peer.try_send(bytes.clone()) {
+                    p2p::Sent::Queued => {
+                        accepted = true;
+                        true
+                    }
+                    p2p::Sent::Full => true,
+                    p2p::Sent::Closed => false,
+                });
             accepted
         }
         fn poll(&mut self) -> Vec<MediaObject> {
             let mut out = Vec::new();
             while out.len() < MAX_MEDIA_POLL {
-                let Ok(obj) = self.inbound_rx.try_recv() else {
+                let Some(obj) = self.endpoint.try_recv() else {
                     break;
                 };
                 out.push(obj);
@@ -881,7 +759,7 @@ mod tests {
     /// Binding runs on the app runtime and wakes the event loop; until then
     /// the engine is live without a ticket, and a failed bind falls back to
     /// the simulator instead of leaving calls on a dead stand-in.
-    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+    #[cfg(feature = "live-media")]
     #[test]
     fn live_engine_binds_in_the_background_and_falls_back_when_binding_fails() {
         let mut scope = ui::WakeScope::new();
@@ -913,22 +791,38 @@ mod tests {
         assert_eq!(engine.local_ticket().as_deref(), Some("sim://local"));
     }
 
+    /// `poll_binding` used to return the latched `bound` flag forever, so
+    /// Chat's `update` stayed true after the endpoint came up and the
+    /// native runner committed a buffer at 144 Hz (~90% of a core).
+    #[test]
+    fn poll_binding_is_edge_triggered_after_the_endpoint_is_ready() {
+        let mut engine = MediaEngine::simulated();
+        engine.bound = true;
+        assert!(
+            !engine.poll_binding(),
+            "an already-bound endpoint is not a change"
+        );
+        assert!(engine.take_bound(), "the latch is still delivered once");
+        assert!(!engine.take_bound());
+        assert!(!engine.poll_binding());
+    }
+
     // -- Real transport + codec loopback (only compiled with `live-media`) ----
-    #[cfg(all(feature = "live-media", not(target_arch = "wasm32")))]
+    #[cfg(all(feature = "live-media", unix))]
     mod live_loopback {
         use super::super::live::IrohTransport;
         use super::*;
-        use crate::audio::{OpusDecoder, OpusEncoder};
-        use std::time::{Duration, Instant};
+        use media::voice::gst::{OpusDecoder, OpusEncoder, test_tone};
+        use ui::time::Duration;
 
         /// Spin the transport's poll (non-blocking) until `want` objects have
         /// arrived or the deadline passes. The endpoints do their real QUIC
         /// handshake + stream I/O on the app runtime's thread, so a
         /// short sleep between polls lets them make progress.
         fn drain_until(t: &mut IrohTransport, want: usize, timeout: Duration) -> Vec<MediaObject> {
-            let deadline = Instant::now() + timeout;
+            let deadline = ui::time::now() + timeout;
             let mut got = Vec::new();
-            while got.len() < want && Instant::now() < deadline {
+            while got.len() < want && ui::time::now() < deadline {
                 got.extend(t.poll());
                 if got.len() < want {
                     std::thread::sleep(Duration::from_millis(20));
@@ -976,7 +870,7 @@ mod tests {
 
             // Real encode: a 40 ms 48 kHz mono tone → two 20 ms Opus packets.
             let mut enc = OpusEncoder::new().expect("opusenc pipeline builds");
-            let pcm = crate::audio::test_tone(48_000, 1, 40);
+            let pcm = test_tone(48_000, 1, 40);
             let packets = enc.encode(&pcm);
             assert!(
                 !packets.is_empty(),

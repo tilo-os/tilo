@@ -8,8 +8,7 @@
 
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Receiver};
-use std::thread;
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use ui::ColorCompat;
@@ -82,6 +81,7 @@ pub struct SpeedTestApp {
     last_animation: Instant,
     started: Option<Instant>,
     worker: Option<Receiver<WorkerMessage>>,
+    task: Option<ui::rt::JoinHandle<()>>,
     region: usize,
     error: Option<String>,
     history: Vec<ResultSet>,
@@ -100,9 +100,10 @@ impl SpeedTestApp {
             result: None,
             display_value: 0.0,
             ring_progress: 0.0,
-            last_animation: Instant::now(),
+            last_animation: ui::time::now(),
             started: None,
             worker: None,
+            task: None,
             region: 0,
             error: None,
             history: Vec::new(),
@@ -162,14 +163,22 @@ impl SpeedTestApp {
         self.phase = Phase::Ping;
         self.error = None;
         self.display_value = 0.0;
-        self.started = Some(Instant::now());
-        self.last_animation = Instant::now();
+        self.started = Some(ui::time::now());
+        self.last_animation = ui::time::now();
         let (tx, rx) = mpsc::channel();
         self.worker = Some(rx);
-        thread::spawn(move || run_measurement(&tx));
+        self.cancel_task();
+        self.task = Some(ui::rt::app().spawn(run_measurement(tx)));
+    }
+
+    fn cancel_task(&mut self) {
+        if let Some(task) = self.task.take() {
+            task.abort();
+        }
     }
 
     fn stop(&mut self) {
+        self.cancel_task();
         self.worker = None;
         self.phase = Phase::Idle;
         self.result = None;
@@ -350,7 +359,7 @@ impl Widget for SpeedTestApp {
             };
             changed = true;
         }
-        let now = Instant::now();
+        let now = ui::time::now();
         let delta = now
             .duration_since(self.last_animation)
             .as_secs_f64()
@@ -810,7 +819,7 @@ impl Widget for SpeedTestApp {
                 .map_or(0.0, |result| (result.download / 800.0).clamp(0.08, 1.0)),
         };
         (self.is_running() || (self.ring_progress - target).abs() > 0.001)
-            .then(|| Instant::now() + Duration::from_millis(16))
+            .then(|| ui::time::now() + Duration::from_millis(16))
     }
 }
 
@@ -1120,71 +1129,62 @@ impl SpeedTestApp {
     }
 }
 
-fn run_measurement(tx: &mpsc::Sender<WorkerMessage>) {
-    let client = match tilo_net::http::blocking_client()
+async fn run_measurement(tx: mpsc::Sender<WorkerMessage>) {
+    let message = match measure(&tx).await {
+        Ok(result) => WorkerMessage::Done(result),
+        Err(error) => WorkerMessage::Failed(error),
+    };
+    let _ = tx.send(message);
+}
+
+async fn measure(tx: &mpsc::Sender<WorkerMessage>) -> Result<ResultSet, String> {
+    let client = tilo_net::Client::builder()
         .timeout(Duration::from_secs(12))
         .user_agent("Tilo Speed Test/0.1")
         .build()
-    {
-        Ok(client) => client,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(error.to_string()));
-            return;
-        }
-    };
-    let ping_start = Instant::now();
-    let ping = match client
+        .map_err(|error| error.to_string())?;
+    let ping_start = ui::time::now();
+    client
         .get("https://speed.cloudflare.com/__down?bytes=1")
         .send()
-    {
-        Ok(_) => ping_start.elapsed().as_secs_f64() * 1000.0,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(format!(
-                "Could not reach the test server: {error}"
-            )));
-            return;
-        }
-    };
+        .await
+        .and_then(tilo_net::Response::error_for_status)
+        .map_err(|error| format!("Could not reach the test server: {error}"))?;
+    let ping = ping_start.elapsed().as_secs_f64() * 1000.0;
+
     let _ = tx.send(WorkerMessage::Phase(Phase::Download));
-    let download_start = Instant::now();
-    #[expect(
-        clippy::redundant_closure_for_method_calls,
-        reason = "the response type lives in `reqwest`, which is only a transitive dependency via `tilo-net`"
-    )]
-    let bytes = match client
+    let download_start = ui::time::now();
+    let mut response = client
         .get("https://speed.cloudflare.com/__down?bytes=10000000")
         .send()
-        .and_then(|response| response.bytes())
+        .await
+        .map_err(|error| format!("Download test failed: {error}"))?;
+    let mut bytes = 0_usize;
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|error| format!("Download test failed: {error}"))?
     {
-        Ok(body) => body.len() as f64,
-        Err(error) => {
-            let _ = tx.send(WorkerMessage::Failed(format!(
-                "Download test failed: {error}"
-            )));
-            return;
-        }
-    };
-    let download = bytes * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+        bytes += chunk.len();
+    }
+    let download = bytes as f64 * 8.0 / download_start.elapsed().as_secs_f64() / 1_000_000.0;
+
     let _ = tx.send(WorkerMessage::Phase(Phase::Upload));
     let upload_body = vec![0_u8; 2_000_000];
-    let upload_start = Instant::now();
-    if let Err(error) = client
+    let upload_start = ui::time::now();
+    client
         .post("https://speed.cloudflare.com/__up")
         .body(upload_body)
         .send()
-    {
-        let _ = tx.send(WorkerMessage::Failed(format!(
-            "Upload test failed: {error}"
-        )));
-        return;
-    }
+        .await
+        .map_err(|error| format!("Upload test failed: {error}"))?;
     let upload = 16.0 / upload_start.elapsed().as_secs_f64();
-    let _ = tx.send(WorkerMessage::Done(ResultSet {
+    Ok(ResultSet {
         ping,
         jitter: ping * 0.08,
         download,
         upload,
-    }));
+    })
 }
 
 #[cfg(test)]

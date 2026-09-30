@@ -2770,8 +2770,11 @@ impl WgpuEngine {
             if Some(id) == zero_gradient_id {
                 continue;
             }
-            if let Some((_texture, _view)) = self.bind_map.image_map.remove(&id) {
+            if let Some((texture, _view)) = self.bind_map.image_map.remove(&id) {
                 // TODO: have a pool to avoid needless re-allocation
+                // Release it once the submitted work is done; dropping alone
+                // leaves a browser's GPU memory to its garbage collector.
+                texture.destroy();
             }
         }
         Ok(submission)
@@ -2796,7 +2799,12 @@ impl WgpuEngine {
     /// from under a frame in flight.
     pub fn clear_pool(&mut self) {
         self.bind_group_cache.clear();
-        self.pool.bufs.clear();
+        // On WebGPU a dropped buffer lives until JavaScript collects it, so a
+        // cleared pool would stay resident beside its replacements. destroy()
+        // waits for submitted work that still uses the buffer.
+        for buffer in self.pool.bufs.drain().flat_map(|(_, buffers)| buffers) {
+            buffer.destroy();
+        }
         self.cpu_pathtag_pool.clear();
         self.cpu_metadata_pool.clear();
         self.cpu_draw_prefix_pool.clear();
@@ -2866,7 +2874,9 @@ impl WgpuEngine {
 
     /// Drop a completed download.
     pub fn free_download(&mut self, buf: BufferProxy) {
-        self.downloads.remove(&buf.id);
+        if let Some(buffer) = self.downloads.remove(&buf.id) {
+            buffer.destroy();
+        }
     }
 
     /// Recycle the fixed-size adaptive bump-counter download.

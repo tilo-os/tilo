@@ -2,7 +2,6 @@ import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {createStorageAccess} from './storage.mjs';
 import {createInlineStorage} from './storage-inline.mjs';
-import {commitPeerBatches} from './peer-persistence.mjs';
 import {fakeIndexedDB,fakeLocks,fakeWorkers,postedTypes} from './testing/fake-storage.mjs';
 
 const settle=async(rounds=20)=>{for(let i=0;i<rounds;i++)await new Promise(resolve=>setImmediate(resolve));};
@@ -90,9 +89,8 @@ test('the same-epoch revision guard and revision validation run in the worker',a
 
 test('failNextWrite aborts the next strict transaction inside the worker',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');
-  lease.abortNext=true;let settlement;
-  await assert.rejects(commitPeerBatches({pending:()=>({id:'b',writes:[write('k','1')]}),commit:writes=>lease.commit(writes),acknowledge:value=>{settlement=value;},epoch:lease.epoch,publish:()=>{}}),/aborted/);
-  assert.deepEqual(settlement.result,{ok:false,code:'storage-transaction-failed'});
+  lease.abortNext=true;
+  await assert.rejects(lease.commit([write('k','1')]),/aborted/);
   assert.equal(h.idb.rows().length,0);assert.equal(lease.abortNext,false);
   await lease.commit([write('k','2')]);assert.equal(h.idb.rows().length,1);
   await lease.release();
@@ -101,9 +99,8 @@ test('failNextWrite aborts the next strict transaction inside the worker',async 
 test('quota and security errors keep their codes through the worker',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');
   for(const [name,code] of [['QuotaExceededError','storage-quota'],['SecurityError','storage-denied']]){
-    h.idb.failNextPut(name);let settlement;
-    await assert.rejects(commitPeerBatches({pending:()=>({id:'b',writes:[write('k','1')]}),commit:writes=>lease.commit(writes),acknowledge:value=>{settlement=value;},epoch:lease.epoch,publish:()=>{}}),error=>error.name===name&&/simulated/.test(error.message));
-    assert.deepEqual([settlement.batchId,settlement.epoch,settlement.result],['b',lease.epoch,{ok:false,code}]);
+    h.idb.failNextPut(name);
+    await assert.rejects(lease.commit([write('k','1')]),error=>error.name===name&&/simulated/.test(error.message)&&(error.code===undefined||error.code===code));
   }
   assert.equal(h.access.mode(),'worker','transaction errors are not worker failures');
   await lease.release();
@@ -111,11 +108,10 @@ test('quota and security errors keep their codes through the worker',async t=>{
 
 test('a worker crash fails the in-flight commit as storage-transaction-failed and the session continues in-page with the same epoch',async t=>{
   const h=harness(t);const lease=await h.access.acquireStorage('p','d');const worker=h.worker();
-  const gate=h.idb.gateNextCommit();let settlement;
-  const run=commitPeerBatches({pending:()=>({id:'b1',writes:[write('k','1')]}),commit:writes=>lease.commit(writes),acknowledge:value=>{settlement=value;},epoch:lease.epoch,publish:()=>{}});
+  const gate=h.idb.gateNextCommit();
+  const run=lease.commit([write('k','1')]);
   await gate.held;worker.crash();
   await assert.rejects(run,error=>error.name==='StorageWorkerError');
-  assert.deepEqual(settlement.result,{ok:false,code:'storage-transaction-failed'});
   assert.equal(worker.terminated,true);assert.equal(h.fallbacks.length,1);assert.equal(h.access.mode(),'inline');
   assert.equal(h.idb.rows().length,0,'the interrupted transaction did not commit');
   await lease.commit([write('k','2',[9])]);

@@ -14,8 +14,8 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::mpsc::{self, Receiver, SyncSender, TryRecvError};
-use std::time::{Duration, Instant};
 use tilo_automerge::ApplyIncoming;
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ChangeHash, ObjId};
@@ -346,6 +346,10 @@ enum RunMode {
     /// The headless `--shots`/test path: seeds the sample budget so a captured
     /// frame shows real formulas, and never reads or writes the user's data.
     Shots,
+    /// Mounted by a host on a record: the record is the workbook, so the
+    /// app-wide file is never read or written. Only the record's creator
+    /// adds the first sheet; a participant that joined waits for it.
+    Record(ui::launch::RecordLaunch),
 }
 
 /// The app's only decorative animation is the transient status bubble. Keep
@@ -366,6 +370,11 @@ impl RunMode {
     /// Whether an empty workbook is filled with the sample budget.
     fn seeds_sample_data(self) -> bool {
         self == Self::Shots
+    }
+
+    /// Whether an empty workbook gets its first blank sheet.
+    fn seeds_blank_sheet(self) -> bool {
+        self != Self::Record(ui::launch::RecordLaunch::Joined)
     }
 }
 
@@ -1072,7 +1081,7 @@ impl SheetsApp {
             settings_panel: SettingsPanel::None,
             global: GlobalSettings::default(),
             doc_settings: DocSettings::default(),
-            run: RunMode::Live,
+            run: ui::launch::record_launch().map_or(RunMode::Live, RunMode::Record),
             motion: MotionPreference::Full,
             saved_heads: Vec::new(),
             persistence_rx: None,
@@ -1430,7 +1439,7 @@ impl SheetsApp {
     /// it would have faded, or never surfaced, by the time the frame renders).
     pub fn arm_status_bubble_for_shots(&mut self) {
         self.shots_status = true;
-        self.status_bubble.poke(std::time::Instant::now());
+        self.status_bubble.poke(ui::time::now());
     }
 
     /// Shots hook: open the File menu so its actions appear in the frame.
@@ -1712,8 +1721,8 @@ impl SheetsApp {
                 if let Some(addr) = a1_to_addr("E2") {
                     self.grid.select_only(addr);
                 }
-            } else {
-                self.perform_action(doc, &actions::add_sheet_action("Sheet1"));
+            } else if self.run.seeds_blank_sheet() {
+                SheetsDoc::add_sheet(doc, "Sheet1");
                 self.active_sheet = 0;
                 self.grid.select_only((0, 0));
             }
@@ -1745,25 +1754,24 @@ impl SheetsApp {
         let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
             "workbook persistence generation is exhausted; restart Sheets".to_string()
         })?;
-        let path =
-            workbook_path().ok_or_else(|| "no per-user data directory is available".to_string())?;
+        let (location, name) = workbook_store();
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sheets-persistence-load".into())
-            .spawn(move || {
-                let result = match std::fs::read(&path) {
-                    Ok(bytes) => AutoCommit::load(&bytes)
-                        .map(|mut saved| {
-                            let heads = saved.get_heads();
-                            Some(Box::new((saved, heads)))
-                        })
-                        .map_err(|error| format!("could not decode saved workbook: {error}")),
-                    Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-                    Err(error) => Err(format!("could not read saved workbook: {error}")),
-                };
-                let _ = tx.send(PersistenceResult::Load { generation, result });
-            })
-            .map_err(|error| format!("could not start workbook load worker: {error}"))?;
+        run_worker("sheets-persistence-load", move || {
+            let read = tilo_files::Dir::open(location)
+                .and_then(|dir| tilo_files::blocking::read(&dir, &name));
+            let result = match read {
+                Ok(bytes) => AutoCommit::load(&bytes)
+                    .map(|mut saved| {
+                        let heads = saved.get_heads();
+                        Some(Box::new((saved, heads)))
+                    })
+                    .map_err(|error| format!("could not decode saved workbook: {error}")),
+                Err(tilo_files::FsError::NotFound) => Ok(None),
+                Err(error) => Err(format!("could not read saved workbook: {error}")),
+            };
+            let _ = tx.send(PersistenceResult::Load { generation, result });
+        })
+        .map_err(|error| format!("could not start workbook load worker: {error}"))?;
         self.persistence_generation = generation;
         self.persistence_rx = Some(rx);
         self.active_persistence = Some((generation, PersistenceJob::Load));
@@ -1783,23 +1791,21 @@ impl SheetsApp {
         let generation = self.persistence_generation.checked_add(1).ok_or_else(|| {
             "workbook persistence generation is exhausted; restart Sheets".to_string()
         })?;
-        let path =
-            workbook_path().ok_or_else(|| "no per-user data directory is available".to_string())?;
+        let (location, name) = workbook_store();
         let mut saved_doc = doc.fork();
         let result_heads = heads.clone();
         let (tx, rx) = mpsc::sync_channel(1);
-        std::thread::Builder::new()
-            .name("sheets-persistence-save".into())
-            .spawn(move || {
-                let result = atomic_file::write_creating_parent(&path, &saved_doc.save())
-                    .map_err(|error| error.to_string());
-                let _ = tx.send(PersistenceResult::Save {
-                    generation,
-                    heads: result_heads,
-                    result,
-                });
-            })
-            .map_err(|error| format!("could not start workbook save worker: {error}"))?;
+        run_worker("sheets-persistence-save", move || {
+            let result = tilo_files::Dir::open(location)
+                .and_then(|dir| tilo_files::blocking::write_atomic(&dir, &name, &saved_doc.save()))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(PersistenceResult::Save {
+                generation,
+                heads: result_heads,
+                result,
+            });
+        })
+        .map_err(|error| format!("could not start workbook save worker: {error}"))?;
         self.persistence_generation = generation;
         self.persistence_rx = Some(rx);
         self.active_persistence = Some((generation, PersistenceJob::Save { heads }));
@@ -1823,7 +1829,7 @@ impl SheetsApp {
             Err(TryRecvError::Disconnected) => {
                 self.persistence_rx = None;
                 let active = self.active_persistence.take();
-                self.last_persist_failure = Some(Instant::now());
+                self.last_persist_failure = Some(ui::time::now());
                 self.status = match active {
                     Some((_, PersistenceJob::Load)) => {
                         "Workbook load worker disconnected; opening a new workbook".into()
@@ -1852,7 +1858,7 @@ impl SheetsApp {
             // retained job. Settle it as failed rather than letting a later
             // dirty check overwrite that ownership.
             self.active_persistence = None;
-            self.last_persist_failure = Some(Instant::now());
+            self.last_persist_failure = Some(ui::time::now());
             self.status =
                 "Discarded a stale workbook persistence result; changes will be retried".into();
             if !self.pending.seeded {
@@ -1875,7 +1881,7 @@ impl SheetsApp {
                             if let Err(error) = doc.merge_incoming(&mut saved) {
                                 self.status =
                                     format!("Saved workbook could not be merged: {error}");
-                                self.last_persist_failure = Some(Instant::now());
+                                self.last_persist_failure = Some(ui::time::now());
                                 None
                             } else {
                                 Some(durable_heads)
@@ -1891,9 +1897,9 @@ impl SheetsApp {
                                     Self::table_from_snapshot(&snapshot)
                                 })
                                 .collect();
-                            if let Err(error) = self.import_tables_with(doc, tables, false) {
+                            if let Err(error) = self.import_tables_with(doc, tables, false, None) {
                                 self.status = format!("Could not import saved workbook: {error}");
-                                self.last_persist_failure = Some(Instant::now());
+                                self.last_persist_failure = Some(ui::time::now());
                             }
                             self.load_start_heads = Some(doc.get_heads());
                             None
@@ -1902,7 +1908,7 @@ impl SheetsApp {
                     Ok(None) => None,
                     Err(error) => {
                         self.status = format!("Could not load saved workbook: {error}");
-                        self.last_persist_failure = Some(Instant::now());
+                        self.last_persist_failure = Some(ui::time::now());
                         None
                     }
                 };
@@ -1922,7 +1928,7 @@ impl SheetsApp {
                 Err(error) => {
                     self.status =
                         format!("Could not save workbook: {error}; changes will be retried");
-                    self.last_persist_failure = Some(Instant::now());
+                    self.last_persist_failure = Some(ui::time::now());
                 }
             },
             _ => {
@@ -1953,7 +1959,7 @@ impl SheetsApp {
         }
         if let Err(error) = self.start_persistence_save(doc, heads) {
             self.status = format!("Could not save workbook: {error}; changes will be retried");
-            self.last_persist_failure = Some(Instant::now());
+            self.last_persist_failure = Some(ui::time::now());
         }
     }
 
@@ -2558,7 +2564,12 @@ impl SheetsApp {
                 (inferred.format != CellFormat::General).then_some(inferred.format),
             ));
         }
-        match self.import_workbook_action(doc, vec![(sheet_name_from_path(path), writes)], true) {
+        match self.import_workbook_action(
+            doc,
+            vec![(sheet_name_from_path(path), writes)],
+            true,
+            Some(path),
+        ) {
             Ok(count) => self.status = format!("Imported {count} cells from {}", file_label(path)),
             Err(error) => self.status = format!("CSV import failed: {error}"),
         }
@@ -2666,8 +2677,9 @@ impl SheetsApp {
         &mut self,
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
-        self.import_tables_with(doc, tables, true)
+        self.import_tables_with(doc, tables, true, source)
     }
 
     /// Import a parsed set of tables (one per sheet) into new sheets, running
@@ -2677,6 +2689,7 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         tables: Vec<crate::xlsx::SheetTable>,
         replace_blank: bool,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
         let cur = self.default_currency();
         let mut total: usize = 0;
@@ -2711,7 +2724,7 @@ impl SheetsApp {
             total += writes.len();
             imported.push((table.name, writes));
         }
-        self.import_workbook_action(doc, imported, replace_blank)?;
+        self.import_workbook_action(doc, imported, replace_blank, source)?;
         self.reload(doc);
         Ok(total)
     }
@@ -2721,12 +2734,13 @@ impl SheetsApp {
     /// the authoritative limit; this inexpensive first gate avoids allocating
     /// an arbitrary local file just to discover it was never eligible.
     fn check_import_file_size(path: &std::path::Path) -> Result<(), String> {
-        let metadata = std::fs::metadata(path)
+        let metadata = tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::metadata(&dir, &name))
             .map_err(|error| format!("cannot inspect {}: {error}", file_label(path)))?;
-        if !metadata.is_file() {
+        if metadata.kind != tilo_files::Kind::File {
             return Err("the selected path is not a regular file".into());
         }
-        if metadata.len() > MAX_IMPORT_FILE_BYTES {
+        if metadata.len > MAX_IMPORT_FILE_BYTES {
             return Err(format!(
                 "{} is larger than the {} MiB import limit",
                 file_label(path),
@@ -2745,6 +2759,7 @@ impl SheetsApp {
         doc: &mut AutoCommit,
         sheets: ImportedWorkbook,
         replace_blank: bool,
+        source: Option<&std::path::Path>,
     ) -> Result<usize, String> {
         let mut total = 0usize;
         let mut action =
@@ -2776,8 +2791,10 @@ impl SheetsApp {
             SheetsAction::ImportSheets {
                 sheets,
                 replace_blank: replace,
+                source: from,
             } => {
                 *replace = replace_blank;
+                *from = source.map(import_source);
                 sheets.last().map(|sheet| sheet.sheet_id.clone())
             }
             _ => None,
@@ -2803,7 +2820,7 @@ impl SheetsApp {
             return;
         }
         match crate::xlsx::read_xlsx(path) {
-            Ok(tables) => match self.import_tables(doc, tables) {
+            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
                 Ok(total) => {
                     self.status = format!("Imported {total} cells from {}", file_label(path));
                 }
@@ -2825,7 +2842,7 @@ impl SheetsApp {
             return;
         }
         match crate::ods::read_ods(path) {
-            Ok(tables) => match self.import_tables(doc, tables) {
+            Ok(tables) => match self.import_tables(doc, tables, Some(path)) {
                 Ok(total) => {
                     self.status = format!("Imported {total} cells from {}", file_label(path));
                 }
@@ -2878,6 +2895,16 @@ impl SheetsApp {
         operation: PendingIo,
         path: PathBuf,
     ) -> Result<(), String> {
+        if let PendingIo::Import(_) = operation
+            && let Some(sheet) = SheetsDoc::sheet_index_by_source(doc, &import_source(&path))
+        {
+            self.switch_sheet(doc, sheet);
+            let name = self.sheet_names.get(sheet).cloned().unwrap_or_default();
+            self.status = format!("{} is already open as {name}", file_label(&path));
+            // Imports publish a job result, which carries no terminal value.
+            self.finish_resource_output(Ok(tilo_actions::ActionOutput::default()));
+            return Ok(());
+        }
         if self.interchange_rx.is_some() || self.active_interchange_generation.is_some() {
             return Err("a spreadsheet import or export is already in progress".into());
         }
@@ -2903,29 +2930,27 @@ impl SheetsApp {
             tx: Some(tx),
             wake: self.interchange_wake.clone(),
         };
-        std::thread::Builder::new()
-            .name("sheets-interchange".into())
-            .spawn(move || {
-                let reply = reply;
-                let result = match operation {
-                    PendingIo::Import(format) => InterchangeResult::Import {
-                        generation,
-                        format,
-                        path: path.clone(),
-                        result: SheetsApp::read_import_tables(format, &path),
-                    },
-                    PendingIo::Export(format) => InterchangeResult::Export {
-                        generation,
-                        format,
-                        destination: path.clone(),
-                        result: SheetsApp::prepare_export_snapshots(
-                            format, &path, generation, &snapshots,
-                        ),
-                    },
-                };
-                reply.send(result);
-            })
-            .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
+        ui::rt::spawn_thread("sheets-interchange", move || {
+            let reply = reply;
+            let result = match operation {
+                PendingIo::Import(format) => InterchangeResult::Import {
+                    generation,
+                    format,
+                    path: path.clone(),
+                    result: SheetsApp::read_import_tables(format, &path),
+                },
+                PendingIo::Export(format) => InterchangeResult::Export {
+                    generation,
+                    format,
+                    destination: path.clone(),
+                    result: SheetsApp::prepare_export_snapshots(
+                        format, &path, generation, &snapshots,
+                    ),
+                },
+            };
+            reply.send(result);
+        })
+        .map_err(|error| format!("could not start spreadsheet worker: {error}"))?;
         self.interchange_rx = Some(rx);
         self.active_interchange_generation = Some(generation);
         self.status = match operation {
@@ -2944,7 +2969,9 @@ impl SheetsApp {
             Interchange::Xlsx => crate::xlsx::read_xlsx(path).map_err(|error| error.to_string()),
             Interchange::Ods => crate::ods::read_ods(path).map_err(|error| error.to_string()),
             Interchange::Csv => {
-                let text = std::fs::read_to_string(path).map_err(|error| error.to_string())?;
+                let bytes = crate::xlsx::read_file(path).map_err(|error| error.to_string())?;
+                let text = String::from_utf8(bytes)
+                    .map_err(|_| "the CSV file is not UTF-8 text".to_string())?;
                 let cells = crate::csv::parse_csv(&text);
                 if cells.len() > MAX_IMPORT_CELLS {
                     return Err(format!("more than {MAX_IMPORT_CELLS} populated cells"));
@@ -3032,22 +3059,14 @@ impl SheetsApp {
                             .collect()
                     })
                     .collect::<Vec<Vec<String>>>();
-                std::fs::write(&temporary, crate::csv::to_csv(&rows))
+                crate::xlsx::write_file(&temporary, crate::csv::to_csv(&rows).as_bytes())
                     .map_err(|error| error.to_string())
             }
         };
         if let Err(error) = result {
-            let _ = std::fs::remove_file(&temporary);
+            Self::discard_export_temp(&temporary);
             return Err(error);
         }
-        std::fs::OpenOptions::new()
-            .write(true)
-            .open(&temporary)
-            .and_then(|file| file.sync_all())
-            .map_err(|error| {
-                let _ = std::fs::remove_file(&temporary);
-                error.to_string()
-            })?;
         Ok(temporary)
     }
 
@@ -3058,27 +3077,22 @@ impl SheetsApp {
         let parent = destination
             .parent()
             .ok_or_else(|| "export destination has no parent directory".to_string())?;
-        std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
+        let dir = tilo_files::Dir::open(tilo_files::Location::Native(parent.to_path_buf()))
+            .map_err(|error| error.to_string())?;
         let stem = destination
             .file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("workbook");
         for _ in 0..4 {
-            let temporary = parent.join(format!(
-                ".{stem}.tilo-export-{generation}-{}.tmp",
-                Uuid::new_v4()
-            ));
-            match std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temporary)
-            {
-                Ok(file) => {
-                    drop(file);
-                    return Ok(temporary);
-                }
-                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-                Err(error) => return Err(error.to_string()),
+            let name = format!(".{stem}.tilo-export-{generation}-{}.tmp", Uuid::new_v4());
+            let reserved = tilo_files::VPath::new(&name)
+                .map_err(|error| error.to_string())
+                .and_then(|name| {
+                    tilo_files::blocking::create_new(&dir, &name, b"")
+                        .map_err(|error| error.to_string())
+                })?;
+            if reserved {
+                return Ok(parent.join(name));
             }
         }
         Err("could not reserve an exclusive export temporary file".into())
@@ -3088,11 +3102,10 @@ impl SheetsApp {
         temporary: &std::path::Path,
         destination: &std::path::Path,
     ) -> Result<(), String> {
-        let parent = destination
-            .parent()
-            .ok_or_else(|| "export destination has no parent directory".to_string())?;
-        std::fs::rename(temporary, destination).map_err(|error| error.to_string())?;
-        atomic_file::sync_directory(parent).map_err(|error| error.to_string())
+        let bytes = crate::xlsx::read_file(temporary).map_err(|error| error.to_string())?;
+        crate::xlsx::write_file(destination, &bytes).map_err(|error| error.to_string())?;
+        Self::discard_export_temp(temporary);
+        Ok(())
     }
 
     fn publish_or_discard_export_temp(
@@ -3109,7 +3122,9 @@ impl SheetsApp {
     }
 
     fn discard_export_temp(temporary: &std::path::Path) {
-        let _ = std::fs::remove_file(temporary);
+        if let Ok((dir, name)) = tilo_files::file_at(temporary) {
+            let _ = tilo_files::blocking::remove(&dir, &name);
+        }
     }
 
     fn table_from_snapshot(snap: &crate::doc::SheetSnapshot) -> crate::xlsx::SheetTable {
@@ -3206,7 +3221,7 @@ impl SheetsApp {
                 path,
                 tables,
                 ..
-            } => self.import_tables(doc, tables).map(|total| {
+            } => self.import_tables(doc, tables, Some(&path)).map(|total| {
                 self.status = format!(
                     "Imported {total} cells from .{} {}",
                     format.ext(),
@@ -3342,7 +3357,7 @@ impl SheetsApp {
                 result,
                 ..
             } => result
-                .and_then(|tables| self.import_tables(doc, tables))
+                .and_then(|tables| self.import_tables(doc, tables, Some(&path)))
                 .map(|total| {
                     self.status = format!(
                         "Imported {total} cells from .{} {}",
@@ -3370,15 +3385,16 @@ impl SheetsApp {
     }
 
     fn finish_resource_io(&mut self, result: Result<(), String>) {
+        self.finish_resource_output(result.map(|()| tilo_actions::ActionOutput::default()));
+    }
+
+    fn finish_resource_output(&mut self, result: Result<tilo_actions::ActionOutput, String>) {
         let Some(invocation) = self.resource_invocation.take() else {
             return;
         };
         self.resource_confirmation = None;
         self.resource_result = Some(match result {
-            Ok(()) => tilo_actions::InvocationUpdate::Succeeded {
-                invocation,
-                output: tilo_actions::ActionOutput::default(),
-            },
+            Ok(output) => tilo_actions::InvocationUpdate::Succeeded { invocation, output },
             Err(message) => tilo_actions::InvocationUpdate::Failed {
                 invocation,
                 error: tilo_actions::ActionFailure {
@@ -4658,7 +4674,7 @@ impl SheetsApp {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let Some(label) = self.status_bubble_label() else {
             return;
         };
@@ -5628,9 +5644,32 @@ fn tsv_cell(display: &str) -> String {
 /// Where the workbook is persisted between sessions:
 /// `$XDG_DATA_HOME/tilo/sheets/workbook.automerge` (falls back to
 /// `~/.local/share`).
+fn workbook_store() -> (tilo_files::Location, tilo_files::VPath) {
+    let location = tilo_paths::env_dir("XDG_DATA_HOME").map_or_else(
+        || tilo_paths::AppPaths::for_app("tilo").data(),
+        |base| tilo_files::Location::Native(base.join("tilo")),
+    );
+    let name = tilo_files::VPath::new("sheets/workbook.automerge").unwrap_or_default();
+    (location, name)
+}
+
+#[cfg(test)]
 fn workbook_path() -> Option<PathBuf> {
-    let base = xdg_paths::env_dir("XDG_DATA_HOME").or_else(xdg_paths::data_dir)?;
-    Some(base.join("tilo").join("sheets").join("workbook.automerge"))
+    let (location, name) = workbook_store();
+    Some(location.native_path().ok()?.join(name.as_str()))
+}
+
+/// Run `job` on a worker thread, or at once where there are no threads (a
+/// browser page, where the app's files answer from memory).
+fn run_worker(name: &str, job: impl FnOnce() + Send + 'static) -> std::io::Result<()> {
+    if matches!(
+        ui::rt::availability(ui::rt::Feature::Threads),
+        ui::rt::Availability::Unsupported(_)
+    ) {
+        job();
+        return Ok(());
+    }
+    ui::rt::spawn_thread(name, job).map(drop)
 }
 
 /// A new sheet name derived from an imported file's stem.
@@ -5640,6 +5679,15 @@ fn sheet_name_from_path(path: &std::path::Path) -> String {
         .map(std::string::ToString::to_string)
         .filter(|s| !s.is_empty())
         .unwrap_or_else(|| "Imported".to_string())
+}
+
+/// How an imported sheet remembers its file: the resolved path, so every
+/// spelling of one file finds the sheets it already became.
+fn import_source(path: &std::path::Path) -> String {
+    tilo_files::canonicalize(path)
+        .unwrap_or_else(|_| path.to_path_buf())
+        .to_string_lossy()
+        .into_owned()
 }
 
 /// Cumulative x positions (layout space) of every character boundary in
@@ -5770,6 +5818,14 @@ impl Widget for SheetsApp {
 
     fn sync(&mut self, state: &mut AppModel, path: &ModelPath) {
         let (state, _) = ui::doc::document(state, path);
+        if self.run == RunMode::Record(ui::launch::RecordLaunch::Joined)
+            && SheetsDoc::sheet_count_readonly(state) == 0
+        {
+            // The creator's workbook has not arrived. Reading through the
+            // get-or-create accessors now would write a second `wb` that
+            // competes with the creator's in the merge.
+            return;
+        }
         if !self.pending.seeded {
             if !self.persistence_started {
                 // Pull the shared global defaults once at startup.
@@ -5778,7 +5834,7 @@ impl Widget for SheetsApp {
                 if self.run.persists() {
                     if let Err(error) = self.start_persistence_load(state.get_heads()) {
                         self.status = format!("Could not start workbook load: {error}");
-                        self.last_persist_failure = Some(Instant::now());
+                        self.last_persist_failure = Some(ui::time::now());
                         self.finish_initialize(state, None);
                     }
                 } else {
@@ -5853,7 +5909,7 @@ impl Widget for SheetsApp {
         let label = self.status_bubble_label().unwrap_or_default();
         if label != self.last_status_label {
             if !label.is_empty() {
-                self.status_bubble.poke(std::time::Instant::now());
+                self.status_bubble.poke(ui::time::now());
             }
             self.last_status_label = label;
         }
@@ -5952,8 +6008,7 @@ impl Widget for SheetsApp {
     fn needs_animation_frame(&self) -> bool {
         // Keep frames coming while the floating status bubble is lingering /
         // fading, so it hides itself without needing a stray pointer event.
-        (self.motion == MotionPreference::Full
-            && self.status_bubble.needs_frame(std::time::Instant::now()))
+        (self.motion == MotionPreference::Full && self.status_bubble.needs_frame(ui::time::now()))
             || self.children().iter().any(|c| c.needs_animation_frame())
     }
 
@@ -6501,6 +6556,15 @@ impl ui::resources::PublishesResources for SheetsApp {
     }
     fn resource(&self, doc: &AutoCommit, id: &str) -> Option<tilo_actions::Resource> {
         self.publish_resource(doc, id)
+    }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        let sheet_id = address.resource.strip_prefix("sheets.sheet:")?;
+        crate::cell_actions::edit_result(doc, sheet_id, &address.action, changes)
     }
 }
 
@@ -7198,7 +7262,7 @@ impl SheetsApp {
         state: &mut AutoCommit,
         handled: &mut bool,
     ) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let cell = self.cell_under(p);
         let double = !self.grid.editing_formula()
             && matches!(
@@ -8317,7 +8381,7 @@ mod tests {
             if done(app) {
                 return;
             }
-            let within = deadline.saturating_duration_since(Instant::now());
+            let within = deadline.saturating_duration_since(ui::time::now());
             let pending = app.status.clone();
             if let Some(rx) = app.persistence_rx.take() {
                 app.persistence_rx = Some(await_reply(rx, within, "persistence", &pending));
@@ -8383,7 +8447,7 @@ mod tests {
         // Case `reduced_motion_stops_status_bubble_animation_frames`.
         {
             let (mut app, _doc) = seeded_app();
-            app.status_bubble.poke(Instant::now());
+            app.status_bubble.poke(ui::time::now());
             assert!(app.needs_animation_frame());
             app.set_motion_reduced(true);
             assert!(!app.needs_animation_frame());
@@ -8825,6 +8889,130 @@ mod tests {
         let _ = std::fs::remove_dir_all(&directory);
     }
 
+    /// Admit an agent's direct-path `.xlsx` import and run the one model pass
+    /// admission schedules.
+    fn admit_direct_import(
+        app: &mut SheetsApp,
+        doc: &mut AutoCommit,
+        source: &std::path::Path,
+    ) -> tilo_actions::InvocationId {
+        let invocation = tilo_actions::InvocationId::new();
+        let payload = serde_json::to_vec(&actions::SheetsOperation::ImportXlsx {
+            path: Some(source.display().to_string()),
+        })
+        .unwrap();
+        let started = Widget::start_operation(
+            app,
+            &ui::widget::ResourceOperation::local(
+                invocation,
+                tilo_actions::OperationKind::Effect,
+                actions::SHEETS_OPERATION_TYPE,
+                &payload,
+            ),
+            doc,
+            &automerge::ROOT,
+        );
+        assert!(
+            matches!(
+                started,
+                Ok(Some(ui::widget::ResourceOperationStart::Accepted))
+            ),
+            "{started:?}"
+        );
+        app.sync(doc, &automerge::ROOT);
+        invocation
+    }
+
+    /// Opening a file the workbook already holds, by an agent's typed import
+    /// or the Import dialog, reveals the sheet it became instead of importing
+    /// a second copy.
+    #[test]
+    fn opening_an_open_file_again_reveals_it_instead_of_importing_a_copy() {
+        let mut scope = ui::wake::WakeScope::new();
+        let _entry = scope.enter();
+        let (sender, wakes) = mpsc::channel();
+        scope
+            .bind(move |event| {
+                let _ = sender.send(event);
+            })
+            .unwrap();
+        let directory = std::env::temp_dir().join(format!("tilo-sheets-reopen-{}", Uuid::new_v4()));
+        let file = directory.join("budget.xlsx");
+        {
+            let (mut app, mut doc) = seeded_app();
+            let invocation = admit_direct_export(&mut app, &mut doc, &file);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, invocation);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+        }
+        let (mut app, mut doc) = seeded_app();
+        let imported = SheetsDoc::sheet_count(&mut doc);
+        let first = admit_direct_import(&mut app, &mut doc, &file);
+        let update = settle_on_idle_host(&mut app, &mut doc, &wakes, first);
+        assert!(
+            matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+            "{update:?}"
+        );
+        let sheets = SheetsDoc::sheet_count(&mut doc);
+        let imported_id = SheetsDoc::sheet_resource_id(&doc, imported);
+
+        // Case `a_typed_reopen_returns_the_open_sheet`.
+        {
+            app.switch_sheet(&mut doc, 0);
+            let respelled = directory.join(".").join("budget.xlsx");
+            let again = admit_direct_import(&mut app, &mut doc, &respelled);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, again);
+            let tilo_actions::InvocationUpdate::Succeeded { output, .. } = update else {
+                panic!("{update:?}");
+            };
+            tilo_actions::ResultSpec::Job
+                .validate(&output)
+                .expect("a reopen honours the import's published job result");
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
+            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+            assert_eq!(
+                SheetsDoc::sheet_resource_id(&doc, app.active_sheet),
+                imported_id
+            );
+        }
+
+        // Case `the_import_dialog_reveals_the_open_sheet`.
+        {
+            app.switch_sheet(&mut doc, 0);
+            let (services, recorder) = ui::host::HostServices::recording();
+            recorder.respond_to_pick(PortalOutcome::Opened(file.clone()));
+            ui::host::scoped(&services, || app.begin_import(Interchange::Xlsx));
+            app.drain_io(&mut doc);
+            assert!(app.interchange_rx.is_none(), "nothing is read again");
+            assert_eq!(SheetsDoc::sheet_count(&mut doc), sheets, "no second copy");
+            assert_eq!(app.active_sheet, imported, "the open sheet is revealed");
+            assert!(app.status.contains("already open"), "{}", app.status);
+        }
+
+        // Case `a_file_whose_sheets_were_deleted_imports_again`.
+        {
+            while let Some(idx) = SheetsDoc::sheet_index_by_source(&doc, &import_source(&file)) {
+                let deleted = actions::SheetsAction::DeleteSheet {
+                    idx,
+                    sheet_id: SheetsDoc::sheet_resource_id(&doc, idx).unwrap(),
+                };
+                app.try_perform_action(&mut doc, &deleted).unwrap();
+            }
+            app.reload(&mut doc);
+            let after_delete = SheetsDoc::sheet_count(&mut doc);
+            let reimport = admit_direct_import(&mut app, &mut doc, &file);
+            let update = settle_on_idle_host(&mut app, &mut doc, &wakes, reimport);
+            assert!(
+                matches!(update, tilo_actions::InvocationUpdate::Succeeded { .. }),
+                "{update:?}"
+            );
+            assert!(SheetsDoc::sheet_count(&mut doc) > after_delete);
+        }
+        let _ = std::fs::remove_dir_all(&directory);
+    }
+
     fn value_at(app: &SheetsApp, addr: Addr) -> Option<CellValue> {
         app.cache
             .as_ref()
@@ -9195,7 +9383,7 @@ mod tests {
             // Import into a brand-new, empty document via the real import path.
             let mut fresh = SheetsApp::new();
             let mut doc2 = AutoCommit::new();
-            fresh.import_tables(&mut doc2, tables).unwrap();
+            fresh.import_tables(&mut doc2, tables, None).unwrap();
 
             // The formula came back as a formula, not its computed value.
             assert_eq!(SheetsDoc::cell_raw(&mut doc2, 0, (4, 1)), "=SUM(B2:D2)");
@@ -9223,10 +9411,11 @@ mod tests {
                     bold: false,
                 })]],
             };
-            app.import_tables(&mut doc, vec![table.clone()]).unwrap();
+            app.import_tables(&mut doc, vec![table.clone()], None)
+                .unwrap();
             assert_eq!(SheetsDoc::sheet_names(&mut doc), ["sales"]);
             assert_eq!(app.active_sheet, 0);
-            app.import_tables(&mut doc, vec![table]).unwrap();
+            app.import_tables(&mut doc, vec![table], None).unwrap();
             assert_eq!(
                 SheetsDoc::sheet_names(&mut doc).len(),
                 2,

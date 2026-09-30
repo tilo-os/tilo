@@ -86,7 +86,7 @@ class CargoDownloadCacheActionTests(unittest.TestCase):
                 cold,
             )
             self.assertLess(
-                cold.index("cargo build -p atomic-file --locked"),
+                cold.index("cargo build -p tilo-atomic-file --locked"),
                 cold.index("- name: Save Cargo downloads"),
             )
         with self.subTest(phase='path filtered consumers track the shared action'):

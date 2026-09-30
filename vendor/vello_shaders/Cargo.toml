@@ -12,7 +12,7 @@
 [package]
 edition = "2024"
 rust-version = "1.88"
-name = "vello_shaders"
+name = "tilo-vello-shaders"
 version = "0.9.0"
 build = "build.rs"
 autolib = false
@@ -20,8 +20,10 @@ autobins = false
 autoexamples = false
 autotests = false
 autobenches = false
-description = "Vello infrastructure to preprocess and cross-compile shaders at compile time."
-readme = "README.md"
+description = "vello_shaders 0.9.0 (https://github.com/linebender/vello) with the shader changes tilo-vello uses (bump budgets, canonical segment order). Tilo's fork; see TILO-FORK.md."
+readme = "TILO-FORK.md"
+# Cargo publication bookkeeping kept from the crates.io source.
+exclude = ["Cargo.toml.orig", ".cargo-ok", ".cargo_vcs_info.json", "Cargo.lock"]
 keywords = [
     "2d",
     "vector-graphics",
@@ -81,7 +83,9 @@ optional = true
 default-features = false
 
 [dependencies.vello_encoding]
+package = "tilo-vello-encoding"
 version = "0.9.0"
+path = "../vello_encoding"
 optional = true
 
 [build-dependencies.log]

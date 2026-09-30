@@ -360,6 +360,34 @@ impl MlsAccessRequestV1 {
         Ok(request)
     }
 
+    /// A request for `device` whose signature is still to be made by a
+    /// key this process cannot hold (a browser's non-extractable `WebCrypto`
+    /// key): sign [`Self::signing_bytes`] and store it in `signature`.
+    pub fn unsigned(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        key_package: Vec<u8>,
+        issued_at: u64,
+    ) -> Self {
+        Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device,
+            key_package,
+            issued_at,
+            signature: Signature::from_bytes([0; 64]),
+        }
+    }
+
+    /// The bytes the device key signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(&self.signing_view())
+    }
+
     fn signing_view(&self) -> AccessRequestView<'_> {
         AccessRequestView {
             domain: b"tilo.mls-access-request.v1",
@@ -434,6 +462,31 @@ impl MlsGovernanceAckV1 {
         };
         ack.signature = sign_event(&ack.signing_view(), device_key)?;
         Ok(ack)
+    }
+
+    /// An acknowledgement whose signature is still to be made, see
+    /// [`MlsAccessRequestV1::unsigned`].
+    pub fn unsigned(
+        channel: ChannelId,
+        device: Ed25519PublicKey,
+        through_digest: [u8; 32],
+    ) -> Self {
+        Self {
+            version: MLS_ACCESS_VERSION,
+            channel,
+            device,
+            through_digest,
+            signature: Signature::from_bytes([0; 64]),
+        }
+    }
+
+    /// The bytes the device key signs.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`CanonicalError`] if the signing view cannot be encoded.
+    pub fn signing_bytes(&self) -> Result<Vec<u8>, CanonicalError> {
+        canonical_bytes(&self.signing_view())
     }
 
     fn signing_view(&self) -> AckView {

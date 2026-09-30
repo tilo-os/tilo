@@ -406,6 +406,14 @@ where
     fn resources(&self, doc: &AutoCommit) -> Vec<tilo_actions::Resource> {
         crate::resources::resources(self.child.as_ref(), doc)
     }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        crate::resources::document_action_result(self.child.as_ref(), doc, address, changes)
+    }
 }
 
 impl<K> crate::widget::controls::ActionControls for ModelView<K>

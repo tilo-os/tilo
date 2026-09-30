@@ -41,6 +41,7 @@
 pub mod background;
 pub mod capture;
 pub mod clipboard;
+pub mod env;
 pub mod host;
 pub mod location;
 pub mod mpris;

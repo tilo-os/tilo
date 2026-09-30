@@ -413,6 +413,197 @@ pub(crate) fn verified_package_for_descendant(pid: u32) -> Option<String> {
     verified_launch_for_descendant(pid).map(|identity| identity.package_id)
 }
 
+/// End every unconfined host launch of `package_id`.
+///
+/// `xdg_toplevel.close` unmaps Wine File's window; `wineserver` and
+/// `tilo-launcher run-host` stay. The launcher child `setsid`s the app, so
+/// a lone SIGTERM of the supervisor leaves the prefix running. Stop the
+/// systemd scope when one exists, then signal the process tree — including
+/// processes that share a session the app created.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn terminate_unconfined_launches(package_id: &str) {
+    for pid in live_unconfined_launch_pids(package_id) {
+        request_stop_host_scope(package_id, pid);
+        terminate_process_tree(pid);
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn live_unconfined_launch_pids(package_id: &str) -> Vec<u32> {
+    let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+        return Vec::new();
+    };
+    map.retain(|pid, launch| proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time));
+    map.iter()
+        .filter(|(_, launch)| {
+            !launch.confined && launch.package_id.eq_ignore_ascii_case(package_id)
+        })
+        .map(|(pid, _)| *pid)
+        .collect()
+}
+
+/// Desktop ids of unconfined launches that still have a live supervisor.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn live_unconfined_package_ids() -> Vec<String> {
+    let Ok(mut map) = LAUNCHED_PROCESSES.lock() else {
+        return Vec::new();
+    };
+    map.retain(|pid, launch| proc_stat(*pid).is_some_and(|(_, start)| start == launch.start_time));
+    let mut ids: Vec<String> = map
+        .iter()
+        .filter(|(_, launch)| !launch.confined)
+        .map(|(_, launch)| launch.package_id.clone())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
+/// Whether `package_id` is a live unconfined launch, not merely a window class.
+#[cfg(any(test, target_os = "linux"))]
+pub(crate) fn unconfined_launch_is_live(package_id: &str) -> bool {
+    !live_unconfined_launch_pids(package_id).is_empty()
+}
+
+/// Same unit name `tilo-launcher` uses for `app-tilo-<id>-<pid>.scope`.
+#[cfg(any(test, target_os = "linux"))]
+fn host_scope_unit(desktop_id: &str, pid: u32) -> Option<String> {
+    use std::fmt::Write as _;
+    let mut escaped = String::with_capacity(desktop_id.len());
+    for byte in desktop_id.bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b':' | b'_' | b'.') {
+            escaped.push(char::from(byte));
+        } else {
+            let _ = write!(escaped, "\\x{byte:02x}");
+        }
+    }
+    let unit = format!("app-tilo-{escaped}-{pid}.scope");
+    (!escaped.is_empty() && unit.len() <= 255).then_some(unit)
+}
+
+#[cfg(all(target_os = "linux", not(test)))]
+fn request_stop_host_scope(desktop_id: &str, pid: u32) {
+    let Some(unit) = host_scope_unit(desktop_id, pid) else {
+        return;
+    };
+    let _ = Command::new("/usr/bin/busctl")
+        .args([
+            "--user",
+            "--timeout=2",
+            "call",
+            "org.freedesktop.systemd1",
+            "/org/freedesktop/systemd1",
+            "org.freedesktop.systemd1.Manager",
+            "StopUnit",
+            "ss",
+            &unit,
+            "replace",
+        ])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+#[cfg(test)]
+fn request_stop_host_scope(_desktop_id: &str, _pid: u32) {}
+
+#[cfg(any(test, target_os = "linux"))]
+fn terminate_process_tree(root: u32) {
+    let pids = descendant_and_session_pids(root);
+    for pid in &pids {
+        signal_pid(*pid, libc::SIGTERM);
+    }
+    for pid in pids {
+        if proc_stat(pid).is_some() {
+            signal_pid(pid, libc::SIGKILL);
+        }
+    }
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn signal_pid(pid: u32, signal: i32) {
+    let Ok(raw) = i32::try_from(pid) else {
+        return;
+    };
+    // SAFETY: signal a compositor-supervised launch pid, or a process in
+    // that launch's session. Never the compositor: the launcher child
+    // called `setsid` and lives in its own session.
+    let _ = unsafe { libc::kill(raw, signal) };
+}
+
+#[derive(Clone, Copy)]
+#[cfg(any(test, target_os = "linux"))]
+struct ProcRow {
+    pid: u32,
+    parent: u32,
+    session: u32,
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn scan_proc_rows() -> Vec<ProcRow> {
+    let Ok(dir) = std::fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+    dir.flatten()
+        .filter_map(|entry| {
+            let pid: u32 = entry.file_name().to_string_lossy().parse().ok()?;
+            let (parent, session, _) = proc_ancestry(pid)?;
+            Some(ProcRow {
+                pid,
+                parent,
+                session,
+            })
+        })
+        .collect()
+}
+
+#[cfg(any(test, target_os = "linux"))]
+fn proc_ancestry(pid: u32) -> Option<(u32, u32, u64)> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let rest = stat.rsplit_once(") ")?.1;
+    let fields: Vec<&str> = rest.split_whitespace().collect();
+    Some((
+        fields.get(1)?.parse().ok()?,
+        fields.get(3)?.parse().ok()?,
+        fields.get(19)?.parse().ok()?,
+    ))
+}
+
+/// The launch pid, every descendant, and every process that joined a
+/// session a descendant created with `setsid` (Wine's prefix).
+#[cfg(any(test, target_os = "linux"))]
+fn descendant_and_session_pids(root: u32) -> Vec<u32> {
+    let rows = scan_proc_rows();
+    let mut kids: HashMap<u32, Vec<u32>> = HashMap::new();
+    for row in &rows {
+        kids.entry(row.parent).or_default().push(row.pid);
+    }
+    let mut tree = Vec::new();
+    let mut stack = vec![root];
+    while let Some(pid) = stack.pop() {
+        if tree.contains(&pid) {
+            continue;
+        }
+        tree.push(pid);
+        if let Some(children) = kids.get(&pid) {
+            stack.extend(children.iter().copied());
+        }
+    }
+    let sessions: Vec<u32> = rows
+        .iter()
+        .filter(|row| tree.contains(&row.pid) && row.session == row.pid)
+        .map(|row| row.session)
+        .collect();
+    let mut pids = tree;
+    for row in rows {
+        if sessions.contains(&row.session) && !pids.contains(&row.pid) {
+            pids.push(row.pid);
+        }
+    }
+    pids
+}
+
 const FILES_PACKAGE_ID: &str = "so.tilo.file-explorer";
 const TRUSTED_IDENTITIES_FILE: &str = "trusted-identities.json";
 static TRUSTED_IDENTITY_PROJECTIONS: LazyLock<
@@ -600,7 +791,9 @@ impl LaunchEvent {
             LaunchEventKind::SpawnFailed { .. } => {
                 crate::shell::i18n::t("launch-failed-launcher-unavailable")
             }
-            LaunchEventKind::Failed { .. } => crate::shell::i18n::t("launch-failed-stopped"),
+            LaunchEventKind::Failed { code, stderr_tail } => {
+                crate::shell::i18n::t(stopped_reason_key(*code, stderr_tail))
+            }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => return None,
         };
         Some(LaunchFailureNotice {
@@ -635,6 +828,24 @@ impl LaunchEvent {
             }
             LaunchEventKind::Started { .. } | LaunchEventKind::Exited => {}
         }
+    }
+}
+
+/// Why a launch stopped, as one of a few fixed sentences. The process's own
+/// words never reach the banner, since they carry paths and environment;
+/// they are only recognised here and logged in full by
+/// [`LaunchEvent::log_failure`].
+fn stopped_reason_key(code: Option<i32>, stderr_tail: &str) -> &'static str {
+    if stderr_tail.contains("error while loading shared libraries")
+        || stderr_tail.contains("cannot open shared object file")
+    {
+        "launch-failed-missing-library"
+    } else if stderr_tail.lines().any(|line| line.starts_with("bwrap: ")) {
+        "launch-failed-sandbox"
+    } else if code.is_none() {
+        "launch-failed-crashed"
+    } else {
+        "launch-failed-stopped"
     }
 }
 
@@ -2184,7 +2395,7 @@ fn execute_installed_inner(
     ));
     command.env.push((
         "TILO_STARTUP_METRICS_PATH".to_string(),
-        format!("/run/tilo/app/startup-{continuity_instance}.json"),
+        format!("/run/tilo/app/.local/state/startup-{continuity_instance}.json"),
     ));
     // An unattended session's apps save where it was told to.
     if let Some(directory) = std::env::var_os(ui::portal::SAVE_DIRECTORY_ENV) {
@@ -3218,6 +3429,8 @@ use crate::shell::state::WorkspaceExt as _;
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
 
     fn launch_event(kind: LaunchEventKind) -> LaunchEvent {
@@ -3531,6 +3744,39 @@ mod tests {
         launch_failure_title_normalises_and_bounds_untrusted_app_names();
         preflight_notification_copy_excludes_paths_and_backend_detail();
         untrusted_app_log_lines_are_memory_bounded_and_stream_label_safe();
+    }
+
+    #[test]
+    fn a_recognised_cause_is_named_without_quoting_the_process() {
+        let cases = [
+            (
+                Some(127),
+                "/usr/libexec/tilo/apps/terminal: error while loading shared libraries: \
+                 libstd-8f2c.so: cannot open shared object file: No such file or directory",
+                "The app needs a library this system doesn't have, so it stopped before opening.",
+            ),
+            (
+                Some(1),
+                "bwrap: Can't make overlay mount on /newroot/usr with options \
+                 upperdir=/proc/self/fd/13,userxattr: Invalid argument",
+                "The app's sandbox could not be set up, so it stopped before opening.",
+            ),
+            (
+                None,
+                "",
+                "The app crashed before opening. Open Applications and try again.",
+            ),
+        ];
+        for (code, stderr, body) in cases {
+            let notice = launch_event(LaunchEventKind::Failed {
+                code,
+                stderr_tail: stderr.into(),
+            })
+            .failure_notice()
+            .expect("failure has a notice");
+            assert_eq!(notice.body, body);
+            assert!(!notice.body.contains('/'), "no path reaches the banner");
+        }
     }
 
     /// The startup metrics of `package_id`'s launches. The metrics registry
@@ -4094,6 +4340,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4141,6 +4388,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: "so.tilo.hello".into(),
                 display_name: "Hello".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/hello/manifest.toml"),
@@ -4242,6 +4490,7 @@ mod tests {
             let app = InstalledApp {
                 package_id: WORKSPACE_AGENT_PACKAGE_ID.into(),
                 display_name: "Agent".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::from("/apps/agent/manifest.toml"),
@@ -4530,6 +4779,7 @@ mod tests {
             remember_launch(&InstalledApp {
                 package_id: "so.tilo.matchfixture".into(),
                 display_name: "Match Fixture".into(),
+                localized_names: BTreeMap::default(),
                 category: None,
                 version: "0.1.0".into(),
                 manifest_path: PathBuf::new(),
@@ -4567,6 +4817,7 @@ mod tests {
         InstalledApp {
             package_id: package_id.to_string(),
             display_name: display_name_for_package_id(package_id),
+            localized_names: BTreeMap::default(),
             category: None,
             version: "0.1.0".into(),
             manifest_path: PathBuf::from("/apps/x/manifest.toml"),
@@ -4890,6 +5141,150 @@ mod tests {
         fn drop(&mut self) {
             self.stop();
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn host_window_tree(tabs: &[(u64, &'static str, u64)]) -> crate::shell::state::WorkspaceTree {
+        use crate::shell::state::{Tab, WindowGroup, WindowWidth};
+        let mut tree = crate::shell::state::WorkspaceTree::bootstrap_default();
+        tree.desktop.workspaces[0].strips[0].window_groups = vec![WindowGroup {
+            id: 100,
+            tabs: tabs
+                .iter()
+                .map(|(id, app_id, surface)| Tab {
+                    id: *id,
+                    title: (*app_id).into(),
+                    tile: crate::shell::state::TileContent::Foreign {
+                        app_id: (*app_id).into(),
+                        surface_id: *surface,
+                    },
+                })
+                .collect(),
+            active_tab: tabs[0].0,
+            width: WindowWidth::Normal,
+            maximized: false,
+        }];
+        tree.seed_doc_from_cache();
+        tree
+    }
+
+    #[cfg(target_os = "linux")]
+    fn process_is_live(pid: u32) -> bool {
+        let Ok(stat) = std::fs::read_to_string(format!("/proc/{pid}/stat")) else {
+            return false;
+        };
+        let Some((_, rest)) = stat.rsplit_once(") ") else {
+            return false;
+        };
+        // A killed child we have not `wait`ed is a zombie: it has already
+        // exited. A07's cmdline scan skips empty zombie cmdlines.
+        !rest.starts_with('Z')
+    }
+
+    #[test]
+    fn host_scope_unit_matches_the_launcher_scope_name() {
+        assert_eq!(
+            host_scope_unit("wine-winefile", 42).as_deref(),
+            Some("app-tilo-wine\\x2dwinefile-42.scope")
+        );
+        assert_eq!(
+            host_scope_unit("wine-winefile.desktop", 9).as_deref(),
+            Some("app-tilo-wine\\x2dwinefile.desktop-9.scope")
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn terminate_unconfined_launches_stops_the_launcher_and_its_children() {
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        assert_eq!(
+            verified_package_for_descendant(standin.pid()).as_deref(),
+            Some("wine-winefile"),
+            "the stand-in must be in the launch table"
+        );
+        terminate_unconfined_launches("wine-winefile");
+        tilo_test_env::wait_until(
+            "the unconfined host launch and its child exit after terminate",
+            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn terminate_unconfined_launches_leaves_a_confined_launch_alone() {
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "so.tilo.terminal", None, true);
+        terminate_unconfined_launches("so.tilo.terminal");
+        assert!(
+            process_is_live(standin.pid()),
+            "a sandboxed launch is asked to close, not signalled"
+        );
+        unregister_launched_process(standin.pid());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn closing_the_last_host_window_stops_the_unconfined_launch() {
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
+            1,
+            "wine-winefile",
+            501,
+        )]));
+        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
+            .expect("close the last Wine File window");
+        tilo_test_env::wait_until(
+            "Wine File's host process tree exits after its last window closes",
+            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn closing_a_wineboot_window_stops_the_winefile_launch() {
+        // A07's VM close is group.close. Wine File's tab announces
+        // wineboot.exe, not the desktop id the launch table uses.
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[(
+            1,
+            "wineboot.exe",
+            501,
+        )]));
+        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
+            .expect("close the last Wine File window");
+        tilo_test_env::wait_until(
+            "Wine File's host process tree exits after its wineboot.exe window closes",
+            || !process_is_live(standin.pid()) && !process_is_live(standin.descendant()),
+        );
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    #[serial_test::serial(process_env)]
+    fn closing_one_of_two_host_windows_leaves_the_launch() {
+        let standin = LauncherStandIn::spawn();
+        register_launched_process(standin.pid(), "wine-winefile", None, false);
+        remember_launch_named("wine-winefile", &["wine-winefile".to_string()], "Wine File");
+        let chrome = crate::shell::chrome_state::ChromeState::new(host_window_tree(&[
+            (1, "wine-winefile", 501),
+            (2, "wine-winefile", 502),
+        ]));
+        crate::shell::window_actions::close_tab(&mut chrome.borrow_mut(), 1)
+            .expect("close one of two windows");
+        assert!(
+            process_is_live(standin.pid()),
+            "a second window of the same host app keeps the launch"
+        );
+        unregister_launched_process(standin.pid());
     }
 
     #[test]

@@ -15,7 +15,7 @@
 //! fighting a flexbox tree.
 
 use std::sync::mpsc::{Receiver, Sender};
-use std::time::Instant;
+use ui::time::Instant;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -566,7 +566,7 @@ impl ContainersApp {
             history_arm_restart: None,
             #[cfg(test)]
             history_runtime_replacement: None,
-            last_refresh: Instant::now(),
+            last_refresh: ui::time::now(),
             live,
             seed_demo,
             seeded: false,
@@ -956,7 +956,7 @@ impl ContainersApp {
         self.toast = Some(Toast {
             message: message.into(),
             error,
-            born: Instant::now(),
+            born: ui::time::now(),
         });
     }
 
@@ -967,7 +967,7 @@ impl ContainersApp {
             return;
         }
         let Some(tx) = self.bg_tx.clone() else { return };
-        self.last_refresh = Instant::now();
+        self.last_refresh = ui::time::now();
         #[cfg(test)]
         if let Some(controlled) = &self.controlled_runtime {
             let _ = controlled.send(ControlledRuntimeRequest::Refresh(
@@ -3675,7 +3675,7 @@ impl ContainersApp {
     /// draw path, mirroring `NavSplit::self_tick`). The first draw sees
     /// `dt == 0` so the rail never teleports.
     pub(crate) fn tick_sidebar(&mut self) {
-        let now = Instant::now();
+        let now = ui::time::now();
         let dt = self
             .sidebar_tick
             .map_or(0.0, |t| now.duration_since(t).as_secs_f64().min(0.1));

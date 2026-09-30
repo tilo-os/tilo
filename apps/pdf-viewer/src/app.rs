@@ -26,7 +26,9 @@ use ui::Widget;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
 use ui::permissions::PermissionContext;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+};
 
 #[derive(Clone, Copy)]
 enum PortalActionKind {
@@ -213,7 +215,10 @@ fn now_ms() -> i64 {
 }
 
 fn today_ymd() -> String {
-    let secs = tilo_clock::unix_now_i64();
+    use ui::time::UNIX_EPOCH;
+    let secs = ui::time::wall()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     ymd_from_unix_secs(secs)
 }
 
@@ -773,6 +778,9 @@ pub struct PdfApp {
     /// [`Widget::sync`]. `None` when no picker is in flight — the app never
     /// draws its own picker (HIG §5).
     portal_rx: Option<PortalChannel>,
+    /// The same request on a host without paths (a browser page), which
+    /// answers with the file's bytes.
+    portal_contents_rx: Option<ContentsChannel>,
 
     /// When the window is too narrow to reserve space for the side panels,
     /// the rail + sidebar become closed-by-default overlays drawn over the
@@ -908,7 +916,19 @@ impl PdfApp {
     /// The no-document state: a clean "open a PDF" surface, no fabricated
     /// content.
     pub fn empty() -> Self {
-        Self::empty_with_content(default_content())
+        let mut app = Self::empty_with_content(default_content());
+        // Where files have no path, the PDF last opened by contents.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+            && let Some(Ok(request)) = app
+                .raster_handle
+                .as_ref()
+                .map(|handle| handle.open_contents(&file.name, file.bytes))
+        {
+            app.pending_open = Some(request);
+            app.status_note = Some("Opening PDF…".to_string());
+        }
+        app
     }
 
     fn empty_with_content(content: ContentStore) -> Self {
@@ -977,7 +997,7 @@ impl PdfApp {
     /// the transient page-info overlay (instead of the old bottom strip).
     pub fn arm_shots_page_bubble(&mut self) {
         self.shots_page_bubble = true;
-        self.page_bubble.poke(std::time::Instant::now());
+        self.page_bubble.poke(ui::time::now());
     }
 
     /// Screenshot-only: open the annotation action menu over the sample page
@@ -1067,7 +1087,10 @@ impl PdfApp {
                 image::Rgba([246, 132, 64, 255])
             };
         }
-        let png = std::env::temp_dir().join("tilo_pdf_demo_import.png");
+        let Some(png) = tilo_paths::temp_dir().map(|dir| dir.join("tilo_pdf_demo_import.png"))
+        else {
+            return;
+        };
         if image::DynamicImage::ImageRgba8(img).save(&png).is_ok() {
             // Screenshot-only helper; production imports receive the checked
             // out shared record from `sync`/the portal path.
@@ -1205,6 +1228,7 @@ impl PdfApp {
             type_px: TypePx::default(),
             empty_open_button: std::cell::Cell::new(Rect::ZERO),
             portal_rx: None,
+            portal_contents_rx: None,
             overlay_mode: false,
             prev_overlay: None,
             toolbar_rect: Rect::ZERO,
@@ -4304,11 +4328,78 @@ impl PdfApp {
     /// request while one is in flight is ignored, so a double-click on the
     /// Open button can't stack two host dialogs.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() || self.pending_open.is_some() {
+        if self.portal_rx.is_some()
+            || self.portal_contents_rx.is_some()
+            || self.pending_open.is_some()
+        {
             return;
         }
-        self.portal_rx = Some(pdf_open_request().send());
+        if tilo_paths::availability(tilo_paths::Feature::NativePaths)
+            == tilo_paths::Availability::Available
+        {
+            self.portal_rx = Some(pdf_open_request().send());
+        } else {
+            self.portal_contents_rx = Some(pdf_open_request().send_contents());
+        }
         self.dirty = true;
+    }
+
+    /// Drain a contents answer to the open request: queue the bytes on the
+    /// PDF owner as [`Self::drain_portal`] queues a path.
+    fn drain_portal_contents(&mut self) {
+        let Some(rx) = self.portal_contents_rx.as_ref() else {
+            return;
+        };
+        let outcome = match rx.try_recv() {
+            Ok(outcome) => outcome,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ContentsOutcome::Failed("the file chooser went away".into())
+            }
+        };
+        self.portal_contents_rx = None;
+        match outcome {
+            ContentsOutcome::Picked(files) => {
+                let Some(file) = files.into_iter().next() else {
+                    self.finish_portal_action(false, None);
+                    return;
+                };
+                let name = file.name.clone();
+                let kept = (!crate::web_file::native_paths()).then(|| file.bytes.clone());
+                match self
+                    .raster_handle
+                    .as_ref()
+                    .map(|h| h.open_contents(&file.name, file.bytes))
+                {
+                    Some(Ok(request)) => {
+                        if let Some(bytes) = kept {
+                            crate::web_file::remember(&name, &bytes);
+                        }
+                        self.pending_open = Some(request);
+                        self.status_note = Some("Opening PDF…".to_string());
+                    }
+                    Some(Err(error)) => {
+                        self.record_open_failure(std::path::Path::new(&name), &error.to_string());
+                    }
+                    None => self.record_open_failure(
+                        std::path::Path::new(&name),
+                        "the PDF worker could not be started",
+                    ),
+                }
+                if self.pending_open.is_none() {
+                    self.finish_portal_action(self.has_document, self.load_error.clone());
+                }
+                self.dirty = true;
+            }
+            ContentsOutcome::Cancelled => self.finish_portal_action(false, None),
+            ContentsOutcome::Failed(reason) => {
+                if !self.has_document {
+                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                }
+                self.dirty = true;
+                self.finish_portal_action(false, Some(reason));
+            }
+        }
     }
 
     /// Drain a completed portal request, if any. Called once per frame from
@@ -5062,6 +5153,7 @@ impl Widget for PdfApp {
         // Pull in any file the host portal picker returned since the last
         // frame (off-thread; never blocks the UI).
         self.drain_portal(state);
+        self.drain_portal_contents();
         // And any completed save-location choice, flattening markup to it.
         self.drain_portal_save();
         // And any completed import (a PDF/image chosen to add as pages).
@@ -5903,8 +5995,13 @@ impl Widget for PdfApp {
         // settles to zero frames instead of redrawing forever. The pointer
         // leaving a button arrives as a real event, which repaints and clears
         // the popover on its own.
+        let owner_busy = self.portal_contents_rx.is_some()
+            || self
+                .raster_handle
+                .as_ref()
+                .is_some_and(crate::source::RasterHandle::wants_frames);
         if self.reduce_motion {
-            return self.pending_raster;
+            return self.pending_raster || owner_busy;
         }
         // Also tick while a page rasterisation was deferred off this frame's
         // budget (`pending_raster`): the framework's animation pump re-draws at
@@ -5914,7 +6011,8 @@ impl Widget for PdfApp {
         // fading, so it hides itself without needing a stray pointer event.
         self.tooltip_pending
             || self.pending_raster
-            || self.page_bubble.needs_frame(std::time::Instant::now())
+            || owner_busy
+            || self.page_bubble.needs_frame(ui::time::now())
     }
 
     fn set_motion_reduced(&mut self, reduced: bool) {
@@ -6465,7 +6563,7 @@ mod tests {
             // substitute. The host checks out records before calling sync.
             app.queue_worker_open(&b);
             let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            while app.pending_open.is_some() && ui::time::now() < deadline {
                 record_frame(&mut app, &mut st, &mut set, &mut room);
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -6505,7 +6603,7 @@ mod tests {
             let original = st.doc.get_heads();
             app.queue_worker_open(&path);
             let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            while app.pending_open.is_some() && ui::time::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -6556,7 +6654,7 @@ mod tests {
                 app.queue_worker_open(&path);
                 assert!(app.pending_open.is_some(), "accepted request is loading");
                 let deadline = tilo_test_env::hang_deadline();
-                while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+                while app.pending_open.is_some() && ui::time::now() < deadline {
                     std::thread::sleep(Duration::from_millis(5));
                     app.drain_raster_events(&mut state);
                 }
@@ -6578,8 +6676,8 @@ mod tests {
             let latest = std::path::Path::new("/definitely/not/a/tilo-pdf-b.pdf");
             app.queue_worker_open(first);
             app.queue_worker_open(latest);
-            let deadline = std::time::Instant::now() + HANG_BOUND;
-            while std::time::Instant::now() < deadline {
+            let deadline = ui::time::now() + HANG_BOUND;
+            while ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 app.drain_raster_events(&mut state);
                 if app.pending_open.is_none() {
@@ -8041,7 +8139,7 @@ mod tests {
             );
 
             // A page change pokes it → it draws and captures its chevron rects.
-            app.page_bubble.poke(std::time::Instant::now());
+            app.page_bubble.poke(ui::time::now());
             app.draw_page_bubble(&mut scene, Affine::IDENTITY, &mut tr, &theme);
             assert_ne!(
                 app.bubble_rect,
@@ -8071,7 +8169,7 @@ mod tests {
             app.page_bubble =
                 ui::StatusBubble::new().with_linger(std::time::Duration::from_millis(0));
             app.page_bubble.poke(
-                std::time::Instant::now()
+                ui::time::now()
                     .checked_sub(std::time::Duration::from_millis(10))
                     .unwrap(),
             );
@@ -8850,9 +8948,7 @@ mod tests {
         // loose sanity bounds, not perf gates.
         eprintln!("phase measure_open_and_render_perf");
         'phase: {
-            use std::time::Instant;
-
-            let t = Instant::now();
+            let t = ui::time::now();
             let mut app = PdfApp::open(SAMPLE_PDF);
             let open_ms = t.elapsed().as_secs_f64() * 1000.0;
             match pdfium_gate(app.raster.is_some(), require_pdfium()) {
@@ -8865,19 +8961,19 @@ mod tests {
             }
             let pages = app.doc.page_count();
 
-            let t = Instant::now();
+            let t = ui::time::now();
             let layer = app.raster.as_mut().unwrap().page_text(0);
             let text_ms = t.elapsed().as_secs_f64() * 1000.0;
             let glyphs = layer.chars.len();
 
             // A fit-page render is ~US-Letter width (612pt) times the 2x supersample.
             let bucket = 1224u32;
-            let t = Instant::now();
+            let t = ui::time::now();
             let img = app.raster.as_mut().unwrap().render(0, bucket);
             let render_cold_ms = t.elapsed().as_secs_f64() * 1000.0;
             assert!(img.is_some(), "page 0 rasterises");
 
-            let t = Instant::now();
+            let t = ui::time::now();
             let _ = app.raster.as_mut().unwrap().render(0, bucket);
             let render_cached_ms = t.elapsed().as_secs_f64() * 1000.0;
 
@@ -8905,7 +9001,6 @@ mod tests {
         eprintln!("phase first_frame_defers_text_extraction");
         'phase: {
             use std::collections::HashMap;
-            use std::time::Instant;
             use ui::permissions::PermissionContext;
             use ui::presence::PresenceCtx;
             use ui::text_render::TextRenderer;
@@ -8975,12 +9070,12 @@ mod tests {
             app.raster_text.clear();
 
             // An idle document frame: no selection, no search — no text extraction.
-            let t = Instant::now();
+            let t = ui::time::now();
             frame(&mut app, &mut st, &mut tr);
             let idle_open_ms = t.elapsed().as_secs_f64() * 1000.0;
             let idle_text_pages = app.raster_text.len();
 
-            let t = Instant::now();
+            let t = ui::time::now();
             frame(&mut app, &mut st, &mut tr);
             let idle_scroll_ms = t.elapsed().as_secs_f64() * 1000.0;
 
@@ -9252,7 +9347,7 @@ mod tests {
             let mut st = ui::State::new();
             app.queue_worker_open(std::path::Path::new(LATIN_PDF));
             let deadline = tilo_test_env::hang_deadline();
-            while app.pending_open.is_some() && std::time::Instant::now() < deadline {
+            while app.pending_open.is_some() && ui::time::now() < deadline {
                 app.sync(&mut st.doc, &st.root);
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -9263,7 +9358,7 @@ mod tests {
             }
             // The page at 100 % arrives first; it is what shows under the tiles.
             let mut app = framed_at_zoom(app, st, 1.0, None);
-            while app.raster_images.is_empty() && std::time::Instant::now() < deadline {
+            while app.raster_images.is_empty() && ui::time::now() < deadline {
                 std::thread::sleep(Duration::from_millis(5));
                 full_frame(&mut app, 1280.0, 800.0, None);
             }
@@ -9281,7 +9376,7 @@ mod tests {
                 if !app.pending_visuals && (covered - target).abs() / target < 1e-6 {
                     break Some(page.placement);
                 }
-                if std::time::Instant::now() >= deadline {
+                if ui::time::now() >= deadline {
                     break None;
                 }
                 std::thread::sleep(Duration::from_millis(5));

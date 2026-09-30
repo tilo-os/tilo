@@ -74,6 +74,13 @@ pub fn app_root() -> Box<dyn Widget> {
     Box::new(CalendarApp::new())
 }
 
+/// The app as every host mounts it: the live root and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.calendar", app_root)
+        .component_actions(actions::register)
+        .as_definition("Calendar")
+}
+
 /// Build a fully-populated app for the hermetic `--shots` / test path. This
 /// is the ONLY place sample events, tasks and calendar accounts come from —
 /// the live app never fabricates content.

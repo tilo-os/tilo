@@ -25,7 +25,7 @@ use std::time::Duration;
 use collab_types::DocumentMutation;
 use ed25519_dalek::SigningKey;
 use getrandom::{SysRng, rand_core::UnwrapErr};
-use tilo_browser_peer::{Host, LiveState, PeerSnapshot, TransportPhase, certify};
+use tilo_browser_peer::{Host, LiveState, PeerEvent, PeerSnapshot, TransportPhase, certify};
 use tilo_relay_protocol::live::{LiveFrame, LiveRecord};
 use tilo_user_identity::{
     DeviceCapabilities, RevocationEntry, RevocationReason, UserIdentity, sign_revocation_entry,
@@ -215,6 +215,35 @@ async fn browser_over_https_and_webtransport_is_certified_syncs_and_is_revoked()
     ));
     drop(tablet_live);
     tablet_peer.close();
+
+    // The laptop, a live member over iroh, receives the browser's
+    // WebTransport presence through the host's bridge.
+    laptop_peer.live_join(workspace()).unwrap();
+    let laptop_events = laptop_peer.events();
+    let bridged = tokio::time::timeout(Duration::from_secs(20), async {
+        let mut seq = 1000;
+        loop {
+            let frame = browser_live
+                .publish_presence(seq, |presence| presence.pointer = Some([21.0, 43.0]))
+                .unwrap();
+            seq += 1;
+            live.publish_presence(&frame);
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            for event in laptop_events.drain() {
+                if let PeerEvent::Live { from, frame, .. } = event
+                    && from == browser_cert.device_public_key
+                {
+                    return frame;
+                }
+            }
+        }
+    })
+    .await
+    .expect("browser presence reaches an iroh live member");
+    assert!(matches!(
+        LiveFrame::decode(&bridged),
+        Ok(LiveFrame::Presence(presence)) if presence.pointer.is_some()
+    ));
 
     let laptop_namespace =
         tilo_moq::live::namespace_path(&grant.room, &hex::encode(laptop.cert.device_public_key))

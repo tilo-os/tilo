@@ -19,6 +19,10 @@
 
 %global tilo_summary Tilo compositor as a Wayland session
 %{!?tilo_version:%global tilo_version 0.1.12}
+# Release builds keep 1; a developer build names its commit here (e.g.
+# 0.202609271530.git5764267571) so `rpm -q tilo-session` on a host says which
+# tree is layered. See dist/rpm/host-update.sh.
+%{!?tilo_release:%global tilo_release 1}
 
 # The payload is already built and stripped; there is no source to extract
 # debug symbols from, and an empty -debuginfo subpackage would fail the
@@ -40,7 +44,7 @@
 
 Name:           tilo-session
 Version:        %{tilo_version}
-Release:        1%{?dist}
+Release:        %{tilo_release}%{?dist}
 Summary:        %{tilo_summary}
 License:        AGPL-3.0-only
 URL:            https://code.tilo.so/tilo/tilo
@@ -285,8 +289,8 @@ test ! -e %{buildroot}%{_userunitdir}/tilo-portal.service
 test -s %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^id = "so.tilo.settings"$' %{buildroot}%{_datadir}/tilo-apps/registry.toml
 grep -q '^payload_root = "/usr/lib/tilo-apps/' %{buildroot}%{_datadir}/tilo-apps/registry.toml
-test -d %{buildroot}%{_prefix}/lib/tilo-apps/payloads
-test ! -e %{buildroot}%{_datadir}/tilo-apps/payloads
+test -d %{buildroot}%{_prefix}/lib/tilo-apps/pkgs
+test ! -e %{buildroot}%{_datadir}/tilo-apps/pkgs
 test -f %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml
 test "$(stat -c %%a %{buildroot}%{_prefix}/lib/tilo-runtime/2026.07/bundle.toml)" = 644
 grep -q '/usr/lib/tilo-apps/bin' %{buildroot}%{_sysconfdir}/profile.d/tilo-apps.sh

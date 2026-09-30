@@ -1,13 +1,21 @@
 //! Searchable window rows over the desktop topology.
 //!
 //! Every tab and window group in the active workspace becomes an exactly
-//! addressed row: close a group, close a tab, or move a tab to another
-//! workspace. The rows are render-free data; a host ranks them with its own
-//! scorer and applies the [`WindowAction`] through its tab lifecycle, so an
-//! invocation never synthesises pointer input.
+//! addressed row: go to a tab, close a group, close a tab, or move a tab to
+//! another workspace. The rows are render-free data; a host ranks them by
+//! their names with its own scorer and applies the [`WindowAction`] through
+//! its tab lifecycle, so an invocation never synthesises pointer input.
+//!
+//! Going to a window is what a search for it means. Closing, moving and
+//! copying are listed in full for an empty query and for their exact
+//! address, but a search only offers them once it names their verb, so Enter
+//! on a window's name never closes it.
 use std::fmt::Write as _;
 
-use tilo_desktop_model::{DesktopTree, GroupId, Tab, TabId, TileContent, Workspace, WorkspaceId};
+use tilo_desktop_model::{
+    DesktopTree, GroupId, Strip, StripId, Tab, TabId, TileContent, WindowGroup, Workspace,
+    WorkspaceId,
+};
 
 use crate::i18n::{t, t_args};
 
@@ -24,6 +32,13 @@ pub enum WindowRowKind {
 /// What invoking a window row does to the desktop.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowAction {
+    /// Bring one tab to the front: its workspace, strip, group and tab.
+    FocusTab {
+        workspace: WorkspaceId,
+        strip: StripId,
+        group: GroupId,
+        tab: TabId,
+    },
     /// Close every tab of the group, remembered as one close.
     CloseGroup { group: GroupId },
     /// Close one tab through the tab lifecycle.
@@ -44,7 +59,7 @@ pub enum WindowAction {
     },
 }
 
-/// One ranked window row with its localized copy.
+/// One window row with its localized copy and the names it answers to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowRow {
     pub kind: WindowRowKind,
@@ -52,13 +67,23 @@ pub struct WindowRow {
     pub title: String,
     pub subtitle: String,
     pub badge: String,
-    pub score: i32,
+    /// What a person calls this row: its visible names and verb, never an
+    /// internal id. A host ranks these as titles.
+    pub names: Vec<String>,
+    /// A weaker name, such as the app a window belongs to; ranked as a
+    /// subtitle.
+    pub hint: Option<String>,
     pub action: WindowAction,
 }
 
 /// The provider's name in the desktop's language.
 pub fn windows_provider_name() -> String {
     t("search-provider-desktop-windows")
+}
+
+/// The exact address of going to `tab` in `group`.
+pub fn tab_focus_id(group: GroupId, tab: TabId) -> String {
+    format!("tab.focus:{group}:{tab}")
 }
 
 /// The exact address of closing `tab` in `group`.
@@ -92,12 +117,76 @@ fn app_id(tile: &TileContent) -> Option<&str> {
     }
 }
 
+/// The readable end of an app id — `so.tilo.file-explorer` answers to
+/// "file explorer" — so a window titled after its document is still found
+/// by its app.
+fn app_hint(tile: &TileContent) -> Option<String> {
+    let last = app_id(tile)?.rsplit('.').next()?;
+    let hint = last.replace(['-', '_'], " ");
+    (!hint.trim().is_empty()).then_some(hint)
+}
+
+/// Which window verbs a query names. An empty query names every verb: a
+/// listing is complete, only a search is selective.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Verbs {
+    close: bool,
+    relocate: bool,
+}
+
+impl Verbs {
+    fn of(needle: &str) -> Self {
+        let words: Vec<String> = needle
+            .split_whitespace()
+            .map(str::to_lowercase)
+            .filter(|word| word.chars().count() >= 3)
+            .collect();
+        if needle.trim().is_empty() {
+            return Self {
+                close: true,
+                relocate: true,
+            };
+        }
+        let names = |key: &str| {
+            let keywords = t(key).to_lowercase();
+            words.iter().any(|word| {
+                keywords
+                    .split_whitespace()
+                    .any(|keyword| keyword.starts_with(word.as_str()))
+            })
+        };
+        Self {
+            close: names("search-window-verb-close"),
+            relocate: names("search-window-verb-relocate"),
+        }
+    }
+}
+
+/// The focused tab of `workspace`, if it has one.
+fn focused_tab(tree: &DesktopTree, workspace: &Workspace) -> Option<TabId> {
+    let strip = tree
+        .active_strip
+        .get(&workspace.id)
+        .and_then(|id| workspace.strips.iter().find(|strip| strip.id == *id))
+        .or_else(|| workspace.strips.first())?;
+    let group = tree
+        .active_group_for(strip.id)
+        .and_then(|id| strip.window_groups.iter().find(|group| group.id == id))
+        .or_else(|| strip.window_groups.first())?;
+    group
+        .tabs
+        .iter()
+        .any(|tab| tab.id == group.active_tab)
+        .then_some(group.active_tab)
+}
+
 /// One "move to workspace" row per other workspace `tab` may go to, and a
 /// "copy to workspace" row for a client window. A workspace's own history
 /// and a collaborator's window stay where they are.
 fn move_rows(
     rows: &mut Vec<WindowRow>,
-    rank: &impl Fn(&[&str]) -> Option<i32>,
+    admit: &impl Fn(&str, bool) -> bool,
+    verbs: Verbs,
     workspaces: &[Workspace],
     workspace: &Workspace,
     group: GroupId,
@@ -110,179 +199,242 @@ fn move_rows(
         return;
     }
     let title = &tab.title;
-    let app = app_id(&tab.tile).unwrap_or("native");
+    let copyable = matches!(
+        tab.tile,
+        TileContent::Foreign { .. } | TileContent::LocalApp { .. }
+    );
+    let detail = || {
+        t_args(
+            "search-window-move-tab-detail",
+            &[("workspace", workspace.name.as_str().into())],
+        )
+    };
     for other in workspaces.iter().filter(|other| other.id != workspace.id) {
         let id = tab_move_id(group, tab.id, other.id);
-        let Some(score) = rank(&[title, app, &workspace.name, &other.name, &id]) else {
-            continue;
-        };
-        rows.push(WindowRow {
-            kind: WindowRowKind::Tab,
-            id,
-            title: t_args(
+        if admit(&id, verbs.relocate) {
+            let label = t_args(
                 "search-window-move-tab",
                 &[
                     ("tab", title.as_str().into()),
                     ("workspace", other.name.as_str().into()),
                 ],
-            ),
-            subtitle: t_args(
-                "search-window-move-tab-detail",
-                &[
-                    ("app", app.into()),
-                    ("workspace", workspace.name.as_str().into()),
-                    ("group", group.to_string().into()),
-                    ("tab", tab.id.to_string().into()),
-                ],
-            ),
-            badge: t("search-badge-tab"),
-            score,
-            action: WindowAction::MoveTab {
-                group,
-                tab: tab.id,
-                workspace: other.id,
-            },
-        });
-        if !matches!(
-            tab.tile,
-            TileContent::Foreign { .. } | TileContent::LocalApp { .. }
-        ) {
-            continue;
+            );
+            rows.push(WindowRow {
+                kind: WindowRowKind::Tab,
+                id,
+                names: vec![label.clone()],
+                title: label,
+                subtitle: detail(),
+                badge: t("search-badge-tab"),
+                hint: app_hint(&tab.tile),
+                action: WindowAction::MoveTab {
+                    group,
+                    tab: tab.id,
+                    workspace: other.id,
+                },
+            });
         }
         let id = tab_copy_id(group, tab.id, other.id);
-        let Some(score) = rank(&[title, app, &workspace.name, &other.name, &id]) else {
-            continue;
-        };
-        rows.push(WindowRow {
-            kind: WindowRowKind::Tab,
-            id,
-            title: t_args(
+        if copyable && admit(&id, verbs.relocate) {
+            let label = t_args(
                 "search-window-copy-tab",
                 &[
                     ("tab", title.as_str().into()),
                     ("workspace", other.name.as_str().into()),
                 ],
-            ),
-            subtitle: t_args(
-                "search-window-move-tab-detail",
-                &[
-                    ("app", app.into()),
-                    ("workspace", workspace.name.as_str().into()),
-                    ("group", group.to_string().into()),
-                    ("tab", tab.id.to_string().into()),
-                ],
-            ),
-            badge: t("search-badge-tab"),
-            score,
-            action: WindowAction::CopyTab {
-                group,
-                tab: tab.id,
-                workspace: other.id,
-            },
-        });
+            );
+            rows.push(WindowRow {
+                kind: WindowRowKind::Tab,
+                id,
+                names: vec![label.clone()],
+                title: label,
+                subtitle: detail(),
+                badge: t("search-badge-tab"),
+                hint: app_hint(&tab.tile),
+                action: WindowAction::CopyTab {
+                    group,
+                    tab: tab.id,
+                    workspace: other.id,
+                },
+            });
+        }
     }
 }
 
-/// Every window row of the active workspace that `rank` admits.
+/// The close rows for `group` and each of its tabs, admitted only once the
+/// query names the verb.
+fn close_rows(
+    rows: &mut Vec<WindowRow>,
+    admit: &impl Fn(&str, bool) -> bool,
+    verbs: Verbs,
+    workspace: &Workspace,
+    strip: &Strip,
+    group: &WindowGroup,
+) {
+    let group_id = group.id;
+    let group_title = group
+        .tabs
+        .iter()
+        .find(|tab| tab.id == group.active_tab)
+        .or_else(|| group.tabs.first())
+        .map_or_else(
+            || t("search-window-group-untitled"),
+            |tab| tab.title.clone(),
+        );
+    let id = group_close_id(group_id);
+    if admit(&id, verbs.close) {
+        let label = t_args(
+            "search-window-close-group",
+            &[("group", group_title.as_str().into())],
+        );
+        rows.push(WindowRow {
+            kind: WindowRowKind::WindowGroup,
+            id,
+            names: vec![label.clone()],
+            title: label,
+            subtitle: t_args(
+                "search-window-close-group-detail",
+                &[
+                    ("workspace", workspace.name.as_str().into()),
+                    ("strip", strip.name.as_str().into()),
+                    ("count", group.tabs.len().into()),
+                ],
+            ),
+            badge: t("search-badge-window-group"),
+            hint: None,
+            action: WindowAction::CloseGroup { group: group_id },
+        });
+    }
+    for tab in &group.tabs {
+        let id = tab_close_id(group_id, tab.id);
+        if admit(&id, verbs.close) {
+            let label = t_args(
+                "search-window-close-tab",
+                &[("tab", tab.title.as_str().into())],
+            );
+            rows.push(WindowRow {
+                kind: WindowRowKind::Tab,
+                id,
+                names: vec![label.clone()],
+                title: label,
+                subtitle: t_args(
+                    "search-window-close-tab-detail",
+                    &[
+                        ("workspace", workspace.name.as_str().into()),
+                        ("strip", strip.name.as_str().into()),
+                    ],
+                ),
+                badge: t("search-badge-tab"),
+                hint: app_hint(&tab.tile),
+                action: WindowAction::CloseTab {
+                    group: group_id,
+                    tab: tab.id,
+                },
+            });
+        }
+    }
+}
+
+/// Every window row of the active workspace that `needle` may be asking for.
 ///
-/// `rank` scores a row's names (each of which names it) and returns `None`
-/// for a miss; only admitted rows pay for their localized copy.
-pub fn window_rows(tree: &DesktopTree, rank: impl Fn(&[&str]) -> Option<i32>) -> Vec<WindowRow> {
+/// Rows are admitted, not ranked: the host ranks [`WindowRow::names`]
+/// against the same needle. A needle equal to a row's exact id always admits
+/// that row, which is how an address resolves.
+pub fn window_rows(tree: &DesktopTree, needle: &str) -> Vec<WindowRow> {
     let Some(workspace) = tree.active_workspace() else {
         return Vec::new();
     };
+    let exact = needle.trim();
+    let verbs = Verbs::of(needle);
+    let admit = |id: &str, named: bool| named || exact == id;
+    let focused = focused_tab(tree, workspace);
+    // An empty listing is "windows to go back to"; a search names every
+    // matching window, including the one already focused. Otherwise
+    // searching for the open Terminal finds only close actions (S05).
+    let searching = !exact.is_empty();
+    let multi_strip = workspace.strips.len() > 1;
     let mut rows = Vec::new();
     for strip in &workspace.strips {
         for group in &strip.window_groups {
             let group_id = group.id;
-            let group_title = group
-                .tabs
-                .iter()
-                .find(|tab| tab.id == group.active_tab)
-                .or_else(|| group.tabs.first())
-                .map_or_else(
-                    || {
-                        t_args(
-                            "search-window-group-untitled",
-                            &[("group", group_id.to_string().into())],
-                        )
-                    },
-                    |tab| tab.title.clone(),
-                );
-            let id = group_close_id(group_id);
-            if let Some(score) = rank(&[&group_title, &workspace.name, &strip.name, &id]) {
-                rows.push(WindowRow {
-                    kind: WindowRowKind::WindowGroup,
-                    id,
-                    title: t_args(
-                        "search-window-close-group",
-                        &[("group", group_title.as_str().into())],
-                    ),
-                    subtitle: t_args(
-                        "search-window-close-group-detail",
-                        &[
-                            ("workspace", workspace.name.as_str().into()),
-                            ("strip", strip.name.as_str().into()),
-                            ("group", group_id.to_string().into()),
-                            ("count", group.tabs.len().into()),
-                        ],
-                    ),
-                    badge: t("search-badge-window-group"),
-                    score,
-                    action: WindowAction::CloseGroup { group: group_id },
-                });
-            }
             for tab in &group.tabs {
-                let app = app_id(&tab.tile).unwrap_or("native");
-                let id = tab_close_id(group_id, tab.id);
-                if let Some(score) = rank(&[&tab.title, app, &workspace.name, &strip.name, &id]) {
+                let id = tab_focus_id(group_id, tab.id);
+                if admit(&id, searching || focused != Some(tab.id)) {
                     rows.push(WindowRow {
                         kind: WindowRowKind::Tab,
                         id,
-                        title: t_args(
-                            "search-window-close-tab",
-                            &[("tab", tab.title.as_str().into())],
-                        ),
-                        subtitle: t_args(
-                            "search-window-close-tab-detail",
-                            &[
-                                ("app", app.into()),
-                                ("workspace", workspace.name.as_str().into()),
-                                ("strip", strip.name.as_str().into()),
-                                ("group", group_id.to_string().into()),
-                                ("tab", tab.id.to_string().into()),
-                            ],
-                        ),
+                        title: tab.title.clone(),
+                        subtitle: focus_detail(strip, group.tabs.len(), multi_strip),
                         badge: t("search-badge-tab"),
-                        score,
-                        action: WindowAction::CloseTab {
+                        names: vec![tab.title.clone()],
+                        hint: app_hint(&tab.tile),
+                        action: WindowAction::FocusTab {
+                            workspace: workspace.id,
+                            strip: strip.id,
                             group: group_id,
                             tab: tab.id,
                         },
                     });
                 }
-                move_rows(&mut rows, &rank, &tree.workspaces, workspace, group_id, tab);
+            }
+            close_rows(&mut rows, &admit, verbs, workspace, strip, group);
+            for tab in &group.tabs {
+                move_rows(
+                    &mut rows,
+                    &admit,
+                    verbs,
+                    &tree.workspaces,
+                    workspace,
+                    group_id,
+                    tab,
+                );
             }
         }
     }
     rows
 }
 
+/// Where a window is, in the words a person uses for it: the strip only
+/// once there is more than one, the tab count only once it is shared.
+fn focus_detail(strip: &Strip, tabs: usize, multi_strip: bool) -> String {
+    let place = if multi_strip {
+        t_args(
+            "search-window-focus-place-strip",
+            &[("strip", strip.name.as_str().into())],
+        )
+    } else {
+        t("search-window-focus-place")
+    };
+    if tabs > 1 {
+        t_args(
+            "search-window-focus-detail-shared",
+            &[("place", place.into()), ("count", tabs.into())],
+        )
+    } else {
+        place
+    }
+}
+
 /// Changes exactly when the set of window rows can change: the active
-/// workspace, its groups and tabs, and every workspace a tab can move to.
+/// workspace, its groups and tabs, which tab is focused, and every
+/// workspace a tab can move to.
 pub fn window_rows_revision(tree: &DesktopTree) -> String {
     let Some(workspace) = tree.active_workspace() else {
         return "desktop-windows:empty".into();
     };
     let mut revision = format!("desktop-windows:{}", workspace.id.raw());
+    if let Some(tab) = focused_tab(tree, workspace) {
+        let _ = write!(revision, ":f{tab}");
+    }
     for other in &tree.workspaces {
         let _ = write!(revision, ":w{}:{}", other.id.raw(), other.name);
     }
     for strip in &workspace.strips {
+        let _ = write!(revision, ":s{}:{}", strip.id.raw(), strip.name);
         for group in &strip.window_groups {
             let _ = write!(revision, ":g{}", group.id);
             for tab in &group.tabs {
-                let _ = write!(revision, ":t{}", tab.id);
+                let _ = write!(revision, ":t{}:{}", tab.id, tab.title);
             }
         }
     }

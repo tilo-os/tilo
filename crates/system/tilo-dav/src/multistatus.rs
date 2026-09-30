@@ -207,6 +207,7 @@ pub fn parse(xml: &str, limits: &Limits) -> Result<Multistatus, XmlError> {
     let options = ParsingOptions {
         allow_dtd: false,
         nodes_limit: limits.max_nodes,
+        ..ParsingOptions::default()
     };
     let doc = Document::parse_with_options(xml, options).map_err(|error| match error {
         roxmltree::Error::DtdDetected => XmlError::Doctype,

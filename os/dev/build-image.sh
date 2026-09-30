@@ -178,7 +178,9 @@ if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 0 ];
   [ "$TILO_WITH_WINDOWS" = 1 ] \
     || warn "no FEX_PAYLOAD_REF/WINDOWS_GUEST_REF: this $TILO_WINDOWS_ARCH image is built without Windows apps"
 fi
-if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
+# Disk-only installation uses an image with its external assets already baked
+# in, so it does not need the build-context downloads.
+if [ "${TILO_SKIP_BUILD:-0}" != 1 ] && [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   mapfile -t _tilo_native_assets < <(sed -nE 's/^(LIBWPE|FDO|WPEWK)=([A-Za-z0-9._-]+)$/\2/p' "$TILO_OS_DIR/dev/build-wpe.sh")
   [ "${#_tilo_native_assets[@]}" -eq 3 ] || die "expected exactly three pinned WPE source archives"
   _tilo_sccache_version=$(sed -nE 's/^ARG SCCACHE_VERSION=([0-9]+\.[0-9]+\.[0-9]+)$/\1/p' "$TILO_OS_DIR/Containerfile")
@@ -192,7 +194,7 @@ if [ "${TILO_NATIVE_BUILDER_ONLY:-0}" = 1 ]; then
   [[ "$_tilo_mold_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "expected one pinned mold version"
   _tilo_native_assets+=("mold-${_tilo_mold_version}-${TILO_WINDOWS_ARCH}-linux.tar.gz")
   "$TILO_OS_DIR/dev/cache-github-assets.sh" "${_tilo_native_assets[@]}"
-else
+elif [ "${TILO_SKIP_BUILD:-0}" != 1 ]; then
   "$TILO_OS_DIR/dev/cache-github-assets.sh"
 fi
 # The digest-pinned base the build starts FROM — the mirror of the Fedora
@@ -717,6 +719,15 @@ fi
 if [ -n "${TILO_DISK_SIZE:-}" ]; then
   disk_args+=(--size "$TILO_DISK_SIZE")
 fi
+# Rockchip boards: the mask ROM loads U-Boot from fixed LBAs in front of the
+# ESP. TILO_ROCKCHIP_LOADER names the loader directory for an image built
+# elsewhere (TILO_SKIP_BUILD); the loader is rebuilt only when its pinned
+# sources change.
+if [ "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 ] || [ -n "${TILO_ROCKCHIP_LOADER:-}" ]; then
+  loader="${TILO_ROCKCHIP_LOADER:-$TILO_OUTPUT/orangepi-3b-loader}"
+  "$TILO_OS_DIR/dev/build-orangepi-uboot.sh" "$loader"
+  disk_args+=(--boot-gap 16M --rockchip-loader "$loader")
+fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
@@ -724,19 +735,18 @@ fi
 # value. disk-image.sh recognises that failure and prints the digest to seal, so
 # the recovery is to rebuild the UKI with it and install again.
 if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-  want="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  want="$(composefs_expected_digest "$INSTALL_LOG")"
   [ -n "$want" ] || die "the disk-image step failed for a reason other than the composefs digest
   seal; see the message above and $INSTALL_LOG"
-  had="$(sed -n "s/.*is 'sha512:\([0-9a-f]\{128\}\)'.*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+  had="$(composefs_sealed_digest "$INSTALL_LOG")"
   msg "bootc#2334: the UKI sealed sha512:${had:0:32}… but install wants sha512:${want:0:32}…"
   msg "pass 2: rewriting that digest into the UKI the image already carries"
   # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
   # layer, so install then computes a third digest, and a fourth — measured here as
-  # 0196…, then 40b1…, then 317b… . Rewriting the digest inside the existing UKI
-  # cannot move the target, because the added layer touches only /boot and /boot is
-  # the one tree excluded from the composefs digest. So this converges in exactly two
-  # passes, and it does not depend on the layer cache holding the rootfs identical
-  # between them.
+  # 0196…, then 40b1…, then 317b… . reseal-image.sh extracts the existing UKI,
+  # edits its command line, and adds it with COPY. A RUN layer copies up /etc and
+  # changes its directory mtime in Podman, which moves bootc's composefs digest
+  # even when the command edits only /boot. COPY leaves that metadata unchanged.
   #
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
   # layout is untouched; uki-cmdline.py refuses anything else.
@@ -745,7 +755,7 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
     printf '%s\n' "$want" > "$TILO_RESEALED_DIGEST_FILE"
   fi
   if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}"; then
-    want2="$(sed -n "s/.*should be sha512:\([0-9a-f]\{128\}\).*/\1/p" "$INSTALL_LOG" 2>/dev/null | tail -1)"
+    want2="$(composefs_expected_digest "$INSTALL_LOG")"
     if [ -n "$want2" ] && [ "$want2" != "$want" ]; then
       die "the digest install expects MOVED between passes (${want:0:16}… -> ${want2:0:16}…),
   even though the only thing that changed was the UKI under /boot. That means the

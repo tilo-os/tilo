@@ -17,7 +17,7 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
-use std::time::{Duration, Instant};
+use ui::time::Duration;
 
 use notes::sidebar::OutEvent;
 use notes::storage::SaveStatus;
@@ -59,8 +59,8 @@ fn status_bar_surfaces_page_save_failure() {
     // until it reflects the failure. Status-only refresh, so no re-queue.
     // Bounded wait on the writer thread — a directory write fails fast.
     let mut surfaced = false;
-    let deadline = Instant::now() + HANG_BOUND;
-    while Instant::now() < deadline {
+    let deadline = ui::time::now() + HANG_BOUND;
+    while ui::time::now() < deadline {
         app.refresh_status_for_test();
         if app.status_bar_for_test().state().save_status == SaveStatus::Failed {
             surfaced = true;

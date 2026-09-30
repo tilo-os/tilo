@@ -30,9 +30,7 @@ export function createFontLoader({
     const assets=new Map();
     for(const asset of value.assets){
       if(!asset||typeof asset.name!=='string'||!/^[A-Za-z0-9][A-Za-z0-9._\[\]-]*$/.test(asset.name)||
-        !Number.isSafeInteger(asset.bytes)||asset.bytes<1||!/^[0-9a-f]{64}$/.test(asset.sha256)||typeof asset.startup!=='boolean'||assets.has(asset.name)||
-        // A content-addressed release names the file by its digest.
-        (asset.path!==undefined&&asset.path!==`fonts/${asset.sha256}${/\.[a-z]+$/.exec(asset.name.toLowerCase())?.[0]??''}`)){
+        !Number.isSafeInteger(asset.bytes)||asset.bytes<1||!/^[0-9a-f]{64}$/.test(asset.sha256)||typeof asset.startup!=='boolean'||assets.has(asset.name)){
         throw Error('invalid canonical font asset descriptor');
       }
       assets.set(asset.name,Object.freeze({...asset}));
@@ -59,7 +57,7 @@ export function createFontLoader({
     return bytes;
   }
   async function load(asset){
-    const url=new URL(asset.path?`./${asset.path}`:`./fonts/${asset.name}`,root);
+    const url=new URL(`./fonts/${asset.name}`,root);
     if(url.origin!==root.origin)throw Error('font asset crossed its release origin');
     try{return await verify(asset,await (await fetchRequired(url)).arrayBuffer());}
     catch(error){
@@ -142,13 +140,15 @@ export function createFontLoader({
   }
   /** Verified bytes already in memory, or undefined; never fetches. */
   function cached(name){return loaded.get(name);}
-  return {manifest,startup,request,prewarm,cached};
+  /** A demand for `name` now, without waiting out a failed fetch's backoff. */
+  function retry(name){failures.delete(name);return request(name);}
+  return {manifest,startup,request,prewarm,cached,retry};
 }
 
 /** Couples optional completion to one live mount generation. */
 export function createFontDemandPump({loader,valid,install,failed=()=>{},report,now=Date.now,sleep=ms=>new Promise(resolve=>setTimeout(resolve,ms))}){
   const applying=new Map(),unavailable=new Set();
-  return names=>Promise.allSettled([...new Set(names)].map(name=>{
+  const demand=names=>Promise.allSettled([...new Set(names)].map(name=>{
     if(applying.has(name))return applying.get(name);
     const apply=async()=>{
       let bytes;
@@ -173,6 +173,16 @@ export function createFontDemandPump({loader,valid,install,failed=()=>{},report,
     }).finally(()=>{if(applying.get(name)===job)applying.delete(name);});
     applying.set(name,job);return job;
   }));
+  /** Fetch, verify and install an unavailable font again, skipping its
+   * backoff; rejects while it stays unavailable. */
+  demand.retry=async name=>{
+    if(!unavailable.has(name))throw Error(`font asset is not unavailable: ${name}`);
+    const bytes=await loader.retry(name);
+    if(!valid())throw Error('Font surface disposed');
+    install(name,bytes);
+    if(unavailable.delete(name))report({font:'available',fontAsset:name});
+  };
+  return demand;
 }
 
 /**

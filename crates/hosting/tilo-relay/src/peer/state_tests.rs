@@ -99,6 +99,7 @@ impl Fixture {
                 tx: delivery,
                 live: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 replay: None,
+                lag: None,
             },
         );
         let source = StateSource {
@@ -234,11 +235,14 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         write_state_delivery(delivery, &self.recipient, &session, wire)
             .await
@@ -1211,6 +1215,59 @@ async fn cleanup_queued_before_recipient_replacement_retains_exact_pending() {
 }
 
 #[tokio::test]
+async fn a_commit_is_acknowledged_only_once_it_is_retained() {
+    let fixture = Fixture::new();
+    let (release, reached) =
+        crate::store::test_barrier::install(fixture.store.root(), "state-persist");
+    let session = SessionCtx {
+        workspaces: &fixture.registry,
+        autobind: None,
+        outbound: &fixture.source.tx,
+        state_outbound: None,
+        connection_live: None,
+        own_user_public_key: &fixture.source.own_user,
+        own_device_cert: &fixture.source.peer.cert,
+        own_device_public_key: &fixture.source.peer.cert.device_public_key,
+        app_serving: None,
+        metrics: &fixture.metrics,
+        trust_policy: &fixture.source.policy,
+        disconnect: &fixture.source.disconnect,
+        v2: true,
+        private_tx: &fixture.private,
+        revocations: &fixture.source.revocations,
+        live_bridge: None,
+        agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
+    };
+    let Envelope::Delta { delta, .. } = fixture.envelope(1) else {
+        unreachable!()
+    };
+    let commit = Envelope::Commit {
+        workspace_id: 7,
+        op: [5; 16],
+        author_device_public_key: fixture.source.peer.device_public_key,
+        authored_at_ns: 1,
+        delta,
+    };
+    let mut committing = Box::pin(handle_commit(&fixture.source.peer, &session, &[7], commit));
+    tokio::select! {
+        _ = &mut committing => panic!("a commit was acknowledged before it was retained"),
+        reached = reached => reached.unwrap(),
+    }
+    assert!(fixture.store.load_retained().unwrap().is_empty());
+    drop(release);
+    let acknowledged = tokio::time::timeout(std::time::Duration::from_secs(30), committing)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(acknowledged, Some(Envelope::Committed { op, .. }) if op == [5; 16]));
+    assert_eq!(fixture.store.load_retained().unwrap().len(), 1);
+}
+
+#[tokio::test]
 async fn state_owner_preserves_checkpoint_then_tail_and_durability_under_cancellation() {
     let mut fixture = Fixture::new();
     let (release, reached) =
@@ -1698,11 +1755,14 @@ async fn sync_request_waits_for_owner_capacity_and_rechecks_source() {
                 trust_policy: &source.policy,
                 disconnect: &source.disconnect,
                 v2: true,
-                agent_reads_v1: false,
                 private_tx: &private,
                 revocations: &source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
+                positions: None,
+                compactor: None,
+                resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             handle_sync_request(&source.peer, &session, 7, vec![]).await
         });
@@ -1801,11 +1861,14 @@ async fn unsubscribed_sync_request_cannot_publish_after_a_replacement_subscribes
         trust_policy: &fixture.source.policy,
         disconnect: &fixture.source.disconnect,
         v2: true,
-        agent_reads_v1: false,
         private_tx: &fixture.private,
         revocations: &fixture.source.revocations,
         live_bridge: None,
         agents: Box::leak(Box::default()),
+        positions: None,
+        compactor: None,
+        resumes: Box::leak(Box::default()),
+        lag: Box::leak(Box::default()),
     };
     handle_sync_request(&fixture.source.peer, &session, 7, vec![])
         .await
@@ -1928,11 +1991,14 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let mut replay = None;
         handle_subscribe(
@@ -1941,6 +2007,7 @@ impl Fixture {
             &mut Vec::new(),
             &mut replay,
             self.store.workspace_id(),
+            Subscription::Whole,
         )
         .await?;
         replay.ok_or_else(|| PeerError::Protocol("subscribe produced no replay".into()))
@@ -2177,11 +2244,14 @@ async fn replay_owner_wait_drains_private_replies_and_rechecks_authority() {
                 trust_policy: &writer.source.policy,
                 disconnect: &writer.source.disconnect,
                 v2: true,
-                agent_reads_v1: false,
                 private_tx: &writer.private,
                 revocations: &writer.source.revocations,
                 live_bridge: None,
                 agents: Box::leak(Box::default()),
+                positions: None,
+                compactor: None,
+                resumes: Box::leak(Box::default()),
+                lag: Box::leak(Box::default()),
             };
             Box::pin(finish_replay_write(
                 ReplayWrite {
@@ -2261,7 +2331,6 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             ActionTarget {
                 broker_host: None,
                 broker_protocol: false,
-                agent_reads_v1: false,
                 room,
                 peer: fixture.source.peer.clone(),
                 state_tx: fixture.source.tx.clone(),
@@ -2273,7 +2342,6 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             ActionTarget {
                 broker_host: None,
                 broker_protocol: false,
-                agent_reads_v1: false,
                 room,
                 peer: fixture.recipient.clone(),
                 state_tx: fixture.recipient_tx.clone(),
@@ -2319,11 +2387,14 @@ async fn replay_direct_wait_keeps_replay_live_while_private_delivery_waits_for_i
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let source = StateSource::new(&writer.recipient, &session);
         let authority = ticket.authority.clone();
@@ -2450,11 +2521,14 @@ async fn replay_direct_wait_finishes_active_private_frame_before_replay_error() 
             trust_policy: &writer.source.policy,
             disconnect: &writer.source.disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &writer.private,
             revocations: &writer.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         let operation = async move {
             complete_rx.await.unwrap();
@@ -2881,11 +2955,14 @@ impl Fixture {
             trust_policy: &self.source.policy,
             disconnect: &self.recipient_disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &self.private,
             revocations: &self.source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         Box::pin(handle_inbound_frame(
             Envelope::Subscribe {
@@ -3228,11 +3305,14 @@ async fn native_sync_refresh_uses_live_subscribed_source_and_rechecks_execution(
             trust_policy: &source.policy,
             disconnect: &source.disconnect,
             v2: true,
-            agent_reads_v1: false,
             private_tx: &fixture.private,
             revocations: &source.revocations,
             live_bridge: None,
             agents: Box::leak(Box::default()),
+            positions: None,
+            compactor: None,
+            resumes: Box::leak(Box::default()),
+            lag: Box::leak(Box::default()),
         };
         handle_sync_request(&source.peer, &session, 7, vec![])
             .await

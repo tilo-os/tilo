@@ -8,7 +8,6 @@
 #![cfg(unix)]
 
 use std::sync::{Arc, Mutex};
-use std::time::Instant;
 
 use file_explorer::model::{AvailabilityPolicy, Residency};
 use file_explorer::{FileCommand, FileExplorerWidget};
@@ -88,7 +87,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
             break;
         }
         assert!(
-            Instant::now() < deadline,
+            ui::time::now() < deadline,
             "live FUSE mount did not become ready"
         );
         tokio::task::yield_now().await;
@@ -149,7 +148,7 @@ async fn files_reads_live_projections_and_applies_folder_pin_to_future_descendan
             break;
         }
         assert!(
-            Instant::now() < child_deadline,
+            ui::time::now() < child_deadline,
             "future descendant did not appear"
         );
         tokio::task::yield_now().await;

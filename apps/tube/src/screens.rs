@@ -7,6 +7,7 @@
 use std::sync::{Arc, Mutex};
 use ui::icons::Icon;
 use ui::theme::Theme;
+use ui::time::UNIX_EPOCH;
 use ui::widget::{IconWidget, ScrollAxis, Scrollable, TextInput};
 use vello::peniko::Color;
 
@@ -2765,7 +2766,9 @@ fn active_device_row(theme: &Theme, bus: &ActionBus, peer: &crate::sync::PeerRec
 }
 
 fn relative_sync_time(time: i64) -> String {
-    let current = tilo_clock::unix_now_i64();
+    let current = ui::time::wall()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |duration| duration.as_secs() as i64);
     format!("Last synced {}", ui::format::relative(current - time))
 }
 

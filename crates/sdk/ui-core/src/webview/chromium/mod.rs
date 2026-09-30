@@ -521,7 +521,7 @@ fn launch_host(
         .arg(format!("--profile={}", profile.display()))
         .arg(format!(
             "--downloads={}",
-            xdg_paths::download_dir()
+            tilo_paths::download_dir()
                 .unwrap_or_else(|| profile.join("downloads"))
                 .display()
         ))
@@ -575,7 +575,7 @@ impl ChromiumEngine {
     pub fn new_with_extensions(extensions: &[PathBuf]) -> Result<Arc<Self>, String> {
         let profile = std::env::var_os("TILO_CHROMIUM_PROFILE")
             .map(PathBuf::from)
-            .or_else(|| xdg_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
+            .or_else(|| tilo_paths::data_dir().map(|path| path.join("tilo-browser/chromium")))
             .ok_or("Cannot locate Chromium profile directory")?;
         Self::with_host_extensions(&host_path()?, &profile, extensions, None)
     }

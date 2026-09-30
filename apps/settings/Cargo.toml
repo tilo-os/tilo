@@ -40,8 +40,8 @@ collab-types = { path = "../../crates/collab/collab-types" }
 # The Tilo action model: every setting mutation is a serializable, replayable
 # `SettingsAction` the on-screen controls and the Ctrl+K palette both dispatch.
 tilo-actions = { path = "../../crates/collab/actions" }
-# The CA-certificate chooser and captive-portal sign-in go through the desktop
-# portals, never a host tool.
+# The CA-certificate chooser and captive-portal sign-in go through
+# `ui::portal`, never a host tool.
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Shared shell-out helpers for the interactive panes (display, audio,
 # network, bluetooth). The crate lives at the workspace root so both
@@ -98,8 +98,8 @@ zeroize.workspace = true
 # per-user config root; uuid mints stable account ids.
 serde.workspace = true
 serde_json.workspace = true
-atomic-file = { path = "../../crates/system/atomic-file" }
-xdg-paths = { path = "../../crates/system/xdg-paths" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
+tilo-paths = { path = "../../crates/platform/tilo-paths" }
 quick-xml.workspace = true
 uuid.workspace = true
 workspace-hack = { version = "0.1" }
@@ -123,7 +123,7 @@ mail = { path = "../mail" }
 tilo-oauth = { path = "../../crates/system/tilo-oauth", features = ["fake"] }
 # The cloud storage end-to-end test: Settings signs in, the storage
 # daemon's cloud service mounts the account against each provider's fake.
-fs = { path = "../../crates/system/fs" }
+tilo-fs = { path = "../../crates/system/fs" }
 cloud-source = { path = "../../crates/system/cloud-source" }
 cloud-source-gdrive = { path = "../../crates/system/cloud-source-gdrive", features = ["fake-server"] }
 cloud-source-onedrive = { path = "../../crates/system/cloud-source-onedrive", features = ["fake-server"] }

@@ -5,6 +5,7 @@
 //! under. The sidebar renders sections in [`Section::ALL`] order, and
 //! within each section the categories in [`Category::ALL`] order.
 
+use crate::i18n::t;
 use ui::icons::Icon;
 
 /// A labelled group of categories in the sidebar. Sections give the long
@@ -36,14 +37,14 @@ impl Section {
     ];
 
     /// The section header label.
-    pub fn label(self) -> &'static str {
-        match self {
-            Section::Connectivity => "Connectivity",
-            Section::Devices => "Devices",
-            Section::System => "System",
-            Section::Hubs => "Accounts & Permissions",
-            Section::Maintenance => "Maintenance",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Section::Connectivity => "settings-section-connectivity",
+            Section::Devices => "settings-section-devices",
+            Section::System => "settings-section-system",
+            Section::Hubs => "settings-section-accounts-permissions",
+            Section::Maintenance => "settings-section-maintenance",
+        })
     }
 }
 
@@ -419,63 +420,61 @@ impl Category {
 
     /// User-facing label, rendered in the sidebar and reused as the pane
     /// header.
-    pub fn label(self) -> &'static str {
-        match self {
-            Category::Network => "Network",
-            Category::Bluetooth => "Bluetooth",
-            Category::DeviceMesh => "Devices & Sync",
-            Category::Sound => "Sound",
-            Category::Speakers => "Speakers",
-            Category::Displays => "Displays",
-            Category::MouseKeyboard => "Mouse & Keyboard",
-            Category::KeyboardShortcuts => "Keyboard Shortcuts",
-            Category::TimeDate => "Time & Date",
-            Category::Users => "Users",
-            Category::Printers => "Printers",
-            Category::Power => "Power",
-            Category::Appearance => "Appearance",
-            Category::Accessibility => "Accessibility",
-            Category::Notifications => "Notifications",
-            Category::DefaultApps => "Apps & Files",
-            Category::Storage => "Storage",
-            Category::ExternalAccounts => "External Accounts",
-            Category::AgentModels => "Agent Models",
-            Category::RegionFormats => "Region & Formats",
-            Category::Permissions => "Device Privacy & Security",
-            Category::Updates => "Updates",
-            Category::About => "About",
-        }
+    pub fn label(self) -> String {
+        t(match self {
+            Category::Network => "settings-category-network",
+            Category::Bluetooth => "settings-category-bluetooth",
+            Category::DeviceMesh => "settings-category-devices-sync",
+            Category::Sound => "settings-category-sound",
+            Category::Speakers => "settings-category-speakers",
+            Category::Displays => "settings-category-displays",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard",
+            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts",
+            Category::TimeDate => "settings-category-time-date",
+            Category::Users => "settings-category-users",
+            Category::Printers => "settings-category-printers",
+            Category::Power => "settings-category-power",
+            Category::Appearance => "settings-category-appearance",
+            Category::Accessibility => "settings-category-accessibility",
+            Category::Notifications => "settings-category-notifications",
+            Category::DefaultApps => "settings-category-default-apps",
+            Category::Storage => "settings-category-storage",
+            Category::ExternalAccounts => "settings-category-external-accounts",
+            Category::AgentModels => "settings-category-agent-models",
+            Category::RegionFormats => "settings-category-region-formats",
+            Category::Permissions => "settings-category-permissions",
+            Category::Updates => "settings-category-updates",
+            Category::About => "settings-category-about",
+        })
     }
 
     /// A one-line summary shown under the label in the content header.
-    pub fn subtitle(self) -> &'static str {
-        match self {
-            Category::Network => "Wi-Fi, wired connections, and VPN",
-            Category::Bluetooth => "Pair and manage Bluetooth devices",
-            Category::DeviceMesh => "Copies, remote access, and server roles",
-            Category::Sound => "Output, input, volume, and system sounds",
-            Category::Speakers => "Stereo pairs and room speakers across your devices",
-            Category::Displays => "Resolution, scale, arrangement, and brightness",
-            Category::MouseKeyboard => "Typing, spelling, input sources, and pointer behaviour",
-            Category::KeyboardShortcuts => "System and workspace keyboard shortcuts",
-            Category::TimeDate => "Clock, time zone, and how dates display",
-            Category::Users => "Accounts on this device and their roles",
-            Category::Printers => "Printers, queues, and recent jobs",
-            Category::Power => "Battery, power profile, and automatic suspend",
-            Category::Appearance => "Theme, contrast, motion, and text size",
-            Category::Accessibility => "Vision, pointer, typing, and hearing assists",
-            Category::Notifications => "Banners, previews, sounds, and Do Not Disturb",
-            Category::DefaultApps => "Your preferred apps for links and file types",
-            Category::Storage => "Apps, data, cache, and synced files",
-            Category::ExternalAccounts => "Accounts shared with compatible installed apps",
-            Category::AgentModels => "Providers, local models, and the model agents use",
-            Category::RegionFormats => "Currency, date, time, and measurement units",
-            Category::Permissions => {
-                "This device's privacy and security; workspace access is managed per workspace"
-            }
-            Category::Updates => "Operating-system and firmware updates",
-            Category::About => "Device identity and transfer",
-        }
+    pub fn subtitle(self) -> String {
+        t(match self {
+            Category::Network => "settings-category-network-subtitle",
+            Category::Bluetooth => "settings-category-bluetooth-subtitle",
+            Category::DeviceMesh => "settings-category-devices-sync-subtitle",
+            Category::Sound => "settings-category-sound-subtitle",
+            Category::Speakers => "settings-category-speakers-subtitle",
+            Category::Displays => "settings-category-displays-subtitle",
+            Category::MouseKeyboard => "settings-category-mouse-keyboard-subtitle",
+            Category::KeyboardShortcuts => "settings-category-keyboard-shortcuts-subtitle",
+            Category::TimeDate => "settings-category-time-date-subtitle",
+            Category::Users => "settings-category-users-subtitle",
+            Category::Printers => "settings-category-printers-subtitle",
+            Category::Power => "settings-category-power-subtitle",
+            Category::Appearance => "settings-category-appearance-subtitle",
+            Category::Accessibility => "settings-category-accessibility-subtitle",
+            Category::Notifications => "settings-category-notifications-subtitle",
+            Category::DefaultApps => "settings-category-default-apps-subtitle",
+            Category::Storage => "settings-category-storage-subtitle",
+            Category::ExternalAccounts => "settings-category-external-accounts-subtitle",
+            Category::AgentModels => "settings-category-agent-models-subtitle",
+            Category::RegionFormats => "settings-category-region-formats-subtitle",
+            Category::Permissions => "settings-category-permissions-subtitle",
+            Category::Updates => "settings-category-updates-subtitle",
+            Category::About => "settings-category-about-subtitle",
+        })
     }
 
     /// Toolkit-owned vector icon rendered before the label in the sidebar.
@@ -544,13 +543,11 @@ impl Category {
     /// [`Category::keywords`]. An all-whitespace query matches everything (the
     /// caller treats that as "no search").
     pub fn matches(self, query: &str) -> bool {
-        let q = query.trim().to_ascii_lowercase();
+        let q = query.trim().to_lowercase();
         if q.is_empty() {
             return true;
         }
-        if self.label().to_ascii_lowercase().contains(&q)
-            || self.subtitle().to_ascii_lowercase().contains(&q)
-        {
+        if self.label().to_lowercase().contains(&q) || self.subtitle().to_lowercase().contains(&q) {
             return true;
         }
         // A keyword matches a query it contains, or one that contains it as

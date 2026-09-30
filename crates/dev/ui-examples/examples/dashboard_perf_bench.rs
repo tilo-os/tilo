@@ -24,10 +24,10 @@
 //! ```
 //! cargo run -p ui-examples --release --example ui-perf -- dashboard_perf_bench
 //! ```
-//! Override iterations: `QUICK_UI_DASH_ITERS=2000`.
-//! Override the render target: `QUICK_UI_DASH_WIDTH=3840
-//! QUICK_UI_DASH_HEIGHT=2160`.
-//! Set `QUICK_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
+//! Override iterations: `TILO_UI_DASH_ITERS=2000`.
+//! Override the render target: `TILO_UI_DASH_WIDTH=3840
+//! TILO_UI_DASH_HEIGHT=2160`.
+//! Set `TILO_UI_DASH_VERIFY=1` to run a separate retained-damage pixel
 //! parity preflight. It compares 40 (configurable: 20..=100) already-built
 //! native scenes to a persistent full-render reference; it does not produce
 //! performance measurements or accept benchmark budget gates.
@@ -83,7 +83,7 @@ fn idx_f64(i: usize) -> f64 {
 }
 
 fn env_u32(name: &str, fallback: u32) -> u32 {
-    std::env::var(name)
+    tilo_ui::env::var(name)
         .ok()
         .and_then(|value| value.parse().ok())
         .filter(|value| *value > 0)
@@ -92,7 +92,7 @@ fn env_u32(name: &str, fallback: u32) -> u32 {
 
 /// Production Vello performance paths are enabled unless explicitly opted out.
 fn env_enabled_by_default(name: &str) -> bool {
-    !matches!(std::env::var(name).as_deref(), Ok("0"))
+    !matches!(tilo_ui::env::var(name).as_deref(), Ok("0"))
 }
 
 #[allow(
@@ -103,14 +103,14 @@ fn verification_frame_count() -> usize {
     const DEFAULT: usize = 40;
     const MIN: usize = 20;
     const MAX: usize = 100;
-    let Ok(raw) = std::env::var("QUICK_UI_DASH_VERIFY_FRAMES") else {
+    let Ok(raw) = tilo_ui::env::var("TILO_UI_DASH_VERIFY_FRAMES") else {
         return DEFAULT;
     };
     if let Ok(value @ MIN..=MAX) = raw.parse::<usize>() {
         value
     } else {
         eprintln!(
-            "damage-verify: QUICK_UI_DASH_VERIFY_FRAMES must be in {MIN}..={MAX}, got {raw:?}"
+            "damage-verify: TILO_UI_DASH_VERIFY_FRAMES must be in {MIN}..={MAX}, got {raw:?}"
         );
         std::process::exit(2);
     }
@@ -124,25 +124,25 @@ fn verification_frame_count() -> usize {
 )]
 fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
     const ACCEPTANCE_BUDGETS: &[&str] = &[
-        "QUICK_UI_DASH_FRAME_BUDGET_US",
-        "QUICK_UI_DASH_MEAN_FRAME_BUDGET_US",
-        "QUICK_UI_DASH_EVENT_BUDGET_US",
-        "QUICK_UI_DASH_RASTER_PIXEL_BUDGET",
-        "QUICK_UI_DASH_ALLOC_BUDGET_PER_1000",
-        "QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW",
-        "QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW",
-        "QUICK_UI_DASH_RSS_BUDGET_KIB",
-        "QUICK_UI_DASH_GPU_BUDGET_BYTES",
-        "QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB",
-        "QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
+        "TILO_UI_DASH_FRAME_BUDGET_US",
+        "TILO_UI_DASH_MEAN_FRAME_BUDGET_US",
+        "TILO_UI_DASH_EVENT_BUDGET_US",
+        "TILO_UI_DASH_RASTER_PIXEL_BUDGET",
+        "TILO_UI_DASH_ALLOC_BUDGET_PER_1000",
+        "TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW",
+        "TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW",
+        "TILO_UI_DASH_RSS_BUDGET_KIB",
+        "TILO_UI_DASH_GPU_BUDGET_BYTES",
+        "TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB",
+        "TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES",
     ];
     // Verification intentionally suppresses every profile report, whereas
     // timestamp diagnostics compose with the frame/host profile reports.
     const VERIFICATION_ONLY_PROFILE_FLAGS: &[&str] = &[
-        "QUICK_UI_DASH_ALLOC_PROFILE",
-        "QUICK_UI_DASH_ALLOC_BREAKDOWN",
-        "QUICK_UI_DASH_FRAME_BREAKDOWN",
-        "QUICK_UI_DASH_RENDER_PROFILE",
+        "TILO_UI_DASH_ALLOC_PROFILE",
+        "TILO_UI_DASH_ALLOC_BREAKDOWN",
+        "TILO_UI_DASH_FRAME_BREAKDOWN",
+        "TILO_UI_DASH_RENDER_PROFILE",
     ];
     let names = if reject_profile_flags {
         ACCEPTANCE_BUDGETS
@@ -156,7 +156,7 @@ fn reject_budgets_in_diagnostic_mode(mode: &str, reject_profile_flags: bool) {
     let supplied = names
         .iter()
         .copied()
-        .filter(|name| std::env::var_os(name).is_some())
+        .filter(|name| tilo_ui::env::var_os(name).is_some())
         .collect::<Vec<_>>();
     if !supplied.is_empty() {
         eprintln!(
@@ -932,7 +932,7 @@ fn full_draw(
             state.damage_regions.push(vp);
         }
     }
-    if std::env::var_os("QUICK_UI_DASH_DAMAGE").is_some() {
+    if tilo_ui::env::var_os("TILO_UI_DASH_DAMAGE").is_some() {
         println!("damage regions: {:?}", state.damage_regions);
     }
     let allocation_before_render = allocation_breakdown
@@ -2289,7 +2289,7 @@ fn enforce_resource_budgets(
     before: ResourceSnapshot,
     after: ResourceSnapshot,
 ) {
-    if let Ok(raw) = std::env::var("QUICK_UI_DASH_RSS_BUDGET_KIB")
+    if let Ok(raw) = tilo_ui::env::var("TILO_UI_DASH_RSS_BUDGET_KIB")
         && let Ok(budget) = raw.parse::<u64>()
         && budget > 0
     {
@@ -2304,7 +2304,7 @@ fn enforce_resource_budgets(
             std::process::exit(2);
         }
     }
-    if let Ok(raw) = std::env::var("QUICK_UI_DASH_GPU_BUDGET_BYTES")
+    if let Ok(raw) = tilo_ui::env::var("TILO_UI_DASH_GPU_BUDGET_BYTES")
         && let Ok(budget) = raw.parse::<u64>()
         && budget > 0
     {
@@ -2319,7 +2319,7 @@ fn enforce_resource_budgets(
             std::process::exit(2);
         }
     }
-    if let Ok(raw) = std::env::var("QUICK_UI_DASH_RSS_GROWTH_BUDGET_KIB")
+    if let Ok(raw) = tilo_ui::env::var("TILO_UI_DASH_RSS_GROWTH_BUDGET_KIB")
         && let Ok(budget) = raw.parse::<u64>()
     {
         let observed = match (before.rss_kib, after.rss_kib) {
@@ -2336,7 +2336,7 @@ fn enforce_resource_budgets(
             std::process::exit(2);
         }
     }
-    if let Ok(raw) = std::env::var("QUICK_UI_DASH_GPU_GROWTH_BUDGET_BYTES")
+    if let Ok(raw) = tilo_ui::env::var("TILO_UI_DASH_GPU_GROWTH_BUDGET_BYTES")
         && let Ok(budget) = raw.parse::<u64>()
     {
         let observed = after.known_gpu_bytes.saturating_sub(before.known_gpu_bytes);
@@ -2496,7 +2496,7 @@ fn traffic_byte_redraw_budget_passes(
 pub fn run(_args: &[String]) {
     init_i18n_resources();
 
-    let verify_damage = std::env::var("QUICK_UI_DASH_VERIFY").is_ok_and(|value| value == "1");
+    let verify_damage = tilo_ui::env::var("TILO_UI_DASH_VERIFY").is_ok_and(|value| value == "1");
     let gpu_timestamp_profile =
         std::env::var("VELLO_GPU_TIMESTAMPS").is_ok_and(|value| value == "1");
     let gpu_dispatch_timestamp_profile =
@@ -2550,16 +2550,16 @@ pub fn run(_args: &[String]) {
         reject_budgets_in_diagnostic_mode("gpu-timestamp-profile", false);
     }
     let profile_render_timing = gpu_timestamp_profile
-        || std::env::var_os("QUICK_UI_DASH_RENDER_PROFILE").is_some_and(|raw| !raw.is_empty());
+        || tilo_ui::env::var_os("TILO_UI_DASH_RENDER_PROFILE").is_some_and(|raw| !raw.is_empty());
 
-    let iters: usize = std::env::var("QUICK_UI_DASH_ITERS")
+    let iters: usize = tilo_ui::env::var("TILO_UI_DASH_ITERS")
         .ok()
         .and_then(|s| s.parse().ok())
         .unwrap_or(500);
-    let static_mode = std::env::var("QUICK_UI_DASH_STATIC").is_ok();
+    let static_mode = tilo_ui::env::var("TILO_UI_DASH_STATIC").is_ok();
     let include_animated = !static_mode;
-    let canvas_w = env_u32("QUICK_UI_DASH_WIDTH", 1800);
-    let canvas_h = env_u32("QUICK_UI_DASH_HEIGHT", 1200);
+    let canvas_w = env_u32("TILO_UI_DASH_WIDTH", 1800);
+    let canvas_h = env_u32("TILO_UI_DASH_HEIGHT", 1200);
     println!(
         "mode: {}",
         if static_mode {
@@ -2680,8 +2680,8 @@ pub fn run(_args: &[String]) {
         renderer.direct_path_dispatch_enabled(),
     );
     println!(
-        "geometric damage capacity: configured={} active={} (default on; QUICK_UI_DAMAGE_GEOMETRIC=0 restores fixed-width capacity)",
-        env_enabled_by_default("QUICK_UI_DAMAGE_GEOMETRIC"),
+        "geometric damage capacity: configured={} active={} (default on; TILO_UI_DAMAGE_GEOMETRIC=0 restores fixed-width capacity)",
+        env_enabled_by_default("TILO_UI_DAMAGE_GEOMETRIC"),
         renderer.damage_geometric_capacity_enabled(),
     );
     println!(
@@ -2731,29 +2731,31 @@ pub fn run(_args: &[String]) {
     // signal. The 2026-05-23 user report ("scrolling does
     // something after a few seconds but isn't smooth") was the
     // motivation for this mode.
-    let frozen = std::env::var("QUICK_UI_DASH_FROZEN").is_ok();
-    let scroll_mode = std::env::var("QUICK_UI_DASH_SCROLL").is_ok();
+    let frozen = tilo_ui::env::var("TILO_UI_DASH_FROZEN").is_ok();
+    let scroll_mode = tilo_ui::env::var("TILO_UI_DASH_SCROLL").is_ok();
     if frozen {
         prime_frozen_cursor(&mut state, &mut doc);
     }
 
-    let allocation_budget = std::env::var("QUICK_UI_DASH_ALLOC_BUDGET_PER_1000")
+    let allocation_budget = tilo_ui::env::var("TILO_UI_DASH_ALLOC_BUDGET_PER_1000")
         .ok()
         .and_then(|raw| raw.parse::<u64>().ok());
-    let allocation_call_redraw_budget = std::env::var("QUICK_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok());
-    let allocation_byte_redraw_budget = std::env::var("QUICK_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW")
-        .ok()
-        .and_then(|raw| raw.parse::<u64>().ok());
+    let allocation_call_redraw_budget =
+        tilo_ui::env::var("TILO_UI_DASH_ALLOC_CALL_BUDGET_PER_REDRAW")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok());
+    let allocation_byte_redraw_budget =
+        tilo_ui::env::var("TILO_UI_DASH_ALLOC_BYTE_BUDGET_PER_REDRAW")
+            .ok()
+            .and_then(|raw| raw.parse::<u64>().ok());
     let profile_allocation_breakdown = allocation_call_redraw_budget.is_some()
         || allocation_byte_redraw_budget.is_some()
-        || std::env::var_os("QUICK_UI_DASH_ALLOC_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
+        || tilo_ui::env::var_os("TILO_UI_DASH_ALLOC_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
     let profile_allocations = allocation_budget.is_some()
         || profile_allocation_breakdown
-        || std::env::var_os("QUICK_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
+        || tilo_ui::env::var_os("TILO_UI_DASH_ALLOC_PROFILE").is_some_and(|raw| !raw.is_empty());
     let frame_breakdown =
-        std::env::var_os("QUICK_UI_DASH_FRAME_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
+        tilo_ui::env::var_os("TILO_UI_DASH_FRAME_BREAKDOWN").is_some_and(|raw| !raw.is_empty());
     let run = run_bench_loop(
         &mut state,
         &mut doc,
@@ -2870,13 +2872,13 @@ pub fn run(_args: &[String]) {
         );
     }
 
-    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_FRAME_BUDGET_US")
+    if let Ok(raw_budget) = tilo_ui::env::var("TILO_UI_DASH_FRAME_BUDGET_US")
         && let Ok(budget_us) = raw_budget.parse::<u128>()
         && budget_us > 0
     {
         enforce_frame_budget(&run.histo, budget_us);
     }
-    let mean_frame_budget = match std::env::var_os("QUICK_UI_DASH_MEAN_FRAME_BUDGET_US") {
+    let mean_frame_budget = match tilo_ui::env::var_os("TILO_UI_DASH_MEAN_FRAME_BUDGET_US") {
         None => Ok(None),
         Some(raw) => match raw.to_str() {
             Some(raw) => parse_mean_frame_budget(Some(raw)),
@@ -2887,17 +2889,17 @@ pub fn run(_args: &[String]) {
         Ok(Some(budget_us)) => enforce_mean_frame_budget(&run.histo, budget_us),
         Ok(None) => {}
         Err(reason) => {
-            eprintln!("QUICK_UI_DASH_MEAN_FRAME_BUDGET_US: {reason}");
+            eprintln!("TILO_UI_DASH_MEAN_FRAME_BUDGET_US: {reason}");
             std::process::exit(2);
         }
     }
-    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_EVENT_BUDGET_US")
+    if let Ok(raw_budget) = tilo_ui::env::var("TILO_UI_DASH_EVENT_BUDGET_US")
         && let Ok(budget_us) = raw_budget.parse::<u128>()
         && budget_us > 0
     {
         enforce_event_budget(&run.histo, budget_us);
     }
-    if let Ok(raw_budget) = std::env::var("QUICK_UI_DASH_RASTER_PIXEL_BUDGET")
+    if let Ok(raw_budget) = tilo_ui::env::var("TILO_UI_DASH_RASTER_PIXEL_BUDGET")
         && let Ok(budget) = raw_budget.parse::<u128>()
         && budget > 0
     {

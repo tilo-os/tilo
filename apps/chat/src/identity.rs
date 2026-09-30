@@ -47,7 +47,6 @@ impl LocalIdentity {
     /// Resolve the live local identity from the environment. Never fabricates a
     /// shared id: each source below yields something distinct per real peer.
     pub fn resolve() -> Self {
-        #[cfg(not(target_arch = "wasm32"))]
         if let Some(id) = Self::from_runtime_identity() {
             return id;
         }
@@ -59,16 +58,15 @@ impl LocalIdentity {
 
     /// The Tilo runtime identity — the canonical per-user identity the launcher
     /// provisions and the collab layer signs with.
-    #[cfg(not(target_arch = "wasm32"))]
     fn from_runtime_identity() -> Option<Self> {
-        let si = runtime_identity::load().ok()?;
-        let pk = si.group_public_key();
+        let si = ui::local_identity::bound()?;
+        let pk = si.group_public_key;
         // A short, stable, collision-resistant id from the public key. The full
         // 32 bytes is overkill for a map key; the first 8 bytes (64 bits) are
         // ample and keep the id readable in logs / the document.
         let id = format!("u_{}", hex8(&pk));
         let name = {
-            let n = si.display_name().trim().to_string();
+            let n = si.display_name.trim().to_string();
             if n.is_empty() { user_display() } else { n }
         };
         Some(Self {
@@ -83,13 +81,15 @@ impl LocalIdentity {
     /// session (no `TILO_USER_IDENTITY`) still keeps one stable id across runs.
     fn from_persisted_uuid() -> Option<Self> {
         let dir = crate::storage::data_dir()?;
-        let path = dir.join("peer-id");
-        let id = match std::fs::read_to_string(&path) {
-            Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        let (dir, name) = tilo_files::file_at(&dir.join("peer-id")).ok()?;
+        let stored = tilo_files::blocking::read(&dir, &name)
+            .ok()
+            .and_then(|bytes| String::from_utf8(bytes).ok());
+        let id = match stored {
+            Some(s) if !s.trim().is_empty() => s.trim().to_string(),
             _ => {
                 let fresh = format!("u_{}", uuid::Uuid::new_v4().simple());
-                std::fs::create_dir_all(&dir).ok()?;
-                std::fs::write(&path, &fresh).ok()?;
+                tilo_files::blocking::write_atomic(&dir, &name, fresh.as_bytes()).ok()?;
                 fresh
             }
         };
@@ -105,10 +105,8 @@ impl LocalIdentity {
     /// Deterministic last resort: a `user@host` hash, so even with no disk and
     /// no runtime identity two different machines/users still differ.
     fn from_user_host() -> Self {
-        let user = std::env::var("USER")
-            .or_else(|_| std::env::var("USERNAME"))
-            .unwrap_or_default();
-        let host = hostname();
+        let user = tilo_paths::session::user_name().unwrap_or_default();
+        let host = tilo_paths::session::host_name().unwrap_or_default();
         let seed = format!("{user}@{host}");
         let id = if seed == "@" {
             format!("u_{}", uuid::Uuid::new_v4().simple())
@@ -126,7 +124,6 @@ impl LocalIdentity {
 }
 
 /// Lower-hex of the first 8 bytes.
-#[cfg(not(target_arch = "wasm32"))]
 fn hex8(b: &[u8]) -> String {
     hex::encode(b.get(..8).unwrap_or(b))
 }
@@ -152,15 +149,10 @@ fn fnv1a(bytes: &[u8]) -> u64 {
     std::hash::Hasher::finish(&hasher)
 }
 
-/// Present a tidy display name from `$USER`, splitting on common separators so
-/// "ada.lovelace" → "Ada Lovelace". Falls back to "You".
+/// Present a tidy display name from the login name, splitting on common
+/// separators so "ada.lovelace" → "Ada Lovelace". Falls back to "You".
 fn user_display() -> String {
-    let raw = std::env::var("USER")
-        .or_else(|_| std::env::var("USERNAME"))
-        .ok()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .unwrap_or_else(|| "You".to_string());
+    let raw = tilo_paths::session::user_name().unwrap_or_else(|| "You".to_string());
     let display: String = raw
         .split(['.', '_', '-', ' '])
         .filter(|p| !p.is_empty())
@@ -186,18 +178,6 @@ fn initials_of(name: &str) -> String {
 /// gave this participant and has to move the monogram with it.
 pub fn initials_for(name: &str) -> String {
     initials_of(name)
-}
-
-fn hostname() -> String {
-    std::env::var("HOSTNAME")
-        .ok()
-        .filter(|s| !s.is_empty())
-        .or_else(|| {
-            std::fs::read_to_string("/etc/hostname")
-                .ok()
-                .map(|s| s.trim().to_string())
-        })
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

@@ -30,7 +30,7 @@
 )]
 
 use std::collections::HashMap;
-use std::time::Instant;
+use ui::time::Instant;
 
 use taffy::prelude::*;
 use ui::launch::{LaunchArgs, LaunchError, LaunchSpec};
@@ -259,13 +259,13 @@ impl BenchHarness {
         let (w, h) = self.viewport;
         let us = |t: Instant| t.elapsed().as_secs_f64() * 1e6;
 
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.sync(&mut self.state.doc, &self.state.root);
         let sync_us = us(t);
 
         let mut taffy: TaffyTree<()> = TaffyTree::new();
         let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-        let t = Instant::now();
+        let t = ui::time::now();
         let child = self
             .widget
             .build_layout(&mut taffy, &self.theme, &mut node_map);
@@ -282,7 +282,7 @@ impl BenchHarness {
             &[child],
         )?;
 
-        let t = Instant::now();
+        let t = ui::time::now();
         {
             let measure_map = node_map.clone();
             let tr = &mut self.text_renderer;
@@ -303,12 +303,12 @@ impl BenchHarness {
         }
         let layout_us = us(t);
 
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.apply_layout(&taffy, child, Point::ORIGIN);
         let apply_us = us(t);
 
         let mut scene = Scene::new();
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.draw_with_presence(
             &mut scene,
             Affine::IDENTITY,
@@ -332,7 +332,7 @@ impl BenchHarness {
     fn dispatch(&mut self, ev: &WindowEvent, child: NodeId, taffy: &TaffyTree<()>) -> f64 {
         let mut handled = false;
         let mut focus = None;
-        let t = Instant::now();
+        let t = ui::time::now();
         self.widget.handle_event(
             ev,
             &mut ui::widget::EventCtx {
@@ -373,7 +373,7 @@ impl BenchHarness {
 
         // The repaint reflecting the event: full frame + GPU scene encode.
         let (scene, _taffy, _child, frame_us) = self.frame()?;
-        let te = Instant::now();
+        let te = ui::time::now();
         let _rgba = self.renderer.render_rgba(&scene);
         let encode_us = te.elapsed().as_secs_f64() * 1e6;
 

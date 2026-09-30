@@ -13,7 +13,7 @@
 //! string for "now") and [`period_progress`] (the 0..1 fraction of the
 //! current step still remaining — drives the countdown ring).
 
-use std::time::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 
 use hmac::{Hmac, KeyInit, Mac};
 use sha1::Sha1;
@@ -58,7 +58,7 @@ fn decode_base32_lenient(encoding: &data_encoding::Encoding, symbols: &[u8]) -> 
 /// Seconds since the Unix epoch for "now". Centralised so tests and the
 /// ring share one clock source.
 pub fn unix_now() -> f64 {
-    SystemTime::now()
+    ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0.0, |d| d.as_secs_f64())
 }

@@ -178,6 +178,9 @@ impl RowGeometry {
 )]
 pub struct SidebarRow {
     category: Category,
+    /// The category's label in the active locale: painted, measured, spoken
+    /// and used as the row's `test_id`.
+    label: String,
     /// Whether this row is the currently-selected category — drives the active
     /// highlight. Passed in at build time from the app's selection.
     active: bool,
@@ -208,6 +211,7 @@ impl SidebarRow {
     ) -> Self {
         Self {
             category,
+            label: category.label(),
             active,
             selection_request,
             rect: Rect::ZERO,
@@ -247,11 +251,8 @@ impl SidebarRow {
     /// bottom — never below [`ROW_HEIGHT`], so 1× rows stay exactly that.
     fn measured_height(&self, text_renderer: &mut TextRenderer, row_w: f64) -> f32 {
         let size = self.renderer_label_size(text_renderer);
-        let (_, line_height) = text_renderer.measure(
-            self.category.label(),
-            size,
-            Some(Self::label_max_width(row_w)),
-        );
+        let (_, line_height) =
+            text_renderer.measure(&self.label, size, Some(Self::label_max_width(row_w)));
         (line_height + 4.0 * spacing().s1).max(ROW_HEIGHT)
     }
 
@@ -358,7 +359,7 @@ impl Widget for SidebarRow {
         // were laid out with — the default toolkit scale, because the sidebar
         // tree is composed before a theme is resolved. Reading a theme-retuned
         // `s2` here would detach the pill from the search field it aligns to.
-        let label = self.category.label();
+        let label = self.label.as_str();
         let label_size = self.renderer_label_size(text_renderer);
         // Shaped against the same width `measure` used, so a label that wraps
         // under large text is centred as the two-line box the row grew for.
@@ -509,13 +510,13 @@ impl Widget for SidebarRow {
     /// Addressable by the category's display label so interaction tests can
     /// resolve a row's on-screen rect and click it.
     fn test_id(&self) -> Option<&str> {
-        Some(self.category.label())
+        Some(&self.label)
     }
 
     fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         Some(
             ui::a11y::AccessNode::new(ui::a11y::Role::RadioButton)
-                .with_name(self.category.label())
+                .with_name(&self.label)
                 .with_action_target(crate::actions::open_pane_address(self.category).encode())
                 .with_state(ui::a11y::AccessState {
                     focusable: true,
@@ -627,7 +628,7 @@ pub fn build(
     if trimmed.is_empty() {
         for section in Section::ALL.iter().copied() {
             let rows: Vec<El> = Category::in_section(section).map(row).collect();
-            col = col.push(section_block(section.label(), rows));
+            col = col.push(section_block(&section.label(), rows));
         }
     } else {
         // Filtered results — a flat list of matching categories under a
@@ -965,7 +966,7 @@ mod incoming_large_text_tests {
         let rect = Rect::new(0.0, 0.0, width, height);
         let size = row.renderer_label_size(&tr);
         let (_, line_box) = tr.measure(
-            row.category.label(),
+            &row.category.label(),
             size,
             Some(SidebarRow::label_max_width(width)),
         );

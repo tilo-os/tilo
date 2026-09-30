@@ -515,7 +515,7 @@ impl PdfApp {
             && self.bubble_shown_page != 0
             && self.current_page != self.bubble_shown_page
         {
-            self.page_bubble.poke(std::time::Instant::now());
+            self.page_bubble.poke(ui::time::now());
         }
         self.bubble_shown_page = self.current_page;
         let c = &theme.tokens.colors;
@@ -3849,7 +3849,7 @@ impl PdfApp {
         if !self.has_document {
             return;
         }
-        let now = std::time::Instant::now();
+        let now = ui::time::now();
         let canvas = self.canvas_rect;
         let label = format!("Page {} of {}", self.current_page, self.doc.page_count());
         let text_size = self.type_px.sm;

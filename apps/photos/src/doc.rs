@@ -47,9 +47,9 @@ pub fn bytes_of(open: &OpenImage, store: &tilo_content::ContentStore) -> Option<
     if let Some(content) = &open.content {
         return crate::pixels::read_bounded(store.open(content)?, crate::pixels::MAX_ENCODED_BYTES);
     }
-    crate::pixels::read_bounded(
-        std::fs::File::open(&open.path).ok()?,
-        crate::pixels::MAX_ENCODED_BYTES,
+    crate::files::read_native(
+        std::path::Path::new(&open.path),
+        crate::pixels::MAX_ENCODED_BYTES as u64,
     )
 }
 

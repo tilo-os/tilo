@@ -1784,7 +1784,7 @@ fn favorite_toggles_dispatch_and_reconcile_with_feedback() {
         // Back-date the toast past its lifetime and draw again → it clears,
         // and the loop is then free to idle.
         if let Some((_, shown)) = app.toast.as_mut() {
-            *shown = Instant::now()
+            *shown = ui::time::now()
                 .checked_sub(TOAST_LIFETIME)
                 .unwrap()
                 .checked_sub(Duration::from_millis(50))
@@ -3476,8 +3476,8 @@ fn import_export_jobs_are_brokered_and_generation_fenced() {
         // The picker is drained on this frame; parsing happens on a worker so
         // a slow vCard cannot block rendering. Drive a few frames instead of
         // assuming the scheduler has already run that worker.
-        let deadline = std::time::Instant::now() + HANG_BOUND;
-        while std::time::Instant::now() < deadline {
+        let deadline = ui::time::now() + HANG_BOUND;
+        while ui::time::now() < deadline {
             app.sync(&mut doc, &ROOT);
             if !app.portal_in_flight() {
                 break;

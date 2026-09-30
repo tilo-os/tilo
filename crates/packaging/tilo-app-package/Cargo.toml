@@ -4,8 +4,11 @@ autotests = false
 name = "tilo-app-package"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
+description = "The Tilo package format (.tapp): manifest, signing and verification."
 
 [lib]
 name = "tilo_app_package"
@@ -19,18 +22,18 @@ path = "src/lib.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-atomic-file = { path = "../../../crates/system/atomic-file" }
-xdg-paths = { path = "../../../crates/system/xdg-paths" }
+tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file" }
+tilo-xdg-paths = { version = "0.1.0", path = "../../../crates/system/xdg-paths" }
 # Threshold-shared Ed25519 identity. Signing goes through the
 # identity's group key; verify is a regular Ed25519 verify against
 # the group public key, so callers only need the verifying-key
 # bytes — not the threshold machinery — to verify a .tapp.
-threshold-identity = { path = "../../collab/threshold-identity" }
+threshold-identity = { version = "0.1.0", path = "../../collab/threshold-identity" }
 # Re-uses the canonical-bytes encoder + Ed25519 newtypes so the
 # signed-bytes shape matches the rest of Tilo's signed wire types.
-collab-types           = { path = "../../collab/collab-types" }
+collab-types           = { version = "0.1.0", path = "../../collab/collab-types" }
 # Canonical registry target spellings, shared with the manifest's `[target]`.
-registry-types = { path = "../registry-types" }
+registry-types = { version = "0.1.0", path = "../registry-types" }
 
 blake3.workspace = true
 getrandom.workspace = true

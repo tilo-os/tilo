@@ -40,7 +40,6 @@
 
 pub mod actions;
 pub mod app;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod capture;
 pub mod component;
 mod continuation;
@@ -49,6 +48,7 @@ pub mod production;
 pub mod resource;
 pub use component::definition;
 pub mod doc;
+mod files;
 pub mod hosting;
 pub mod legacy_import;
 pub mod main_panel;
@@ -59,7 +59,6 @@ pub mod notebook;
 pub use ui::num;
 pub mod search_provider;
 pub mod shortcuts_overlay;
-#[cfg(not(target_arch = "wasm32"))]
 pub mod shots;
 pub mod sidebar;
 pub mod status_bar;

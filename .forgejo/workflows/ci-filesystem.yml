@@ -232,7 +232,7 @@ jobs:
       - name: Run the complete kernel-path filesystem contract
         run: >-
           bash scripts/ci-run.sh "real FUSE integration" --
-          cargo test --locked -p fs --test integration_test -- --nocapture --test-threads=1
+          cargo test --locked -p tilo-fs --test integration_test -- --nocapture --test-threads=1
 
       - name: Mount the standalone runtime's workspace and fall back to its folder
         run: >-
@@ -242,17 +242,17 @@ jobs:
       - name: Mount a cloud account through the kernel and write back
         run: >-
           bash scripts/ci-run.sh "cloud account mount" --
-          cargo test --locked -p fs --test cloud_mount -- --nocapture --test-threads=1
+          cargo test --locked -p tilo-fs --test cloud_mount -- --nocapture --test-threads=1
 
       - name: Run the separate-process exact-share and injected-clock lifecycle
         run: >-
           bash scripts/ci-run.sh "real FUSE exact-share lifecycle" --
-          cargo test --locked -p fs --test exact_share_process_fuse -- --nocapture --test-threads=1
+          cargo test --locked -p tilo-fs --test exact_share_process_fuse -- --nocapture --test-threads=1
 
       - name: Enforce deterministic partition and multi-writer convergence
         run: >-
           bash scripts/ci-run.sh "collaborative-files partition matrix" --
-          cargo test --locked -p fs --test collab_release_matrix -- --nocapture --test-threads=1
+          cargo test --locked -p tilo-fs --test collab_release_matrix -- --nocapture --test-threads=1
 
       - name: Exercise Files against a live collaborative mount
         run: >-
@@ -261,36 +261,36 @@ jobs:
 
       - name: Enforce named delivery and governed identity
         run: |
-          bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p fs named_share_delivery --lib -- --nocapture
+          bash scripts/ci-run.sh "authenticated named-share delivery" -- cargo test --locked -p tilo-fs named_share_delivery --lib -- --nocapture
           bash scripts/ci-run.sh "named-share control wire" -- cargo test --locked -p collab-types share_control --lib -- --nocapture
           bash scripts/ci-run.sh "governed identity projection schema" -- cargo test --locked -p tilo-user-identity projection --lib -- --nocapture
           bash scripts/ci-run.sh "governed room identity projection" -- cargo test --locked -p shell root_signed_governance_projects_identity_and_additive_revocation --lib -- --nocapture
 
       - name: Enforce skew, read-only and atomic-recovery boundaries
         run: |
-          bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
-          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture
-          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=fs TEST_TARGET= OPERATION=test-lib \
+          bash scripts/ci-run.sh "replica receipt clock skew" -- cargo test --locked -p tilo-fs replica_ack::tests::exact_nonce_version_peer_and_freshness_are_bound --lib -- --nocapture
+          bash scripts/ci-run.sh "authenticated read-only writer denial" -- cargo test --locked -p tilo-fs sync::tests::namespace_documents_reach_only_entitled_peers_and_readers_cannot_author --lib -- --nocapture
+          SOURCE_SHA="$(git rev-parse HEAD)" PACKAGE=tilo-fs TEST_TARGET= OPERATION=test-lib \
             TEST_NAME=fs::tests::record_publisher_integration_tests::keep_current_and_use_other_append_signed_convergent_resolutions \
             bash scripts/ci-run.sh "Keep Both all-phase restart recovery" -- python3 -I tools/ci/focused_test.py run --root .
 
       - name: Reject corrupted collaborative state and prove legacy name migration
         run: |
-          bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p fs --test corruption_matrix -- --nocapture --test-threads=1
-          bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p fs durable_backup::tests --lib -- --nocapture
-          bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- cargo test --locked -p fs record_repository::tests::restart_verifies_signed_state_and_recovers_valid_generations --lib -- --nocapture
-          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
-          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
-          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
-          bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
-          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
+          bash scripts/ci-run.sh "collaborative-files corruption matrix" -- cargo test --locked -p tilo-fs --test corruption_matrix -- --nocapture --test-threads=1
+          bash scripts/ci-run.sh "bounded durable backup policy" -- cargo test --locked -p tilo-fs durable_backup::tests --lib -- --nocapture
+          bash scripts/ci-run.sh "signed repository known-good recovery and tamper refusal" -- cargo test --locked -p tilo-fs record_repository::tests::restart_verifies_signed_state_and_recovers_valid_generations --lib -- --nocapture
+          bash scripts/ci-run.sh "legacy byte-name migration" -- cargo test --locked -p tilo-fs namespace::tests::byte_names_survive_load_save_rename_and_replication_exactly --lib -- --nocapture
+          bash scripts/ci-run.sh "history ancestry corruption refusal" -- cargo test --locked -p tilo-fs history::tests::history_logs_read_legacy_and_fail_closed_on_damage --lib -- --nocapture
+          bash scripts/ci-run.sh "transaction journal partial-batch refusal" -- cargo test --locked -p tilo-fs record_transaction::tests::journal_restarts_exactly_with_monotonic_phases_and_whole_batches --lib -- --nocapture
+          bash scripts/ci-run.sh "transaction coordinator recovery" -- cargo test --locked -p tilo-fs transaction_coordinator::tests::broadcast_failure_recovers_exact_committed_namespace_without_duplicate_history --lib -- --nocapture
+          bash scripts/ci-run.sh "availability receipt tamper refusal" -- cargo test --locked -p tilo-fs availability::tests::availability_registry_persists_by_stable_record_id_and_rejects_tampering --lib -- --nocapture
 
       - name: Enforce deterministic collaborative-files performance SLOs
         env:
           TILO_FS_PERF_GATE: "1"
         run: >-
           bash scripts/ci-run.sh "collaborative-files performance gate" --
-          cargo test --locked -p fs --test performance_gate -- --nocapture --test-threads=1
+          cargo test --locked -p tilo-fs --test performance_gate -- --nocapture --test-threads=1
 
   # The cloud-source conformance suite against real, self-hosted servers:
   # Apache mod_dav and the official Nextcloud image, as job services. The

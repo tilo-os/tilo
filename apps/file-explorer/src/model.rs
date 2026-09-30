@@ -724,7 +724,7 @@ fn root_generation(root: &Path) -> String {
             hasher.update(b"metadata\\0");
             hasher.update(metadata.len().to_be_bytes());
             if let Ok(modified) = metadata.modified()
-                && let Ok(duration) = modified.duration_since(std::time::UNIX_EPOCH)
+                && let Ok(duration) = modified.duration_since(ui::time::UNIX_EPOCH)
             {
                 hasher.update(duration.as_secs().to_be_bytes());
                 hasher.update(duration.subsec_nanos().to_be_bytes());
@@ -1560,7 +1560,7 @@ pub fn initial_path() -> PathBuf {
 /// window was on the real home and `format_path` was measuring against
 /// `/run/tilo/app`, which nothing is under.
 pub fn user_home() -> Option<PathBuf> {
-    ui::sysdirs::user_home_override().or_else(xdg_paths::home)
+    ui::sysdirs::user_home_override().or_else(tilo_paths::home)
 }
 
 #[cfg(test)]

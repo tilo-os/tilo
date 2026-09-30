@@ -53,8 +53,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
 use ui::doc::{read_bool, read_f64, read_str_or_text};
+use ui::time::{Duration, Instant};
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, transaction::Transactable};
@@ -552,7 +552,7 @@ impl AudioPane {
             gctl: Arc::new(RealGraphControl),
             enumerator: Arc::new(RealEnumerator),
             hotplug_interval: HOTPLUG_INTERVAL,
-            last_enum: Some(Instant::now()),
+            last_enum: Some(ui::time::now()),
             seeded_streams: HashSet::new(),
             last_stream_sink: HashMap::new(),
             last_stream_vol: HashMap::new(),
@@ -618,7 +618,7 @@ impl AudioPane {
             gctl: Arc::new(NoopGraphControl),
             enumerator: Arc::new(StaticEnumerator(AudioGraph::default())),
             hotplug_interval: Duration::MAX,
-            last_enum: Some(Instant::now()),
+            last_enum: Some(ui::time::now()),
             seeded_streams: HashSet::new(),
             last_stream_sink: HashMap::new(),
             last_stream_vol: HashMap::new(),
@@ -1505,7 +1505,7 @@ impl AudioPane {
         if !due {
             return false;
         }
-        self.last_enum = Some(Instant::now());
+        self.last_enum = Some(ui::time::now());
         let fresh = self.enumerator.enumerate();
         if fresh.topology_signature() == self.graph.topology_signature() {
             return false;

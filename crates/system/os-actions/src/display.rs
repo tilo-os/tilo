@@ -52,8 +52,11 @@ pub fn set_brightness(pct: f32) -> Result<(), String> {
                           with no sign loss"
             )]
             let percent = clamped.round() as u32;
-            run("brightnessctl", &["set", &format!("{percent}%")])
-                .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
+            run(
+                "brightnessctl",
+                &["-c", "backlight", "set", &format!("{percent}%")],
+            )
+            .map_err(|tool_err| format!("{sysfs_err}; brightnessctl also failed: {tool_err}"))
         }
     }
 }
@@ -71,7 +74,9 @@ pub fn get_brightness() -> Result<f32, String> {
             if !which("brightnessctl") {
                 return Err(sysfs_err);
             }
-            let out = run_capture("brightnessctl", &["-m"])?;
+            // Without a class, brightnessctl falls back to any device, which on a
+            // machine with no backlight is a keyboard LED.
+            let out = run_capture("brightnessctl", &["-m", "-c", "backlight"])?;
             parse_brightness_machine(&out)
         }
     }
@@ -182,6 +187,14 @@ fn set_brightness_in(root: &Path, pct: f32) -> Result<(), String> {
 
 /// Write `pct` percent to one backlight device.
 pub(crate) fn set_backlight(dev: &Path, pct: f32) -> Result<(), String> {
+    set_backlight_with(dev, pct, logind_set_brightness)
+}
+
+fn set_backlight_with(
+    dev: &Path,
+    pct: f32,
+    refused: impl FnOnce(&str, u32) -> Result<(), String>,
+) -> Result<(), String> {
     let max = read_u32(dev, "max_brightness").ok_or("backlight max_brightness unreadable")?;
     if max == 0 {
         return Err("backlight max_brightness is 0".to_string());
@@ -198,7 +211,48 @@ pub(crate) fn set_backlight(dev: &Path, pct: f32) -> Result<(), String> {
     // with no way for the user to see the screen well enough to bring it back.
     let raw = if pct > 0.0 { raw.max(1) } else { raw };
     let path = dev.join("brightness");
-    fs::write(&path, raw.to_string()).map_err(|e| format!("write {}: {e}", path.display()))
+    let Err(write_err) = fs::write(&path, raw.to_string()) else {
+        return Ok(());
+    };
+    let name = dev
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or("backlight device has no name")?;
+    refused(name, raw)
+        .map_err(|logind_err| format!("write {}: {write_err}; {logind_err}", path.display()))
+}
+
+/// A host session (Silverblue, Bazzite) has no udev rule handing the attribute to
+/// the user, and the user is usually not in `video`. logind's `SetBrightness`
+/// lets the seat's active session set it; it is how GNOME and KDE dim there. The
+/// connection is kept because brightness keys auto-repeat.
+fn logind_set_brightness(name: &str, raw: u32) -> Result<(), String> {
+    static SYSTEM_BUS: std::sync::Mutex<Option<zbus::Connection>> = std::sync::Mutex::new(None);
+    let name = name.to_owned();
+    crate::block_on(async move {
+        let cached = SYSTEM_BUS.lock().ok().and_then(|bus| bus.clone());
+        let bus = if let Some(bus) = cached {
+            bus
+        } else {
+            let bus = zbus::Connection::system()
+                .await
+                .map_err(|e| format!("cannot reach the system bus: {e}"))?;
+            if let Ok(mut slot) = SYSTEM_BUS.lock() {
+                *slot = Some(bus.clone());
+            }
+            bus
+        };
+        bus.call_method(
+            Some("org.freedesktop.login1"),
+            "/org/freedesktop/login1/session/auto",
+            Some("org.freedesktop.login1.Session"),
+            "SetBrightness",
+            &("backlight", name.as_str(), raw),
+        )
+        .await
+        .map_err(|e| format!("logind SetBrightness: {e}"))?;
+        Ok(())
+    })
 }
 
 /// Pick which backlight to drive when the kernel exposes several. `acpi_video*` is the
@@ -237,6 +291,9 @@ fn parse_brightness_machine(stdout: &str) -> Result<f32, String> {
     if fields.len() < 4 {
         return Err(format!("brightnessctl -m unexpected: {line}"));
     }
+    if fields.get(1) != Some(&"backlight") {
+        return Err(format!("brightnessctl -m found no backlight: {line}"));
+    }
     // Field 3 is the percentage with a trailing `%`.
     let pct_str = fields
         .get(3)
@@ -263,6 +320,47 @@ mod tests {
             fs::write(d.join("max_brightness"), format!("{max}\n")).unwrap();
         }
         dir
+    }
+
+    #[test]
+    fn a_refused_sysfs_write_asks_logind_for_the_same_raw_level() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let dev = dir.path().join("nvidia_wmi_ec_backlight");
+        // A directory in place of the attribute refuses the write even as root.
+        fs::create_dir_all(dev.join("brightness")).unwrap();
+        fs::write(dev.join("max_brightness"), "200\n").unwrap();
+
+        let mut asked = None;
+        set_backlight_with(&dev, 40.0, |name, raw| {
+            asked = Some((name.to_owned(), raw));
+            Ok(())
+        })
+        .expect("logind accepted the level");
+        assert_eq!(asked, Some(("nvidia_wmi_ec_backlight".to_owned(), 80)));
+
+        let err = set_backlight_with(
+            &dev,
+            40.0,
+            |_, _| Err("logind SetBrightness: denied".into()),
+        )
+        .expect_err("both paths refused");
+        assert!(
+            err.contains("write ") && err.contains("logind SetBrightness: denied"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn a_writable_attribute_never_reaches_logind() {
+        let dir = tree(&[("intel_backlight", 10, 100)]);
+        set_backlight_with(&dir.path().join("intel_backlight"), 55.0, |_, _| {
+            panic!("logind asked although sysfs accepted the write")
+        })
+        .unwrap();
+        assert_eq!(
+            fs::read_to_string(dir.path().join("intel_backlight/brightness")).unwrap(),
+            "55"
+        );
     }
 
     #[test]
@@ -364,12 +462,16 @@ mod tests {
         // Phase `parse_brightness_machine_clamps_above_one`.
         {
             // brightnessctl will never emit >100%, but a hypothetical 110% must not surface as a >1.0 fraction.
-            let s = "x,b,11,110%,10";
+            let s = "x,backlight,11,110%,10";
             assert!((parse_brightness_machine(s).unwrap() - 1.0).abs() < f32::EPSILON);
         }
         // Phase `parse_brightness_machine_empty_is_err`.
         {
             assert!(parse_brightness_machine("").is_err());
+        }
+        // A machine with no backlight: a keyboard LED is not a display.
+        {
+            assert!(parse_brightness_machine("input3::capslock,leds,0,0%,1").is_err());
         }
     }
 

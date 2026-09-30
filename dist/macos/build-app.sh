@@ -100,20 +100,22 @@ for agent in so.tilo.runtime so.tilo.runtime.update; do
   cp "$here/$agent.plist" "$contents/Library/LaunchAgents/$agent.plist"
 done
 plutil -lint -s "$contents/Info.plist" "$contents/Library/LaunchAgents/"*.plist \
-  "$here/Tilo.entitlements"
+  "$here/Tilo.entitlements" "$here/Runtime.entitlements"
 
 # Inner code first, then the bundle, which seals the main executable, the
 # agent plist and the already-signed runtime. No --deep: it would re-sign the
 # runtime with the bundle's identifier and options.
-sign=(codesign --force --options runtime --entitlements "$here/Tilo.entitlements")
+sign=(codesign --force --options runtime)
 if [ -n "$identity" ]; then
   sign+=(--timestamp --sign "$identity")
 else
   sign+=(--timestamp=none --sign -)
 fi
-"${sign[@]}" --identifier so.tilo.runtime.daemon "$contents/MacOS/tilo-runtime"
-"${sign[@]}" --identifier so.tilo.runtime.update "$contents/MacOS/tilo-runtime-update"
-"${sign[@]}" "$app"
+"${sign[@]}" --entitlements "$here/Runtime.entitlements" --identifier so.tilo.runtime.daemon \
+  "$contents/MacOS/tilo-runtime"
+"${sign[@]}" --entitlements "$here/Tilo.entitlements" --identifier so.tilo.runtime.update \
+  "$contents/MacOS/tilo-runtime-update"
+"${sign[@]}" --entitlements "$here/Tilo.entitlements" "$app"
 codesign --verify --deep --strict --verbose=2 "$app"
 
 if [ -n "$identity" ]; then

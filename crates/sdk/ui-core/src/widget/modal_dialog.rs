@@ -548,9 +548,9 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         );
         self.recompute_layout();
         let theme = self.layout_theme.clone();
-        let mut tr = TextRenderer::new();
-        tr.set_text_scale(self.layout_theme.text_scale);
-        self.place_content(&theme, &mut tr);
+        crate::text_render::with_layout_renderer(self.layout_theme.text_scale, |tr| {
+            self.place_content(&theme, tr)
+        });
     }
 
     #[allow(

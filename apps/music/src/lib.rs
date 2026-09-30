@@ -56,6 +56,7 @@ pub mod art;
 pub mod audio;
 pub mod backend;
 pub mod doc;
+mod files;
 pub mod icon;
 pub mod local_file;
 pub mod lyrics;
@@ -96,6 +97,13 @@ pub fn app_root() -> Box<dyn Widget> {
     let mut app = MusicApp::new();
     app.enable_mpris();
     Box::new(app)
+}
+
+/// The app as every host mounts it: the live player and its actions.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::launch::LaunchSpec::new("so.tilo.music", app_root)
+        .component_actions(actions::register)
+        .as_definition("Music")
 }
 
 /// Build the live root from a validated app-owned resource argument. The

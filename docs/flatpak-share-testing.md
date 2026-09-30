@@ -139,7 +139,7 @@ so you can compare configurations without a stopwatch.
   a missing one)
 - `frames_received` / `frames_dropped` — receiver-side counters
 
-These roll up into the OSD overlay when `QUICK_UI_DEBUG=1` is set and
+These roll up into the OSD overlay when `TILO_UI_DEBUG=1` is set and
 `debug_assertions` are on.
 
 ## Known limits

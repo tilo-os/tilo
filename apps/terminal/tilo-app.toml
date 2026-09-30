@@ -22,13 +22,18 @@ category = "System"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Hosts a pseudo-terminal: drives PTY window size and foreground process group over the ush guest socket."
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
 
-[platform]
-native = "Hosts a pseudo-terminal: drives PTY window size and foreground process group over the ush guest socket."
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["processes"]
+optional = ["clipboard", "files.paths", "app-files", "threads"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

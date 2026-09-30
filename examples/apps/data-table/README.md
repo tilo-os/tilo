@@ -13,7 +13,8 @@ Read:
 - `src/lib.rs`: the columns, the model, and the resource that records which rows were opened.
 - `tests/app.rs`: selection by stable row id, cell values, touch-sized rows, undoable cell actions.
 
-The example works on a `std::thread`, so it runs on native platforms only.
+The work runs through `ui::background`, on a thread where the target has one
+and on the page's executor on the web, so the example runs everywhere.
 
 Start your own app from it:
 

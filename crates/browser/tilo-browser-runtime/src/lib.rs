@@ -1,160 +1,51 @@
-//! Actual Tilo component renderer. Authentication/state transport are installed by the peer layer.
+//! The Tilo UI runtime in the browser.
 //!
-//! In wasm32 the certified peer, its transports and the Automerge admission
-//! check belong to the `cloud` feature; host tests always cover them.
+//! The page mounts a real application component (`ui::application`) through
+//! the same frame pipeline the native runner uses and presents it with Vello
+//! on a WebGPU canvas. `web/host.mjs` owns the DOM: input and IME, clipboard
+//! events, the accessibility projection, font fetching and `IndexedDB`; this
+//! crate owns the component, its records and the GPU. Everything runs on the
+//! page's thread.
+//!
+//! See `docs/architecture/browser-runtime.md`. Everything is browser-only;
+//! native workspace builds compile an empty library. The page's host services
+//! are the platform crates' web backends (`tilo-dialogs`,
+//! `tilo-clipboard`, `tilo-notify`).
 #![cfg_attr(
-    all(target_arch = "wasm32", not(feature = "cloud")),
+    target_arch = "wasm32",
     allow(
-        dead_code,
-        reason = "without the Cloud peer the canonical desktop and live paths stay compiled but unreachable"
+        clippy::future_not_send,
+        reason = "browser futures hold JavaScript handles and run on the page's single thread"
     )
 )]
+
 #[cfg(target_arch = "wasm32")]
 mod browser;
-
 #[cfg(target_arch = "wasm32")]
 mod clipboard;
-
-#[cfg(all(target_arch = "wasm32", feature = "cloud"))]
-mod automerge_check;
-
-#[cfg(test)]
-tilo_automerge_isolate::test_worker!();
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod close_recovery;
-
-#[cfg(all(target_arch = "wasm32", feature = "cloud"))]
-mod peer;
-
-#[cfg(all(target_arch = "wasm32", feature = "relay"))]
-mod relay;
-
-#[cfg(not(target_arch = "wasm32"))]
-mod fixture;
-#[cfg(not(target_arch = "wasm32"))]
-pub use fixture::{fixture_seed, fixture_writer_insert};
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod admitted_records;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod admission_health;
-
-#[cfg(any(target_arch = "wasm32", test))]
-pub(crate) fn revision_wire_value(revision: u64) -> String {
-    revision.to_string()
-}
-
-#[cfg(test)]
-mod revision_wire_tests {
-    #[test]
-    fn revisions_above_javascript_safe_integer_range_are_decimal_strings() {
-        let revision = 9_007_199_254_740_993_u64;
-        assert_eq!(super::revision_wire_value(revision), "9007199254740993");
-    }
-}
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod identity;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_cloud;
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_invitation;
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_onboarding;
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_onboarding_custody;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_journal;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_delivery;
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_delivery_auth;
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_delivery_cursor;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_storage_batch;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_media;
-
-#[cfg(any(all(target_arch = "wasm32", feature = "cloud"), test))]
-mod peer_live;
-
-#[cfg(test)]
-mod post_ready_repair;
-
-mod catalog;
+#[cfg(target_arch = "wasm32")]
+mod crash;
+#[cfg(target_arch = "wasm32")]
 mod desktop;
-#[cfg(all(target_arch = "wasm32", feature = "dylink"))]
-mod side_module;
-// Side modules link against the SDK facade and its resource layer, which the
-// core itself never names; rustc links only crates that are referenced.
-#[cfg(all(target_arch = "wasm32", feature = "dylink"))]
-extern crate tilo_app as _;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod desktop_activity;
-#[cfg(any(target_arch = "wasm32", test))]
-mod desktop_host;
-#[cfg(any(target_arch = "wasm32", test))]
-mod desktop_navigation;
-#[cfg(any(target_arch = "wasm32", test))]
-mod desktop_notifications;
-#[cfg(any(target_arch = "wasm32", test))]
-mod desktop_overlays;
-#[cfg(any(target_arch = "wasm32", test))]
-mod live_view;
-#[cfg(any(target_arch = "wasm32", test))]
-mod local_desktop;
-#[cfg(any(target_arch = "wasm32", test))]
-mod page_authors;
-#[cfg(any(target_arch = "wasm32", test))]
-mod system_search;
-
-/// Private browser action correlation, also exercised by the ordinary host harness.
-pub mod action_client;
-pub mod agent_reads;
-pub mod committed_desktop;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod mount_agent;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod storage_key;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod action_palette;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod viewport;
-
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(target_arch = "wasm32")]
+mod files;
+#[cfg(target_arch = "wasm32")]
 mod frame_metrics;
-
-#[cfg(any(target_arch = "wasm32", test))]
+#[cfg(target_arch = "wasm32")]
+mod host_services;
+#[cfg(target_arch = "wasm32")]
+mod peer;
+#[cfg(target_arch = "wasm32")]
+mod replication;
+#[cfg(target_arch = "wasm32")]
+mod scratch;
+#[cfg(target_arch = "wasm32")]
 mod semantics_status;
-
-#[cfg(any(target_arch = "wasm32", test))]
-mod report_text;
-
-#[cfg(any(target_arch = "wasm32", test))]
-const fn font_install_should_wake(peer_suspended: bool, hidden: bool) -> bool {
-    !peer_suspended && !hidden
-}
-
-#[cfg(test)]
-mod font_install_lifecycle_tests {
-    #[test]
-    fn suspended_or_hidden_mount_installs_without_waking_its_render_loop() {
-        assert!(super::font_install_should_wake(false, false));
-        assert!(!super::font_install_should_wake(true, false));
-        assert!(!super::font_install_should_wake(false, true));
-        assert!(!super::font_install_should_wake(true, true));
-    }
-}
+#[cfg(target_arch = "wasm32")]
+mod settings;
+#[cfg(target_arch = "wasm32")]
+mod storage;
+#[cfg(target_arch = "wasm32")]
+mod throttle;
+#[cfg(target_arch = "wasm32")]
+mod viewport;

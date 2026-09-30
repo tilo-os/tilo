@@ -344,7 +344,7 @@ fn build_root_widget(tree: TreeView<()>) -> Box<dyn Widget> {
 pub fn run(_args: &[String]) {
     use winit::event::{MouseScrollDelta, WindowEvent};
 
-    let out_top = std::env::var("QUICK_UI_SHOWCASE_OUT")
+    let out_top = tilo_ui::env::var("TILO_UI_SHOWCASE_OUT")
         .unwrap_or_else(|_| "/tmp/quick-ui-widget-showcase.png".to_string());
     let out_scrolled = "/tmp/quick-ui-widget-showcase-scrolled.png";
     // Window-sized canvas so we can verify scrolling against a fixed

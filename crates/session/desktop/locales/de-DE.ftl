@@ -211,7 +211,8 @@ activity-latest = Zuletzt · { $headline }
 activity-history-pending = Der Verlauf wartet auf laufende Bearbeitungen
 activity-caught-up = Du bist auf dem neuesten Stand
 activity-summary-on-device = Zusammenfassung auf dem Gerät
-activity-summary-glance = Auf einen Blick
+activity-session-move-newer = ↑  1 Aktion
+activity-session-move-older = 1 Aktion  ↓
 activity-more-sessions = Weitere Arbeitssitzungen…
 activity-first-sessions = Erste Arbeitssitzungen…
 activity-brief-underlying = { $count } { $count ->
@@ -443,16 +444,26 @@ search-provider-desktop-windows = Fenster auf dem Desktop
 search-badge-tab = Tab
 search-badge-window-group = Fenstergruppe
 search-window-move-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ verschieben
-search-window-move-tab-detail = App { $app } · aus dem Arbeitsbereich „{ $workspace }“ · Gruppe { $group } · Tab { $tab }
+search-window-move-tab-detail = Aus dem Arbeitsbereich „{ $workspace }“
 search-window-copy-tab = Tab „{ $tab }“ in den Arbeitsbereich „{ $workspace }“ kopieren
-search-window-group-untitled = Fenstergruppe { $group }
+search-window-group-untitled = Unbenanntes Fenster
 search-window-close-group = Fenstergruppe „{ $group }“ schließen
-search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · { $count ->
+search-window-close-group-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · { $count ->
     [one] 1 Tab
    *[other] { $count } Tabs
 }
 search-window-close-tab = Tab „{ $tab }“ schließen
-search-window-close-tab-detail = App { $app } · Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“ · Gruppe { $group } · Tab { $tab }
+search-window-close-tab-detail = Arbeitsbereich „{ $workspace }“ · Leiste „{ $strip }“
+search-window-focus-place = Geöffnet in diesem Arbeitsbereich
+search-window-focus-place-strip = Geöffnet in der Leiste „{ $strip }“
+search-window-focus-detail-shared = { $place } · { $count ->
+    [one] 1 Tab
+   *[other] { $count } Tabs
+}
+# Wörter, die nach Schließen- bzw. Verschieben/Kopieren-Zeilen fragen;
+# Englisch bleibt als Rückfall erhalten. Leerzeichengetrennt, klein.
+search-window-verb-close = schließen beenden close quit
+search-window-verb-relocate = verschieben kopieren senden move copy send
 
 # Notifications: banner stack and notification centre
 drill-in-back = Zurück
@@ -610,6 +621,7 @@ workspace-settings-expiry-session = Sitzung
 workspace-settings-expiry-until = Bis
 workspace-settings-expiry-always = Immer
 workspace-settings-granted-by-person = erteilt von { $id }
+workspace-settings-granted-by-you = von dir erteilt
 workspace-settings-granted-by-app = erteilt von der App { $app }
 workspace-settings-granted-by-agent = erteilt von Agent { $id }
 workspace-settings-granted-by-token = erteilt über Token { $id }
@@ -704,8 +716,10 @@ workspace-settings-apps-intro-detail = Der Arbeitsbereich gibt eine Grundlage vo
 workspace-settings-apps-header = STANDARDANWENDUNGEN
 workspace-settings-workspace-choice = Wahl des Arbeitsbereichs
 workspace-settings-your-choice = Deine Wahl
+workspace-settings-resource-extension = .{ $ext }-Dateien
+workspace-settings-resource-scheme = { $scheme }:-Links
 workspace-settings-follow-personal = Persönlichen Standards folgen
-workspace-settings-use-workspace-choice = Wahl des Arbeitsbereichs verwenden
+workspace-settings-use-workspace-choice = Dem Arbeitsbereich folgen
 workspace-settings-use-personal-default = Meinen persönlichen Standard verwenden
 workspace-settings-apps-file-types = { $count ->
     [one] 1 Dateityp
@@ -729,10 +743,7 @@ workspace-settings-who-agent = Wer · AGENT (nur dieser Bereich; kein allgemeine
 workspace-settings-nobody-to-grant = Noch niemand, dem du etwas erteilen kannst – lade jemanden ein oder öffne hier eine App.
 workspace-settings-what-it-allows = Was es erlaubt
 workspace-settings-grant-header = BERECHTIGUNG ERTEILEN
-workspace-settings-saved-roles = { $count ->
-    [one] 1 GESPEICHERTE ROLLE · VERWALTEN
-   *[other] { $count } GESPEICHERTE ROLLEN · VERWALTEN
-}
+workspace-settings-saved-roles = Rollen verwalten ({ $count })
 workspace-settings-expiry-caption = Gültigkeit
 workspace-settings-grant = Erteilen
 workspace-settings-role-sheet-title = Zugriff auf den Arbeitsbereich wählen
@@ -869,7 +880,7 @@ emoji-picker-hint = Eingabe fügt ein · Esc schließt
 emoji-picker-hint-tones = Eingabe fügt ein · Umschalt+Eingabe wählt einen Hautton
 emoji-picker-tones = Hauttöne
 emoji-picker-tones-hint = Rechtsklick, langes Drücken oder Umschalt+Eingabe für Hauttöne
-emoji-picker-a11y-description = Tippen Sie, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem Sie geschrieben haben, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
+emoji-picker-a11y-description = Tippe, um zu suchen. Die Pfeiltasten wechseln zwischen den Emoji, Tab wechselt die Kategorie, Eingabe fügt das markierte Emoji in das Textfeld ein, in dem du geschrieben hast, Umschalt+Eingabe wählt einen Hautton, Escape schließt.
 
 # Ein Emoji in einem Hautton: „Daumen hoch, mittlerer Hautton“.
 emoji-picker-toned = { $name }, { $tone }
@@ -896,7 +907,7 @@ a11y-shell-wheel-add = Arbeitsbereich hinzufügen
 overview-empty-window = Leeres Fenster
 overview-untitled = Ohne Titel
 overview-access-nobody = Niemand hat Zugriff
-overview-access-private = Nur für Sie
+overview-access-private = Nur für dich
 overview-access-one = Geteilt mit { $name }
 overview-access-two = Geteilt mit { $name } und { $other }
 overview-access-many = Geteilt mit { $name } und { $count } weiteren
@@ -904,9 +915,9 @@ overview-shares = { $count ->
         [one] 1 Element geteilt
        *[other] { $count } Elemente geteilt
     }
-overview-presence-you = Sie sind hier
-overview-presence-you-and-one = Sie und { $name } sind hier
-overview-presence-you-and-many = Sie und { $count } weitere sind hier
+overview-presence-you = Du bist hier
+overview-presence-you-and-one = Du und { $name } seid hier
+overview-presence-you-and-many = Du und { $count } weitere seid hier
 overview-presence-one = { $name } ist hier
 overview-presence-many = { $count } Personen sind hier
 overview-collaborators-here = { $count } Mitwirkende sind hier

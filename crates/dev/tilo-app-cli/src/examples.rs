@@ -19,7 +19,8 @@ pub struct Example {
     /// What the app does, in a sentence.
     pub summary: &'static str,
     /// Whether the example uses only what `tilo-app build --platform web`
-    /// supports. An example that runs work on a `std::thread` is native-only.
+    /// supports. An example that runs work on a `std::thread` is native-only;
+    /// `ui::background` runs everywhere.
     pub web: bool,
     /// Every file of the example other than the ones `new` renders, by path
     /// relative to the app directory.
@@ -68,14 +69,14 @@ pub const ALL: &[Example] = &[
         name: "virtual-list",
         concept: "lists and virtualization",
         summary: "A hundred-million-row list that loads only the rows in view, with variable heights and row buttons.",
-        web: false,
+        web: true,
         files: example_files_with_common!("virtual-list"),
     },
     Example {
         name: "data-table",
         concept: "tables",
         summary: "Text and widget columns over a sparse source, row selection and actions from cells.",
-        web: false,
+        web: true,
         files: example_files_with_common!("data-table"),
     },
     Example {
@@ -89,7 +90,7 @@ pub const ALL: &[Example] = &[
         name: "background-task",
         concept: "async work",
         summary: "A cancellable computation on a worker thread, started by a button or by any caller of its action.",
-        web: false,
+        web: true,
         files: example_files_with_common!("background-task"),
     },
     Example {

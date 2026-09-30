@@ -477,6 +477,7 @@ impl DrainQueues {
                 cluster_id: entry.cluster_id,
                 record_id: entry.record_id,
                 role: entry.role,
+                replayed: entry.replayed,
                 envelope: *entry.envelope,
             };
             // Same id and room lookup the peer's presence arrives under, so
@@ -603,7 +604,7 @@ fn spawn_inner(
     let channels: Arc<Mutex<BrokerChannels>> = Arc::new(Mutex::new(BrokerChannels::default()));
     // A configured peer broker runs without the session's vault.
     let (mls_authority, channel_encryption) =
-        open_session_services(membership.as_ref(), &channels, config.is_none());
+        open_session_services(membership.as_ref(), peer_sync, &channels, config.is_none());
     // Who is waiting on a cooperative scrollback answer, keyed by
     // artifact — a `ScrollbackResponse` off gossip carries an
     // artifact id and nothing else, so without this the drain thread
@@ -778,6 +779,7 @@ type SessionServices = (
 #[cfg(test)]
 fn open_session_services(
     _: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    _: Option<&Arc<ShellNetwork>>,
     _: &Arc<Mutex<BrokerChannels>>,
     _: bool,
 ) -> SessionServices {
@@ -787,6 +789,7 @@ fn open_session_services(
 #[cfg(not(test))]
 fn open_session_services(
     membership: Option<&crate::shell::state::WorkspaceTreeHandle>,
+    peer_sync: Option<&Arc<ShellNetwork>>,
     channels: &Arc<Mutex<BrokerChannels>>,
     open_vault: bool,
 ) -> SessionServices {
@@ -812,8 +815,12 @@ fn open_session_services(
                 state.install_mls_vault(vault.clone());
             }
             if let Some(workspaces) = membership.cloned() {
-                channel_encryption =
-                    open_channel_encryption(&vault, workspaces, Arc::clone(channels));
+                channel_encryption = open_channel_encryption(
+                    &vault,
+                    workspaces,
+                    peer_sync.cloned(),
+                    Arc::clone(channels),
+                );
             }
             if let Some(workspaces) = membership.cloned() {
                 match crate::shell::collab_mls_authority::MlsAuthorityCoordinator::open(
@@ -841,6 +848,7 @@ fn open_session_services(
 fn open_channel_encryption(
     vault: &crate::shell::collab_mls_authority::SecretServiceMlsVault,
     workspaces: crate::shell::state::WorkspaceTreeHandle,
+    net: Option<Arc<ShellNetwork>>,
     channels: Arc<Mutex<BrokerChannels>>,
 ) -> Option<crate::shell::channel_encryption::ChannelKeyAccess> {
     let paths = crate::firstboot::collaboration_identity_paths();
@@ -851,9 +859,13 @@ fn open_channel_encryption(
             return None;
         }
     };
+    let authenticated: crate::shell::channel_policy::AuthenticatedDevices = match net {
+        Some(net) => Box::new(move |user| net.authenticated_devices_of(user)),
+        None => Box::new(|_| Vec::new()),
+    };
     let directory = crate::shell::channel_policy::WorkspaceChannelDirectory::new(
         workspaces,
-        crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet(),
+        crate::shell::channel_policy::WorkspaceChannelDirectory::session_fleet_with(authenticated),
     );
     match crate::shell::channel_encryption::ChannelEncryption::open(
         crate::shell::channel_encryption::ChannelEncryptionConfig {

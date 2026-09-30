@@ -84,6 +84,41 @@ pub enum BridgeError {
 /// One-shot latch so the "CPU fallback active" warning fires once per process; shared across all bridges since the message is process-global.
 static WARNED_CPU_FALLBACK: AtomicBool = AtomicBool::new(false);
 
+/// wgpu errors no call site captured, held for the bridge to act on.
+///
+/// wgpu's default handler for them panics, and the compositor is built with `panic = "abort"`:
+/// one oversized binding on the present thread took the whole session down, every client
+/// with it. A validation or out-of-memory error leaves the device usable; what it invalidates
+/// is the objects of the frame that raised it. So the bridge takes the error at its next
+/// check, reports the frame as failed, and rebuilds the renderer on the same device.
+#[derive(Clone, Default)]
+struct DeviceErrorLatch(std::sync::Arc<std::sync::Mutex<Option<String>>>);
+
+impl DeviceErrorLatch {
+    /// Route `device`'s uncaptured errors into a new latch.
+    fn install(device: &wgpu::Device) -> Self {
+        let latch = Self::default();
+        let sink = latch.clone();
+        device.on_uncaptured_error(std::sync::Arc::new(move |error: wgpu::Error| {
+            let mut slot = sink
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            if slot.is_none() {
+                *slot = Some(error.to_string());
+            }
+        }));
+        latch
+    }
+
+    fn take(&self) -> Option<String> {
+        self.0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+    }
+}
+
 /// Process-unique bridge identities prevent a replacement renderer from inheriting a stale
 /// caller destination claim. Exhaustion makes destination tracking unavailable rather than
 /// wrapping; ordinary bridge construction and full rendering remain available.
@@ -93,6 +128,10 @@ static NEXT_XRGB_HISTORY_GENERATION: AtomicU64 = AtomicU64::new(1);
 /// pixel. Retrying is deliberately bounded: an exhausted recovery reports an error rather than
 /// presenting incomplete geometry as a successful frame.
 const RESILIENT_RENDER_ATTEMPTS: usize = 4;
+/// Pixels along one side of a Vello bin (16 tiles of 16 pixels).
+const VELLO_BIN_PIXELS: u32 = 256;
+/// Bins one Vello render can address: `N_TILE` in the shaders' `config.wgsl`.
+const MAX_VELLO_BINS: u32 = 256;
 /// A software Vulkan frame can legitimately exceed the normal one-second phase budget.  Once it
 /// does, repeatedly allocating a replacement target every compositor tick only queues more
 /// llvmpipe work and makes the guest look frozen.  Give the timed-out submission one more full
@@ -394,8 +433,14 @@ pub struct RetainedGpuTarget {
     /// Offscreen render target. Recreated on resize.
     texture: wgpu::Texture,
     view: wgpu::TextureView,
+    /// The band a target past [`MAX_VELLO_BINS`] is rendered through, and its height; see
+    /// [`RetainedGpuTarget::band_rows`]. Allocated on the first banded frame.
+    band: Option<(wgpu::Texture, wgpu::TextureView, u32)>,
     /// Current native extent; resize recreates the target texture.
     size: (u32, u32),
+    /// The latest render covered the whole target. Its scratch buffers are
+    /// sized for that and stay pooled until trimmed.
+    last_frame_full: bool,
     /// Base color used to clear when the caller's scene is empty; matches the winit backend's fallback so the host window doesn't flash white.
     base_color: Color,
     /// The target contains a complete settled frame, independent of CPU staging validity.
@@ -464,6 +509,7 @@ impl RetainedGpuTarget {
             renderer,
             texture,
             view,
+            band: None,
             loss: gpu.loss_monitor(),
             poisoned: false,
             geometry_generation: 1,
@@ -473,6 +519,7 @@ impl RetainedGpuTarget {
             #[cfg(test)]
             phase_wait_override: None,
             size: (width, height),
+            last_frame_full: false,
             base_color: Color::from_rgb8(0x1A, 0x1B, 0x26),
             retained_target_valid: false,
             last_successful_revision: None,
@@ -579,6 +626,10 @@ impl RetainedGpuTarget {
         Self::validate_size(&self.device, width, height)?;
         if (width, height) != self.size {
             (self.texture, self.view) = Self::allocate_texture(&self.device, width, height);
+            self.band = None;
+            // Pooled scratch is sized for the old extent; a session that
+            // changed mode never renders at it again.
+            self.renderer.trim_pooled_buffers();
             self.size = (width, height);
             self.geometry_generation = self.geometry_generation.saturating_add(1);
         }
@@ -652,6 +703,7 @@ impl RetainedGpuTarget {
         if self.last_successful_revision != Some(damage.previous_revision?)
             || !self.retained_target_valid
             || !self.renderer.sparse_fine_supported()
+            || Self::band_rows(self.size).is_some()
         {
             return None;
         }
@@ -733,7 +785,10 @@ impl RetainedGpuTarget {
         self.check_live(policy)?;
         // Once encoding starts, even a pre-submit abort leaves renderer-owned downloads and
         // timestamp bookkeeping unusable. Clear poison only after both completion facts hold.
-        let result = self.render_attempts(scene, sparse, output, policy, timing, post_render);
+        let result = match Self::band_rows(self.size).filter(|_| sparse.is_none()) {
+            Some(rows) => self.render_banded(scene, rows, output, policy, timing, post_render),
+            None => self.render_attempts(scene, sparse, output, policy, timing, post_render),
+        };
         if let Some(pass) = self.hdr_pass.as_ref() {
             // Later renders (and captures on this renderer) draw the images
             // as they are again.
@@ -741,13 +796,205 @@ impl RetainedGpuTarget {
                 self.renderer.override_image(&substitution.image, None);
             }
         }
-        if result.is_ok() {
-            self.retained_target_valid = true;
-            self.last_successful_revision = damage.map(|damage| damage.revision);
-        } else {
-            self.poisoned = true;
+        match &result {
+            Ok(_) => {
+                self.retained_target_valid = true;
+                self.last_successful_revision = damage.map(|damage| damage.revision);
+            }
+            // Every attempt completed and settled its counters, so the renderer is consistent
+            // and holds the budget those attempts grew. Rebuilding it would start the next
+            // frame from the initial budget and overflow the same way forever.
+            Err(BridgeError::RecoveryExhausted { .. }) => {}
+            Err(_) => self.poisoned = true,
         }
         result
+    }
+
+    /// The height of the horizontal bands a target of `size` must be rendered in, or `None` when
+    /// it renders whole.
+    ///
+    /// Vello bins the target into 256x256-pixel bins, and its binning and coarse stages keep one
+    /// 256-entry bitmap per workgroup. A target with more bins than that is not refused: the
+    /// indices past 255 are clamped onto other bins, and whatever falls there is drawn wrong or
+    /// not at all. Two outputs side by side reach it easily -- 5120x2880 beside 1920x1080 is a
+    /// 7040x2880 target of 336 bins -- and so does a single 6K or 8K panel.
+    fn band_rows((width, height): (u32, u32)) -> Option<u32> {
+        let bins_x = width.div_ceil(VELLO_BIN_PIXELS);
+        let bins_y = height.div_ceil(VELLO_BIN_PIXELS);
+        if bins_x.saturating_mul(bins_y) <= MAX_VELLO_BINS {
+            return None;
+        }
+        // bins_x is at least 1 for any positive width; zero width never reaches banding.
+        let bins_per_band = MAX_VELLO_BINS.checked_div(bins_x).unwrap_or(1).max(1);
+        Some(bins_per_band.saturating_mul(VELLO_BIN_PIXELS))
+    }
+
+    fn band_target(&mut self, rows: u32) -> (wgpu::Texture, wgpu::TextureView) {
+        if let Some((texture, view, band_rows)) = &self.band
+            && *band_rows == rows
+        {
+            return (texture.clone(), view.clone());
+        }
+        let (texture, view) = Self::allocate_texture(&self.device, self.size.0, rows);
+        self.band = Some((texture.clone(), view.clone(), rows));
+        (texture, view)
+    }
+
+    /// Dense render of a target past [`MAX_VELLO_BINS`], one band of `rows` at a time.
+    ///
+    /// Each band renders the scene translated up by its offset into a band-sized texture, which
+    /// is copied into place in the full target; the full target's output copy and `post_render`
+    /// follow the last band, so callers see exactly what a whole render would produce. Each band
+    /// has its own bounded recovery, and every one is a smaller viewport, so its bump buffers are
+    /// smaller too.
+    #[allow(
+        clippy::too_many_lines,
+        reason = "one ordered band/recovery transaction serves both output paths"
+    )]
+    fn render_banded(
+        &mut self,
+        scene: &Scene,
+        rows: u32,
+        output: FrameOutput<'_>,
+        policy: CompletionPolicy,
+        mut timing: Option<&mut BridgePhaseTiming>,
+        post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
+    ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        use vello::kurbo::Affine;
+
+        let (width, height) = self.size;
+        let (band_texture, band_view) = self.band_target(rows);
+        let mut top = 0;
+        while top < height {
+            let band_height = rows.min(height.saturating_sub(top));
+            let last = top.saturating_add(band_height) >= height;
+            let mut band_scene = Scene::new();
+            band_scene.append(scene, Some(Affine::translate((0.0, -f64::from(top)))));
+            let mut attempts = 0;
+            let mapped = loop {
+                if attempts == RESILIENT_RENDER_ATTEMPTS {
+                    return Err(BridgeError::RecoveryExhausted {
+                        attempts: self.last_render_attempts,
+                    });
+                }
+                attempts = attempts.saturating_add(1);
+                self.check_live(policy)?;
+                let submit_started = timing.as_ref().map(|_| Instant::now());
+                let params = RenderParams {
+                    base_color: self.base_color,
+                    width,
+                    height: band_height,
+                    antialiasing_method: AaConfig::Area,
+                };
+                let loss = self.loss.clone();
+                let before_submit = || {
+                    loss.reason().is_none()
+                        && match policy {
+                            CompletionPolicy::Absolute(deadline) => Instant::now() < deadline,
+                            CompletionPolicy::LinuxPerPhase => true,
+                        }
+                };
+                let append = |encoder: &mut wgpu::CommandEncoder| {
+                    encoder.copy_texture_to_texture(
+                        band_texture.as_image_copy(),
+                        wgpu::TexelCopyTextureInfo {
+                            texture: &self.texture,
+                            mip_level: 0,
+                            origin: wgpu::Origin3d { x: 0, y: top, z: 0 },
+                            aspect: wgpu::TextureAspect::All,
+                        },
+                        wgpu::Extent3d {
+                            width,
+                            height: band_height,
+                            depth_or_array_layers: 1,
+                        },
+                    );
+                    if last {
+                        output.append(encoder, &self.texture, self.size, None);
+                        post_render(&self.device, encoder, &self.view);
+                    }
+                };
+                let submission = match self
+                    .renderer
+                    .render_to_texture_with_post_render_checked_indexed(
+                        &self.device,
+                        &self.queue,
+                        &band_scene,
+                        &band_view,
+                        &params,
+                        append,
+                        before_submit,
+                    ) {
+                    Ok(submission) => submission,
+                    Err(vello::Error::SubmissionAborted) => {
+                        self.check_live(policy)?;
+                        return Err(BridgeError::Render(
+                            "submission declined after encoding".to_owned(),
+                        ));
+                    }
+                    Err(error) => return Err(BridgeError::Render(format!("{error:?}"))),
+                };
+                self.last_render_attempts = self.last_render_attempts.saturating_add(1);
+                self.last_full_render_attempts = self.last_full_render_attempts.saturating_add(1);
+                if let (Some(timing), Some(started)) = (timing.as_deref_mut(), submit_started) {
+                    timing.submit_us = timing
+                        .submit_us
+                        .saturating_add(started.elapsed().as_micros());
+                    if last {
+                        timing.readback_bytes = timing
+                            .readback_bytes
+                            .saturating_add(output.copy_bytes(self.size, None));
+                    }
+                }
+                self.check_live(policy)?;
+                let map_started = timing.as_ref().map(|_| Instant::now());
+                let mapped = match output {
+                    FrameOutput::Xrgb { buffer, .. } if last => Some(self.map_framebuffer(buffer)?),
+                    FrameOutput::GpuOnly if matches!(policy, CompletionPolicy::Absolute(_)) => {
+                        self.wait_submission(submission, policy)?;
+                        None
+                    }
+                    // Counter settlement below waits on this band's submission.
+                    _ => None,
+                };
+                if let (Some(timing), Some(started)) = (timing.as_deref_mut(), map_started) {
+                    timing.completed_readback_map_us = timing
+                        .completed_readback_map_us
+                        .saturating_add(started.elapsed().as_micros());
+                }
+                let settle_started = timing.as_ref().map(|_| Instant::now());
+                let settled = self.settle_counters(policy).and_then(|overflowed| {
+                    self.check_live(policy)?;
+                    Ok(overflowed)
+                });
+                if let (Some(timing), Some(started)) = (timing.as_deref_mut(), settle_started) {
+                    timing.settle_us = timing
+                        .settle_us
+                        .saturating_add(started.elapsed().as_micros());
+                }
+                match settled {
+                    Ok(false) => break mapped,
+                    Ok(true) => {
+                        if mapped.is_some() {
+                            drop(mapped);
+                            output.unmap();
+                        }
+                    }
+                    Err(error) => {
+                        if mapped.is_some() {
+                            drop(mapped);
+                            output.unmap();
+                        }
+                        return Err(error);
+                    }
+                }
+            };
+            if last {
+                return Ok((mapped, false));
+            }
+            top = top.saturating_add(band_height);
+        }
+        Err(BridgeError::InvalidSize(format!("{width}x{height}")))
     }
 
     #[allow(
@@ -763,6 +1010,13 @@ impl RetainedGpuTarget {
         mut timing: Option<&mut BridgePhaseTiming>,
         post_render: impl Fn(&wgpu::Device, &mut wgpu::CommandEncoder, &wgpu::TextureView),
     ) -> Result<(Option<wgpu::BufferView>, bool), BridgeError> {
+        // A full frame (a lock screen, an overlay's first paint) leaves
+        // full-target scratch pooled; damage frames after it never reuse it.
+        let full = sparse.is_none();
+        if !full && self.last_frame_full {
+            self.renderer.trim_pooled_buffers();
+        }
+        self.last_frame_full = full;
         while self.last_render_attempts < RESILIENT_RENDER_ATTEMPTS {
             self.check_live(policy)?;
             let regions = sparse.take();
@@ -1323,6 +1577,7 @@ impl RetainedGpuTarget {
             format: wgpu::TextureFormat::Rgba8Unorm,
             usage: wgpu::TextureUsages::STORAGE_BINDING
                 | wgpu::TextureUsages::COPY_SRC
+                | wgpu::TextureUsages::COPY_DST
                 | wgpu::TextureUsages::TEXTURE_BINDING,
             view_formats: &[],
         });
@@ -1343,6 +1598,7 @@ impl RetainedGpuTarget {
 pub struct VelloDrmBridge {
     context: RenderContext,
     target: RetainedGpuTarget,
+    device_errors: DeviceErrorLatch,
     bgra_blitter: TextureBlitter,
     /// SDR → PQ encode passes, one per HDR scanout format in use.
     hdr_encoders: Vec<HdrEncodePipeline>,
@@ -1419,6 +1675,7 @@ impl VelloDrmBridge {
             "DRM CPU-fallback wgpu adapter selected"
         );
 
+        let device_errors = DeviceErrorLatch::install(device);
         let target = RetainedGpuTarget::new(dev_handle, width, height)?;
         let bgra_blitter = TextureBlitter::new(device, wgpu::TextureFormat::Bgra8Unorm);
         let (readback_buf, padded_bytes_per_row) = Self::allocate_staging(device, width, height);
@@ -1426,6 +1683,7 @@ impl VelloDrmBridge {
         Ok(Self {
             context,
             target,
+            device_errors,
             bgra_blitter,
             hdr_encoders: Vec::new(),
             hdr_compositor: None,
@@ -1506,6 +1764,9 @@ impl VelloDrmBridge {
         hdr_layers: &[HdrLayer],
     ) -> Result<GpuFrameStats, BridgeError> {
         self.last_phase_timing = None;
+        if let Some(error) = self.take_device_error() {
+            return Err(error);
+        }
         if (target.width, target.height) != self.target.size {
             return Err(BridgeError::InvalidSize(format!(
                 "imported scanout target is {}x{}, expected {}x{}",
@@ -1575,6 +1836,9 @@ impl VelloDrmBridge {
             self.target.last_successful_revision = None;
         }
         let (_, admitted) = rendered?;
+        if let Some(error) = self.take_device_error() {
+            return Err(error);
+        }
         Ok(GpuFrameStats {
             revision: damage.revision,
             damage_admitted: admitted,
@@ -3108,25 +3372,10 @@ impl VelloDrmBridge {
                 self.dev_id
             )));
         }
+        self.take_device_error();
         if self.target.poisoned {
-            let color = self.target.base_color;
             let (width, height) = self.target.size;
-            let mut target = RetainedGpuTarget::new(
-                self.context.devices.get(self.dev_id).ok_or_else(|| {
-                    BridgeError::InvalidDevice(
-                        "renderer reconstruction lost its device handle".to_owned(),
-                    )
-                })?,
-                width,
-                height,
-            )?;
-            target.set_base_color(color);
-            self.target = target;
-            (self.readback_buf, self.padded_bytes_per_row) =
-                Self::allocate_staging(&self.target.device, width, height);
-            self.xrgb_history_generation = Self::next_xrgb_history_generation();
-            self.bump_xrgb_history_epoch();
-            self.invalidate_retained();
+            self.reconstruct_target(width, height)?;
         }
         let partial = self.retained_staging_valid
             && self.staging_content
@@ -3150,9 +3399,47 @@ impl VelloDrmBridge {
         // its deliberately stricter invalidate-both boundary, independent of GPU completion.
         self.invalidate_retained();
         let (mapped, admitted) = result?;
+        if let Some(error) = self.take_device_error() {
+            drop(mapped);
+            self.readback_buf.unmap();
+            return Err(error);
+        }
         mapped
             .map(|mapped| (mapped, admitted))
             .ok_or_else(|| BridgeError::Map("XRGB output missing mapped framebuffer".to_owned()))
+    }
+
+    /// Take an uncaptured wgpu error raised since the last check, poisoning the target so the
+    /// next render rebuilds it.
+    fn take_device_error(&mut self) -> Option<BridgeError> {
+        let error = self.device_errors.take()?;
+        tracing::error!(%error, "DRM paint: wgpu reported an error; rebuilding the renderer");
+        self.target.poisoned = true;
+        Some(BridgeError::Render(format!("wgpu: {error}")))
+    }
+
+    /// Replace the target with a fresh renderer at `width` x `height` on the same device,
+    /// keeping its clear colour. This is the one way out of a poisoned target.
+    fn reconstruct_target(&mut self, width: u32, height: u32) -> Result<(), BridgeError> {
+        let color = self.target.base_color;
+        let mut target = RetainedGpuTarget::new(
+            self.context.devices.get(self.dev_id).ok_or_else(|| {
+                BridgeError::InvalidDevice(
+                    "renderer reconstruction lost its device handle".to_owned(),
+                )
+            })?,
+            width,
+            height,
+        )?;
+        target.set_base_color(color);
+        self.target = target;
+        (self.readback_buf, self.padded_bytes_per_row) =
+            Self::allocate_staging(&self.target.device, width, height);
+        self.readback.clear();
+        self.xrgb_history_generation = Self::next_xrgb_history_generation();
+        self.bump_xrgb_history_epoch();
+        self.invalidate_retained();
+        Ok(())
     }
 
     /// Append one complete readback copy for a shared-coarse diagnostic output. Diagnostics use
@@ -3461,6 +3748,13 @@ impl VelloDrmBridge {
         // ambiguous target on the next frame.
         self.invalidate_retained();
         self.bump_xrgb_history_epoch();
+        // A poisoned target refuses to resize; rebuilding it at the new size is what a failed
+        // frame followed by a display change needs. Refusing instead left the presenter asking
+        // again every frame and presenting nothing.
+        self.take_device_error();
+        if self.target.poisoned {
+            return self.reconstruct_target(width, height);
+        }
         let old_size = self.target.size;
         self.target.resize(width, height)?;
         if old_size == self.target.size {
@@ -3471,6 +3765,12 @@ impl VelloDrmBridge {
         // Reset the tight buffer for the next `paint`; the new size may be larger, so clearing is cleaner than keeping capacity.
         self.readback.clear();
         Ok(())
+    }
+
+    /// Why this bridge's device was lost, once it has been. Nothing recovers a lost device but
+    /// a new bridge.
+    pub fn device_lost(&self) -> Option<String> {
+        self.target.loss.reason()
     }
 
     /// Current (width, height); useful in tests and for comparing against the connector's mode size before resizing.
@@ -4276,6 +4576,100 @@ mod tests {
         scene
     }
 
+    /// Scratch pooled for a full frame or an old size is released once the
+    /// session stops rendering that way, so the shell's memory comes back
+    /// down after a lock screen, an overlay or a mode change.
+    #[test]
+    fn pooled_scratch_follows_the_frames_the_session_still_renders() {
+        let busy = |w: u32, h: u32| {
+            let mut scene = Scene::new();
+            for i in 0..400_u32 {
+                let x = f64::from(i * 37 % w);
+                let y = f64::from(i * 53 % h);
+                let rect = vello::kurbo::Rect::new(x, y, x + 24.0, y + 24.0);
+                let color = Color::from_rgb8(u8::try_from(i % 251).expect("below 256"), 0x40, 0x80);
+                scene.fill(Fill::NonZero, Affine::IDENTITY, color, None, &rect);
+            }
+            scene
+        };
+        let pooled = |bridge: &VelloDrmBridge| bridge.target.memory_stats().pooled_buffer_bytes;
+        let mut bridge = required_bridge(1024, 768);
+        let mut pixels = vec![0; 1024 * 768 * 4];
+        let scene = busy(1024, 768);
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 1,
+                    previous_revision: None,
+                    regions: None,
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("full frame");
+        let after_full = pooled(&bridge);
+        assert!(after_full > 0, "a full frame pools its scratch");
+
+        let rects = [vello::FineDamageRect {
+            x: 16,
+            y: 16,
+            width: 32,
+            height: 32,
+        }];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 2,
+                    previous_revision: Some(1),
+                    regions: Some(&rects),
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("damage frame");
+        assert_eq!(bridge.last_sparse_render_attempts(), 1);
+        let after_damage = pooled(&bridge);
+        assert!(
+            after_damage < after_full,
+            "damage frames must not keep the full frame's scratch: {after_damage} >= {after_full}"
+        );
+
+        bridge
+            .paint_damage_into_xrgb8888(
+                &scene,
+                SceneDamage {
+                    revision: 3,
+                    previous_revision: Some(2),
+                    regions: None,
+                },
+                &mut pixels,
+                1024 * 4,
+            )
+            .expect("full frame again");
+        let before_resize = pooled(&bridge);
+        bridge.resize(320, 240).expect("resize");
+        let mut small = vec![0; 320 * 240 * 4];
+        bridge
+            .paint_damage_into_xrgb8888(
+                &Scene::new(),
+                SceneDamage {
+                    revision: 4,
+                    previous_revision: None,
+                    regions: None,
+                },
+                &mut small,
+                320 * 4,
+            )
+            .expect("frame at the new size");
+        let after_resize = pooled(&bridge);
+        assert!(
+            after_resize < before_resize,
+            "a mode change must not keep the old size's scratch: {after_resize} >= {before_resize}"
+        );
+    }
+
     #[test]
     #[allow(
         clippy::too_many_lines,
@@ -4877,6 +5271,54 @@ mod tests {
         }
     }
 
+    /// A GPU reset under a live session (amdgpu cancelled the context during a window-switch
+    /// animation at 5K) used to panic inside `Device::poll` and take the session to a black
+    /// screen. The reset here is the driver's: every fence wait answers `DeviceError::Lost`, and
+    /// wgpu-core invalidates the device and runs its lost callback as it does for a real one.
+    #[test]
+    fn gpu_target_a_gpu_reset_mid_session_is_survived_by_a_new_bridge() {
+        const SIZE: u32 = 64;
+        let pitch = SIZE as usize * 4;
+        let scene = rect_scene(SIZE, SIZE, Color::WHITE);
+        let mut scanout = vec![0x11; pitch * SIZE as usize];
+        let mut bridge = required_bridge(SIZE, SIZE);
+        bridge
+            .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+            .expect("the frame before the reset");
+
+        // SAFETY: the hal device is only flagged; no raw handle leaves this block.
+        let hal = unsafe { bridge.target.device.as_hal::<wgpu::hal::api::Vulkan>() };
+        hal.expect("the compositor renders through Vulkan")
+            .simulate_device_loss();
+
+        scanout.fill(0x11);
+        let result =
+            bridge.paint_damage_into_xrgb8888(&scene, version(2, None, None), &mut scanout, pitch);
+        assert!(
+            matches!(result, Err(BridgeError::DeviceLost(_))),
+            "the frame during the reset reports the loss: {result:?}"
+        );
+        assert!(
+            scanout.iter().all(|byte| *byte == 0x11),
+            "a lost frame publishes nothing, so the last good front stays on screen"
+        );
+        assert!(
+            bridge.device_lost().is_some(),
+            "the DRM backend replaces a bridge whose device_lost() is set"
+        );
+
+        let mut replacement = required_bridge(SIZE, SIZE);
+        replacement
+            .paint_damage_into_xrgb8888(&scene, version(1, None, None), &mut scanout, pitch)
+            .expect("the replacement bridge paints on a new device");
+        assert!(
+            scanout
+                .chunks_exact(4)
+                .all(|pixel| pixel.get(..3) == Some(&[0xFF, 0xFF, 0xFF][..])),
+            "the replacement repaints the whole scene"
+        );
+    }
+
     fn version(
         revision: u64,
         previous_revision: Option<u64>,
@@ -5017,11 +5459,14 @@ mod tests {
                 assert_eq!(target.last_full_render_attempts, 3);
                 assert_eq!(target.completion_markers, 4);
                 assert!(target.completed_view().is_none());
-                assert!(target.poisoned);
-                assert!(matches!(
-                    target.render_until(&scene, version(4, None, None), deadline),
-                    Err(BridgeError::RecreateRequired)
-                ));
+                // Every exhausted attempt completed and settled, so the renderer and the budget
+                // those attempts grew are kept: rebuilding it would restart from the initial
+                // budget and overflow the same way on every frame.
+                assert!(!target.poisoned);
+                target
+                    .render_until(&scene, version(4, None, None), deadline)
+                    .expect("the next frame renders on the same target");
+                assert_eq!(target_pixels(&target), target_pixels(&oracle));
             }
 
             // Phase `gpu_target_linux_phase_limits_survive_recovery`.
@@ -7120,5 +7565,167 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn targets_past_the_bin_limit_render_in_bands_of_whole_bin_rows() {
+        assert_eq!(RetainedGpuTarget::band_rows((1920, 1080)), None);
+        assert_eq!(
+            RetainedGpuTarget::band_rows((5120, 2880)),
+            None,
+            "a 5K panel alone is 240 bins and renders whole"
+        );
+        // 5120x2880 beside 1920x1080: 28 bins across, so nine bin rows per band.
+        assert_eq!(RetainedGpuTarget::band_rows((7040, 2880)), Some(2304));
+        assert_eq!(RetainedGpuTarget::band_rows((7680, 4320)), Some(2048));
+        assert_eq!(RetainedGpuTarget::band_rows((16384, 16384)), Some(1024));
+    }
+
+    /// The multi-output presenter paints one scene spanning every output. For a 5120x2880
+    /// panel beside a 1920x1080 one that is 7040x2880, 336 of Vello's 256x256 bins against the
+    /// 256 its binning and coarse stages address: the bins past 255 were clamped onto others,
+    /// and the bottom of the large panel drew somebody else's content. Every bin must show its
+    /// own.
+    #[test]
+    fn a_combined_target_past_the_bin_limit_draws_every_bin() {
+        let (width, height) = (7040_u32, 2880_u32);
+        let mut bridge = required_bridge(width, height);
+        bridge.wait_for_gpu_completion_for_test();
+        let colour = |bx: u32, by: u32| {
+            Color::from_rgb8(
+                u8::try_from(bx * 9).expect("fits"),
+                u8::try_from(by * 20).expect("fits"),
+                0xC8,
+            )
+        };
+        let mut scene = rect_scene(width, height, Color::BLACK);
+        let bins = (width.div_ceil(256), height.div_ceil(256));
+        for by in 0..bins.1 {
+            for bx in 0..bins.0 {
+                // The last column and row of bins are partial: 7040 and 2880 are not multiples
+                // of 256, so each probe sits within the first 64 pixels of its bin.
+                let (x, y) = (f64::from(bx * 256 + 16), f64::from(by * 256 + 16));
+                scene.fill(
+                    Fill::NonZero,
+                    Affine::IDENTITY,
+                    colour(bx, by),
+                    None,
+                    &vello::kurbo::Rect::new(x, y, x + 32.0, y + 32.0),
+                );
+            }
+        }
+        let rgba = bridge.paint(&scene).expect("combined paint").to_vec();
+        let mut wrong = Vec::new();
+        for by in 0..bins.1 {
+            for bx in 0..bins.0 {
+                let (x, y) = ((bx * 256 + 32) as usize, (by * 256 + 32) as usize);
+                let at = (y * width as usize + x) * 4;
+                let want = colour(bx, by).to_rgba8();
+                if rgba[at..at + 4] != [want.r, want.g, want.b, 0xFF] {
+                    wrong.push((bx, by, rgba[at..at + 4].to_vec()));
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "bins drawn wrong (bx, by, pixel): {wrong:?}"
+        );
+        assert!(
+            bridge.last_full_render_attempts() >= 2,
+            "a 336-bin target renders as more than one band"
+        );
+    }
+
+    /// The black-screen loop: a frame failed and poisoned the target, the display
+    /// configuration changed, and every later frame asked the poisoned target to resize, was
+    /// refused with "retained GPU target must be reconstructed", and presented nothing.
+    #[test]
+    fn a_poisoned_target_is_rebuilt_at_the_size_a_resize_asks_for() {
+        let mut bridge = required_bridge(128, 128);
+        let mut test = completion_clock();
+        test.failure = Some(WaitPhase::Fence);
+        bridge.target.completion_test = Some(test);
+        let mut pixels = vec![0; 128 * 128 * 4];
+        assert!(matches!(
+            bridge.paint_into_xrgb8888(&rect_scene(128, 128, Color::WHITE), &mut pixels, 512),
+            Err(BridgeError::Map(_))
+        ));
+        assert!(
+            bridge.target.poisoned,
+            "the fixture must reach the poisoned state"
+        );
+        let generation = bridge.xrgb_history_generation;
+
+        bridge
+            .resize(256, 96)
+            .expect("a poisoned target is rebuilt, not refused");
+        assert_eq!(bridge.size(), (256, 96));
+        assert!(!bridge.target.poisoned);
+        assert_ne!(
+            bridge.xrgb_history_generation, generation,
+            "a rebuilt target is a new destination history"
+        );
+        bridge.wait_for_gpu_completion_for_test();
+        bridge.recovery_not_before = Some(
+            Instant::now()
+                .checked_sub(Duration::from_millis(1))
+                .expect("monotonic clock is past its first millisecond"),
+        );
+        let red = Color::from_rgb8(0xE0, 0x10, 0x20);
+        let rgba = bridge
+            .paint(&rect_scene(256, 96, red))
+            .expect("the rebuilt target paints")
+            .to_vec();
+        assert_eq!(rgba.len(), 256 * 96 * 4);
+        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            assert_eq!(pixel, &[0xE0, 0x10, 0x20, 0xFF], "pixel {index}");
+        }
+    }
+
+    /// wgpu answers an uncaptured validation error by panicking, and the compositor aborts on
+    /// panic: one oversized binding on the present thread ended the session and every client
+    /// in it. The bridge's device must hand such an error to the bridge instead, which rebuilds
+    /// its renderer and keeps presenting.
+    #[test]
+    fn an_uncaptured_wgpu_error_costs_a_renderer_not_the_session() {
+        let mut bridge = required_bridge(64, 64);
+        bridge.wait_for_gpu_completion_for_test();
+        let limits = bridge.target.device.limits();
+        let refused = bridge.target.device.create_buffer(&wgpu::BufferDescriptor {
+            label: Some("past max_buffer_size"),
+            size: limits.max_buffer_size.saturating_add(4),
+            usage: wgpu::BufferUsages::STORAGE,
+            mapped_at_creation: false,
+        });
+        drop(refused);
+        assert!(
+            bridge.device_errors.0.lock().expect("latch").is_some(),
+            "the validation error reached the bridge, not a panic"
+        );
+        let generation = bridge.xrgb_history_generation;
+        let green = Color::from_rgb8(0x10, 0xC0, 0x40);
+        let rgba = bridge
+            .paint(&rect_scene(64, 64, green))
+            .expect("the next frame renders on a rebuilt renderer")
+            .to_vec();
+        assert_ne!(bridge.xrgb_history_generation, generation, "rebuilt");
+        for (index, pixel) in rgba.chunks_exact(4).enumerate() {
+            assert_eq!(pixel, &[0x10, 0xC0, 0x40, 0xFF], "pixel {index}");
+        }
+    }
+
+    /// wgpu's default limits cap a storage binding at 128 MiB whatever the hardware binds; a
+    /// 5120x2880 output's scratch buffers need more. The bridge's device must carry what its
+    /// adapter supports.
+    #[test]
+    fn the_bridge_device_binds_what_its_adapter_supports() {
+        let bridge = required_bridge(64, 64);
+        let adapter = bridge.context.devices[bridge.dev_id].adapter.limits();
+        let device = bridge.target.device.limits();
+        assert_eq!(
+            device.max_storage_buffer_binding_size,
+            adapter.max_storage_buffer_binding_size
+        );
+        assert_eq!(device.max_buffer_size, adapter.max_buffer_size);
     }
 }

@@ -170,13 +170,13 @@ impl ResultSpec {
                 Ok(())
             }
             Self::None => Err("action declared no result but returned one".into()),
-            Self::Json { schema } => {
-                let value = output
-                    .value
-                    .as_ref()
-                    .ok_or_else(|| "action did not return its declared JSON result".to_string())?;
-                crate::params::validate_schema(value, schema)
-            }
+            // An absent value is `null`: a result its schema lets be null may be
+            // left out by an executor with nothing to report.
+            Self::Json { schema } => match output.value.as_ref() {
+                Some(value) => crate::params::validate_schema(value, schema),
+                None => crate::params::validate_schema(&serde_json::Value::Null, schema)
+                    .map_err(|_| "action did not return its declared JSON result".to_string()),
+            },
             Self::Resource { resource_kind }
                 if !output.resources.is_empty()
                     && output.resources.iter().all(|address| {
@@ -386,5 +386,24 @@ mod tests {
                 })
                 .is_err()
         );
+    }
+
+    #[test]
+    fn only_a_nullable_json_result_may_be_left_out() {
+        let nullable = ResultSpec::Json {
+            schema: serde_json::json!({"type": ["string", "null"]}),
+        };
+        let required = ResultSpec::Json {
+            schema: serde_json::json!({"type": "string"}),
+        };
+        let none = crate::ActionOutput::default();
+        assert!(nullable.validate(&none).is_ok());
+        assert!(required.validate(&none).is_err());
+        let text = crate::ActionOutput {
+            value: Some(serde_json::json!("changed")),
+            resources: Vec::new(),
+        };
+        assert!(nullable.validate(&text).is_ok());
+        assert!(required.validate(&text).is_ok());
     }
 }

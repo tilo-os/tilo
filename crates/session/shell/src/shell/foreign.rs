@@ -21,7 +21,8 @@
 //! Hosted as a [`ui::widget::AppWidget`] (not a post-pass blit), sharing
 //! placement/clipping/masking/fades/active-tab-only-paints with every
 //! other tile; [`ForeignSurfaceWidget::needs_animation_frame`] is `true`
-//! only when the store holds an undrawn frame, so an idle client costs one lock + lookup per tick and zero paints.
+//! only until the first buffer is presented. A later client commit is
+//! `needs_redraw` (one shot), so an idle hosted app costs zero cadence.
 //!
 //! dmabuf capture is coalesced per surface and runs outside the compositor
 //! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
@@ -1292,6 +1293,7 @@ impl AsyncShmCapture {
                                 store().note_failure(job.surface, error.to_string());
                             }
                         }
+                        SHM_FRAMES_PUBLISHED.store(true, std::sync::atomic::Ordering::Release);
                         if let Some(ping) = worker_completion_ping
                             .lock()
                             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1326,6 +1328,19 @@ static ASYNC_DMABUF_CAPTURE: OnceLock<Result<AsyncDmabufCapture, String>> = Once
 
 #[cfg(target_os = "linux")]
 static ASYNC_SHM_CAPTURE: OnceLock<Result<AsyncShmCapture, String>> = OnceLock::new();
+
+/// Set by the SHM worker after it publishes (or fails) a frame. Unlike a
+/// dmabuf, an SHM commit holds no transaction barrier, so nothing else tells
+/// the loop a client frame landed.
+#[cfg(target_os = "linux")]
+static SHM_FRAMES_PUBLISHED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Whether the SHM worker published a frame since the last call.
+#[cfg(target_os = "linux")]
+pub fn take_published_shm_frames() -> bool {
+    SHM_FRAMES_PUBLISHED.swap(false, std::sync::atomic::Ordering::AcqRel)
+}
 
 #[cfg(target_os = "linux")]
 pub fn install_completion_ping(ping: &smithay::reexports::calloop::ping::Ping) {
@@ -2193,6 +2208,13 @@ impl ForeignFrameStore {
         })
     }
 
+    /// Forget the size last sent, so the next [`Self::take_pending_configure`]
+    /// sends the tab size again even though the layout did not change: the
+    /// client was configured to something else in between.
+    pub fn resend_configure(&self, id: SurfaceId) {
+        self.with_entry(id, |e| e.configured = None);
+    }
+
     /// Whether this surface has something worth putting on screen, and
     /// latch the answer once it does. Read by
     /// [`ForeignSurfaceWidget::presented`], the predicate deciding when a launched window turns up.
@@ -2332,6 +2354,7 @@ pub struct ForeignSurfaceWidget {
     /// never showed a usable frame. The lookup consults launches then installed manifests, so it's not repeated on every rebuild.
     name: std::cell::OnceCell<String>,
     preserve_transparency: bool,
+    last_draw: Option<std::time::Instant>,
 }
 
 impl ForeignSurfaceWidget {
@@ -2348,6 +2371,7 @@ impl ForeignSurfaceWidget {
             test_id: format!("foreign-surface-{surface_id}"),
             name: std::cell::OnceCell::new(),
             preserve_transparency: false,
+            last_draw: None,
         }
     }
 
@@ -2430,6 +2454,18 @@ impl ForeignSurfaceWidget {
     /// unmapped.
     pub fn is_mapped(&self) -> bool {
         store().frame_size(self.surface_id).is_some()
+    }
+
+    /// Why this tile is asking for frames, for the paint-stats diagnostic.
+    pub(crate) fn animation_detail(&self) -> String {
+        format!(
+            "seq={} cached_seq={} cached={} presented={} drawn_ms_ago={:?}",
+            store().frame_seq(self.surface_id),
+            self.cached_seq,
+            self.cached.is_some(),
+            store().is_presented(self.surface_id),
+            self.last_draw.map(|at| at.elapsed().as_millis()),
+        )
     }
 
     /// Pull a fresh frame out of the store if one has landed since the last call; returns `true` when the cache changed.
@@ -2698,6 +2734,7 @@ impl Widget for ForeignSurfaceWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
+        self.last_draw = Some(std::time::Instant::now());
         self.refresh_cache();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
             return;
@@ -2819,15 +2856,21 @@ impl Widget for ForeignSurfaceWidget {
         Some(&self.test_id)
     }
 
+    fn as_any(&self) -> Option<&dyn std::any::Any> {
+        Some(self)
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
-    /// A pending client frame keeps animation cadence alive. A placement-only
-    /// change is edge-triggered through `needs_redraw` instead, so resizing a
-    /// static client repaints once without creating an idle frame loop.
+    /// Only an unpresented window holds animation cadence: nothing else
+    /// wakes the loop for its first paint. A later client commit is
+    /// `needs_redraw` (one shot). Treating a pending sequence as cadence
+    /// kept off-screen tiles — never drawn, so never cached — asking for
+    /// frames at the refresh rate after the app itself had gone idle.
     fn needs_animation_frame(&self) -> bool {
-        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -3076,6 +3119,13 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
     let fallback = opening_fallback_size(state);
     // `toplevel_surfaces` borrows the shell state; a cheap clone releases the borrow before the configure calls below, which don't touch `State`.
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
+    // A fullscreen client is sized to its output by the fullscreen overlay;
+    // its promoted tile still lays out underneath and must not resize it.
+    let fullscreen = state
+        .fullscreen_target
+        .as_ref()
+        .filter(|target| target.pinned_output.is_none())
+        .map(|target| target.surface_id);
     let mut sent: usize = 0;
     for toplevel in toplevels {
         let id = crate::compositor::state::surface_id(toplevel.wl_surface());
@@ -3102,6 +3152,9 @@ pub fn flush_configures(state: &mut crate::compositor::state::State) -> usize {
             });
         store().note_size_limits(id, min, max);
         let tiled = !state.is_floating_toplevel(id);
+        if fullscreen == Some(id) && toplevel.is_initial_configure_sent() {
+            continue;
+        }
         if let Some((w, h)) = store().take_pending_configure(id) {
             configure_to(&toplevel, w, h, tiled);
             sent = sent.saturating_add(1);
@@ -3191,39 +3244,66 @@ fn opening_fallback_size(state: &crate::compositor::state::State) -> (i32, i32) 
 ///
 /// Wayland clients that draw on demand wait for `wl_surface.frame` before
 /// their next buffer; without this pass a client renders one frame and
-/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen.
+/// freezes forever. Callbacks fire only for the *visible* tab of each group, also keeping a background client from burning CPU unseen,
+/// and for a window the compositor asked to close, whose tab is already gone.
 ///
 /// Returns the number of surfaces signalled.
 #[cfg(target_os = "linux")]
 pub fn release_frame_throttle(state: &mut crate::compositor::state::State) -> usize {
-    let time_ms = u32::try_from(state.start_time.elapsed().as_millis()).unwrap_or(u32::MAX);
     let toplevels: Vec<_> = state.xdg_shell_state.toplevel_surfaces().to_vec();
     let mut signalled: usize = 0;
     for toplevel in toplevels {
         let surface = toplevel.wl_surface();
-        let id = crate::compositor::state::surface_id(surface);
-        let visible_tab = {
-            let tree = state.workspace_tree.read();
-            is_visible_tab(&tree, store().sheet_root(id))
-        };
-        if !visible_tab && state.osk_surface != Some(id) && !state.is_floating_toplevel(id) {
+        if !frame_throttle_releases(state, surface) {
             continue;
         }
-        let mut fired = false;
-        smithay::wayland::compositor::with_states(surface, |states| {
-            let mut attrs = states
-                .cached_state
-                .get::<smithay::wayland::compositor::SurfaceAttributes>();
-            for callback in attrs.current().frame_callbacks.drain(..) {
-                callback.done(time_ms);
-                fired = true;
-            }
-        });
-        if fired {
+        if state.release_frame_callbacks(surface) {
             signalled = signalled.saturating_add(1);
         }
     }
     signalled
+}
+
+/// Whether a surface [`release_frame_throttle`] serves is waiting for
+/// `wl_surface.frame`. The loop must paint for it: a callback can arrive
+/// on a commit without a new buffer (a configure ack, a title), which
+/// changes nothing on screen, and the client draws nothing until it fires.
+#[cfg(target_os = "linux")]
+pub fn frame_callbacks_waiting(state: &crate::compositor::state::State) -> bool {
+    state
+        .xdg_shell_state
+        .toplevel_surfaces()
+        .iter()
+        .map(ToplevelSurface::wl_surface)
+        .filter(|surface| frame_throttle_releases(state, surface))
+        .any(|surface| {
+            smithay::wayland::compositor::with_states(surface, |states| {
+                !states
+                    .cached_state
+                    .get::<smithay::wayland::compositor::SurfaceAttributes>()
+                    .current()
+                    .frame_callbacks
+                    .is_empty()
+            })
+        })
+}
+
+/// Callbacks fire only for the visible tab of each group, the on-screen
+/// keyboard, floating windows and windows asked to close.
+#[cfg(target_os = "linux")]
+fn frame_throttle_releases(
+    state: &crate::compositor::state::State,
+    surface: &smithay::reexports::wayland_server::protocol::wl_surface::WlSurface,
+) -> bool {
+    let id = crate::compositor::state::surface_id(surface);
+    let visible_tab = {
+        let tree = state.workspace_tree.read();
+        is_visible_tab(&tree, store().sheet_root(id))
+    };
+    visible_tab
+        || state.osk_surface == Some(id)
+        || state.is_floating_toplevel(id)
+        || state.is_closing_toplevel(id)
 }
 
 #[cfg(test)]
@@ -4115,8 +4195,12 @@ mod tests {
                 "the paint gate itself must settle a fitting first frame; native asks it before draw"
             );
             assert!(
-                w.needs_animation_frame(),
-                "a fresh frame requests a repaint"
+                !w.needs_animation_frame(),
+                "an idle hosted app must not keep requesting frames after its first buffer landed"
+            );
+            assert!(
+                w.needs_redraw(),
+                "the undrawn first buffer still requests one paint"
             );
             assert!(w.refresh_cache(), "cache picks up the new frame");
             assert!(
@@ -4216,6 +4300,54 @@ mod tests {
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
         moving_a_static_foreign_surface_requests_one_repaint();
+    }
+
+    /// Off-screen tiles never `draw()`, so `cached_seq` stays stale. A
+    /// pending client sequence used to keep `needs_animation_frame` true
+    /// forever and pin the host at the refresh rate. Fail if an idle
+    /// hosted app still requests frames after its first buffer landed.
+    #[test]
+    fn idle_hosted_app_does_not_keep_requesting_frames() {
+        let id = sid(71);
+        store().forget(id);
+        let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+        w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
+        assert!(
+            !w.awaiting_first_paint(),
+            "the first fitting buffer has already settled the paint gate"
+        );
+        assert!(
+            !w.needs_animation_frame(),
+            "an idle hosted app must not keep requesting frames"
+        );
+        store().forget(id);
+    }
+
+    /// An idle desktop paints only when the loop sees a change, and frame
+    /// callbacks are released only after a paint. An SHM frame the worker
+    /// published without reporting it left the client waiting for
+    /// `wl_surface.frame` forever: headless guests froze every app.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_published_shm_frame_is_reported_to_the_loop() {
+        let id = sid(72);
+        store().forget(id);
+        let _ = take_published_shm_frames();
+        assert!(
+            store().prepare_shm_capture(id, OwnedShmFrame::argb8888(vec![0, 0, 255, 255], 1, 1))
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !take_published_shm_frames() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the loop must learn a client frame landed, or it never paints nor releases frame callbacks"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert_ne!(store().frame_seq(id), 0, "reported only once published");
+        assert!(!take_published_shm_frames(), "reported once");
+        store().forget(id);
     }
 
     #[test]

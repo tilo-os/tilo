@@ -7,277 +7,148 @@
 [apps.agent]
 D1 = 3
 D2 = 15
-W1 = 8
-W2 = 51
 
 [apps.api-tester]
 D2 = 2
-W1 = 1
-W2 = 1
 
 [apps.backups]
-D1 = 3
-D2 = 4
-R3 = 2
-W1 = 3
-W2 = 6
-W3 = 7
+D1 = 1
+D2 = 2
+R3 = 1
 
 [apps.browser]
-D1 = 5
-D2 = 8
-W1 = 8
-W2 = 39
-W3 = 54
+D1 = 3
+D2 = 6
 
 [apps.calculator]
 D2 = 1
-R1 = 2
-W2 = 6
 
 [apps.calendar]
-D1 = 1
-D2 = 8
-W1 = 1
-W2 = 2
-W3 = 8
+D2 = 7
 
 [apps.camera]
-D1 = 2
-D2 = 7
-W1 = 4
-W2 = 6
-W3 = 17
+D1 = 1
+D2 = 5
 
 [apps.chat]
-D1 = 3
-D2 = 11
-R1 = 20
-R3 = 8
-W1 = 2
-W2 = 7
-W3 = 8
+D1 = 1
+D2 = 8
 
 [apps.clocks]
-D1 = 3
-D2 = 4
-W2 = 9
-W3 = 2
+D2 = 1
 
 [apps.code-editor]
-D1 = 2
-D2 = 5
-W1 = 5
-W2 = 11
-W3 = 13
+D1 = 1
+D2 = 4
 
 [apps.contacts]
 D2 = 3
-W1 = 1
-W2 = 2
-W3 = 5
 
 [apps.containers]
 D1 = 2
 D2 = 4
-R3 = 18
-R4 = 7
-W1 = 6
-W2 = 4
-W3 = 2
 
 [apps.db-client]
 D2 = 2
-W1 = 3
-W2 = 8
-W3 = 1
 
 [apps.diffmerge]
 D2 = 2
-W2 = 3
-W3 = 1
-
-[apps.disk-usage]
-R3 = 3
-W1 = 1
-W2 = 1
-W3 = 1
 
 [apps.disks]
 D1 = 2
 D2 = 3
-R3 = 20
-R4 = 6
-W1 = 2
-W2 = 2
-W3 = 2
 
 [apps.ebook]
-D1 = 2
-D2 = 8
-R1 = 6
-R3 = 3
-W1 = 2
-W3 = 7
+D1 = 1
+D2 = 7
 
 [apps.feeds]
 D2 = 2
-W2 = 6
-W3 = 2
 
 [apps.file-explorer]
-D1 = 4
-D2 = 13
+D1 = 3
+D2 = 12
 R1 = 1
 R3 = 3
-W1 = 2
-W2 = 9
-W3 = 71
 
 [apps.firewall]
 D1 = 1
 D2 = 3
-W3 = 1
 
 [apps.git-client]
 D1 = 1
 D2 = 3
-R3 = 2
-W1 = 1
-W2 = 7
-W3 = 3
 
 [apps.hex-editor]
 D2 = 1
-W2 = 4
-W3 = 3
 
 [apps.image-editor]
 D2 = 2
-W3 = 2
 
 [apps.imager]
-D1 = 8
-D2 = 8
-R1 = 309
+D1 = 7
+D2 = 7
+R1 = 299
 R2 = 204
 R3 = 51
-R4 = 26
-W1 = 20
-W2 = 27
-W3 = 175
+R4 = 22
 
 [apps.logs]
 D1 = 1
 D2 = 2
-R3 = 1
-W2 = 3
-W3 = 2
 
 [apps.mail]
-D1 = 2
-D2 = 10
-W1 = 3
-W2 = 3
-W3 = 6
+D1 = 1
+D2 = 9
 
 [apps.maps]
-D1 = 1
-D2 = 3
-W1 = 10
-W2 = 15
-W3 = 8
+D2 = 2
 
 [apps.monitor]
 D1 = 2
 D2 = 2
-W2 = 22
 
 [apps.music]
-D1 = 3
-D2 = 6
-R1 = 1
-W1 = 14
-W2 = 55
-W3 = 30
+D2 = 3
 
 [apps.notes]
-D1 = 4
-D2 = 10
-F1 = 1
-R1 = 6
-R3 = 1
-W1 = 9
-W2 = 17
-W3 = 24
+D1 = 3
+D2 = 9
 
 [apps.osk]
 D1 = 3
 D2 = 3
 R1 = 7
 R2 = 3
-R3 = 1
-W1 = 2
-W2 = 3
-W3 = 1
 
 [apps.passwords]
-D1 = 1
-D2 = 3
-W1 = 3
-W2 = 6
+D2 = 2
 
 [apps.pdf-viewer]
 D1 = 1
 D2 = 5
-W1 = 1
-W2 = 11
-W3 = 8
 
 [apps.photos]
-D1 = 3
-D2 = 10
-W1 = 3
-W2 = 5
-W3 = 15
+D1 = 1
+D2 = 8
 
 [apps.print-centre]
 D1 = 1
 D2 = 6
-R3 = 2
-W1 = 6
-W3 = 1
 
 [apps.publisher]
 D2 = 2
-W1 = 1
 
 [apps.remote]
-D1 = 4
-D2 = 8
-R3 = 2
-W1 = 2
-W2 = 6
-W3 = 2
-
-[apps.scratchpad]
-W3 = 1
+D1 = 2
+D2 = 6
 
 [apps.settings]
-D1 = 6
-D2 = 21
-R3 = 23
-R4 = 3
-W1 = 28
-W2 = 31
-W3 = 35
+D1 = 4
+D2 = 19
 
 [apps.sheets]
-D1 = 3
-D2 = 7
-W1 = 3
-W2 = 14
-W3 = 19
+D2 = 4
 
 [apps.shortcuts]
 D2 = 2
@@ -285,23 +156,13 @@ D2 = 2
 [apps.slides]
 D1 = 1
 D2 = 8
-W1 = 2
-W2 = 6
-W3 = 3
 
 [apps.snippets]
 D2 = 2
 
-[apps.speed-test]
-W1 = 1
-W2 = 8
-
 [apps.store]
-D1 = 3
-D2 = 9
-W1 = 1
-W2 = 3
-W3 = 11
+D1 = 2
+D2 = 8
 
 [apps.terminal]
 D1 = 5
@@ -309,100 +170,59 @@ D2 = 5
 R1 = 53
 R2 = 58
 R3 = 3
-W1 = 6
-W2 = 2
-W3 = 7
 
 [apps.themes]
-D1 = 1
-D2 = 3
-W2 = 2
-W3 = 4
+D2 = 2
 
 [apps.totp]
-D1 = 2
-D2 = 5
-W2 = 4
-W3 = 3
+D2 = 3
 
 [apps.tube]
-D1 = 6
-D2 = 8
-R3 = 3
-W1 = 4
-W2 = 16
-W3 = 8
+D1 = 2
+D2 = 4
 
 [apps.typst-editor]
-D1 = 1
-D2 = 3
-W1 = 1
-W2 = 7
-W3 = 7
+D2 = 2
 
 [apps.video-editor]
-D1 = 1
-D2 = 4
-R3 = 1
-W1 = 4
-W2 = 22
-W3 = 19
+D2 = 3
 
 [apps.video-player]
-D1 = 1
-D2 = 4
-R3 = 3
-W1 = 1
-W2 = 4
+D2 = 3
 
 [apps.vpn]
-D1 = 3
-D2 = 6
-R3 = 2
-W2 = 2
-W3 = 5
+D1 = 1
+D2 = 4
 
 [apps.weather]
-D1 = 1
-D2 = 3
-W1 = 2
-W2 = 8
+D2 = 2
 
 [apps.windows]
 D1 = 2
 D2 = 4
-R4 = 5
-W1 = 7
-W2 = 8
-W3 = 7
 
 [apps.word-processor]
-D1 = 3
-D2 = 12
-F1 = 1
-R1 = 3
-W2 = 5
-W3 = 14
+D1 = 2
+D2 = 11
 
-[sdk.app-state]
-R1 = 10
+[sdk.tilo-app-state]
+R1 = 9
 W1 = 1
 W2 = 3
 W3 = 7
 
 [sdk.settings-store]
-R1 = 1
 W3 = 11
 
 [sdk.tilo-app]
-R1 = 17
+R1 = 24
 
 [sdk.tilo-host]
-R1 = 19
+R1 = 18
 W3 = 11
 
 [sdk.tilo-ui]
-R1 = 326
+R1 = 321
 W1 = 21
 W2 = 2
 W3 = 80

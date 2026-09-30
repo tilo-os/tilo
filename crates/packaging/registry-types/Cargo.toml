@@ -2,8 +2,11 @@
 name = "registry-types"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+description = "Wire types for the Tilo app registry: signed package metadata, versions and content roots."
+repository.workspace = true
+homepage.workspace = true
 
 [lib]
 name = "registry_types"

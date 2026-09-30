@@ -2005,7 +2005,7 @@ fn build_channel_resource(
             "attach",
             "Attach file",
             "File path",
-            "/var/workspace/report.pdf",
+            "Documents/report.pdf",
             OperationKind::Effect,
             CHAT_OPERATION_TYPE,
             {

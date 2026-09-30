@@ -44,7 +44,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicU64, Ordering};
-use ui::clock::{SystemTime, UNIX_EPOCH};
+use ui::time::UNIX_EPOCH;
 
 use tilo_actions::{
     Action, ActionError, ActionRegistry, Doc, EncodedAction, ExecutionLocus, Resource,
@@ -418,7 +418,7 @@ fn new_id(kind: &str) -> String {
     // Identity is chosen before action encoding, never during replay.  The
     // timestamp makes independently running collaborator windows disjoint;
     // the process counter also distinguishes two additions in the same tick.
-    let tick = SystemTime::now()
+    let tick = ui::time::wall()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |d| d.as_nanos());
     format!("{kind}-{tick}-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))

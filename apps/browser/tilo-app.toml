@@ -15,10 +15,17 @@ category = "Network"
 version  = "0.1.0"
 kind     = "app"
 runtime  = "tilo-runtime/2026.07"
+platforms = ["linux", "macos"]
+platform-reason = "Embeds a WebView engine."
 
 [package.isa]
 x86_64 = "v3"
 aarch64 = "aarch64"
+
+# What the app's code uses (tools/policy/check_app_capabilities.py checks it).
+[capabilities]
+required = ["network.http", "webview"]
+optional = ["clipboard", "files.save", "files.paths", "app-files", "open-uri", "threads", "processes"]
 
 [publisher]
 identity  = "ed25519:0000000000000000000000000000000000000000000000000000000000000000"

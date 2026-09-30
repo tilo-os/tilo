@@ -3,7 +3,7 @@
 version = 4
 
 [[package]]
-name = "advisory-lock"
+name = "tilo-advisory-lock"
 version = "0.1.0"
 dependencies = [
  "rustix",
@@ -138,10 +138,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d3fb67a6e08acf24fdeccbac2cb6ac4305825bd1f117462e0e6f2f193345ad56"
 
 [[package]]
-name = "atomic-file"
+name = "tilo-atomic-file"
 version = "0.1.0"
 dependencies = [
- "advisory-lock",
+ "tilo-advisory-lock",
  "rustix",
  "windows-sys",
 ]
@@ -1464,7 +1464,7 @@ dependencies = [
  "package-store",
  "runtime-bundle",
  "runtime-identity",
- "sandbox-core",
+ "tilo-sandbox-core",
  "serde",
  "serde_json",
  "thiserror",
@@ -2008,7 +2008,7 @@ dependencies = [
 name = "private-fs"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
+ "tilo-atomic-file",
  "libc",
  "windows-sys",
 ]
@@ -2155,15 +2155,15 @@ dependencies = [
  "thiserror",
  "tilo-clock",
  "toml",
- "xdg-paths",
+ "tilo-xdg-paths",
 ]
 
 [[package]]
 name = "runtime-identity"
 version = "0.1.0"
 dependencies = [
- "advisory-lock",
- "atomic-file",
+ "tilo-advisory-lock",
+ "tilo-atomic-file",
  "bounded-command",
  "ed25519-dalek",
  "getrandom",
@@ -2238,7 +2238,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sandbox-core"
+name = "tilo-sandbox-core"
 version = "0.1.0"
 dependencies = [
  "landlock",
@@ -2557,7 +2557,7 @@ dependencies = [
 name = "tilo-app-package"
 version = "0.1.0"
 dependencies = [
- "atomic-file",
+ "tilo-atomic-file",
  "blake3",
  "collab-types",
  "ed25519-dalek",
@@ -2570,7 +2570,7 @@ dependencies = [
  "threshold-identity",
  "toml",
  "walkdir",
- "xdg-paths",
+ "tilo-xdg-paths",
 ]
 
 [[package]]
@@ -2589,7 +2589,7 @@ name = "tilo-desktop-entry"
 version = "0.1.0"
 dependencies = [
  "thiserror",
- "xdg-paths",
+ "tilo-xdg-paths",
 ]
 
 [[package]]
@@ -2638,8 +2638,8 @@ dependencies = [
 name = "tilo-user-identity"
 version = "0.1.0"
 dependencies = [
- "advisory-lock",
- "atomic-file",
+ "tilo-advisory-lock",
+ "tilo-atomic-file",
  "automerge",
  "blake3",
  "data-encoding",
@@ -3056,7 +3056,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "xdg-paths"
+name = "tilo-xdg-paths"
 version = "0.1.0"
 dependencies = [
  "windows-sys",

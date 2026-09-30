@@ -27,7 +27,6 @@ use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, mpsc};
-use std::thread;
 use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId};
@@ -51,7 +50,9 @@ use ui::animation::{Animated, Curve};
 use ui::chrome::SelectionState;
 use ui::gesture::{DragSelect, Granularity};
 use ui::paint::PaintCtx;
-use ui::portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
+use ui::portal::{
+    ContentsChannel, ContentsOutcome, FileFilter, PickRequest, PortalChannel, PortalOutcome,
+};
 use ui::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use ui::theme::Theme;
 use ui::tokens::metrics::Metrics;
@@ -151,13 +152,6 @@ struct SearchWorker {
 impl SearchWorker {
     /// `prior` is the published provider; its chapter-prose index is reused
     /// when the book set has not changed.
-    #[cfg_attr(
-        target_arch = "wasm32",
-        allow(
-            clippy::unnecessary_wraps,
-            reason = "only a native thread spawn can fail; both targets share the caller"
-        )
-    )]
     fn spawn(
         prior: crate::search_provider::BookSearchProvider,
         books: Arc<Vec<Arc<Book>>>,
@@ -167,7 +161,7 @@ impl SearchWorker {
         generation: u64,
     ) -> Result<Self, String> {
         let (send, results) = mpsc::sync_channel(1);
-        let build = move || {
+        ui::rt::spawn_thread("ebook-search-builder", move || {
             let provider = crate::search_provider::BookSearchProvider::new_shared_after(
                 &prior,
                 books,
@@ -182,17 +176,8 @@ impl SearchWorker {
                 generation,
                 provider,
             });
-        };
-        // The browser has no threads. Without an index the library's book,
-        // chapter and annotation resources are unresolvable, so build it on
-        // the UI thread there; the one slot means the send never blocks.
-        #[cfg(target_arch = "wasm32")]
-        build();
-        #[cfg(not(target_arch = "wasm32"))]
-        thread::Builder::new()
-            .name("ebook-search-builder".into())
-            .spawn(build)
-            .map_err(|error| error.to_string())?;
+        })
+        .map_err(|error| error.to_string())?;
         Ok(Self { results })
     }
 
@@ -213,68 +198,66 @@ impl ImportWorker {
         let (result_tx, results) = mpsc::sync_channel(1);
         let worker_mailbox = Arc::clone(&mailbox);
         let ui_wake = ui::wake::WakeHandle::new();
-        thread::Builder::new()
-            .name("ebook-import-worker".into())
-            .spawn(move || {
-                loop {
-                    let request = {
-                        let (lock, wake) = &*worker_mailbox;
-                        let mut state = lock
-                            .lock()
+        ui::rt::spawn_thread("ebook-import-worker", move || {
+            loop {
+                let request = {
+                    let (lock, wake) = &*worker_mailbox;
+                    let mut state = lock
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    while state.pending.is_none() && !state.closed {
+                        state = wake
+                            .wait(state)
                             .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        while state.pending.is_none() && !state.closed {
-                            state = wake
-                                .wait(state)
-                                .unwrap_or_else(std::sync::PoisonError::into_inner);
-                        }
-                        if state.closed {
-                            return;
-                        }
-                        state.pending.take()
-                    };
-                    let Some(request) = request else { continue };
-                    #[cfg(test)]
-                    if let Some((entered, release)) = &request.hold {
-                        let _ = entered.send(());
-                        let _ = release.recv();
                     }
-                    // The file is copied into the content-addressed workspace
-                    // on this worker before its collaborative library row is
-                    // written on the UI thread.  A peer therefore receives
-                    // bytes and metadata as one logical import, never a
-                    // dangling shared title/annotation record.
-                    let (path, result) = match content::parse_shared_path_detailed(&request.path) {
-                        Ok((book, shared_path))
-                            if request
-                                .expected_book_id
-                                .as_deref()
-                                .is_none_or(|expected| expected == book.id) =>
-                        {
-                            (shared_path, Ok(book))
-                        }
-                        Ok(_) => (
-                            request.path.clone(),
-                            Err("the shared workspace bytes do not match the requested book".into()),
-                        ),
-                        Err(error) => (request.path.clone(), Err(error)),
-                    };
-                    if result_tx
-                        .send(ImportResult {
-                            generation: request.generation,
-                            source_path: request.path,
-                            path,
-                            kind: request.kind,
-                            expected_book_id: request.expected_book_id,
-                            result,
-                        })
-                        .is_err()
-                    {
+                    if state.closed {
                         return;
                     }
-                    ui_wake.wake();
+                    state.pending.take()
+                };
+                let Some(request) = request else { continue };
+                #[cfg(test)]
+                if let Some((entered, release)) = &request.hold {
+                    let _ = entered.send(());
+                    let _ = release.recv();
                 }
-            })
-            .map_err(|error| format!("couldn't start the book importer: {error}"))?;
+                // The file is copied into the content-addressed workspace
+                // on this worker before its collaborative library row is
+                // written on the UI thread.  A peer therefore receives
+                // bytes and metadata as one logical import, never a
+                // dangling shared title/annotation record.
+                let (path, result) = match content::parse_shared_path_detailed(&request.path) {
+                    Ok((book, shared_path))
+                        if request
+                            .expected_book_id
+                            .as_deref()
+                            .is_none_or(|expected| expected == book.id) =>
+                    {
+                        (shared_path, Ok(book))
+                    }
+                    Ok(_) => (
+                        request.path.clone(),
+                        Err("the shared workspace bytes do not match the requested book".into()),
+                    ),
+                    Err(error) => (request.path.clone(), Err(error)),
+                };
+                if result_tx
+                    .send(ImportResult {
+                        generation: request.generation,
+                        source_path: request.path,
+                        path,
+                        kind: request.kind,
+                        expected_book_id: request.expected_book_id,
+                        result,
+                    })
+                    .is_err()
+                {
+                    return;
+                }
+                ui_wake.wake();
+            }
+        })
+        .map_err(|error| format!("couldn't start the book importer: {error}"))?;
         Ok(Self { mailbox, results })
     }
 
@@ -946,6 +929,10 @@ pub struct BooksApp {
     /// An in-flight host file-picker request, drained once per frame in
     /// `sync`. `None` when no picker is open (the app never draws its own).
     portal_rx: Option<PortalChannel>,
+    /// A chooser delivering contents, where files have no path (the web).
+    portal_contents_rx: Option<ContentsChannel>,
+    /// A book chosen by contents, waiting for the document in `sync`.
+    pending_contents: Option<(String, Vec<u8>)>,
     resource_invocation: Option<tilo_actions::InvocationId>,
     resource_lifecycle: Option<ResourceLifecycle>,
     completed_resource_invocation: Option<tilo_actions::InvocationUpdate>,
@@ -1236,6 +1223,12 @@ impl BooksApp {
         let mut app = Self::with_library(Vec::new());
         app.library_loaded = false;
         app.view = View::Library;
+        // Where files have no path, the book last opened by contents.
+        if !crate::web_file::native_paths()
+            && let Some(file) = crate::web_file::recall()
+        {
+            app.pending_contents = Some((file.name, file.bytes));
+        }
         app
     }
 }
@@ -1300,6 +1293,8 @@ impl BooksApp {
             pending_handed: None,
             content: None,
             portal_rx: None,
+            portal_contents_rx: None,
+            pending_contents: None,
             resource_invocation: None,
             resource_lifecycle: None,
             completed_resource_invocation: None,
@@ -1718,7 +1713,7 @@ impl BooksApp {
                 );
                 self.library_paths.insert(
                     "book:c".into(),
-                    PathBuf::from("/var/workspace/Books/shared.epub"),
+                    content::workspace_books_dir().join("shared.epub"),
                 );
             }
             "narrow" => {
@@ -2481,10 +2476,14 @@ impl BooksApp {
     /// a channel drained each frame in [`Self::drain_portal`]. A second
     /// request while one is in flight is ignored.
     fn request_open_via_portal(&mut self) {
-        if self.portal_rx.is_some() {
+        if self.portal_rx.is_some() || self.portal_contents_rx.is_some() {
             return;
         }
-        self.portal_rx = Some(book_open_request().send());
+        if crate::web_file::native_paths() {
+            self.portal_rx = Some(book_open_request().send());
+        } else {
+            self.portal_contents_rx = Some(book_open_request().send_contents());
+        }
         self.load_error = None;
         self.dirty = true;
     }
@@ -2492,6 +2491,27 @@ impl BooksApp {
     /// Drain a completed picker request, if any. Never blocks — a
     /// still-pending picker stays installed for the next frame.
     fn drain_portal(&mut self) {
+        if let Some(rx) = self.portal_contents_rx.as_ref() {
+            match rx.try_recv() {
+                Ok(ContentsOutcome::Picked(files)) => {
+                    self.portal_contents_rx = None;
+                    if let Some(file) = files.into_iter().next() {
+                        crate::web_file::remember(&file.name, &file.bytes);
+                        self.pending_contents = Some((file.name, file.bytes));
+                    }
+                }
+                Ok(ContentsOutcome::Cancelled)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    self.portal_contents_rx = None;
+                }
+                Ok(ContentsOutcome::Failed(reason)) => {
+                    self.portal_contents_rx = None;
+                    self.load_error = Some(format!("Couldn't open the file chooser: {reason}"));
+                    self.dirty = true;
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+            }
+        }
         let Some(rx) = self.portal_rx.as_ref() else {
             return;
         };
@@ -2623,6 +2643,35 @@ impl BooksApp {
     /// Accept worker results on the UI thread. Older generations have been
     /// superseded by a later request and are discarded before they can mutate
     /// the shelf, reader, or CRDT.
+    /// Open a book chosen by contents: parsed here (a page has no importer
+    /// thread) and shelved as the importer would.
+    fn adopt_contents(&mut self, doc: &mut AutoCommit) {
+        let Some((name, bytes)) = self.pending_contents.take() else {
+            return;
+        };
+        match crate::epub::parse_epub(&bytes, 0, "") {
+            Ok(book) => {
+                let path = PathBuf::from(format!("browser/{name}"));
+                let (book, entry) = content::prepare_imported_book(&path, book);
+                self.perform_action(doc, &crate::actions::restore_library_book_action(&entry));
+                let id = book.id.clone();
+                let index = if let Some(index) = self.library.iter().position(|b| b.id == id) {
+                    if let Some(slot) = Arc::make_mut(&mut self.library).get_mut(index) {
+                        *slot = Arc::new(book);
+                    }
+                    index
+                } else {
+                    Arc::make_mut(&mut self.library).push(Arc::new(book));
+                    self.library.len() - 1
+                };
+                self.load_error = None;
+                self.open_book_at(doc, index);
+            }
+            Err(error) => self.load_error = Some(format!("Couldn’t open {name}: {error}")),
+        }
+        self.dirty = true;
+    }
+
     fn drain_import_worker(&mut self, doc: &mut AutoCommit) {
         while let Some(outcome) = self.import_worker.as_ref().map(ImportWorker::try_recv) {
             let completed = match outcome {
@@ -5016,6 +5065,7 @@ impl Widget for BooksApp {
         self.note_composer.sync(doc, path);
         self.comment_overlay.sync(doc, path);
         self.drain_portal();
+        self.adopt_contents(doc);
         self.drain_import_worker(doc);
         self.commit_pending_share(doc);
         if let Some(s) = self.shot_settings.take() {
@@ -10796,7 +10846,7 @@ impl BooksApp {
         let theme = ctx.theme;
         let c = &theme.tokens.colors;
         let radii_md = f64::from(theme.tokens.radii.md);
-        let home = std::env::var("HOME").ok();
+        let home = tilo_paths::home().map(|home| home.to_string_lossy().into_owned());
         let ws = content::workspace_root();
         // Present folders in human terms — never a raw internal mount (HIG §4):
         // the workspace reads as "Workspace", the reader's home as "~".

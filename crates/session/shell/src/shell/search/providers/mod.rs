@@ -17,6 +17,7 @@ pub mod session_actions;
 pub mod shortcuts;
 pub mod text_app;
 pub mod tray_items;
+pub mod unavailable_applications;
 
 pub use actions::ActionsProvider;
 pub use applications::{ApplicationsProvider, NativeApplicationsProvider};
@@ -32,3 +33,4 @@ pub use notes::NotesProvider;
 pub use records::RecordsProvider;
 pub use session_actions::{SessionActionPolicy, SessionActionsProvider};
 pub use shortcuts::ShortcutsProvider;
+pub use unavailable_applications::UnavailableApplicationsProvider;

@@ -1,5 +1,5 @@
 //! Pointer-only navigation-button hold gesture.
-use std::time::{Duration, Instant};
+use ui::time::{Duration, Instant};
 
 use ui::webview::NavigationDirection;
 
@@ -49,7 +49,7 @@ mod tests {
     fn back_hold_distinguishes_click_hold_and_cancellation() {
         // Phase `short_click_backs_but_hold_opens_once_and_suppresses_release`.
         {
-            let now = Instant::now();
+            let now = ui::time::now();
             let mut hold = NavigationHold::default();
             hold.press(now, NavigationDirection::Back);
             assert_eq!(hold.tick(now + Duration::from_millis(100)), None);
@@ -68,7 +68,7 @@ mod tests {
 
         // Phase `pointer_departure_or_focus_loss_cancels_without_late_back`.
         {
-            let now = Instant::now();
+            let now = ui::time::now();
             let mut hold = NavigationHold::default();
             hold.press(now, NavigationDirection::Back);
             hold.cancel();

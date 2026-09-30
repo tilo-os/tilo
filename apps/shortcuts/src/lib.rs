@@ -54,6 +54,11 @@ fn install_catalog() {
 /// The app.
 pub struct App;
 
+/// The app as every host mounts it.
+pub fn definition() -> &'static ui::application::ApplicationDefinition {
+    ui::framework::definition::<App>()
+}
+
 impl ResourceApp for App {
     type Resource = Workbench;
     const ID: &'static str = APP_ID;

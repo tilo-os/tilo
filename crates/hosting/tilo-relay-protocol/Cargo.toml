@@ -2,9 +2,11 @@
 name = "tilo-relay-protocol"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 description = "Shared value types of the Tilo host + relay: the handshake and wire messages, mesh roles and placement, relay configuration, home-peer registrations, room shard ids and the metrics snapshot."
 license = "MIT OR Apache-2.0"
+repository.workspace = true
+homepage.workspace = true
 
 # Clients of the relay (the shell, Settings, Remote) read and write these
 # records without linking the daemon. Keep this crate free of the relay's
@@ -12,7 +14,7 @@ license = "MIT OR Apache-2.0"
 # `tilo-relay-client`, the iroh endpoint, runtime and storage in `tilo-relay`.
 [dependencies]
 # Crash-safe replacement of the metrics snapshot.
-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
+tilo-atomic-file = { version = "0.1.0", path = "../../system/atomic-file" }
 # Certificates embedded in home-peer registrations and checked by the
 # trust policy.
 tilo-user-identity = { version = "0.1.0", path = "../../collab/tilo-user-identity" }

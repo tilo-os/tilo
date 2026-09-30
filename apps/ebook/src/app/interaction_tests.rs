@@ -24,7 +24,7 @@ fn app_with_sample() -> BooksApp {
 
 fn wait_for_import(app: &mut BooksApp, doc: &mut AutoCommit) {
     let deadline = tilo_test_env::hang_deadline();
-    while Instant::now() < deadline {
+    while ui::time::now() < deadline {
         app.sync(doc, &automerge::ROOT);
         if app.import_loading.is_none() {
             return;
@@ -2244,7 +2244,7 @@ fn pages_advance_and_jump_to_blocks_and_chapters() {
             "a page change surfaces the bubble's next chevron"
         );
         assert!(
-            app.reader_bubble.needs_frame(Instant::now()),
+            app.reader_bubble.needs_frame(ui::time::now()),
             "the visible bubble schedules its own fade-out frames"
         );
     }
@@ -2415,7 +2415,7 @@ fn page_modes_and_turn_animation() {
             "the turn schedules animation frames"
         );
         let pt = app.page_turn.expect("a page-turn slide is in flight");
-        let (dx, alpha) = pt.visual(std::time::Instant::now(), 500.0);
+        let (dx, alpha) = pt.visual(ui::time::now(), 500.0);
         assert!(
             dx > 0.0,
             "a forward turn slides the incoming page in from the right: {dx}"

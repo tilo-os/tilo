@@ -1283,6 +1283,9 @@ pub struct WordProcessorWidget {
     save_status: DocumentSaveStatus,
     // Full read-only content projection, including formatting/comments/media.
     // Host undo and remote document actions need not touch the UI status enum.
+    /// Mounted on a record another participant created: until its content
+    /// arrives the document is left untouched rather than seeded.
+    joined: bool,
     saved_document: Option<serde_json::Value>,
     /// Framework-owned action dispatch: brackets the undo boundary and dispatches
     /// each action through the executor (so a test can prove parity with Ctrl+K).
@@ -1579,6 +1582,7 @@ impl WordProcessorWidget {
                 needs_commit: false,
             },
             save_status: DocumentSaveStatus::Clean,
+            joined: ui::launch::record_launch() == Some(ui::launch::RecordLaunch::Joined),
             saved_document: None,
             actions: crate::framework::ActionSink::default(),
             source: crate::framework::StateSource::default(),
@@ -2504,7 +2508,7 @@ impl WordProcessorWidget {
         doc: &AutoCommit,
     ) {
         self.participants
-            .set(participant, view, doc, ui::clock::Instant::now());
+            .set(participant, view, doc, ui::time::now());
         self.lifecycle.dirty = true;
     }
 
@@ -3098,7 +3102,12 @@ impl WordProcessorWidget {
     /// content store and the document references them; the renderer/exporter
     /// decode them on demand.
     fn insert_image_from_path(&mut self, state: &mut AutoCommit, path: &std::path::Path) -> bool {
-        match std::fs::read(path) {
+        let file = tilo_files::file_at(path);
+        match file
+            .as_ref()
+            .map_err(Clone::clone)
+            .and_then(|(dir, name)| tilo_files::blocking::read(dir, name))
+        {
             Ok(bytes) => {
                 let hash = match self.inner.content_store().put(&bytes) {
                     Ok(hash) => hash,
@@ -3151,8 +3160,10 @@ impl WordProcessorWidget {
                 // A drop arrives as a file the toolkit spooled into our
                 // runtime dir; once the bytes live in the document the
                 // spool copy has no owner.
-                if is_dnd_spool_path(path) {
-                    let _ = std::fs::remove_file(path);
+                if is_dnd_spool_path(path)
+                    && let Ok((dir, name)) = &file
+                {
+                    let _ = tilo_files::blocking::remove(dir, name);
                 }
                 true
             }
@@ -3383,7 +3394,9 @@ impl WordProcessorWidget {
             return Err("Resolve the selected file choice before opening another file".into());
         }
         let history = self.read_existing_file(path)?;
-        let bytes = match std::fs::read(path) {
+        let bytes = match tilo_files::file_at(path)
+            .and_then(|(dir, name)| tilo_files::blocking::read(&dir, &name))
+        {
             Ok(b) => b,
             Err(e) => {
                 self.toast = Some((t("toast-open-failed"), ToastKind::Error));
@@ -8721,7 +8734,7 @@ impl WordProcessorWidget {
         let (remote_carets, remote_selections) = self.remote_presence_overlays(presence);
         // A peer's just-typed run glows in their colour, fading; drawn first so it
         // sits under the selection and caret rather than competing with them.
-        for (user, spans) in self.remote_typing_overlays(presence, ui::clock::Instant::now()) {
+        for (user, spans) in self.remote_typing_overlays(presence, ui::time::now()) {
             presence.draw_peer_typing(scene, theme, &user, &spans);
         }
         for sel in &remote_selections {
@@ -8733,7 +8746,7 @@ impl WordProcessorWidget {
         // not fake mouse coordinates. Resolve those anchors through the same
         // shaped layouts as a person's selection and decorate the resulting
         // geometry with the authenticated actor label.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         for interaction in presence.interactions_for_resource("word-processor.document", now) {
             let ranges = match &interaction.anchor {
                 tilo_actions::InteractionAnchor::Text { ranges, .. } => ranges
@@ -10336,9 +10349,19 @@ impl Widget for WordProcessorWidget {
         }
     }
 
+    #[allow(
+        clippy::too_many_lines,
+        reason = "the editor binds, rebases and reconciles in one sync pass"
+    )]
     fn sync(&mut self, state: &mut AppModel, root: &ModelPath) {
         let (state, root) = ui::doc::document(state, root);
         self.expire_file_jobs();
+        if self.joined
+            && self.inner.containers.is_none()
+            && state.get(root, "schema").ok().flatten().is_none()
+        {
+            return;
+        }
         if self.canonical {
             self.inner.reconcile(state);
         } else {
@@ -10417,7 +10440,7 @@ impl Widget for WordProcessorWidget {
         self.refresh_blocks(state);
         // Other participants' views follow local and remote edits alike; a
         // participant's own applied edit hands over its next view.
-        let now = ui::clock::Instant::now();
+        let now = ui::time::now();
         self.participants.adopt_outcomes(state, now);
         self.participants.rebase(state);
         self.participants.expire(now);
@@ -11470,6 +11493,14 @@ impl ui::resources::PublishesResources for WordProcessorWidget {
         };
         find(self.participant_resources(Some(participant), doc), id)
     }
+    fn document_action_result(
+        &self,
+        doc: &AutoCommit,
+        _address: &tilo_actions::ActionAddress,
+        changes: &[automerge::Patch],
+    ) -> Option<serde_json::Value> {
+        Some(crate::semantic_read::changes::summary(doc, changes).into())
+    }
 }
 
 impl ui::widget::controls::ActionControls for WordProcessorWidget {
@@ -11551,9 +11582,7 @@ impl ui::collaboration::participants::Participants for WordProcessorWidget {
     /// An agent task joined: its view is placed at the document end on the
     /// next sync (no document here) and published as presence from then on.
     fn join_participant(&mut self, participant: &tilo_actions::ParticipantId) -> bool {
-        let joined = self
-            .participants
-            .join(participant.clone(), ui::clock::Instant::now());
+        let joined = self.participants.join(participant.clone(), ui::time::now());
         self.lifecycle.dirty |= joined;
         joined
     }
@@ -14119,7 +14148,7 @@ fn is_dnd_spool_path(path: &std::path::Path) -> bool {
         .filter_map(std::env::var_os)
         .filter(|v| !v.is_empty())
         .any(|dir| path.starts_with(dir))
-        || path.starts_with(std::env::temp_dir())
+        || tilo_paths::temp_dir().is_some_and(|dir| path.starts_with(dir))
 }
 
 #[cfg(test)]

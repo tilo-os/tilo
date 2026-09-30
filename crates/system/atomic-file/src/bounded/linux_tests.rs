@@ -8,7 +8,7 @@
 //!
 //! ```sh
 //! TILO_PRIVATE_ACTIONS_XFS_FIXTURES=/mnt/xfs/private \
-//!     cargo test -p atomic-file --lib bounded::linux_tests -- --ignored
+//!     cargo test -p tilo-atomic-file --lib bounded::linux_tests -- --ignored
 //! ```
 #![expect(
     clippy::result_large_err,

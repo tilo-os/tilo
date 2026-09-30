@@ -3,7 +3,7 @@
 //! owner. Synchronous persistence methods remain compatibility helpers for
 //! runtimes that have not entered shared live service.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
 use tilo_automerge::ApplyIncoming;
 
@@ -11,7 +11,7 @@ use automerge::{AutoCommit, ChangeHash};
 use tokio::sync::{Mutex as AsyncMutex, mpsc};
 
 use crate::auth::PeerRole;
-use crate::store::{LogEntry, WorkspaceStore};
+use crate::store::{CommitRecord, LogEntry, WorkspaceStore};
 use crate::transport::Envelope;
 
 /// Membership set for a workspace on this relay. Populated by the
@@ -60,6 +60,13 @@ pub struct Subscriber {
 /// Per-workspace runtime.
 pub struct WorkspaceRuntime {
     pub(crate) sync_refresh: Option<crate::peer::sync_refresh::Mailbox>,
+    /// The in-process room authority governing this workspace, told of each
+    /// retained body a device's admitted delta carries. Bounded; a full queue
+    /// drops the notice.
+    pub(crate) governor_tap: Option<mpsc::Sender<([u8; 32], Vec<u8>)>>,
+    /// The in-process authority governing this workspace's room, if any: it
+    /// answers the room's calls.
+    pub(crate) room_authority: Option<crate::rooms::RoomAuthority>,
     /// On-disk state.
     pub store: WorkspaceStore,
     /// Initial pinned document. Transferred to `persistence` on first live
@@ -117,6 +124,77 @@ pub struct WorkspaceRuntime {
     live_members: HashMap<[u8; 32], LiveBudget>,
     /// Host order of the last admitted delta.
     last_seq: u64,
+    /// Recently admitted commits, for de-duplicating resends.
+    commits: CommitLedger,
+    /// Held by a `Commit` from its ledger check until it is admitted and
+    /// recorded, so two copies of one commit cannot both be admitted.
+    pub(crate) commit_gate: Arc<AsyncMutex<()>>,
+}
+
+/// Admitted commits a workspace remembers. A browser resends its whole
+/// outbox after every reconnect, and a commit whose `Committed` answer was
+/// lost is resent too; within this window the resend is answered with the
+/// original host order instead of being persisted and fanned out again.
+/// Older commits are forgotten first; a resend of one of those is admitted
+/// again, which the document merge absorbs.
+pub const MAX_REMEMBERED_COMMITS: usize = 16_384;
+
+/// The ledger write that makes one [`WorkspaceRuntime::remember_commit`]
+/// durable.
+#[must_use]
+pub enum CommitLedgerWrite {
+    /// Append one record.
+    Append(CommitRecord),
+    /// Replace the ledger, dropping evicted records.
+    Rewrite(Vec<CommitRecord>),
+}
+
+impl CommitLedgerWrite {
+    /// Write it to `store`. A failure is logged, not fatal: the commit itself
+    /// is already durable, and a resend it would have recognised is merged
+    /// by the document again.
+    pub fn persist(&self, store: &WorkspaceStore) {
+        let persisted = match self {
+            Self::Append(record) => store.append_commit(record),
+            Self::Rewrite(records) => store.rewrite_commits(records),
+        };
+        if let Err(error) = persisted {
+            tracing::warn!(%error, "commit ledger not persisted");
+        }
+    }
+}
+
+#[derive(Default)]
+struct CommitLedger {
+    by_op: HashMap<([u8; 32], [u8; 16]), CommitRecord>,
+    order: VecDeque<([u8; 32], [u8; 16])>,
+    /// Records in the on-disk ledger, evicted ones included.
+    logged: usize,
+}
+
+impl CommitLedger {
+    fn load(records: Vec<CommitRecord>) -> Self {
+        let mut ledger = Self {
+            logged: records.len(),
+            ..Self::default()
+        };
+        for record in records {
+            ledger.insert(record);
+        }
+        ledger
+    }
+
+    fn insert(&mut self, record: CommitRecord) {
+        let key = (record.author, record.op);
+        if self.by_op.insert(key, record).is_none() {
+            self.order.push_back(key);
+        }
+        while self.order.len() > MAX_REMEMBERED_COMMITS {
+            if let Some(evicted) = self.order.pop_front() {
+                self.by_op.remove(&evicted);
+            }
+        }
+    }
 }
 
 /// Per-publisher live rate budget over one-second windows.
@@ -147,6 +225,9 @@ impl LiveBudget {
         true
     }
 }
+
+/// The first bytes of every Automerge chunk (document, change or bundle).
+const AUTOMERGE_MAGIC: [u8; 4] = [0x85, 0x6f, 0x4a, 0x83];
 
 impl WorkspaceRuntime {
     /// Build a runtime for a bound workspace. Loads the snapshot
@@ -218,6 +299,7 @@ impl WorkspaceRuntime {
         } else {
             None
         };
+        let commits = CommitLedger::load(store.load_commits()?);
         Ok(Self {
             store,
             doc,
@@ -239,9 +321,38 @@ impl WorkspaceRuntime {
             outbound_federation: HashMap::new(),
             checkpoint_served: HashMap::new(),
             sync_refresh: None,
+            governor_tap: None,
+            room_authority: None,
             live_members: HashMap::new(),
             last_seq: 0,
+            commits,
+            commit_gate: Arc::new(AsyncMutex::new(())),
         })
+    }
+
+    /// The admission of `author`'s commit `op`, if this host remembers it.
+    pub fn admitted_commit(&self, author: &[u8; 32], op: &[u8; 16]) -> Option<CommitRecord> {
+        self.commits.by_op.get(&(*author, *op)).copied()
+    }
+
+    /// Remember an admitted commit. The returned write makes it durable, so
+    /// a resend is recognised also after a host restart; run it off the
+    /// workspace lock and in admission order (see `commit_gate`).
+    pub fn remember_commit(&mut self, record: CommitRecord) -> CommitLedgerWrite {
+        self.commits.insert(record);
+        self.commits.logged = self.commits.logged.saturating_add(1);
+        if self.commits.logged > MAX_REMEMBERED_COMMITS.saturating_mul(2) {
+            let kept: Vec<CommitRecord> = self
+                .commits
+                .order
+                .iter()
+                .filter_map(|key| self.commits.by_op.get(key).copied())
+                .collect();
+            self.commits.logged = kept.len();
+            CommitLedgerWrite::Rewrite(kept)
+        } else {
+            CommitLedgerWrite::Append(record)
+        }
     }
 
     /// The host order for the next admitted delta: wall-clock nanoseconds,
@@ -457,6 +568,32 @@ impl WorkspaceRuntime {
         self.subscribers.contains_key(device)
     }
 
+    /// Tell live devices that just lost membership they are no longer
+    /// authorised, while their connection is still open. Removals publish
+    /// this before durable IO so a concurrent audit cannot close the session
+    /// without an authenticated refusal. The subscriber is then unregistered
+    /// so a follow-up write closes instead of emitting a second refusal.
+    pub(crate) fn refuse_removed_live_members(&mut self, removed: &[[u8; 32]]) {
+        if removed.is_empty() {
+            return;
+        }
+        let workspace_id = self.store.workspace_id();
+        for device in removed {
+            let Some(sub) = self.subscribers.get(device) else {
+                continue;
+            };
+            let _ = sub.tx.try_send(Envelope::NotAuthorised {
+                workspace_id,
+                reason: "workspace membership changed".into(),
+            });
+        }
+        for device in removed {
+            if self.subscribers.contains_key(device) {
+                self.remove_subscriber(device);
+            }
+        }
+    }
+
     /// Route a delta envelope to every subscriber that is NOT the
     /// author, AND enqueue for offline members. Returns how many
     /// live subscribers were fanned out to.
@@ -646,7 +783,10 @@ impl WorkspaceRuntime {
     ///   doc + snapshot untouched;
     /// - a delta that adds nothing new writes no snapshot.
     fn materialize(&mut self, delta_bytes: &[u8]) -> bool {
-        if delta_bytes.is_empty() {
+        // Automerge logs every chunk it cannot parse at error level before
+        // returning the error, and co-edit wrappers never start with its
+        // magic.
+        if !delta_bytes.starts_with(&AUTOMERGE_MAGIC) {
             return false;
         }
         let Some(current) = self.doc.as_ref() else {
@@ -795,6 +935,90 @@ pub type SharedWorkspace = Arc<AsyncMutex<WorkspaceRuntime>>;
 mod tests {
     use super::*;
     use crate::transport::Envelope;
+
+    /// An auto-bound workspace is pinned, and every delta a session sends is
+    /// a co-edit wrapper: routing one must not reach Automerge's parser,
+    /// which logs each chunk it rejects at error level.
+    #[test]
+    fn co_edit_payload_logs_no_automerge_error() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tracing_subscriber::layer::SubscriberExt as _;
+
+        struct Errors(Arc<AtomicUsize>);
+        impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for Errors {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == tracing::Level::ERROR {
+                    self.0.fetch_add(1, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let tmp = tempfile::tempdir().unwrap();
+        let mut rt = WorkspaceRuntime::open(tmp.path(), 57, true, Membership::default()).unwrap();
+        let payload = crate::coedit::CoeditPayload::Checkpoint {
+            channel: [3; 32],
+            body: b"opaque".to_vec(),
+        }
+        .encode()
+        .unwrap();
+        let errors = Arc::new(AtomicUsize::new(0));
+        let subscriber = tracing_subscriber::registry().with(Errors(Arc::clone(&errors)));
+        tracing::subscriber::with_default(subscriber, || {
+            rt.fanout_delta(
+                &[6u8; 32],
+                PeerRole::Device,
+                &env_delta(57, [6u8; 32]),
+                &payload,
+                1,
+            )
+            .unwrap();
+        });
+        assert_eq!(errors.load(Ordering::SeqCst), 0);
+        assert!(rt.current_heads().is_empty());
+    }
+
+    #[test]
+    fn the_commit_ledger_is_durable_and_forgets_its_oldest_commits_first() {
+        let tmp = tempfile::tempdir().unwrap();
+        let record = |n: u64| CommitRecord {
+            author: [1; 32],
+            op: {
+                let mut op = [0; 16];
+                op[..8].copy_from_slice(&n.to_le_bytes());
+                op
+            },
+            seq: n,
+            digest: [2; 32],
+        };
+        let mut ws = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
+        let total = MAX_REMEMBERED_COMMITS as u64 * 2 + 10;
+        for n in 1..=total {
+            ws.remember_commit(record(n)).persist(&ws.store);
+        }
+        drop(ws);
+        let ws = WorkspaceRuntime::open(tmp.path(), 5, false, Membership::default()).unwrap();
+        let oldest_kept = total - MAX_REMEMBERED_COMMITS as u64 + 1;
+        assert_eq!(
+            ws.admitted_commit(&[1; 32], &record(total).op),
+            Some(record(total))
+        );
+        assert_eq!(
+            ws.admitted_commit(&[1; 32], &record(oldest_kept).op),
+            Some(record(oldest_kept))
+        );
+        assert_eq!(
+            ws.admitted_commit(&[1; 32], &record(oldest_kept - 1).op),
+            None
+        );
+        assert!(
+            ws.store.load_commits().unwrap().len() <= MAX_REMEMBERED_COMMITS * 2,
+            "the on-disk ledger is compacted"
+        );
+    }
 
     fn env_delta(id: u64, author: [u8; 32]) -> Envelope {
         Envelope::Delta {

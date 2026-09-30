@@ -68,8 +68,8 @@ pub mod tool_intent;
 pub mod users;
 
 pub use audio::{
-    VolumeState, get_source_state, get_volume, get_volume_state, set_mute, set_volume, toggle_mute,
-    toggle_source_mute,
+    VolumeState, get_source_state, get_volume, get_volume_state, has_output_device, set_mute,
+    set_volume, toggle_mute, toggle_source_mute,
 };
 pub use battery::{
     BatteryHistory, BatteryHistoryPoint, BatteryInfo, ChargeCapBackend, ChargeCapCapability,

@@ -27,6 +27,42 @@
 pub use ui_core::*;
 
 pub mod framework;
+mod runner;
+
+/// The toolkit's launch vocabulary, with `run` resolved to the runner this
+/// build targets: the native event loop on Linux and macOS, registration with
+/// the page runtime in the browser.
+pub mod launch {
+    pub use crate::runner::{run, run_or_exit};
+    pub use ui_core::launch::*;
+}
+
+/// The binary entry point of an app, identical on every target.
+///
+/// ```ignore
+/// ui::main!(hello::App);                           // a `ResourceApp`
+/// ui::main!(definition = hello::definition);       // fn() -> &'static ApplicationDefinition
+/// ```
+///
+/// On Linux and macOS it runs the native runner with the standard launch
+/// modes (`--shots`, `--headless`, …). In the browser it registers the app
+/// for the page runtime to mount.
+#[macro_export]
+macro_rules! main {
+    (definition = $definition:expr) => {
+        fn main() {
+            // A browser page mounts the definition itself; its binary is empty.
+            #[cfg(not(target_arch = "wasm32"))]
+            $crate::launch::run_or_exit(&$crate::framework::definition_launch_spec($definition()));
+        }
+    };
+    ($app:ty) => {
+        fn main() {
+            #[cfg(not(target_arch = "wasm32"))]
+            $crate::framework::run::<$app>();
+        }
+    };
+}
 
 /// Export the entry points every platform's host enters the app library by.
 ///
@@ -90,10 +126,14 @@ pub use tilo_resource;
 /// JSON values for action arguments, component props and native-input
 /// snapshots, re-exported so an app needs no dependency of its own.
 pub use serde_json;
+/// Files on every target: capability-scoped directories on Linux and macOS,
+/// the origin-private file system in the browser. Use it where `std::fs`
+/// would fail on the web.
+pub use tilo_files as files;
 
 /// The usual imports for application code.
 pub mod prelude {
-    #[cfg(feature = "native")]
+    #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
     pub use crate::framework::run;
     #[cfg(not(target_arch = "wasm32"))]
     pub use crate::framework::testing::{HeadlessApp, TestApp};
@@ -197,5 +237,60 @@ mod tests {
         assert_eq!(widget.get_rect(), custom.inner.get_rect());
         std::hint::black_box(SearchRegistry::new());
         std::hint::black_box(ActionForm::new("note", "Note", "save", "Save"));
+    }
+
+    fn adapted_root() -> Box<dyn Widget> {
+        Box::new(Text::new("adapted root"))
+    }
+
+    /// A hand-built launch spec mounts in a component host, once per app id.
+    #[test]
+    fn launch_spec_mounts_as_a_component() {
+        use crate::launch::LaunchSpec;
+        let definition = LaunchSpec::new("test.adapted", adapted_root).as_definition("Adapted");
+        let again = LaunchSpec::new("test.adapted", adapted_root).as_definition("Other");
+        assert!(std::ptr::eq(definition, again));
+        assert_eq!(definition.title, "Adapted");
+        assert_eq!(definition.record_kind.as_str(), "test.adapted.app");
+
+        let profile = tempfile::tempdir().unwrap();
+        let permissions = std::rc::Rc::new(std::cell::RefCell::new(
+            crate::permissions::PermissionContext::from_capabilities(
+                crate::permissions::Actor::person(Some(crate::permissions::Role::Owner), "author"),
+                vec![],
+            ),
+        ));
+        let mut host = crate::application::ApplicationHost::new(
+            profile.path().join("state"),
+            "device".into(),
+            "workspace",
+            crate::permissions::UserId("author".into()),
+            permissions,
+            tilo_actions::ActionContext::default(),
+        )
+        .unwrap();
+        let checkout = RecordCheckout::new(
+            RecordId::derived("default", &RecordId::for_tab(0)),
+            definition.record_kind.clone(),
+        );
+        let prepared = host
+            .prepare_default(
+                definition,
+                1,
+                checkout,
+                None,
+                ComponentRunnerInputs::from_native_process(),
+            )
+            .unwrap();
+        let component = definition
+            .instantiate(prepared.context, prepared.target, prepared.restore)
+            .unwrap();
+        let mut harness = crate::headless::FrameHarness::from_component(
+            component,
+            (320, 200),
+            prepared.runner_inputs,
+        )
+        .unwrap();
+        harness.poll_frame().unwrap();
     }
 }

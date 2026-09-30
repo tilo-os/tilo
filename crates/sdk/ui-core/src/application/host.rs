@@ -367,7 +367,7 @@ fn persistent_device_id(profile_root: &Path) -> Result<String, LaunchError> {
                 .write_all(generated.as_bytes())
                 .and_then(|()| file.write_all(b"\n"))
                 .and_then(|()| file.sync_all())
-                .and_then(|()| atomic_file::sync_directory(profile_root))
+                .and_then(|()| tilo_files::native::atomic::sync_directory(profile_root))
             {
                 drop(file);
                 let _ = std::fs::remove_file(&path);

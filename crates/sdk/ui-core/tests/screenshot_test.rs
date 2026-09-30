@@ -270,10 +270,10 @@ fn headless_renderer_paints_writes_and_captures_widgets() {
             let bg = Color::from_rgb8(0xff, 0x00, 0xff);
             let rgba = renderer.render(&scene, bg);
 
-            // If QUICK_UI_SCREENSHOT_DIR is set, write the rasterised bar to
+            // If TILO_UI_SCREENSHOT_DIR is set, write the rasterised bar to
             // `<dir>/tab_bar.png` for visual inspection. Off by default so normal
             // CI runs don't accumulate artifacts.
-            if let Ok(dir) = std::env::var("QUICK_UI_SCREENSHOT_DIR") {
+            if let Ok(dir) = std::env::var("TILO_UI_SCREENSHOT_DIR") {
                 let path = std::path::Path::new(&dir).join("tab_bar.png");
                 std::fs::create_dir_all(&dir).ok();
                 tilo_ui::png::write_rgba8(&path, bar_w, bar_h, &rgba)
