@@ -36,8 +36,23 @@ refuses 'adds an arbitrary unit drop-in' 'may not write /etc/systemd/system/gett
   sh -c 'mkdir -p "$0/systemd/system/getty@.service.d" && echo x > "$0/systemd/system/getty@.service.d/x.conf"'
 refuses 'replaces the sudo PAM stack' 'may not write /etc/pam.d/sudo' \
   sh -c 'mkdir -p "$0/pam.d" && echo x > "$0/pam.d/sudo"'
+refuses 'links the diagnostic script outside the overlay' 'diagnostics script must be a regular file' \
+  sh -c 'ln -s /etc/passwd "$0/tilo-validation-diagnostics.sh"'
 refuses 'holds a device node' 'contains a special file' \
   sh -c 'mkdir -p "$0/verity.d" && mkfifo "$0/verity.d/x.crt"'
+
+# The release gate's diagnostic service must pass the overlay policy. Use an
+# intentionally missing helper to stop at the next preflight without a build.
+allowed_overlay="$work/diagnostics-allowed"
+mkdir -p "$allowed_overlay"
+printf '%s\n' 'printf diagnostics' > "$allowed_overlay/tilo-validation-diagnostics.sh"
+out="$("$disk" localhost/tilo-test "$work/out-diagnostics" \
+  --etc-overlay "$allowed_overlay" --bootc-helper "$work/missing-helper" 2>&1)"
+if [ $? -ne 0 ] && grep -Fq -- '--bootc-helper must name an executable regular, non-symlink file' <<<"$out"; then
+  ok 'the validation diagnostic script passes overlay preflight'
+else
+  bad "the validation diagnostic script did not pass overlay preflight: $out"
+fi
 
 # The unit merges only a signed root partition and binds to the disk vm.sh
 # attaches; the device unit name is the systemd escape of its by-id path.
