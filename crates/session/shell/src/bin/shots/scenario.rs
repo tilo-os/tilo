@@ -3049,7 +3049,9 @@ fn build_scenarios() -> Vec<Scenario> {
             description: "Open responsive Explorer and traverse lenses; capture at wide and narrow sweep viewports.",
             actions: vec![
                 Action::SeedRoomActivity { explore: true },
+                // As in the recap: let the strip ease the new group into view.
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Snapshot("01-explorer-three-panel"),
                 Action::Key(Key::Named(NamedKey::Home)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
@@ -3068,6 +3070,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedRoomActivity { explore: true },
                 Action::SelectRoomActivityEntry(0),
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Key(Key::Named(NamedKey::Home)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
                 Action::Key(Key::Named(NamedKey::ArrowRight)),
@@ -3091,6 +3094,7 @@ fn build_scenarios() -> Vec<Scenario> {
                 Action::SeedRoomActivity { explore: true },
                 Action::ShowRoomActivityReplay,
                 Action::Relayout,
+                Action::Wait(20),
                 Action::Snapshot("01-replay-checkpoint"),
                 Action::Key(Key::Named(NamedKey::End)),
                 Action::Key(Key::Named(NamedKey::Enter)),

@@ -1103,7 +1103,7 @@ shell-tab-menu-split-right = Split Right
 shell-tab-menu-new-group = Move to New Group
 shell-terminal-unavailable = Terminal: { $error }
 shell-app-unavailable = Application unavailable
-shell-activity-title = While you were away
+shell-activity-title = Activity
 shell-activity-loading = Loading workspace activity…
 
 # Session (power) menu
