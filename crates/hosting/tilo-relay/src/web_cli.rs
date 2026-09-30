@@ -65,34 +65,135 @@ pub struct WebArgs {
     /// uses the HTTPS stream fallback).
     #[arg(long = "web-plain", value_name = "ADDR")]
     pub web_plain: Option<SocketAddr>,
+    #[cfg(feature = "agents")]
+    #[command(flatten)]
+    pub agents: AgentArgs,
 }
 
-/// The relay the command line started.
+/// Agents on the host (feature `agents`).
+#[cfg(feature = "agents")]
+#[derive(clap::Args, Clone, Debug)]
+pub struct AgentArgs {
+    /// Run agents on this host: pages request grants (approved with their
+    /// delegation on a root-holding device), spawn agents and steer them.
+    /// Grants and agents are kept under the state directory and resume
+    /// when the host restarts.
+    #[arg(long)]
+    pub agents: bool,
+    /// How agents plan natural-language tasks: `settings` (the provider
+    /// selected in Settings, through tilo-model-gateway), `scripted` (a
+    /// deterministic keyword planner for tests and demos),
+    /// `openai:<base url>` (an OpenAI-compatible chat-completions endpoint)
+    /// or `cloud:<base url>` (Tilo Cloud's metered
+    /// `…/api/machines/<id>/ai/v1`, billed to the machine's AI credits). The
+    /// key comes from `TILO_AGENT_API_KEY`, or `TILO_AGENT_API_KEY_FILE`,
+    /// read before every call so a rotated token needs no restart. Default
+    /// `$TILO_AGENT_MODEL`, else `settings`.
+    #[arg(long = "agent-model", value_name = "MODEL")]
+    pub model: Option<String>,
+    /// The model id for `openai:` (required) or `cloud:` (default
+    /// `gpt-4.1-mini-2025-04-14`). Default `$TILO_AGENT_MODEL_NAME`.
+    #[arg(long = "agent-model-name", value_name = "ID")]
+    pub model_name: Option<String>,
+    /// Let agents' apps use this user's own files, Keychain or Secret
+    /// Service, as a person at this machine would. Without it each agent
+    /// has a profile of its own under the state directory and secrets
+    /// kept in memory.
+    #[arg(long = "agent-host-profile")]
+    pub host_profile: bool,
+}
+
+#[cfg(feature = "agents")]
+impl AgentArgs {
+    fn options(
+        &self,
+        state_dir: PathBuf,
+    ) -> anyhow::Result<Option<tilo_relay::agents::AgentOptions>> {
+        if !self.agents {
+            return Ok(None);
+        }
+        let env = |name: &str| std::env::var(name).ok().filter(|value| !value.is_empty());
+        let spec = self
+            .model
+            .clone()
+            .or_else(|| env("TILO_AGENT_MODEL"))
+            .unwrap_or_else(|| "settings".into());
+        let name = self
+            .model_name
+            .clone()
+            .or_else(|| env("TILO_AGENT_MODEL_NAME"));
+        let model = tilo_agent_participant::ModelChoice::parse(
+            &spec,
+            name.as_deref(),
+            tilo_agent_participant::ApiKey::from_env(
+                env("TILO_AGENT_API_KEY"),
+                env("TILO_AGENT_API_KEY_FILE"),
+            ),
+        )
+        .map_err(|error| anyhow::anyhow!("--agent-model: {error}"))?;
+        tracing::info!(model = %model.describe(), state = %state_dir.display(), "agents on this host");
+        Ok(Some(tilo_relay::agents::AgentOptions {
+            state_dir,
+            model,
+            host_profile: self.host_profile,
+            catalogue: None,
+        }))
+    }
+}
+
+/// The relay, with its agents when `--agents` asked for them.
 pub struct HostedRelay {
     pub relay: Relay,
+    #[cfg(feature = "agents")]
+    agents: Option<tilo_agent_participant::AgentHost>,
 }
 
 impl HostedRelay {
-    /// Stop the relay.
+    /// Stop the agents (they resume on the next start), then the relay.
     pub async fn shutdown(self) {
+        #[cfg(feature = "agents")]
+        if let Some(agents) = self.agents {
+            agents.shutdown();
+        }
         self.relay.shutdown().await;
     }
 }
 
-/// Start the relay.
+/// Start the relay; with `--agents`, with its agent supervisor as the
+/// app-serving plane and the agents kept under `state_root/agents`.
 ///
 /// # Errors
-/// The relay did not start.
+/// The relay did not start, or the agent state could not be read.
+#[cfg_attr(
+    not(feature = "agents"),
+    allow(unused_variables, reason = "agents only")
+)]
 pub async fn start_relay(
     cfg: tilo_relay::RelayConfig,
     identity: RelayIdentity,
-    _args: &WebArgs,
-    _state_root: &Path,
+    args: &WebArgs,
+    state_root: &Path,
 ) -> anyhow::Result<HostedRelay> {
+    #[cfg(feature = "agents")]
+    let options = args.agents.options(state_root.join("agents"))?;
+    #[cfg(feature = "agents")]
+    if let Some(options) = options {
+        let (relay, agents) = tilo_relay::agents::start(cfg, identity, options)
+            .await
+            .context("start the relay with agents")?;
+        return Ok(HostedRelay {
+            relay,
+            agents: Some(agents),
+        });
+    }
     let relay = Relay::start(cfg, identity)
         .await
         .context("start the relay")?;
-    Ok(HostedRelay { relay })
+    Ok(HostedRelay {
+        relay,
+        #[cfg(feature = "agents")]
+        agents: None,
+    })
 }
 
 fn web_config(args: &WebArgs, listen: SocketAddr, state_root: &Path) -> WebConfig {

@@ -2,8 +2,10 @@
 name = "fs-content"
 version = "0.1.0"
 edition = "2024"
-publish.workspace = true
+publish = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 description = "The storage daemon's content format: size-tiered FastCDC chunking, BLAKE3 chunk hashes and self-describing HashSeq manifests, with the legacy format still readable."
 
 [dependencies]

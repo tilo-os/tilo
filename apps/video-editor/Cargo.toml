@@ -43,7 +43,7 @@ gstreamer = { workspace = true, optional = true }
 media = { package = "tilo-media", path = "../../crates/platform/tilo-media" }
 gstreamer-app = { version = "0.24", optional = true }
 # Bin swatches and filmstrip frames come from the shared preview pipeline.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 
 # GStreamer encode/decode tests share a `serial` group because the native
 # encoder is not safe to run concurrently in one process.
@@ -52,7 +52,7 @@ ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["te
 serial_test.workspace = true
 tempfile.workspace = true
 tilo-test-env = { path = "../../crates/dev/test-env" }
-advisory-lock = { path = "../../crates/system/advisory-lock" }
+tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
 # The compose probe example writes rendered frames for inspection.
 
 # The page build has no GStreamer: the editor runs with representative
@@ -71,7 +71,7 @@ thin = ["dep:runtime-dylib"]
 default = ["decode", "gst"]
 # Decode and waveform support for the preview canvas through
 # `media::MediaEngine` and its appsink.
-decode = ["media/decode", "thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
+decode = ["media/decode", "tilo-thumbnail/video", "dep:gstreamer", "dep:gstreamer-app"]
 # GStreamer encode and mux support. Kept separate so preview-only builds can
 # use `--no-default-features --features decode`.
 gst = ["dep:gstreamer", "dep:gstreamer-app", "media/encode"]

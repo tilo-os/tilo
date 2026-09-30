@@ -23,7 +23,7 @@ path = "src/main.rs"
 thin = ["dep:runtime-dylib"]
 
 [dependencies]
-cli    = { path = "../../../crates/runtime/cli" }
+tilo-cli-kit    = { path = "../../../crates/runtime/cli" }
 anyhow.workspace = true
 clap.workspace = true
 # Only pulled in under `--features thin`; see the `thin` feature above.

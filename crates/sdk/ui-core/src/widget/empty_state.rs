@@ -1126,6 +1126,29 @@ mod tests {
     }
 
     #[test]
+    fn exported_action_button_is_placed_where_activation_clicks() {
+        let mut es = EmptyState::new("No response yet").with_action("Send request");
+        lay_out(&mut es, 600.0, 400.0);
+        let _ = draw(&mut es);
+
+        let mut taffy = TaffyTree::<()>::new();
+        let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
+        es.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        let update = crate::accesskit_bridge::build_tree_update(&es, &node_map, None, 1.0);
+        let (_, button) = update
+            .nodes
+            .iter()
+            .find(|(_, n)| n.role() == accesskit::Role::Button)
+            .expect("the action is exported as a button");
+        let bounds = button.bounds().expect("the action button has bounds");
+        let action = es.action_rect();
+        assert_eq!(
+            (bounds.x0, bounds.y0, bounds.x1, bounds.y1),
+            (action.x0, action.y0, action.x1, action.y1)
+        );
+    }
+
+    #[test]
     fn empty_state_action_fires_once_through_pointer_keyboard_and_semantics() {
         fn action_pill_click_fires_once() {
             let mut es = EmptyState::new("No messages")
