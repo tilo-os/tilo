@@ -8,10 +8,7 @@
 //! mounts of the page made to the records it shows (a phone's Books, an
 //! agent's Writer) instead of listing them as unknown participants.
 use std::{cell::RefCell, collections::BTreeMap};
-use ui::{
-    history_source::{AuthorDirectory, short_id, stable_hue},
-    widget::HistoryAuthor,
-};
+use ui::history_source::{AuthorDirectory, author_coloured, short_id};
 
 /// Actors one page remembers; a page mounts a handful.
 const MAX_ACTORS: usize = 256;
@@ -75,10 +72,8 @@ pub(crate) fn register(directory: &mut AuthorDirectory, agents: &[String]) {
             // The key a participant's own handle actor has, so an actor
             // history resolves by its handle alone agrees too.
             let identity = automerge::ActorId::from(name.as_bytes()).to_hex_string();
-            directory.register(
-                actor,
-                HistoryAuthor::new(name, stable_hue(&identity), short_id(&identity)),
-            );
+            let rgb = ui::presence::user_color(&name);
+            directory.register(actor, author_coloured(name, short_id(&identity), rgb));
         }
     });
 }
