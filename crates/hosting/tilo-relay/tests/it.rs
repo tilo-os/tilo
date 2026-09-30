@@ -10,6 +10,9 @@
     reason = "in a test these are the assertion, not a hazard"
 )]
 
+// Integration tests re-exec this binary as the automerge worker.
+tilo_automerge_isolate::test_worker!();
+
 #[path = "common/mod.rs"]
 mod common;
 
