@@ -719,6 +719,15 @@ fi
 if [ -n "${TILO_DISK_SIZE:-}" ]; then
   disk_args+=(--size "$TILO_DISK_SIZE")
 fi
+# Rockchip boards: the mask ROM loads U-Boot from fixed LBAs in front of the
+# ESP. TILO_ROCKCHIP_LOADER names the loader directory for an image built
+# elsewhere (TILO_SKIP_BUILD); the loader is rebuilt only when its pinned
+# sources change.
+if [ "$TILO_HARDWARE_PROFILE" = orangepi-3b-v2-1 ] || [ -n "${TILO_ROCKCHIP_LOADER:-}" ]; then
+  loader="${TILO_ROCKCHIP_LOADER:-$TILO_OUTPUT/orangepi-3b-loader}"
+  "$TILO_OS_DIR/dev/build-orangepi-uboot.sh" "$loader"
+  disk_args+=(--boot-gap 16M --rockchip-loader "$loader")
+fi
 
 # Pass 1. A sealed image is expected to be refused here: `bootc container ukify`
 # and `bootc install` compute different composefs digests for the same image
