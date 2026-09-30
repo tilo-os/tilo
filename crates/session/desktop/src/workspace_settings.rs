@@ -982,7 +982,11 @@ const PANE_PAD_TOP: f64 = ui::tokens::Spacing::BASE.s2 as f64;
 /// one `s3` clear of the lens body's bottom edge. Only the top lead-in shrank
 /// to complete the section step; the bottom keeps its authored step.
 const PANE_PAD_BOTTOM: f64 = ui::tokens::Spacing::BASE.s3 as f64;
-const PANE_INTRO_HEIGHT: f64 = 64.0;
+/// Room for the intro's title and two lines of detail: German detail copy
+/// does not fit one line at the lens's width, and cutting it mid-sentence
+/// loses the explanation the intro exists for.
+const PANE_INTRO_HEIGHT: f64 = 76.0;
+const PANE_INTRO_DETAIL_LINES: usize = 2;
 const PANE_INTRO_GAP: f64 = 12.0;
 /// Two lines of text plus breathing room.
 const ROW_HEIGHT: f64 = 56.0;
@@ -1093,9 +1097,9 @@ fn draw_pane_intro(
 
     let icon_rect = Rect::new(
         rect.x0 + 14.0,
-        rect.y0 + 14.0,
+        rect.center().y - 18.0,
         rect.x0 + 50.0,
-        rect.y1 - 14.0,
+        rect.center().y + 18.0,
     );
     scene.fill(
         Fill::NonZero,
@@ -1112,43 +1116,50 @@ fn draw_pane_intro(
         colors.accent[4],
         LUCIDE_DEFAULT_STROKE_PX,
     );
+    let detail_size = tokens.typography.scale.xs;
+    let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
+    #[allow(
+        clippy::cast_possible_truncation,
+        reason = "settings-pane geometry is a small logical-pixel width"
+    )]
+    let lines = text_renderer.clamp_to_lines(
+        detail,
+        detail_size,
+        detail_max as f32,
+        PANE_INTRO_DETAIL_LINES,
+    );
+    let title_h = f64::from(
+        text_renderer
+            .measure(title, tokens.typography.scale.sm, None)
+            .1,
+    );
+    let line_h = f64::from(detail_size) * 1.25;
+    #[allow(
+        clippy::cast_precision_loss,
+        reason = "at most PANE_INTRO_DETAIL_LINES lines"
+    )]
+    let block_h = title_h + 4.0 + line_h * lines.len() as f64;
+    let top = rect.y0 + ((rect.height() - block_h) / 2.0).max(8.0);
     text_renderer.draw_text(
         scene,
         title,
         tokens.typography.scale.sm,
         colors.text_primary,
-        {
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-            )]
-            let title_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 12.0));
-            title_transform
-        },
+        at(transform, rect.x0 + 62.0, top),
         None,
     );
-    let detail_max = (rect.width() - 62.0 - 124.0).max(80.0);
-    let shown = elide(
-        detail,
-        tokens.typography.scale.xs,
-        detail_max,
-        text_renderer,
-    );
-    text_renderer.draw_text(
-        scene,
-        &shown,
-        tokens.typography.scale.xs,
-        colors.text_dim,
-        {
-            #[allow(
-                clippy::arithmetic_side_effects,
-                reason = "Affine composition/translation is matrix multiplication on f64 fields; it cannot panic or overflow"
-            )]
-            let detail_transform = transform * Affine::translate((rect.x0 + 62.0, rect.y0 + 35.0));
-            detail_transform
-        },
-        None,
-    );
+    let mut line_y = top + title_h + 4.0;
+    for line in &lines {
+        text_renderer.draw_text(
+            scene,
+            line,
+            detail_size,
+            colors.text_dim,
+            at(transform, rect.x0 + 62.0, line_y),
+            None,
+        );
+        line_y += line_h;
+    }
     draw_pill(
         scene,
         transform,
@@ -1187,12 +1198,20 @@ fn draw_pill(
         anchor.x,
         anchor.y + h / 2.0,
     );
+    // Every pill sits on a raised row or intro card; the badge picks its ink
+    // against the colour that reaches the screen, so hand it the composite.
+    let chip = tokens.colors.tinted_chip_on(
+        tokens.colors.surfaces.raised,
+        tint.color,
+        0.20 * tint.alpha,
+        ui::tokens::colors::ON_CARD_SMALL_TEXT_CONTRAST,
+    );
     Badge::paint_at(
         scene,
         transform,
         rect,
         label,
-        tint.color.with_alpha_factor(0.20 * tint.alpha),
+        chip.fill,
         text_renderer,
         theme,
     );
@@ -2482,16 +2501,7 @@ pub fn draw_members_pane(
 
     let roster_count = ordered_roster(ws).len();
     let transfer_status = ownership_transfer_status(ws, local_user);
-    let member_help = if let Some(status) = transfer_status.as_deref() {
-        elide(
-            status,
-            theme.tokens.typography.scale.xs,
-            (pane_rect.width() - 294.0).max(120.0),
-            text_renderer,
-        )
-    } else {
-        t("workspace-settings-members-help")
-    };
+    let member_help = transfer_status.unwrap_or_else(|| t("workspace-settings-members-help"));
     let can_manage_transfer = !ownership_transfer_resource(ws, local_user)
         .actions
         .is_empty();
@@ -2580,11 +2590,12 @@ pub fn draw_members_pane(
 /// Pointer and accessibility target for the ownership action entry point in
 /// the Members intro card.
 pub fn ownership_action_rect(pane_rect: Rect) -> Rect {
+    let center_y = pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT / 2.0;
     Rect::new(
         pane_rect.x1 - PANE_PAD_X - 112.0,
-        pane_rect.y0 + PANE_PAD_TOP + 14.0,
+        center_y - 18.0,
         pane_rect.x1 - PANE_PAD_X - 8.0,
-        pane_rect.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT - 14.0,
+        center_y + 18.0,
     )
 }
 
@@ -3096,6 +3107,48 @@ fn default_app_rows_top(pane: Rect) -> f64 {
     pane.y0 + PANE_PAD_TOP + PANE_INTRO_HEIGHT + PANE_INTRO_GAP + 44.0
 }
 
+/// A default-app cycler keeps this far from its row card's edge.
+const DEFAULT_APP_ROW_INSET: f64 = 12.0;
+const DEFAULT_APP_COLUMN_GAP: f64 = 12.0;
+/// What a wide row keeps for its resource label before the two cyclers
+/// share the rest.
+const DEFAULT_APP_LABEL_MIN: f64 = 120.0;
+
+/// The x-extent of the workspace and personal cyclers in a row spanning
+/// `x0..x1`. The column captions above the rows read the same extents, so
+/// a caption always sits over its control.
+fn default_app_columns(x0: f64, x1: f64, compact: bool) -> ((f64, f64), (f64, f64)) {
+    let inner0 = x0 + DEFAULT_APP_ROW_INSET;
+    let inner1 = x1 - DEFAULT_APP_ROW_INSET;
+    if compact {
+        let control_w = ((inner1 - inner0 - DEFAULT_APP_COLUMN_GAP) / 2.0).max(0.0);
+        return ((inner0, inner0 + control_w), (inner1 - control_w, inner1));
+    }
+    let control_w = ((inner1 - inner0 - DEFAULT_APP_LABEL_MIN - 2.0 * DEFAULT_APP_COLUMN_GAP)
+        / 2.0)
+        .clamp(160.0, 260.0);
+    let user = (inner1 - control_w, inner1);
+    let workspace_x1 = user.0 - DEFAULT_APP_COLUMN_GAP;
+    ((workspace_x1 - control_w, workspace_x1), user)
+}
+
+/// The row label for a resource kind in the desktop's language.
+fn resource_kind_label(resource: &desktop_policy::ResourceKind) -> String {
+    if let Some(ext) = resource.extension_name() {
+        t_args(
+            "workspace-settings-resource-extension",
+            &[("ext", ext.into())],
+        )
+    } else if let Some(scheme) = resource.scheme_name() {
+        t_args(
+            "workspace-settings-resource-scheme",
+            &[("scheme", scheme.into())],
+        )
+    } else {
+        resource.display_label()
+    }
+}
+
 pub fn default_app_rows(
     pane: Rect,
     candidates: &[desktop_policy::AppCandidate],
@@ -3123,34 +3176,14 @@ pub fn default_app_rows(
             )]
             let y0 = default_app_rows_top(pane) + index as f64 * row_step;
             let row_rect = Rect::new(x0, y0, x1, y0 + row_h);
-            let (workspace_rect, user_rect) = if compact {
-                let gap = 8.0;
-                let control_w = (row_rect.width() - gap) / 2.0;
-                let controls_y = row_rect.y1 - 10.0 - CONTROL_HEIGHT;
-                (
-                    Rect::new(x0, controls_y, x0 + control_w, controls_y + CONTROL_HEIGHT),
-                    Rect::new(
-                        x0 + control_w + gap,
-                        controls_y,
-                        x1,
-                        controls_y + CONTROL_HEIGHT,
-                    ),
-                )
+            let controls_y = if compact {
+                row_rect.y1 - 10.0 - CONTROL_HEIGHT
             } else {
-                // Full pointer targets, centred on the row rather than at an
-                // authored offset that only matched the old 30 px control.
-                let control_w = 190.0;
-                let controls_y = y0 + (row_h - CONTROL_HEIGHT) / 2.0;
-                (
-                    Rect::new(
-                        x1 - control_w * 2.0 - 12.0,
-                        controls_y,
-                        x1 - control_w - 12.0,
-                        controls_y + CONTROL_HEIGHT,
-                    ),
-                    Rect::new(x1 - control_w, controls_y, x1, controls_y + CONTROL_HEIGHT),
-                )
+                y0 + (row_h - CONTROL_HEIGHT) / 2.0
             };
+            let ((ws_x0, ws_x1), (user_x0, user_x1)) = default_app_columns(x0, x1, compact);
+            let workspace_rect = Rect::new(ws_x0, controls_y, ws_x1, controls_y + CONTROL_HEIGHT);
+            let user_rect = Rect::new(user_x0, controls_y, user_x1, controls_y + CONTROL_HEIGHT);
             (row_rect.y1 <= pane.y1 - 10.0).then_some(DefaultAppRow {
                 resource,
                 workspace_rect,
@@ -3260,43 +3293,21 @@ fn draw_default_apps_header(
         text_renderer,
         theme,
     );
-    let workspace_choice = t("workspace-settings-workspace-choice");
-    let your_choice = t("workspace-settings-your-choice");
-    if compact_pane(pane) {
-        let x0 = pane.x0 + PANE_PAD_X;
-        let x1 = pane.x1 - PANE_PAD_X;
-        let midpoint = x0 + (x1 - x0) / 2.0;
+    let ((workspace_x, _), (user_x, _)) = default_app_columns(
+        pane.x0 + PANE_PAD_X,
+        pane.x1 - PANE_PAD_X,
+        compact_pane(pane),
+    );
+    for (caption, x) in [
+        (t("workspace-settings-workspace-choice"), workspace_x),
+        (t("workspace-settings-your-choice"), user_x),
+    ] {
         text_renderer.draw_text(
             scene,
-            &workspace_choice,
+            &caption,
             theme.tokens.typography.scale.xs,
             theme.tokens.colors.text_dim,
-            at(transform, x0, heading_y + 22.0),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &your_choice,
-            theme.tokens.typography.scale.xs,
-            theme.tokens.colors.text_dim,
-            at(transform, midpoint + 4.0, heading_y + 22.0),
-            None,
-        );
-    } else {
-        text_renderer.draw_text(
-            scene,
-            &workspace_choice,
-            theme.tokens.typography.scale.xs,
-            theme.tokens.colors.text_dim,
-            at(transform, pane.x1 - 404.0, heading_y + 22.0),
-            None,
-        );
-        text_renderer.draw_text(
-            scene,
-            &your_choice,
-            theme.tokens.typography.scale.xs,
-            theme.tokens.colors.text_dim,
-            at(transform, pane.x1 - 194.0, heading_y + 22.0),
+            at(transform, x, heading_y + 22.0),
             None,
         );
     }
@@ -3321,19 +3332,32 @@ fn draw_default_apps_rows(
     } = *ctx;
     for row in default_app_rows(pane, candidates) {
         draw_row_card(scene, transform, row.row_rect, theme);
-        let label = row.resource.display_label();
+        let label_size = theme.tokens.typography.scale.sm;
+        let label_x = row.row_rect.x0 + DEFAULT_APP_ROW_INSET;
+        let stacked = row.workspace_rect.y0 >= row.row_rect.y0 + 20.0;
+        let label_max = if stacked {
+            row.row_rect.x1 - DEFAULT_APP_ROW_INSET - label_x
+        } else {
+            row.workspace_rect.x0 - DEFAULT_APP_COLUMN_GAP - label_x
+        };
         let label = elide(
-            &label,
-            theme.tokens.typography.scale.sm,
-            row.row_rect.width() - 24.0,
+            &resource_kind_label(&row.resource),
+            label_size,
+            label_max,
             text_renderer,
         );
+        let label_h = f64::from(text_renderer.measure(&label, label_size, None).1);
+        let label_y = if stacked {
+            row.row_rect.y0 + 12.0
+        } else {
+            row.workspace_rect.center().y - label_h / 2.0
+        };
         text_renderer.draw_text(
             scene,
             &label,
-            theme.tokens.typography.scale.sm,
+            label_size,
             theme.tokens.colors.text_primary,
-            at(transform, row.row_rect.x0 + 12.0, row.row_rect.y0 + 12.0),
+            at(transform, label_x, label_y),
             None,
         );
         let policy = ws
@@ -5725,8 +5749,8 @@ mod permissions_pane_tests {
                 }];
                 let rows = default_app_rows(pane, &candidates);
                 let row = rows.first().expect("a narrow policy row fits");
-                assert!(row.workspace_rect.x0 >= row.row_rect.x0);
-                assert!(row.user_rect.x1 <= row.row_rect.x1);
+                assert!(row.workspace_rect.x0 >= row.row_rect.x0 + DEFAULT_APP_ROW_INSET);
+                assert!(row.user_rect.x1 <= row.row_rect.x1 - DEFAULT_APP_ROW_INSET);
                 assert!(
                     row.workspace_rect.y0 > row.row_rect.y0 + 20.0,
                     "the resource label keeps its own line above both choices"
@@ -5734,6 +5758,24 @@ mod permissions_pane_tests {
                 assert!(
                     row.workspace_rect.x1 <= row.user_rect.x0,
                     "the two explicit choices never overlap at phone width"
+                );
+
+                let wide = Rect::new(0.0, 0.0, 670.0, 800.0);
+                let rows = default_app_rows(wide, &candidates);
+                let row = rows.first().expect("a wide policy row fits");
+                assert!(
+                    row.workspace_rect.x0
+                        >= row.row_rect.x0 + DEFAULT_APP_ROW_INSET + DEFAULT_APP_LABEL_MIN,
+                    "a wide row keeps its resource label clear of the cyclers: {row:?}"
+                );
+                assert!(
+                    row.user_rect.x1 <= row.row_rect.x1 - DEFAULT_APP_ROW_INSET,
+                    "the personal cycler stays inside its row card: {row:?}"
+                );
+                assert!(row.workspace_rect.x1 <= row.user_rect.x0);
+                assert!(
+                    (row.workspace_rect.center().y - row.row_rect.center().y).abs() < 0.5,
+                    "wide-row cyclers are centred on the row"
                 );
             }
 
