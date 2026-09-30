@@ -310,7 +310,7 @@ jobs:
           echo "hardware-profile=$profile" >> "$GITHUB_OUTPUT"
           # Board dev images layer on a dev build's aarch64 dev image.
           boards=false
-          if [[ $GITHUB_EVENT_NAME == workflow_call && $skip != true && -n $LENOVO_FIRMWARE_REF ]] \
+          if [[ $GITHUB_EVENT_NAME == workflow_call && $skip != true && -n ${LENOVO_FIRMWARE_REF:-} ]] \
              && jq -e 'any(.include[]; .arch == "aarch64")' <<< "$matrix" >/dev/null; then
             boards=true
           fi
