@@ -143,8 +143,26 @@ fn canonical_idle_projection_does_not_request_perpetual_frames() {
     ChatDoc::seed_starter(&mut doc, &me.id, &me.name, &me.initials);
     doc.commit();
     let mut app = ChatApp::from_document(&doc, me, crate::app::ChatRuntime::Unavailable).unwrap();
+    app.sync(&mut doc, &ROOT);
+    let _ = app.update(&mut doc, &ROOT);
     app.mark_drawn();
+    app.media.latch_bound_for_test();
+    assert!(
+        !app.update(&mut doc, &ROOT),
+        "an already-bound media endpoint is not a change"
+    );
+    assert!(
+        !app.needs_animation_frame(),
+        "idle Chat must not keep requesting frames"
+    );
     assert!(!app.needs_redraw());
+    doc.put(ROOT, "remote-change", "newer").unwrap();
+    doc.commit();
+    app.sync(&mut doc, &ROOT);
+    assert!(
+        app.needs_redraw(),
+        "a conversation change still requests one paint"
+    );
 }
 #[test]
 fn canonical_composer_exports_ime_purpose_through_app_root() {
