@@ -574,7 +574,7 @@ the OS. The default `filesystem` feature adds the namespace, FUSE projection,
 service protocols and their integration tests.
 
 ```powershell
-cargo test --locked -p fs --no-default-features --lib
+cargo test --locked -p tilo-fs --no-default-features --lib
 cargo test --locked -p scratchpad --all-targets
 ```
 
@@ -1093,7 +1093,7 @@ output, from any command. Point `TMPDIR` at real disk for large parallel builds.
 
 ```bash
 cargo build -p shell            # or ui, fs, terminal, file-explorer, browser
-cargo test -p fs
+cargo test -p tilo-fs
 cargo test -p shell --lib room_activity      # scope it; the compile dominates
 cargo check -p shell --tests                 # before finishing
 ```
@@ -1168,10 +1168,10 @@ Reproduce that locally with:
 
 ```bash
 scripts/test-local.sh                            # the workspace, visual goldens excluded
-scripts/test-local.sh -p fs -p tilo-ui           # selected packages
-scripts/test-local.sh -p fs -- checked_restore   # arguments after -- go to nextest run
+scripts/test-local.sh -p tilo-fs -p tilo-ui           # selected packages
+scripts/test-local.sh -p tilo-fs -- checked_restore   # arguments after -- go to nextest run
 scripts/test-local.sh --goldens                  # only the visual goldens
-CARGO=my-cargo scripts/test-local.sh -p fs       # any cargo drop-in compiles, run here
+CARGO=my-cargo scripts/test-local.sh -p tilo-fs  # any cargo drop-in compiles, run here
 ```
 
 It compiles in your environment, then runs the compiled tests (through

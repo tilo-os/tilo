@@ -58,7 +58,7 @@ url.workspace = true
 base64.workspace = true
 image = { workspace = true, features = ["jpeg", "png", "webp"] }
 # Portal-selected cover art is normalised through the shared preview decoder.
-thumbnail = { path = "../../crates/media/thumbnail" }
+tilo-thumbnail = { path = "../../crates/media/thumbnail" }
 tracing.workspace = true
 tracing-subscriber.workspace = true
 hex.workspace = true
