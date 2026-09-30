@@ -4382,6 +4382,51 @@ mod tests {
         }
     }
 
+    /// Answer every voice request with the broker's reply when this app has
+    /// no native media lane; returns how many there were.
+    fn refuse_voice(app: &mut ChatApp) -> usize {
+        use ui::widget::Collaborative as _;
+        let mut sent = 0;
+        for request in app.take_collab_requests() {
+            if let ui::collaboration::CollabRequest::NativeMediaCommand { request_id, .. } = request
+            {
+                sent += 1;
+                app.handle_collab_event(
+                    &ui::collaboration::CollabEvent::NativeMediaCommandResult {
+                        request_id,
+                        result: Err("native media requires the bounded control lane".into()),
+                    },
+                );
+            }
+        }
+        sent
+    }
+
+    #[test]
+    fn a_refused_voice_service_is_not_asked_again_on_every_frame() {
+        // Phase: not_in_a_call.
+        {
+            let (mut app, _doc) = app_with_doc();
+            let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
+            assert_eq!(
+                sent, 1,
+                "one status poll per interval, not one request per frame"
+            );
+        }
+        // Phase: joined_call_is_left_once.
+        {
+            let (mut app, mut doc) = app_with_doc();
+            app.on_hit(Hit::Channel("c_standup".into()), &mut doc);
+            assert!(
+                app.native_voice.channel.is_some(),
+                "opening a voice channel joins it"
+            );
+            let sent: usize = (0..20).map(|_| refuse_voice(&mut app)).sum();
+            assert_eq!(sent, 2, "a refused join is left once, then nothing");
+            assert!(app.native_voice.channel.is_none());
+        }
+    }
+
     #[test]
     fn microphone_intent_waits_for_local_service_and_never_writes_membership() {
         let (mut app, mut doc) = app_with_doc();
