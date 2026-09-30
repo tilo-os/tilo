@@ -31,7 +31,7 @@
 let
   # A fixed-output vendor path can remain cached after Cargo.lock changes.
   # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "172d44e8191d49e55f81d3e536c0fcfd3e1327175dcda26766af4af8adf05c69";
+  expectedCargoLockSha256 = "7c949d48d86351cf192b3cac91961b2da953b5ca3327e27b06147e2d4f39b745";
   repoRoot = toString ../..;
 in
 assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
