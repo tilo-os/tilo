@@ -33,8 +33,7 @@ display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
 display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
 display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
-
-# Displays pane: night light, rotation, built-in name
+# Mouse & Keyboard pane: touchpad
 display-builtin = Integrierter Bildschirm
 display-brightness = Helligkeit
 display-auto-brightness = Automatische Helligkeit
@@ -475,7 +474,7 @@ settings-category-updates-subtitle = Betriebssystem- und Firmware-Updates
 settings-category-about = Info
 settings-category-about-subtitle = Geräteidentität und Übertragung
 
-# Users pane
+# Appearance pane
 settings-users-error-title = Diese Änderung konnte nicht übernommen werden
 settings-users-add = Benutzer hinzufügen
 settings-users-empty-accounts = Auf diesem Gerät wurden keine normalen Anmeldekonten gefunden.
@@ -724,3 +723,51 @@ continuity-app-continuations = App-Fortsetzungen
 continuity-all = Gesamte Continuity
 continuity-audit-allowed = { $subject } erlaubt · lokaler Eintrag { $at }
 continuity-audit-stopped = { $subject } gestoppt · lokaler Eintrag { $at }
+settings-appearance-theme-card = Erscheinungsbild
+settings-appearance-theme = Thema
+settings-appearance-ui-scale = UI-Skalierung
+settings-appearance-text-size = Textgröße
+settings-appearance-text-small = Klein
+settings-appearance-text-default = Standard
+settings-appearance-text-large = Groß
+settings-appearance-text-larger = Größer
+settings-appearance-access-card = Barrierefreiheit
+settings-appearance-high-contrast = Hoher Kontrast
+settings-appearance-high-contrast-desc = Kontrast für sehbehinderte Nutzer maximieren
+settings-appearance-reduce-motion = Bewegung reduzieren
+settings-appearance-reduce-motion-desc = Animationen und Übergänge überspringen
+settings-appearance-applied-card = Angewandtes Thema
+settings-appearance-active-theme = Aktives Thema
+settings-appearance-text-scale = Textskalierung
+settings-appearance-reduced-motion = Reduzierte Bewegung
+settings-appearance-on = Ein
+settings-appearance-off = Aus
+settings-appearance-shared-card = Wird mit deinen Apps geteilt
+settings-appearance-shared-body = Thema, Kontrast, Bewegung, UI-Skalierung und Textgröße liest der Compositor und jede Tilo-App, damit das ganze System dem Look folgt, den du hier wählst. Die UI-Skalierung vergrößert die gesamte Oberfläche und wirkt mit der eigenen Skalierung jedes Bildschirms zusammen; die Textgröße ändert zusätzlich die Schrift.
+settings-appearance-wallpaper-card = Hintergrundbild
+settings-appearance-wallpaper-body = Wähle ein Bild für den Desktop. Ein Arbeitsbereich ist, mit wem du arbeitest — ein eigenes Bild zeigt auf einen Blick, in welchem geteilten Arbeitsbereich du bist.
+settings-appearance-use-for = Verwenden für
+settings-appearance-show-on = Anzeigen auf
+settings-appearance-scope-workspace = Dieser Arbeitsbereich
+settings-appearance-scope-all = Jeder Arbeitsbereich
+settings-appearance-target-desktop = Desktop
+settings-appearance-target-lock = Sperrbildschirm
+settings-appearance-target-both = Desktop und Sperrbildschirm
+settings-appearance-choose-picture = Bild wählen…
+settings-appearance-choose-wallpaper = Hintergrundbild wählen
+settings-appearance-choose = Wählen
+settings-appearance-pictures = Bilder
+settings-appearance-confirm-preview = Bestätige die Vorschau, um es zu verwenden.
+settings-appearance-open-failed = Das Bild konnte nicht geöffnet werden: { $error }
+settings-appearance-updated = Hintergrundbild aktualisiert.
+settings-appearance-unchanged = Das Hintergrundbild wurde nicht geändert: { $error }
+settings-appearance-schedule = Zeitplan
+settings-appearance-schedule-sun = Nach Sonnenstand
+settings-appearance-schedule-custom = Eigene Zeiten
+settings-appearance-day-starts = Tag beginnt
+settings-appearance-night-starts = Nacht beginnt
+settings-appearance-today = Heute
+settings-appearance-today-value = Tag ab { $day }, Nacht ab { $night }
+settings-appearance-schedule-no-location = Deine Zeitzone liefert keinen Ort, daher läuft der Tag nach den eigenen Zeiten. Das automatische Thema und ein geplantes Nachtlicht folgen diesem Zeitplan.
+settings-appearance-schedule-follow = Das automatische Thema und ein geplantes Nachtlicht folgen diesem Zeitplan.
+settings-appearance-day-night-card = Tag und Nacht

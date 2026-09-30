@@ -1850,6 +1850,7 @@ impl Widget for SettingsApp {
         // survives category switches (which rebuild the tree). A text-scale
         // change is the one thing that re-sizes the shell itself, so it is the
         // one thing that builds it anew.
+        crate::widgets::set_compose_text_growth(theme.text_growth());
         if self.shell.is_none() || self.shell_text_scale.to_bits() != theme.text_scale.to_bits() {
             self.shell_text_scale = theme.text_scale;
             self.shell = Some(self.build_shell());
