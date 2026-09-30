@@ -379,10 +379,27 @@ fn draw_resume_card(
         at(transform, rect.x0 + 46.0, rect.y0 + 7.0),
         None,
     );
+    // The button fits its label ("Fortsetzen →" is wider than "Resume →");
+    // the title and context take what it leaves.
+    let button_label = t("activity-resume-button");
+    let (label_w, _) = tr.measure_weighted(
+        &button_label,
+        theme.tokens.typography.scale.sm,
+        None,
+        ui::text_render::TextWeight::Medium,
+    );
+    let button_w = (f64::from(label_w) + 24.0).max(74.0);
+    let button = Rect::new(
+        rect.x1 - 10.0 - button_w,
+        rect.y0 + 19.0,
+        rect.x1 - 10.0,
+        rect.y0 + 49.0,
+    );
+    let text_w = text_width((button.x0 - 12.0 - (rect.x0 + 46.0)).max(0.0));
     let title = tr.elide_to_width(
         &resume.target.label,
         theme.tokens.typography.scale.sm,
-        text_width(rect.width() - 144.0),
+        text_w,
     );
     tr.draw_text_weighted(
         scene,
@@ -403,11 +420,7 @@ fn draw_resume_card(
             )
         },
     );
-    let context = tr.elide_to_width(
-        &context,
-        theme.tokens.typography.scale.sm,
-        text_width(rect.width() - 144.0),
-    );
+    let context = tr.elide_to_width(&context, theme.tokens.typography.scale.sm, text_w);
     tr.draw_text(
         scene,
         &context,
@@ -416,30 +429,15 @@ fn draw_resume_card(
         at(transform, rect.x0 + 46.0, rect.y0 + 46.0),
         None,
     );
-    let button = Rect::new(
-        rect.x1 - 84.0,
-        rect.y0 + 19.0,
-        rect.x1 - 10.0,
-        rect.y0 + 49.0,
-    );
-    scene.fill(
-        Fill::NonZero,
-        transform,
-        colors.accent[5],
-        None,
-        &RoundedRect::from_rect(button, f64::from(theme.tokens.radii.sm)),
-    );
-    tr.draw_text_weighted(
+    ui::widget::Button::paint(
         scene,
-        &t("activity-resume-button"),
-        theme.tokens.typography.scale.sm,
-        theme
-            .tokens
-            .colors
-            .on_accent(ui::tokens::colors::ON_FILL_MIN_CONTRAST),
-        at(transform, button.x0 + 10.0, button.y0 + 8.0),
-        None,
-        ui::text_render::TextWeight::Medium,
+        transform,
+        tr,
+        theme,
+        &ui::widget::ButtonFace::new(button, &button_label)
+            .primary()
+            .text_size(theme.tokens.typography.scale.sm)
+            .radius(f64::from(theme.tokens.radii.sm)),
     );
 }
 
@@ -1937,12 +1935,16 @@ impl RoomActivityPane {
             } else {
                 self.host.local_author(self.source.authors_mut(), &actor)
             };
+            // The hue follows the person, as receipt rows' does: one person
+            // editing from this device and acting through a receipt is one
+            // colour, not one per key.
             if let Some(principal) = principal {
+                let hue = ui::history_source::stable_hue(&principal);
                 self.source.authors_mut().register(
                     &actor,
                     ui::widget::HistoryAuthor::new(
                         principal,
-                        ui::history_source::stable_hue(&actor),
+                        hue,
                         ui::history_source::short_id(&actor),
                     ),
                 );
@@ -3695,7 +3697,7 @@ impl RoomActivityPane {
             let title_lines = tr.clamp_to_lines(
                 &brief.title,
                 type_size(tr, theme.tokens.typography.scale.base),
-                text_width(x1 - x0 - 24.0),
+                brief_text_width(x1 - x0),
                 2,
             );
             let collapsed_height = metrics.height(title_lines.len(), 0);
@@ -7113,7 +7115,8 @@ fn draw_brief_card(
     now: SystemTime,
 ) {
     let (scene, transform, tr, theme) = (&mut *ctx.scene, ctx.transform, &mut *ctx.text, ctx.theme);
-    let rail_x = rect.x0 + 20.0;
+    let rail_x = rect.x0 + BRIEF_RAIL_X;
+    let text_x = rect.x0 + BRIEF_TEXT_INSET;
     scene.stroke(
         &Stroke::new(2.0),
         transform,
@@ -7124,11 +7127,14 @@ fn draw_brief_card(
     scene.fill(
         Fill::NonZero,
         transform,
-        theme.tokens.colors.surfaces.raised,
+        ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
         None,
-        &vello::kurbo::Circle::new((rail_x, rect.y0 + 18.0), 8.0),
+        &vello::kurbo::Circle::new(
+            (rail_x, rect.y0 + m.pad + m.title_lh / 2.0),
+            BRIEF_RAIL_KNOB,
+        ),
     );
-    let width = text_width(rect.width() - 24.0);
+    let width = brief_text_width(rect.width());
     let title_lines = tr.clamp_to_lines(
         &brief.title,
         type_size(tr, theme.tokens.typography.scale.base),
@@ -7146,7 +7152,7 @@ fn draw_brief_card(
             theme.tokens.colors.text_primary,
             at(
                 transform,
-                rect.x0 + 12.0,
+                text_x,
                 rect.y0 + m.pad + small_count_to_f64(index) * m.title_lh,
             ),
             None,
@@ -7166,7 +7172,7 @@ fn draw_brief_card(
         tr,
         theme,
         &brief.authors,
-        rect.x0 + 12.0,
+        text_x,
         byline_y,
     );
     let byline_width = text_width((rect.x1 - 12.0 - byline_x).max(0.0));
@@ -7203,11 +7209,7 @@ fn draw_brief_card(
         &provenance,
         type_size(tr, theme.tokens.typography.scale.sm),
         theme.tokens.colors.text_dim,
-        at(
-            transform,
-            rect.x0 + 12.0,
-            rect.y0 + m.provenance_top(title_count),
-        ),
+        at(transform, text_x, rect.y0 + m.provenance_top(title_count)),
         None,
     );
     if expanded {
@@ -7228,12 +7230,7 @@ fn draw_brief_card(
             ui::widget::Avatar::draw_at(
                 scene,
                 transform,
-                Rect::new(
-                    rect.x0 + 18.0,
-                    action_y - 2.0,
-                    rect.x0 + 34.0,
-                    action_y + 14.0,
-                ),
+                Rect::new(rail_x - 8.0, action_y - 2.0, rail_x + 8.0, action_y + 14.0),
                 &initial,
                 vello::peniko::Color::from_rgba8(r, g, b, 255),
                 theme,
@@ -7248,14 +7245,14 @@ fn draw_brief_card(
             let action_line = tr.elide_to_width(
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
-                text_width(rect.width() - 58.0),
+                width,
             );
             tr.draw_text(
                 scene,
                 &action_line,
                 type_size(tr, theme.tokens.typography.scale.sm),
                 theme.tokens.colors.text_primary,
-                at(transform, rect.x0 + 40.0, action_y),
+                at(transform, text_x, action_y),
                 None,
             );
             action_y += m.action_pitch();
@@ -7278,7 +7275,7 @@ fn draw_brief_card(
         },
         at(
             transform,
-            rect.x0 + 12.0,
+            text_x,
             rect.y0 + m.affordance_top(title_count, action_count),
         ),
         Some(width),
@@ -7491,6 +7488,19 @@ fn draw_brief_author_stack(
     } else {
         x + small_count_to_f64(badges) * 12.0 + 10.0
     }
+}
+
+/// A brief card's timeline rail, and the knob beside its title.
+const BRIEF_RAIL_X: f64 = 14.0;
+const BRIEF_RAIL_KNOB: f64 = 4.0;
+/// Where a brief card's text starts: clear of the rail, its knob, and the
+/// avatars expanded actions centre on it.
+const BRIEF_TEXT_INSET: f64 = 32.0;
+
+/// The width a brief card's lines wrap and elide to. The card is sized from
+/// the same width, so a title can't wrap differently from the card it fills.
+fn brief_text_width(card_width: f64) -> f32 {
+    text_width(card_width - BRIEF_TEXT_INSET - 12.0)
 }
 
 /// The vertical rhythm of one catch-up card, from measured line heights so
