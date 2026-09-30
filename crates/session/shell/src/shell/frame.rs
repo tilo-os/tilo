@@ -800,9 +800,15 @@ impl FrameBuilder {
             let pointer = std::ptr::from_ref(widget);
             if widget.is_focusable()
                 && widget.is_enabled()
-                && let Some((&node, _)) = node_map
-                    .iter()
-                    .find(|(_, mapped)| std::ptr::addr_eq(**mapped as *const dyn Widget, pointer))
+                && let Some((&node, _)) = node_map.iter().find(|(_, mapped)| {
+                    // `TileHost` children are `dyn AppWidget`; comparing the
+                    // full `dyn Widget` fat pointer misses the same heap
+                    // object because the vtables differ.
+                    std::ptr::eq(
+                        (**mapped as *const dyn Widget).cast::<()>(),
+                        pointer.cast::<()>(),
+                    )
+                })
             {
                 order.push(node);
             }
@@ -873,7 +879,78 @@ impl FrameBuilder {
         self.set_native_focus_with_reveal(focus, target, true);
     }
 
+    fn widget_name(&self, id: NodeId) -> Option<&'static str> {
+        self.node_map.get(&id).map(|&widget| {
+            // SAFETY: this map belongs to the current, live layout tree.
+            unsafe { (*widget).name() }
+        })
+    }
+
+    fn active_tile_is_terminal(&self) -> bool {
+        use crate::shell::state::{AppKind, TileContent};
+        let chrome = self.chrome();
+        let tree = chrome.tree();
+        let Some(ws) = tree.desktop.active_workspace() else {
+            return false;
+        };
+        let strip = tree
+            .desktop
+            .active_strip
+            .get(&ws.id)
+            .and_then(|sid| ws.strips.iter().find(|s| s.id == *sid))
+            .or_else(|| ws.strips.first());
+        let Some(strip) = strip else {
+            return false;
+        };
+        let group = tree
+            .desktop
+            .active_group_for(strip.id)
+            .and_then(|gid| strip.window_groups.iter().find(|g| g.id == gid))
+            .or_else(|| strip.window_groups.first());
+        let Some(group) = group else {
+            return false;
+        };
+        let tab = group
+            .tabs
+            .iter()
+            .find(|t| t.id == group.active_tab)
+            .or_else(|| group.tabs.first());
+        tab.is_some_and(|tab| match &tab.tile {
+            TileContent::AppPlaceholder {
+                kind: AppKind::Terminal,
+                ..
+            }
+            | TileContent::Stub {
+                kind: AppKind::Terminal,
+                ..
+            } => true,
+            TileContent::Foreign { app_id, .. } => app_id == "so.tilo.terminal",
+            _ => false,
+        })
+    }
+
     fn initial_focus_target(&self, order: &[NodeId]) -> Option<NodeId> {
+        // A focused Terminal must receive typing, including Space and Enter.
+        // Chrome controls come first in DFS and used to steal initial focus;
+        // Activate then opened workspace settings instead of sending CR.
+        if self.active_tile_is_terminal() {
+            // TileHost children are `dyn AppWidget`; chrome focus order
+            // compares `dyn Widget` fat pointers and used to miss the
+            // Terminal even though it is in the live node map.
+            if let Some((&id, _)) = self.node_map.iter().find(|(_, mapped)| {
+                let widget = unsafe { &***mapped };
+                widget.name() == "Terminal" && widget.is_focusable() && widget.is_enabled()
+            }) {
+                return Some(id);
+            }
+            if let Some(terminal) = order
+                .iter()
+                .copied()
+                .find(|id| self.widget_name(*id) == Some("Terminal"))
+            {
+                return Some(terminal);
+            }
+        }
         // Overflowing scroll regions are keyboard targets too, but an
         // unnamed container must not take the initial focus from the setup
         // form's first control. Keep it in the Tab order for keyboard scrolling.
@@ -2889,6 +2966,36 @@ impl FrameBuilder {
         // widget (editing controls may consume it), then activate only when it
         // was otherwise unhandled.
         if !handled
+            && let WindowEvent::KeyboardInput { event: key, .. } = event
+            && key.state == winit::event::ElementState::Pressed
+            && matches!(
+                key.logical_key,
+                Key::Named(NamedKey::Enter | NamedKey::Space)
+            )
+            && self.active_tile_is_terminal()
+            && let Some((&id, &widget)) = self
+                .node_map
+                .iter()
+                .find(|(_, mapped)| unsafe { (***mapped).name() } == "Terminal")
+        {
+            let taffy = self.taffy();
+            unsafe {
+                (*widget).handle_event(
+                    event,
+                    &mut ui::widget::EventCtx {
+                        scale_factor: 1.0,
+                        modifiers,
+                        state,
+                        path: root_obj,
+                        handled: &mut handled,
+                        focus_target: &mut focus_target,
+                        node_id: id,
+                        taffy,
+                    },
+                );
+            }
+        }
+        if !handled
             && let WindowEvent::KeyboardInput { event, .. } = event
             && event.state == winit::event::ElementState::Pressed
             && matches!(
@@ -4210,6 +4317,98 @@ mod tests {
         native_oobe_tab_and_shift_tab_follow_dfs_order();
         native_oobe_focus_order_excludes_disabled_controls();
         focused_terminal_gets_plain_tab_before_focus_traversal();
+    }
+
+    #[test]
+    fn control_socket_typing_reaches_the_hosted_terminal_pty() {
+        use crate::shell::state::{AppKind, TileContent};
+        use winit::keyboard::SmolStr;
+        // Production chrome path: `FrameBuilder::dispatch_event`, the same
+        // route tilo-control type/key and the DRM keyboard take once the
+        // compositor has mapped the press.
+        let mut fb = FrameBuilder::new((1280, 800));
+        fb.relayout();
+        // W17 / window.new.terminal leaves the Terminal tile active. The
+        // demo tree otherwise keeps Notes first, so chrome would still
+        // steal initial focus. Switch through the live GroupRow so harvest
+        // cannot write the Notes tab back over the tree.
+        let target = {
+            let chrome = fb.chrome();
+            let tree = chrome.tree();
+            tree.desktop.active_workspace().and_then(|workspace| {
+                workspace.strips.iter().find_map(|strip| {
+                    strip.window_groups.iter().find_map(|group| {
+                        group
+                            .tabs
+                            .iter()
+                            .find(|tab| {
+                                matches!(
+                                    &tab.tile,
+                                    TileContent::AppPlaceholder {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    } | TileContent::Stub {
+                                        kind: AppKind::Terminal,
+                                        ..
+                                    }
+                                )
+                            })
+                            .map(|tab| (strip.id, group.id, tab.id))
+                    })
+                })
+            })
+        };
+        let (strip, group, tab) = target.expect("production chrome must include a Terminal tab");
+        assert!(
+            fb.host_mut().focus_window_on_strip(strip, group, tab),
+            "the compositor must be able to focus the hosted Terminal tab"
+        );
+        fb.relayout();
+        let mut focus = None;
+        fb.reconcile_native_focus(&mut focus);
+        assert_eq!(
+            fb.widget_name(focus.expect("a terminal tile must take initial focus")),
+            Some("Terminal"),
+            "chrome must not keep initial focus on a workspace pill"
+        );
+        let probe = fb.node_map.values().find_map(|widget| {
+            // SAFETY: node_map pointers are owned by the live widget tree.
+            let widget = unsafe { &mut **widget };
+            (widget.name() == "Terminal")
+                .then(|| widget.as_any_mut())
+                .flatten()
+                .and_then(|any| any.downcast_mut::<terminal::TerminalWidget>())
+                .map(|term| term.attach_input_probe())
+        });
+        let Some(probe) = probe else {
+            panic!("production chrome must mount a hosted Terminal");
+        };
+        let mut doc = AutoCommit::new();
+        for key in [
+            Key::Character(SmolStr::new_static("e")),
+            Key::Named(NamedKey::Space),
+            Key::Named(NamedKey::Enter),
+        ] {
+            assert!(
+                fb.dispatch_event(
+                    &key_press(key),
+                    &Modifiers::default(),
+                    &mut doc,
+                    &automerge::ROOT,
+                    &mut focus,
+                ),
+                "typed keys must be consumed on the production chrome path"
+            );
+        }
+        let mut got = Vec::new();
+        while let Ok(chunk) = probe.try_recv() {
+            got.extend(chunk);
+        }
+        assert_eq!(
+            got.as_slice(),
+            b"e \r",
+            "letters, Space and Enter must reach the PTY, not chrome Activate",
+        );
     }
 
     #[test]

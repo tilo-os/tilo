@@ -265,6 +265,17 @@ impl App {
                     .rev(),
             );
         }
+        if self
+            .history
+            .as_ref()
+            .is_none_or(|history| !history.captures_input())
+        {
+            self.focusable_order.sort_by_key(|id| {
+                self.history
+                    .as_ref()
+                    .is_some_and(|history| history.owns_node(*id, &self.layout.taffy))
+            });
+        }
         self.accessibility.focus_trap_active = self
             .history
             .as_ref()
