@@ -732,11 +732,10 @@ if ! "$TILO_OS_DIR/dev/disk-image.sh" "$TILO_IMAGE" "$OUTDIR" "${disk_args[@]}";
   msg "pass 2: rewriting that digest into the UKI the image already carries"
   # NOT a rebuild. Rebuilding the UKI does not converge: it produces a new rootfs
   # layer, so install then computes a third digest, and a fourth — measured here as
-  # 0196…, then 40b1…, then 317b… . Rewriting the digest inside the existing UKI
-  # cannot move the target, because the added layer touches only /boot and /boot is
-  # the one tree excluded from the composefs digest. So this converges in exactly two
-  # passes, and it does not depend on the layer cache holding the rootfs identical
-  # between them.
+  # 0196…, then 40b1…, then 317b… . reseal-image.sh extracts the existing UKI,
+  # edits its command line, and adds it with COPY. A RUN layer copies up /etc and
+  # changes its directory mtime in Podman, which moves bootc's composefs digest
+  # even when the command edits only /boot. COPY leaves that metadata unchanged.
   #
   # Both digests are 128 hex characters, so the edit is length-preserving and the PE
   # layout is untouched; uki-cmdline.py refuses anything else.
