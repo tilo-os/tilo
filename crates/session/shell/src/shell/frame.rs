@@ -4975,6 +4975,55 @@ mod tests {
             "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
         );
     }
+
+    #[test]
+    #[serial_test::serial(process_env)]
+    fn theme_file_write_repaint_quick_settings_chrome() {
+        use ui::a11y::relative_luminance;
+        use ui::chrome::shell::panel_ground;
+
+        let config = tempfile::tempdir().expect("isolated appearance store");
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", config.path());
+        env.remove("TILO_SHOTS_THEME");
+        env.remove("TILO_SHOTS_TEXT_SCALE");
+
+        let write = |theme: &str| {
+            let mut values = serde_json::Map::new();
+            values.insert("theme".into(), serde_json::Value::String(theme.into()));
+            values.insert("high_contrast".into(), serde_json::Value::Bool(false));
+            settings_store::update_section("appearance", values).expect("write appearance");
+        };
+
+        let mut frame = FrameBuilder::new((1280, 800));
+        frame.enable_configured_theme();
+        frame.with_chrome(|chrome| chrome.overlays.quick_settings = true);
+        frame.relayout();
+
+        write("light");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let light = panel_ground(&frame.theme);
+        let light_bg = frame.theme.bg_app;
+        let light_y = relative_luminance(light);
+
+        write("dark");
+        frame.with_chrome(ChromeState::note_appearance_change);
+        let _ = frame.paint();
+        let dark = panel_ground(&frame.theme);
+        let dark_bg = frame.theme.bg_app;
+        let dark_y = relative_luminance(dark);
+
+        assert_ne!(
+            (light, light_bg),
+            (dark, dark_bg),
+            "writing appearance.theme light then dark must change the Quick Settings chrome the next paint uses"
+        );
+        assert!(
+            (light_y - dark_y).abs() > 0.08,
+            "light and dark Quick Settings chrome must not share luminance (light {light_y:.3}, dark {dark_y:.3})"
+        );
+    }
 }
 
 #[cfg(test)]
