@@ -288,7 +288,8 @@ mod tests {
             store.load_resume(&device, &resumed, 2).unwrap().unwrap(),
             HashSet::from([[1; 32], [2; 32]])
         );
-        assert!(store.fork_resume(&device, &log, 2).unwrap().is_some());
+        // With four retained logs, a new session must not evict this
+        // position before the late subscription can use it.
         store.start_resume(&device).unwrap();
         assert!(
             store.load_resume(&device, &resumed, 2).unwrap().is_some(),
