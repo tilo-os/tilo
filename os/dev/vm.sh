@@ -268,6 +268,16 @@ cmd_wait() {
       die "qemu exited during boot; see $TILO_QEMU_LOG / $TILO_SERIAL"; }
     sleep 2
   done
+  if command -v sshpass >/dev/null 2>&1 \
+     && [ -n "${TILO_USER:-}" ] && [ -n "${TILO_PASS:-}" ]; then
+    local ssh_diagnostic
+    ssh_diagnostic="$(gssh 'systemctl status greetd.service tilo-validation-ssh.service --no-pager --lines=20; systemctl --failed --no-pager' 2>&1)" \
+      || warn "validation SSH diagnostic probe failed"
+    if [ -n "$ssh_diagnostic" ]; then
+      warn "validation SSH diagnostic output:"
+      printf '%s\n' "$ssh_diagnostic" | tail -n 100 >&2
+    fi
+  fi
   boot_diagnose "$TILO_SERIAL" || true
   if [ -s "$TILO_SERIAL" ]; then
     warn "last lines of $TILO_SERIAL:"
