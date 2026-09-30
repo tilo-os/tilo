@@ -41,6 +41,8 @@ mod capture_protection;
 mod client_exit_closes_its_tabs;
 #[path = "clipboard_e2e.rs"]
 mod clipboard_e2e;
+#[path = "closing_window_frames.rs"]
+mod closing_window_frames;
 #[path = "collab_policy_state.rs"]
 mod collab_policy_state;
 #[path = "color_management_protocol.rs"]
@@ -117,6 +119,8 @@ mod headless_examples_smoke;
 mod identity_startup;
 #[path = "idle_inhibit_protocol.rs"]
 mod idle_inhibit_protocol;
+#[path = "idle_settles.rs"]
+mod idle_settles;
 #[path = "input_device_settings.rs"]
 mod input_device_settings;
 #[path = "input_method_wire.rs"]
