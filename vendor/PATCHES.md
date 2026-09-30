@@ -147,6 +147,11 @@ through `BumpAllocators::failed`. `BudgetTracker::set_device_limits` sets it
 from `device.limits()`, rounded down to a size class the engine's buffer pool
 allocates exactly, since the pool rounds requests up and binds whole buffers.
 
+Growth stops at `BumpBudget::ceiling_for_viewport`, not the flat `CEILING`:
+the flat `blend_spill` ceiling (4M words) sat below one spilled blend level
+per tile on a 5120x2880 desktop (14.7M), so every frame overflowed, was
+refused growth, and never converged.
+
 ## `vendor/vello/src/bump_budget.rs` (new)
 
 `BudgetTracker`: owns one renderer's `BumpBudget`, starts a non-blocking

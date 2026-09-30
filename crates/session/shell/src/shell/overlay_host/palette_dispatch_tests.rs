@@ -6,6 +6,12 @@ use ui::widget::Container;
 fn host_with_chrome() -> (ShellOverlayHost, crate::shell::chrome_state::Chrome) {
     let tree = WorkspaceTree::bootstrap_demo();
     let chrome = ChromeState::new(tree);
+    {
+        let mut state = chrome.borrow_mut();
+        state.quick_settings.brightness_available = true;
+        state.quick_settings.radios.wifi_available = true;
+        state.quick_settings.bluetooth_available = true;
+    }
     let host = ShellOverlayHost::with_fixture_content(Box::new(Container::new()))
         .with_chrome(chrome.clone());
     (host, chrome)
