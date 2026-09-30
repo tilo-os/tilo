@@ -113,7 +113,8 @@ fn record_power_history_at(path: &Path, point: BatteryHistoryPoint) -> Result<bo
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
     }
-    atomic_file::write_with_mode(path, &bytes, 0o600).map_err(|error| error.to_string())?;
+    tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
+        .map_err(|error| error.to_string())?;
     Ok(true)
 }
 

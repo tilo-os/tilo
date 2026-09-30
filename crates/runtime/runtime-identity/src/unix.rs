@@ -212,8 +212,8 @@ const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 /// failure phase. Lifecycle callers admit the identity namespace and hold its
 /// lock; provisioning that parent durably is a separate responsibility.
 fn write_private_atomic(path: &std::path::Path, bytes: &[u8]) -> io::Result<()> {
-    atomic_file::replace(path, bytes, atomic_file::Privacy::OwnerOnly)
-        .map_err(atomic_file::PublicationError::into_io_error)
+    tilo_files::native::atomic::replace(path, bytes, tilo_files::native::atomic::Privacy::OwnerOnly)
+        .map_err(tilo_files::native::atomic::PublicationError::into_io_error)
 }
 
 /// Resolve the per-login-user identity directory using XDG rules.
@@ -481,8 +481,8 @@ fn import_identity_unlocked(
         // errors arise only before metadata publication (read, validation,
         // provider access or serialization), so the staged v1 may be removed.
         if matches!(
-            atomic_file::publication_state(&error),
-            None | Some(atomic_file::PublicationState::NotPublished)
+            tilo_files::native::atomic::publication_state(&error),
+            None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
         ) {
             let _ = fs::remove_file(&path);
         }
@@ -557,8 +557,8 @@ fn secure_record_unlocked(
             if secure_store::FILE_FALLBACK
                 && preferred.protection() == KeyProtection::SecretService
                 && matches!(
-                    atomic_file::publication_state(&preferred_error),
-                    None | Some(atomic_file::PublicationState::NotPublished)
+                    tilo_files::native::atomic::publication_state(&preferred_error),
+                    None | Some(tilo_files::native::atomic::PublicationState::NotPublished)
                 ) =>
         {
             // Errors without a publication phase occur before this attempt's
@@ -638,8 +638,8 @@ fn secure_record_with_provider_unlocked(
     let metadata = serde_json::to_vec_pretty(&record)
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
     if let Err(error) = write_private_atomic(path, &metadata) {
-        if atomic_file::publication_state(&error)
-            == Some(atomic_file::PublicationState::NotPublished)
+        if tilo_files::native::atomic::publication_state(&error)
+            == Some(tilo_files::native::atomic::PublicationState::NotPublished)
             && let Some(reference) = record.secret_ref.as_ref()
         {
             let _ = provider.remove(&reference.locator);
@@ -2395,8 +2395,8 @@ mod tests {
 
     #[test]
     fn secure_record_publication_cleanup_preserves_published_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
         for (checkpoint, expected) in [
             (
@@ -2416,7 +2416,10 @@ mod tests {
                 secure_identity_with_provider(dir.path(), "personal", &provider)
             })
             .expect_err("the real metadata writer must report the injected failure");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(&path, &provider, 71);
         }
     }
@@ -2469,8 +2472,8 @@ mod tests {
 
     #[test]
     fn secure_record_publication_cleanup_before_publish_removes_new_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("personal.json");
@@ -2482,7 +2485,7 @@ mod tests {
         })
         .expect_err("the real metadata writer must report the injected failure");
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::NotPublished)
         );
         assert_eq!(fs::read(&path).unwrap(), original);
@@ -2495,8 +2498,10 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preserves_second_write_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth, with_observer};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{
+            Checkpoint, with_failure_on_nth, with_observer,
+        };
         for (checkpoint, expected) in [
             (
                 Checkpoint::AfterPublish,
@@ -2530,7 +2535,10 @@ mod tests {
             )
             .expect_err("v2 publication must report the injected failure");
             assert_eq!(completed.get(), 1, "v1 must commit before v2 fails");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(
                 &dir.path().join("personal.json"),
                 &provider,
@@ -2541,8 +2549,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_before_second_publish_removes_record_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let provider = BrokerFileProvider::new(dir.path());
         let error = with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
@@ -2555,7 +2563,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::NotPublished)
         );
         assert!(!dir.path().join("personal.json").exists());
@@ -2568,8 +2576,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_unknown_before_rename_preserves_record_and_secret() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let provider = BrokerFileProvider::new(dir.path());
         let original = record_bytes("Ada", 75);
@@ -2578,7 +2586,7 @@ mod tests {
         })
         .unwrap_err();
         assert_eq!(
-            atomic_file::publication_state(&error),
+            tilo_files::native::atomic::publication_state(&error),
             Some(PublicationState::PublicationUnknown)
         );
         assert_eq!(
@@ -2591,8 +2599,8 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preferred_provider_does_not_fallback_after_publication() {
-        use atomic_file::PublicationState;
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::PublicationState;
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         for (checkpoint, expected) in [
             (
                 Checkpoint::AfterPublish,
@@ -2610,7 +2618,10 @@ mod tests {
                 })
             })
             .expect_err("fallback must not hide an uncertain metadata publication");
-            assert_eq!(atomic_file::publication_state(&error), Some(expected));
+            assert_eq!(
+                tilo_files::native::atomic::publication_state(&error),
+                Some(expected)
+            );
             assert_published_identity_keeps_secret(
                 &dir.path().join("personal.json"),
                 &SecretServiceFixture::new(dir.path(), false),
@@ -2633,7 +2644,7 @@ mod tests {
 
     #[test]
     fn import_publication_cleanup_preferred_provider_may_fallback_before_publication() {
-        use atomic_file::test_support::{Checkpoint, with_failure_on_nth};
+        use tilo_files::native::atomic::test_support::{Checkpoint, with_failure_on_nth};
         let dir = tempfile::tempdir().unwrap();
         let imported = with_preferred_secret_service(false, || {
             with_failure_on_nth(Checkpoint::BeforePublish, 2, || {
@@ -2666,7 +2677,7 @@ mod tests {
             &SecretServiceFixture::new(dir.path(), true),
         )
         .unwrap_err();
-        assert!(atomic_file::publication_state(&error).is_none());
+        assert!(tilo_files::native::atomic::publication_state(&error).is_none());
         assert!(!dir.path().join("personal.json").exists());
 
         let imported = with_preferred_secret_service(true, || {

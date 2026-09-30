@@ -23,7 +23,7 @@ fn agent_launch_stage_failure_requires_actual_commit_error() {
     };
     let result = crate::storage::test_support::with_save_failure(
         dir.path(),
-        atomic_file::test_support::Checkpoint::PublishSubmitted,
+        tilo_files::native::atomic::test_support::Checkpoint::PublishSubmitted,
         || store.claim_launch_candidate_for_runtime(&custody, runtime, None),
     );
     let LaunchCandidateClaim::Failed(failed) = result else {
@@ -79,7 +79,7 @@ fn agent_launch_stage_plain_consumed_custody_stays_refused_after_source_reconcil
     };
     let result = crate::storage::test_support::with_save_failure(
         dir.path(),
-        atomic_file::test_support::Checkpoint::PublishSubmitted,
+        tilo_files::native::atomic::test_support::Checkpoint::PublishSubmitted,
         || store.claim_launch_candidate(&custody, runtime()),
     );
     assert!(matches!(result, Err(AgentCommitError::Uncertain { .. })));

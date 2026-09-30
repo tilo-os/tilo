@@ -391,7 +391,7 @@ fn commit_personal_device(
             .or_else(|_| std::fs::metadata(identity_dir))
             .map(|metadata| (metadata.uid(), metadata.gid()))?
     };
-    atomic_file::write_creating_parent(&path, fleet)?;
+    tilo_files::native::atomic::write_creating_parent(&path, fleet)?;
     #[cfg(unix)]
     {
         use std::os::unix::ffi::OsStrExt as _;
@@ -671,28 +671,28 @@ fn stage_personal_enrollment(
     let stage_dir = enrollment_stage_dir(identity_root).join(&stage_name);
     std::fs::create_dir_all(&stage_dir)?;
     let cert = tilo_user_identity::canonical::canonical_bytes(&payload.cert)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "record.json"),
         &projection.identity,
         0o600,
     )?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "registry.json"),
         &projection.registry,
         0o600,
     )?;
-    atomic_file::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write(&staged(&stage_dir, "fleet.json"), &projection.fleet)?;
+    tilo_files::native::atomic::write_with_mode(
         &staged(&stage_dir, "home-peers.json"),
         &projection.peers,
         0o644,
     )?;
-    atomic_file::write(
+    tilo_files::native::atomic::write(
         &staged(&stage_dir, "user-pubkey.bin"),
         &payload.cert.user_public_key,
     )?;
-    atomic_file::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
-    atomic_file::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "per-user-cert.bin"), &cert)?;
+    tilo_files::native::atomic::write(&staged(&stage_dir, "default-cert.bin"), &cert)?;
     let marker = PersonalEnrollmentMarker {
         schema_version: PERSONAL_ENROLLMENT_SCHEMA,
         identity_dir: identity_dir.to_path_buf(),
@@ -704,7 +704,11 @@ fn stage_personal_enrollment(
     };
     let marker_path = personal_marker_path(identity_root, payload.nonce);
     std::fs::create_dir_all(enrollment_commit_dir(identity_root))?;
-    atomic_file::write_with_mode(&marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        &marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     let _ = paths; // binds staging to the active device layout at the call site.
     Ok((marker_path, marker))
 }
@@ -720,7 +724,11 @@ fn authorize_personal_commit(
     validate_requester(requester_lease)?;
     let mut marker = marker.clone();
     marker.commit_ready = true;
-    atomic_file::write_with_mode(marker_path, &serde_json::to_vec_pretty(&marker)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(
+        marker_path,
+        &serde_json::to_vec_pretty(&marker)?,
+        0o600,
+    )?;
     Ok(marker)
 }
 
@@ -764,35 +772,38 @@ fn commit_staged_personal_enrollment(
     std::fs::create_dir_all(&marker.identity_dir)?;
     let record = identity_record_path(&marker.identity_dir, marker.user_public_key);
     let fleet = fleet_path(&marker.identity_dir, marker.user_public_key);
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &record,
         &std::fs::read(staged(&stage_dir, "record.json"))?,
         0o600,
     )?;
     checkpoint(PersonalCommitCheckpoint::Fleet)?;
-    atomic_file::write_creating_parent(&fleet, &std::fs::read(staged(&stage_dir, "fleet.json"))?)?;
+    tilo_files::native::atomic::write_creating_parent(
+        &fleet,
+        &std::fs::read(staged(&stage_dir, "fleet.json"))?,
+    )?;
     checkpoint(PersonalCommitCheckpoint::HomePeers)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &identity_root.join("home-peers.json"),
         &std::fs::read(staged(&stage_dir, "home-peers.json"))?,
         0o644,
     )?;
     checkpoint(PersonalCommitCheckpoint::Registry)?;
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &marker.identity_dir.join("registry.json"),
         &std::fs::read(staged(&stage_dir, "registry.json"))?,
         0o600,
     )?;
     checkpoint(PersonalCommitCheckpoint::UserPublicKey)?;
-    atomic_file::write(&paths.user_pubkey, &marker.user_public_key)?;
+    tilo_files::native::atomic::write(&paths.user_pubkey, &marker.user_public_key)?;
     checkpoint(PersonalCommitCheckpoint::PerUserCert)?;
-    atomic_file::write_creating_parent(
+    tilo_files::native::atomic::write_creating_parent(
         &paths.device_cert_for_user(&marker.user_public_key),
         &std::fs::read(staged(&stage_dir, "per-user-cert.bin"))?,
     )?;
     // Publish this last: every projection file has been durably installed.
     checkpoint(PersonalCommitCheckpoint::DefaultCert)?;
-    atomic_file::write(&paths.device_cert, &cert_bytes)?;
+    tilo_files::native::atomic::write(&paths.device_cert, &cert_bytes)?;
     // A polkit-launched enrollment may have written these as root. Restore
     // the identity owner's uid/gid before the marker is cleared, so recovery
     // repeats this step if it is interrupted.
@@ -950,7 +961,11 @@ fn register_home_peer(
         bail!("home-peer registry is full");
     }
     registrations.sort_by(|left, right| left.device_node_id.cmp(&right.device_node_id));
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -1471,7 +1486,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                         .context("approving device omitted home-peer configuration")?;
                     let _: fs::full_replica::HomePeerSet = toml::from_str(home_peer_toml)
                         .context("approving device returned an invalid home-peer configuration")?;
-                    atomic_file::write(
+                    tilo_files::native::atomic::write(
                         home_peer_output.context("home-peer output is required")?,
                         home_peer_toml.as_bytes(),
                     )?;
@@ -1536,7 +1551,7 @@ fn join_with_token(token_text: &str, options: JoinOptions<'_>) -> anyhow::Result
                                         // projection, but still waits for
                                         // Finalized before changing its active
                                         // identity binding.
-                                        atomic_file::write(
+                                        tilo_files::native::atomic::write(
                                             &paths.user_pubkey,
                                             &response.payload.cert.user_public_key,
                                         )?;
@@ -1660,7 +1675,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
     })?;
     let code = pairing_code(device.verifying_key().to_bytes(), relay_service_node_id);
     if let Some(path) = status_file {
-        atomic_file::write_with_mode(
+        tilo_files::native::atomic::write_with_mode(
             path,
             &serde_json::to_vec(&serde_json::json!({
                 "state": "waiting_for_approval",
@@ -1711,7 +1726,7 @@ fn pair(options: JoinOptions<'_>, status_file: Option<&std::path::Path>) -> anyh
                     },
                 )?;
                 if let Some(path) = status_file {
-                    atomic_file::write_with_mode(
+                    tilo_files::native::atomic::write_with_mode(
                         path,
                         &serde_json::to_vec(&serde_json::json!({
                             "state": "complete",
@@ -2441,7 +2456,7 @@ mod tests {
             };
             sign_revocation_entry(&mut revocation, &root).unwrap();
             let identity = tempfile::tempdir().unwrap();
-            atomic_file::write_creating_parent(
+            tilo_files::native::atomic::write_creating_parent(
                 &fleet_path(identity.path(), user),
                 &serde_json::to_vec(&FleetProjection {
                     schema_version: 1,
@@ -2764,7 +2779,7 @@ mod tests {
                 device_cert: Some(other_cert),
                 relay_workspace_ids: vec![7],
             };
-            atomic_file::write(
+            tilo_files::native::atomic::write(
                 &identity_root.path().join("home-peers.json"),
                 &serde_json::to_vec_pretty(&vec![other.clone()]).unwrap(),
             )
@@ -2938,7 +2953,7 @@ mod tests {
             &issuer_cert,
         )
         .unwrap();
-        atomic_file::write_creating_parent(
+        tilo_files::native::atomic::write_creating_parent(
             &fleet_path(approver_identities.path(), root.verifying_key().to_bytes()),
             &serde_json::to_vec_pretty(&FleetProjection {
                 schema_version: 1,
@@ -3143,7 +3158,7 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("home-peers.json");
-            atomic_file::write(&path, b"not json").unwrap();
+            tilo_files::native::atomic::write(&path, b"not json").unwrap();
             let root = ed25519_dalek::SigningKey::from_bytes(&[9; 32]);
             assert!(register_home_peer(dir.path(), &payload(&root).cert, [8; 32], &[2]).is_err());
             assert_eq!(std::fs::read(&path).unwrap(), b"not json");

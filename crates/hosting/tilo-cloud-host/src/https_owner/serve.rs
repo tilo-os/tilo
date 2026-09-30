@@ -9,13 +9,13 @@ use super::{
     service::{CloudService, PrivateLane, spawn_private_broker},
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
-use atomic_file::{Privacy, PublishMode, StorageDirectory};
 use std::{
     ffi::OsString,
     path::{Path, PathBuf},
     sync::Arc,
 };
 use tilo_delivery_protocol::delivery_v3::capabilities::PRODUCT_DATA_V1;
+use tilo_files::native::atomic::{Privacy, PublishMode, StorageDirectory};
 use tilo_workspace_host::ingress::PreparedTransport;
 struct PreparedCloud {
     config: OperatorConfig,

@@ -178,7 +178,7 @@ impl State {
         // commits syncs it once per reservation instead of once per commit.
         if next > self.reserved {
             let reserved = next.saturating_add(SEQUENCE_RESERVATION_NS);
-            atomic_file::write(&path, &reserved.to_le_bytes())?;
+            tilo_files::native::atomic::write(&path, &reserved.to_le_bytes())?;
             std::fs::File::open(self.store.root())?.sync_all()?;
             self.reserved = reserved;
         }

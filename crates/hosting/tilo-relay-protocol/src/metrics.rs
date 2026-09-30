@@ -59,7 +59,7 @@ pub enum MetricsFileError {
 pub fn save_metrics(state_root: &Path, snapshot: &MetricsSnapshot) -> Result<(), MetricsFileError> {
     std::fs::create_dir_all(state_root)?;
     let bytes = serde_json::to_vec_pretty(snapshot)?;
-    atomic_file::write(&state_root.join(METRICS_FILE), &bytes)?;
+    tilo_files::native::atomic::write(&state_root.join(METRICS_FILE), &bytes)?;
     Ok(())
 }
 

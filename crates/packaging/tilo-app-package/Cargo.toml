@@ -22,7 +22,7 @@ path = "src/lib.rs"
 
 [dependencies]
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { version = "0.1.0", path = "../../../crates/system/atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 tilo-xdg-paths = { version = "0.1.0", path = "../../../crates/system/xdg-paths" }
 # Threshold-shared Ed25519 identity. Signing goes through the
 # identity's group key; verify is a regular Ed25519 verify against

@@ -423,7 +423,7 @@ impl RemoteRestoreStore {
                     .map_err(|error| format!("secure remote-desktop restore directory: {error}"))?;
             }
         }
-        atomic_file::write_with_mode(path, &bytes, 0o600)
+        tilo_files::native::atomic::write_with_mode(path, &bytes, 0o600)
             .map_err(|error| format!("write remote-desktop restores: {error}"))
     }
 }

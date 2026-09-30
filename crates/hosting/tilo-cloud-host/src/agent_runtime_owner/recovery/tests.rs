@@ -86,7 +86,7 @@ fn agent_prelaunch_recovery_uncertain_admission_requires_actual_reopen() {
     let invocation = uuid::Uuid::from_u128(910);
     let result = crate::storage::test_support::with_save_failure(
         dir.path(),
-        atomic_file::test_support::Checkpoint::BeforeCommit,
+        tilo_files::native::atomic::test_support::Checkpoint::BeforeCommit,
         || store.admit_agent_candidate(&caller, invocation, &input),
     );
     assert!(matches!(result, Err(AgentCommitError::Uncertain { .. })));

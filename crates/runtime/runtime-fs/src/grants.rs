@@ -96,7 +96,7 @@ pub enum FsError {
     /// Owns the original receipt-publication failure and any commit obligation.
     /// Retrying its commit requires retaining the `OperationOwner`'s writer
     /// exclusion; it neither unpoisons the owner nor resumes job bookkeeping.
-    Publication(atomic_file::PublicationError),
+    Publication(tilo_files::native::atomic::PublicationError),
     Transport(runtime_portal::NotAvailable),
     Io(std::io::Error),
 }

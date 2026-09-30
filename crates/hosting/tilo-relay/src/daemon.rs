@@ -1428,7 +1428,7 @@ fn persist_authority_high_water(
     let bytes = postcard::to_allocvec(&high_water)
         .map_err(|error| format!("could not encode authority high-water mark: {error}"))?;
     let path = authority_high_water_path(cache_dir);
-    atomic_file::write_creating_parent(&path, &bytes)
+    tilo_files::native::atomic::write_creating_parent(&path, &bytes)
         .map_err(|error| format!("could not persist {}: {error}", path.display()))
 }
 
@@ -1972,7 +1972,7 @@ impl ProtocolHandler for ManagementProtocol {
                         "home-peer name must be 1 to 80 bytes",
                     )));
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("home-peer-name"),
                     label.as_bytes(),
                     0o644,
@@ -2007,7 +2007,7 @@ impl ProtocolHandler for ManagementProtocol {
                         |error| AcceptError::from_err(std::io::Error::other(error.to_string())),
                     )?;
                 }
-                atomic_file::write_with_mode(
+                tilo_files::native::atomic::write_with_mode(
                     &self.state_root.join("decommissioned"),
                     b"decommissioned\n",
                     0o600,

@@ -298,7 +298,11 @@ fn refresh_home_peer_endpoint(
         .ok_or_else(|| anyhow::anyhow!("home peer is not registered"))?;
     registration.relay_endpoint = Some(endpoint.clone());
     registration.schema_version = tilo_relay::HomePeerRegistration::CURRENT_SCHEMA;
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 
@@ -404,7 +408,7 @@ fn save_pending_decommissions(
     identity_root: &std::path::Path,
     pending: &[PendingDecommission],
 ) -> anyhow::Result<()> {
-    atomic_file::write_with_mode(
+    tilo_files::native::atomic::write_with_mode(
         &pending_decommissions_path(identity_root),
         &serde_json::to_vec_pretty(pending)?,
         0o600,
@@ -471,7 +475,7 @@ fn persist_canonical_revocation(
     entries.retain(|entry| entry.revoked_device_public_key != revocation.revoked_device_public_key);
     entries.push(revocation.clone());
     entries.sort_by_key(|entry| entry.revoked_device_public_key);
-    atomic_file::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &postcard::to_allocvec(&entries)?, 0o600)?;
     Ok(())
 }
 
@@ -512,7 +516,7 @@ fn persist_fleet_revocation(
             })
     });
     revocations.push(serde_json::to_value(revocation)?);
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
+    tilo_files::native::atomic::write_with_mode(&path, &serde_json::to_vec_pretty(&fleet)?, 0o600)?;
     Ok(())
 }
 
@@ -540,7 +544,11 @@ fn update_home_peer_registry(
     } else {
         registrations.retain(|entry| entry.device_node_id != device);
     }
-    atomic_file::write_with_mode(&path, &serde_json::to_vec_pretty(&registrations)?, 0o644)?;
+    tilo_files::native::atomic::write_with_mode(
+        &path,
+        &serde_json::to_vec_pretty(&registrations)?,
+        0o644,
+    )?;
     Ok(())
 }
 

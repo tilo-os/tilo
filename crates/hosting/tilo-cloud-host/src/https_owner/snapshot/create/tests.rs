@@ -101,7 +101,7 @@ async fn cloud_snapshot_owner_pin_barrier_precedes_canonical_pair_and_manifest_h
 #[tokio::test]
 async fn cloud_snapshot_uncertain_owner_barrier_keeps_pending_and_never_exposes_pair() {
     use crate::storage::test_support::with_save_failure;
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     for checkpoint in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let f = snapshot_fixture().await;
         register(&f);

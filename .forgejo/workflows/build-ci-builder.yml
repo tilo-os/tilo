@@ -22,8 +22,6 @@ on:
       - "os/dev/builder-canary-inputs.py"
       - "rust-toolchain.toml"
       - "crates/system/advisory-lock/**"
-      - "crates/system/atomic-file/**"
-      - "crates/dev/test-env/**"
       - "crates/workspace-hack/**"
       - "vendor/wayland-backend/**"
       - "tools/ci/check-build-env.sh"
@@ -328,7 +326,7 @@ jobs:
         run: |
           test -n "${RUSTC_WRAPPER:-}"
           bash tools/ci/measure.sh "sccache cold canary" -- \
-            cargo build -p tilo-atomic-file --locked
+            cargo build -p tilo-advisory-lock --locked
           bash tools/ci/sccache-canary.sh cold
       - name: Save Cargo downloads
         if: steps.cargo-cache.outputs.cache-hit != 'true'
@@ -382,7 +380,7 @@ jobs:
         run: |
           test -n "${RUSTC_WRAPPER:-}"
           bash tools/ci/measure.sh "sccache warm canary" -- \
-            cargo build -p tilo-atomic-file --locked
+            cargo build -p tilo-advisory-lock --locked
           bash tools/ci/sccache-canary.sh warm
       - name: Retain only successful warm acceptance
         uses: actions/upload-artifact@ff15f0306b3f739f7b6fd43fb5d26cd321bd4de5 # v3

@@ -2,7 +2,6 @@
 //! This is not an ingress installation or native allocation qualification.
 use crate::{StatePeer, Store};
 use anyhow::{Context, Result, ensure};
-use atomic_file::FileIdentity;
 use std::{
     fs::File,
     sync::{
@@ -11,6 +10,7 @@ use std::{
     },
 };
 use tilo_action_broker::peer_actions::{OwnerPolicyClock, PolicyOrigin, PolicyTime};
+use tilo_files::native::atomic::FileIdentity;
 
 pub(crate) enum Current<T> {
     #[expect(

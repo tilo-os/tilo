@@ -1,6 +1,6 @@
 use super::*;
 use crate::*;
-use atomic_file::test_support::{Checkpoint, with_failure};
+use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
 
 #[test]
 fn delivery_v6_baseline_generation_is_explicit_and_old_inner_preserves_bytes() {

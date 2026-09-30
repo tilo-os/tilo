@@ -441,9 +441,15 @@ impl PackageStore {
                 set_mode(&target, mode)?;
             }
             std::fs::create_dir_all(&record)?;
-            atomic_file::write(&record.join(SIGNED_ROOT_FILE), &meta.signed_root_bytes())?;
-            atomic_file::write(&record.join(MANIFEST_FILE), &meta.manifest_bytes)?;
-            atomic_file::write(&record.join(COLLECTION_FILE), &meta.collection_bytes)?;
+            tilo_files::native::atomic::write(
+                &record.join(SIGNED_ROOT_FILE),
+                &meta.signed_root_bytes(),
+            )?;
+            tilo_files::native::atomic::write(&record.join(MANIFEST_FILE), &meta.manifest_bytes)?;
+            tilo_files::native::atomic::write(
+                &record.join(COLLECTION_FILE),
+                &meta.collection_bytes,
+            )?;
             swap_in(
                 &tree,
                 &layout.payload(meta.id),

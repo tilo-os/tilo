@@ -1,10 +1,10 @@
 use super::super::{CloudStoreSource, Current};
 use super::*;
 use crate::storage::test_support::with_save_failure;
-use atomic_file::test_support::Checkpoint;
 use ed25519_dalek::SigningKey;
 use std::{os::unix::fs::PermissionsExt, path::Path};
 use tilo_delivery_protocol::delivery_v3::{auth, state::ResetReason};
+use tilo_files::native::atomic::test_support::Checkpoint;
 use tilo_workspace_host::ingress::{HostBytes, PreparedTransport};
 
 // Component fixture only: real selected Store and original ingress pool, with

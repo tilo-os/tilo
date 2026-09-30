@@ -650,7 +650,7 @@ fn load_stage() -> Result<Option<BootPackStage>, String> {
 fn save_json<T: Serialize>(path: &Path, value: &T, mode: u32) -> Result<(), String> {
     let mut bytes = serde_json::to_vec(value).map_err(|error| error.to_string())?;
     bytes.push(b'\n');
-    atomic_file::write_creating_parent_with_mode(path, &bytes, mode)
+    tilo_files::native::atomic::write_creating_parent_with_mode(path, &bytes, mode)
         .map_err(|error| format!("cannot atomically write {}: {error}", path.display()))
 }
 

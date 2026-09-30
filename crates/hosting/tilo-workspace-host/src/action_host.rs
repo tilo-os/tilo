@@ -718,7 +718,7 @@ impl ActionHost {
                 } if workspace == owner.peer().room() => {
                     let directory = owner.root().join("actions/views");
                     ensure_private(&directory).map_err(|e| e.to_string())?;
-                    atomic_file::write_with_mode(
+                    tilo_files::native::atomic::write_with_mode(
                         &directory.join(format!("{instance}.bin")),
                         &write.value.bytes,
                         0o600,
@@ -833,7 +833,8 @@ impl ActionHost {
                 if bytes.len() > 64 * 1024 * 1024 {
                     return Err("recovery artifact exceeds bounded capacity".into());
                 }
-                atomic_file::write_with_mode(&path, &bytes, 0o600).map_err(|e| e.to_string())?;
+                tilo_files::native::atomic::write_with_mode(&path, &bytes, 0o600)
+                    .map_err(|e| e.to_string())?;
                 crate::store::sync_dir(path.parent().ok_or("missing recovery parent")?)
                     .map_err(|e| e.to_string())
             })();

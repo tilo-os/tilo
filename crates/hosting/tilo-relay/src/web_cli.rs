@@ -253,7 +253,8 @@ fn dev_identity(state: &Path) -> anyhow::Result<[SigningKey; 3]> {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             let seeds: Vec<u8> = (0..3).flat_map(|_| rand::random::<[u8; 32]>()).collect();
-            atomic_file::write_with_mode(&path, &seeds, 0o600).context("save the dev identity")?;
+            tilo_files::native::atomic::write_with_mode(&path, &seeds, 0o600)
+                .context("save the dev identity")?;
             seeds
         }
         Err(error) => return Err(error).context("read the dev identity"),

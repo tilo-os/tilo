@@ -240,7 +240,8 @@ impl TrustedAttestors {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
         }
         let text = self.to_toml_string()?;
-        atomic_file::write(path, text.as_bytes()).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
         Ok(())
     }
 
@@ -338,7 +339,8 @@ impl RevocationList {
             std::fs::create_dir_all(parent).map_err(|e| TrustLoadError::Io(e.to_string()))?;
         }
         let text = self.to_toml_string()?;
-        atomic_file::write(path, text.as_bytes()).map_err(|e| TrustLoadError::Io(e.to_string()))?;
+        tilo_files::native::atomic::write(path, text.as_bytes())
+            .map_err(|e| TrustLoadError::Io(e.to_string()))?;
         Ok(())
     }
 

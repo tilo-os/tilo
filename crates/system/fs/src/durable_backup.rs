@@ -109,7 +109,7 @@ pub fn read_or_recover(
     let recovered_hash = hash(&recovered);
     let evidence_path =
         backup_dir.join(format!("evidence-{generation:020}-{damaged_hash}.corrupt"));
-    atomic_file::write(&evidence_path, &primary)?;
+    tilo_files::native::atomic::write(&evidence_path, &primary)?;
     let receipt_path = backup_dir.join(format!("recovery-{generation:020}.json"));
     let mut receipt = RecoveryReceiptV1 {
         schema_version: RECEIPT_VERSION,
@@ -122,17 +122,17 @@ pub fn read_or_recover(
         evidence_file: file_name(&evidence_path)?,
     };
     let receipt_bytes = serde_json::to_vec_pretty(&receipt).map_err(io::Error::other)?;
-    atomic_file::write(&receipt_path, &receipt_bytes)?;
+    tilo_files::native::atomic::write(&receipt_path, &receipt_bytes)?;
     // Do not route this through `write`: that deliberately refuses to replace
     // an invalid primary. The exact bad bytes and recovery intent are durable.
-    atomic_file::write(path, &recovered)?;
+    tilo_files::native::atomic::write(path, &recovered)?;
     receipt.completed = true;
     if let Ok(receipt_bytes) = serde_json::to_vec_pretty(&receipt) {
         // If this final annotation cannot be written (for example, the device
         // became full after the primary rename), the durable `completed:false`
         // receipt remains. That is conservative and still identifies every
         // byte involved; startup can compare the named recovered hash.
-        if let Err(error) = atomic_file::write(&receipt_path, &receipt_bytes) {
+        if let Err(error) = tilo_files::native::atomic::write(&receipt_path, &receipt_bytes) {
             eprintln!(
                 "workspace state recovered but completion receipt update failed at {}: {error}",
                 receipt_path.display()
@@ -199,12 +199,12 @@ pub fn write(path: &Path, bytes: &[u8], validate: impl Fn(&[u8]) -> bool) -> io:
                 "generation-{generation:020}-{}.bak",
                 hash(&previous)
             ));
-            atomic_file::write(&backup, &previous)?;
-            atomic_file::write(path, bytes)?;
+            tilo_files::native::atomic::write(&backup, &previous)?;
+            tilo_files::native::atomic::write(path, bytes)?;
             prune_generations(&backup_dir)?;
         }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            atomic_file::write(path, bytes)?;
+            tilo_files::native::atomic::write(path, bytes)?;
         }
         Err(error) => return Err(error),
     }

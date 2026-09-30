@@ -255,7 +255,7 @@ pub fn mark(name: &str) {
         "origin_epoch_ms": m.origin_epoch_ms,
         "events": *events,
     });
-    let _ = atomic_file::write_regenerable(
+    let _ = tilo_files::native::atomic::write_regenerable(
         &m.output_path,
         &serde_json::to_vec_pretty(&payload).unwrap_or_default(),
     );

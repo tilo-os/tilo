@@ -97,7 +97,7 @@ fn agent_owner_effect_live_admission_custody_survives_normal_store_reopen() {
 }
 #[test]
 fn agent_owner_effect_uncertain_intent_consumes_live_stage_and_never_reclaims() {
-    use atomic_file::test_support::Checkpoint;
+    use tilo_files::native::atomic::test_support::Checkpoint;
     for checkpoint in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
         let (dir, mut store, custody) = admitted();
         let result =

@@ -1,7 +1,6 @@
 //! One state-file writer shared by UI snapshots and committed native owners.
 use super::{NativeAuthorityStorage, NativeWorkspaceOwner};
 use crate::shell::state::{WorkspaceTree, WorkspaceTreeHandle};
-use atomic_file::lease::{FileLease, LeaseMode};
 use parking_lot::{Mutex, RwLock};
 use std::{
     io::{self, Write},
@@ -11,6 +10,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
 };
+use tilo_files::native::atomic::lease::{FileLease, LeaseMode};
 pub(crate) use tilo_joined_room::{LimitedWriter, MAX_AUTHORITY_BYTES, MAX_STATE_BYTES, preflight};
 
 /// Clones of the desktop share the writer, so stale UI snapshots cannot erase floors.
@@ -117,13 +117,17 @@ impl NativeStateRuntime {
         if writer.expected != Some(base_digest) {
             return Err(io::Error::other("stale native authority snapshot refused"));
         }
-        match atomic_file::replace(path, bytes, atomic_file::Privacy::OwnerOnly) {
+        match tilo_files::native::atomic::replace(
+            path,
+            bytes,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
+        ) {
             Ok(()) => {
                 writer.expected = Some(next_digest);
                 Ok(())
             }
             Err(error) => {
-                if error.state() != atomic_file::PublicationState::NotPublished {
+                if error.state() != tilo_files::native::atomic::PublicationState::NotPublished {
                     {
                         let mut uncertain = self.0.uncertain_rooms.write();
                         uncertain.extend(next.rooms());
@@ -158,8 +162,11 @@ impl Writer {
             .parent()
             .filter(|p| !p.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
-        atomic_file::provision_directory(parent, atomic_file::Privacy::Inherit)
-            .map_err(io::Error::other)?;
+        tilo_files::native::atomic::provision_directory(
+            parent,
+            tilo_files::native::atomic::Privacy::Inherit,
+        )
+        .map_err(io::Error::other)?;
         let mut sentinel = path.as_os_str().to_os_string();
         sentinel.push(".writer-lock");
         let file = std::fs::OpenOptions::new()

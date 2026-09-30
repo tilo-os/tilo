@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn agent_runtime_document_uncertain_barrier_has_no_receipt_and_latches_owner() {
-        use atomic_file::test_support::Checkpoint;
+        use tilo_files::native::atomic::test_support::Checkpoint;
         for checkpoint in [Checkpoint::BeforePublish, Checkpoint::BeforeCommit] {
             let (dir, mut store, route, cert) = selected();
             let mutation = DocumentMutation::Snapshot(

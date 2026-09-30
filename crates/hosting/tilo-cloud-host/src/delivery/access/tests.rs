@@ -1,5 +1,5 @@
 use super::*;
-use atomic_file::test_support::{ExistingCheckpoint, with_existing_hooks};
+use tilo_files::native::atomic::test_support::{ExistingCheckpoint, with_existing_hooks};
 
 fn selected() -> (tempfile::TempDir, Store) {
     let (dir, mut store, _) = crate::agent_owner_tests::enrolled();
@@ -82,15 +82,16 @@ fn delivery_access_retains_exact_admitted_directory_handle() {
     drop(store);
     let current = try_open(dir.path(), "agent-admission").unwrap();
     let expected =
-        atomic_file::FileIdentity::of(&std::fs::File::open(dir.path()).unwrap()).unwrap();
+        tilo_files::native::atomic::FileIdentity::of(&std::fs::File::open(dir.path()).unwrap())
+            .unwrap();
     assert_eq!(
-        atomic_file::FileIdentity::of(&current.directory).unwrap(),
+        tilo_files::native::atomic::FileIdentity::of(&current.directory).unwrap(),
         expected
     );
     let moved = dir.path().with_extension("moved");
     std::fs::rename(dir.path(), &moved).unwrap();
     assert_eq!(
-        atomic_file::FileIdentity::of(&current.directory).unwrap(),
+        tilo_files::native::atomic::FileIdentity::of(&current.directory).unwrap(),
         expected
     );
     // Restore the test fixture name for TempDir cleanup; production has not reopened it.

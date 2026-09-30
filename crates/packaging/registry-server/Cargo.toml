@@ -25,7 +25,7 @@ tilo-advisory-lock = { path = "../../system/advisory-lock" }
 tilo-clock = { path = "../../platform/tilo-clock" }
 tilo-xdg-paths = { path = "../../system/xdg-paths" }
 # Crash-safe file replacement (temp + fsync + rename + dir fsync).
-tilo-atomic-file = { path = "../../../crates/system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 registry-types = { path = "../registry-types" }
 app-registry = { path = "../app-registry" }
 tilo-app-package = { path = "../tilo-app-package" }

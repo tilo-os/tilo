@@ -3,8 +3,8 @@
 //! the real reconciled reader and the real Store.
 use super::test_journal::{Point, with_fault, with_journal};
 use super::*;
-use atomic_file::{PublicationState, StorageDirectory, test_support::Checkpoint};
 use std::{fs, path::PathBuf};
+use tilo_files::native::atomic::{PublicationState, StorageDirectory, test_support::Checkpoint};
 
 fn pseudo(len: usize, seed: u64) -> Vec<u8> {
     let mut state = seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1;

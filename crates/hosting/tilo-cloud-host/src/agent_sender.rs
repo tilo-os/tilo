@@ -104,8 +104,11 @@ impl CloudSender {
         };
         let scope = || SenderScope::cloud(room, host_root, device, &machine, incarnation);
         let directory = root.join(SENDER_DIRECTORY);
-        atomic_file::provision_directory(&directory, atomic_file::Privacy::OwnerOnly)
-            .map_err(|e| e.to_string())?;
+        tilo_files::native::atomic::provision_directory(
+            &directory,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
+        )
+        .map_err(|e| e.to_string())?;
         let exists = directory
             .join("private-actions-v1")
             .join("private-actions-v1.bin")
@@ -122,7 +125,8 @@ impl CloudSender {
             }
         };
         let administrative = AdministrativeFile::open(
-            atomic_file::StorageDirectory::open(&directory).map_err(|e| e.to_string())?,
+            tilo_files::native::atomic::StorageDirectory::open(&directory)
+                .map_err(|e| e.to_string())?,
             scope().map_err(storage)?,
             instance,
             expectation,
@@ -131,7 +135,8 @@ impl CloudSender {
         drop(administrative);
         let cache = PortableStorage::new("cloud-agent-sender", &hex::encode(device))?;
         let file = PrivateActionsFile::from_held(
-            atomic_file::StorageDirectory::open(&directory).map_err(|e| e.to_string())?,
+            tilo_files::native::atomic::StorageDirectory::open(&directory)
+                .map_err(|e| e.to_string())?,
             scope().map_err(storage)?,
             &cache,
         )

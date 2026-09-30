@@ -96,7 +96,7 @@ pub fn save_revocations(
     fs::create_dir_all(state_root)?;
     let bytes =
         serde_json::to_vec_pretty(entries).map_err(|error| StoreError::Json(error.to_string()))?;
-    atomic_file::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
+    tilo_files::native::atomic::write(&state_root.join(REVOCATIONS_FILE), &bytes)?;
     Ok(())
 }
 
@@ -301,7 +301,7 @@ impl WorkspaceStore {
                     authority: authority.clone(),
                 })
                 .map_err(|e| StoreError::Json(e.to_string()))?;
-                atomic_file::write(&path, &bytes)?;
+                tilo_files::native::atomic::write(&path, &bytes)?;
             }
             Err(error) => return Err(error.into()),
         }
@@ -345,7 +345,7 @@ impl WorkspaceStore {
         if !self.pinned {
             return Ok(());
         }
-        atomic_file::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
+        tilo_files::native::atomic::write(&self.root.join(SNAPSHOT_FILE), bytes)?;
         Ok(())
     }
 
@@ -401,7 +401,7 @@ impl WorkspaceStore {
             .map_err(|error| StoreError::Json(error.to_string()))?;
         #[cfg(test)]
         test_barrier::pause(&self.root, "membership-write");
-        atomic_file::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
+        tilo_files::native::atomic::write(&self.root.join(MEMBERSHIP_FILE), &bytes)?;
         Ok(())
     }
 
@@ -451,7 +451,7 @@ impl WorkspaceStore {
         };
         let bytes = serde_json::to_vec_pretty(&encoded)
             .map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_file::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
+        tilo_files::native::atomic::write(&self.root.join(GOVERNED_ACCESS_FILE), &bytes)?;
         Ok(())
     }
 
@@ -524,7 +524,7 @@ impl WorkspaceStore {
         }
         let bytes =
             serde_json::to_vec(record).map_err(|error| StoreError::Json(error.to_string()))?;
-        atomic_file::write(&path, &bytes)?;
+        tilo_files::native::atomic::write(&path, &bytes)?;
         Ok(())
     }
 
@@ -554,7 +554,7 @@ impl WorkspaceStore {
             .join(hex::encode(device));
         fs::create_dir_all(&directory)?;
         let path = directory.join(format!("{sequence:016x}.compute"));
-        atomic_file::write(&path, bytes)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
         Ok(path)
     }
 
@@ -655,7 +655,7 @@ impl WorkspaceStore {
         // receive. The temp file is process-scoped, so two writers filling the
         // same peer's queue cannot publish each other's half-written bytes —
         // the fixed `.partial` name this used to use could.
-        atomic_file::write(&path, bytes)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
         // A live fanout may now rely on this exact fallback. Require directory
         // durability instead of treating the atomic helper's best effort as a
         // successful publication barrier.
@@ -679,7 +679,7 @@ impl WorkspaceStore {
             hex::encode(rand::random::<[u8; 16]>())
         ));
         continuity::write(self, &path, bytes, receipt)?;
-        atomic_file::write(&path, bytes)?;
+        tilo_files::native::atomic::write(&path, bytes)?;
         for directory in directory.ancestors().take(3) {
             fs::File::open(directory)?.sync_all()?;
         }
@@ -848,7 +848,7 @@ impl WorkspaceStore {
         for record in records {
             bytes.extend_from_slice(&record.encode());
         }
-        atomic_file::write(&self.root.join(COMMITS_FILE), &bytes)?;
+        tilo_files::native::atomic::write(&self.root.join(COMMITS_FILE), &bytes)?;
         Ok(())
     }
 

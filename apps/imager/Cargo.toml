@@ -30,7 +30,7 @@ base64.workspace = true
 crc32fast.workspace = true
 # Advisory locks on ownership, journal and target files.
 tilo-advisory-lock = { path = "../../crates/system/advisory-lock" }
-tilo-atomic-file = { path = "../../crates/system/atomic-file" }
+tilo-files = { path = "../../crates/platform/tilo-files" }
 tilo-ntfs-protocol = { path = "../../crates/session/tilo-ntfs-protocol" }
 runtime-dylib = { path = "../../crates/runtime/runtime-dylib", optional = true }
 # The Tilo ACTION model: the imager's guided-customization install profile (the

@@ -15,7 +15,7 @@ name = "tilo-system-extension-manager"
 path = "src/bin/tilo-system-extension-manager.rs"
 
 [dependencies]
-tilo-atomic-file = { path = "../atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 bounded-command = { path = "../bounded-command" }
 ed25519-dalek.workspace = true
 hex.workspace = true

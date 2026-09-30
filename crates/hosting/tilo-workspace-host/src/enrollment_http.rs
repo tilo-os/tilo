@@ -28,7 +28,11 @@ impl Authorization {
         if absent {
             let mut capability = [0; 32];
             rand::rand_core::UnwrapErr(rand::rngs::SysRng).fill_bytes(&mut capability);
-            atomic_file::write_with_mode(&path, hex::encode(capability).as_bytes(), 0o600)?;
+            tilo_files::native::atomic::write_with_mode(
+                &path,
+                hex::encode(capability).as_bytes(),
+                0o600,
+            )?;
             crate::store::sync_dir(root)?;
         }
         let metadata = std::fs::symlink_metadata(&path)?;

@@ -110,8 +110,8 @@ fn native_outgoing_failed_barrier_cannot_return_success_or_publish_a_frame() {
     let path = directory.path().join("state.json");
     let before = std::fs::read(&path).unwrap();
     let (request, _) = edit(&owner, room, &key, now, 2);
-    let result = atomic_file::test_support::with_failure(
-        atomic_file::test_support::Checkpoint::BeforePublish,
+    let result = tilo_files::native::atomic::test_support::with_failure(
+        tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
         || owner.commit_document(request, now),
     );
     assert!(result.is_err());
@@ -270,8 +270,8 @@ fn native_outgoing_expired_incremental_and_snapshot_keep_original_until_real_dur
             .unwrap();
         let before_ack = std::fs::read(directory.path().join("state.json")).unwrap();
         assert!(
-            atomic_file::test_support::with_failure(
-                atomic_file::test_support::Checkpoint::BeforePublish,
+            tilo_files::native::atomic::test_support::with_failure(
+                tilo_files::native::atomic::test_support::Checkpoint::BeforePublish,
                 || owner.receive(room, origin, acknowledgement[1].clone(), later)
             )
             .is_err()
@@ -378,7 +378,7 @@ fn native_outgoing_capacity_refuses_new_success_and_inbound_ack_can_release_spac
 
 #[test]
 fn native_outgoing_uncertain_append_fences_and_reopens_exact_committed_bytes() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let (request, expected) = edit(&owner, room, &key, now, 51);
@@ -560,7 +560,7 @@ fn native_outgoing_replaces_repeated_expiry_without_new_originals_or_exact_admis
 )]
 #[test]
 fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
     let mut remote = governor(&owner, room);
     let (request, original) = edit(&owner, room, &key, now, 400);
@@ -677,7 +677,7 @@ fn native_outgoing_projection_replacement_barrier_and_late_echo_preserve_custody
 
 #[test]
 fn native_outgoing_uncertain_projection_reopens_published_floor_and_reserve_tamper_refuses() {
-    use atomic_file::test_support::{Checkpoint, with_failure};
+    use tilo_files::native::atomic::test_support::{Checkpoint, with_failure};
     for point in [Checkpoint::AfterPublish, Checkpoint::BeforeCommit] {
         let (directory, owner, room, now, key) = super::tests::test_enrolled_owner();
         let mut remote = governor(&owner, room);
@@ -956,7 +956,7 @@ fn native_outgoing_sanitized_foreign_title_cannot_consume_recovery_reserve() {
     let before = std::fs::read(&path).unwrap();
     let checkpoints = Rc::new(Cell::new(0usize));
     let observed = checkpoints.clone();
-    let result = atomic_file::test_support::with_observer(
+    let result = tilo_files::native::atomic::test_support::with_observer(
         move |_| observed.set(observed.get() + 1),
         || owner.commit_document(request, now),
     );

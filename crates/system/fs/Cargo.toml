@@ -108,7 +108,7 @@ required-features = ["filesystem"]
 
 [dependencies]
 bounded-command = { version = "0.1.0", path = "../bounded-command" }
-tilo-atomic-file = { version = "0.1.0", path = "../atomic-file" }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 anyhow.workspace = true
 bytes.workspace = true
 clap = { workspace = true, optional = true }

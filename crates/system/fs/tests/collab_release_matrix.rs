@@ -599,8 +599,8 @@ fn forced_partition_offline_edits_restart_and_converge_as_a_conflict() {
 
     let left_path = temp.path().join("left.automerge");
     let right_path = temp.path().join("right.automerge");
-    atomic_file::write(&left_path, &left.save()).unwrap();
-    atomic_file::write(&right_path, &right.save()).unwrap();
+    tilo_files::native::atomic::write(&left_path, &left.save()).unwrap();
+    tilo_files::native::atomic::write(&right_path, &right.save()).unwrap();
     drop(left);
     drop(right);
 

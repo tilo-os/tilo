@@ -13,13 +13,13 @@ description = "Canonical desktop policy shared by the Tilo launcher, Settings an
 # storage scanner. Without it the crate is the pure policy vocabulary and
 # resolver, which the desktop model embeds.
 default = ["host-storage"]
-host-storage = ["dep:tilo-atomic-file", "dep:package-store", "dep:tilo-xdg-paths"]
+host-storage = ["dep:tilo-files", "dep:package-store", "dep:tilo-xdg-paths"]
 
 [dependencies]
 tilo-xdg-paths = { version = "0.1.0", path = "../xdg-paths", optional = true }
 # Which packages are installed and where their trees are.
 package-store = { version = "0.1.0", path = "../../packaging/package-store", optional = true }
-tilo-atomic-file = { version = "0.1.0", path = "../atomic-file", optional = true }
+tilo-files = { version = "0.1.0", path = "../../platform/tilo-files", optional = true }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true

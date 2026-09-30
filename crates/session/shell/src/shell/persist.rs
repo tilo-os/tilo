@@ -233,15 +233,18 @@ fn save_doc_beside(durable: &mut WorkspaceTree, path: &Path, state_json: &[u8]) 
     };
     // Document before meta: a meta naming this `state.json` must never sit
     // beside an older document.
-    let written =
-        atomic_file::replace(&state_doc_path(path), &doc, atomic_file::Privacy::OwnerOnly)
-            .and_then(|()| {
-                atomic_file::replace(
-                    &state_doc_meta_path(path),
-                    &meta,
-                    atomic_file::Privacy::OwnerOnly,
-                )
-            });
+    let written = tilo_files::native::atomic::replace(
+        &state_doc_path(path),
+        &doc,
+        tilo_files::native::atomic::Privacy::OwnerOnly,
+    )
+    .and_then(|()| {
+        tilo_files::native::atomic::replace(
+            &state_doc_meta_path(path),
+            &meta,
+            tilo_files::native::atomic::Privacy::OwnerOnly,
+        )
+    });
     if let Err(error) = written {
         tracing::warn!(path = %path.display(), %error, "could not save the tree document");
     }

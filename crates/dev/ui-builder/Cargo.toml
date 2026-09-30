@@ -11,7 +11,7 @@ name = "tilo-ui-builder"
 path = "src/main.rs"
 
 [dependencies]
-tilo-atomic-file = { path = "../../system/atomic-file" }
+tilo-files = { path = "../../platform/tilo-files" }
 ui = { package = "tilo-ui", path = "../../sdk/ui-core" }
 workspace-hack = { version = "0.1" }
 

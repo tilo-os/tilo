@@ -176,7 +176,7 @@ impl Registry {
             path: path.display().to_string(),
             detail: e.to_string(),
         })?;
-        atomic_file::write_creating_parent(path, text.as_bytes())
+        tilo_files::native::atomic::write_creating_parent(path, text.as_bytes())
             .map_err(CliError::io(format!("write {}", path.display())))
     }
 

@@ -310,7 +310,7 @@ fn apply_services(config: &RelayConfig) -> anyhow::Result<()> {
 
 fn restore(path: &Path, previous: Option<&[u8]>) -> anyhow::Result<()> {
     match previous {
-        Some(bytes) => atomic_file::write(path, bytes).map_err(Into::into),
+        Some(bytes) => tilo_files::native::atomic::write(path, bytes).map_err(Into::into),
         None if path.exists() => std::fs::remove_file(path).map_err(Into::into),
         None => Ok(()),
     }
@@ -325,9 +325,9 @@ fn commit_transaction(
 ) -> anyhow::Result<()> {
     let previous = std::fs::read(relay_path).ok();
     let previous_home = std::fs::read(home_path).ok();
-    atomic_file::write(relay_path, relay_bytes)?;
+    tilo_files::native::atomic::write(relay_path, relay_bytes)?;
     if let Some(bytes) = home_bytes
-        && let Err(error) = atomic_file::write(home_path, bytes)
+        && let Err(error) = tilo_files::native::atomic::write(home_path, bytes)
     {
         restore(relay_path, previous.as_deref())?;
         return Err(error.into());
@@ -744,9 +744,9 @@ mod tests {
         {
             let dir = tempfile::tempdir().unwrap();
             let path = dir.path().join("relay.toml");
-            atomic_file::write(&path, b"old").unwrap();
+            tilo_files::native::atomic::write(&path, b"old").unwrap();
             let home = dir.path().join("home.toml");
-            atomic_file::write(&home, b"old-home").unwrap();
+            tilo_files::native::atomic::write(&home, b"old-home").unwrap();
             let result = commit_transaction(&path, b"new", &home, Some(b"new-home"), || {
                 bail!("reload failed")
             });
@@ -822,7 +822,7 @@ mod tests {
                 }],
             };
             let original = toml::to_string_pretty(&bundle).unwrap();
-            atomic_file::write(&home, original.as_bytes()).unwrap();
+            tilo_files::native::atomic::write(&home, original.as_bytes()).unwrap();
             let continuity =
                 tilo_relay::personal_continuity_workspace_id(&governor.verifying_key().to_bytes());
 

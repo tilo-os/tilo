@@ -184,7 +184,7 @@ pub fn record(xbel: &Path, home: &Path, path: &Path, now: &str) -> std::io::Resu
     if let Some(parent) = xbel.parent() {
         std::fs::create_dir_all(parent)?;
     }
-    atomic_file::write_with_mode(xbel, render(&merged).as_bytes(), 0o600)?;
+    tilo_files::native::atomic::write_with_mode(xbel, render(&merged).as_bytes(), 0o600)?;
     Ok(true)
 }
 
