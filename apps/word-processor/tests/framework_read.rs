@@ -45,7 +45,18 @@ fn read_text_pages_the_committed_document_for_an_agent() {
     app.harness().key("Enter");
     app.harness().type_text("Book the venue");
 
-    let first = read(&mut app, &serde_json::json!({"pageSize": 1})).unwrap();
+    let whole = read(&mut app, &serde_json::json!({})).unwrap();
+    let markdown = whole["content"]["markdown"].as_str().unwrap();
+    assert!(
+        markdown.starts_with("Q3 Planning {#") && markdown.contains("\nBook the venue {#"),
+        "{markdown}"
+    );
+
+    let first = read(
+        &mut app,
+        &serde_json::json!({"pageSize": 1, "format": "segments"}),
+    )
+    .unwrap();
     assert_eq!(first["version"], 1);
     assert_eq!(first["content"]["segments"][0]["text"], "Q3 Planning");
     assert!(!first["basis"]["heads"].as_array().unwrap().is_empty());
@@ -56,7 +67,7 @@ fn read_text_pages_the_committed_document_for_an_agent() {
 
     let rest = read(
         &mut app,
-        &serde_json::json!({"pageSize": 8, "cursor": cursor}),
+        &serde_json::json!({"pageSize": 8, "cursor": cursor, "format": "segments"}),
     )
     .unwrap();
     assert_eq!(rest["content"]["segments"][0]["text"], "Book the venue");
@@ -69,7 +80,7 @@ fn read_text_pages_the_committed_document_for_an_agent() {
     app.harness().type_text("!");
     let stale = read(
         &mut app,
-        &serde_json::json!({"pageSize": 8, "cursor": cursor}),
+        &serde_json::json!({"pageSize": 8, "cursor": cursor, "format": "segments"}),
     );
     assert!(
         matches!(&stale, Err(tilo_actions::DoorError::Unavailable { code, .. }) if code == "stale_cursor"),
