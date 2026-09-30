@@ -312,12 +312,41 @@ rather than a second host:
     `NeighbourMsg::AppDocument` commits: the shell's own wire, with
     `channel-crypto` ciphertext on encrypted routes).
   - `/events` is a long-poll that returns the host's envelopes after a
-    host-MAC'd cursor and acknowledges the previous one.
+    host-MAC'd cursor and acknowledges the previous one. A page carries at
+    most 1 MiB of payload (and at least one envelope), so a late join's
+    checkpoint and tail stream as acknowledged pages.
   - The browser applies its edit to its local replica first and keeps it in
-    a persisted outbox until `Committed`.
+    a persisted outbox until `Committed`. The host keeps a durable ledger of
+    admitted commits by author and operation id: a resend is answered with
+    its original order and neither persisted nor fanned out again.
+  - Documents larger than one frame travel as signed segments; the session
+    reassembles them (bounded, digest-checked) before a mount sees them.
+    The page merges one drain's changes per record in one pass (a
+    checkpoint, then its tail as one Automerge change set), so catch-up is
+    linear in the history.
   - Reconnect runs the handshake again, re-subscribes (the host replays
-    retained checkpoints and this device's queue), and resends the whole
-    outbox. Replays are idempotent.
+    its retained coverage and this device's queue), and resends the whole
+    outbox; the ledger absorbs what was already committed.
+  - A session holds at most 16 MiB of unacknowledged events. Past it the
+    host stops reading for that session; a room whose live deliveries the
+    connection could not take resumes from its position once the queues
+    drained, so the session stays and nothing is dropped.
+  - The host keeps each record's retained history short. Once a route's
+    tail grows (256 entries, or 1 MiB and half its snapshot) and the route
+    has been quiet for 2 s, the host folds every cleartext entry it can
+    verify into one Automerge snapshot signed as the host device (publisher
+    `peer_handle(host)`), retained but not fanned out, and removes exactly
+    the entries whose every change the snapshot holds, by change hash.
+    Entries retained during the fold, and anything it cannot read, stay.
+    The host's certificate is retained beside its snapshot, so a replay
+    carries it first. A sealed route the host cannot read is compacted by
+    a member: the host asks a page that volunteered
+    (`Envelope::CompactRequest`), the page's runtime answers with its
+    replica, the session commits it sealed and then sends a device-signed
+    `CoverageStatement` naming the retained entries (by digest of their
+    body) it had delivered or published before the request. The host
+    removes exactly those. Rooms whose replay a native shell selects
+    (`shell_authority`) are left to that selection.
 - **Live plane over WebTransport.** It uses 541's `LIVE_V1` relay
   (`crates/hosting/tilo-moq`, ported from `qos-moq`), `moq-lite` at
   `/moq/live` on the same port number over UDP.
@@ -1149,7 +1178,10 @@ Status after integrating the parallel branches (`feat/browser-runtime`).
      frames from WebTransport members are not bridged back to iroh members
      (the agents branch adds that); `channel-crypto` group provisioning for
      the browser; `TlsSource::Managed`; a noq WebTransport; a native
-     approver UI; segmented inbound transfers.
+     approver UI; member compaction by native shells (they do not
+     volunteer) and by toolkit-only pages (they volunteer but ignore
+     requests; the host asks the next volunteer on the route's next growth,
+     30 s after the unanswered request).
 7. **Actions.** *Agents done; `actionsV1` for apps open.*
    `tilo_actions::remote` as `actionsV1`/`actionsV2`, so agents can drive
    apps through the same routes as users. See [Agents](#agents).
