@@ -31,7 +31,8 @@
 #                            live installer's writable /var for offline installs
 #     --etc-overlay DIR       add files to THIS disk's installed /etc (release
 #                            gate only; os/dev/validation-access.sh). Limited to
-#                            systemd/system, verity.d and pam.d/sshd
+#                            systemd/system, verity.d, pam.d/sshd, and the
+#                            validation-only boot diagnostic script
 #     --raw                   leave the raw image, skip the qcow2 conversion
 #     --direct-boot-bundle DIR
 #                            export this dev disk's installed UKI sections
@@ -194,14 +195,19 @@ if [ -n "$FIRSTBOOT_SEED" ]; then
 fi
 
 # The overlay only ever adds validation access to a gate's own disk copy: a
-# unit, the trust anchor for its extension, and sshd's PAM stack. Anything else
-# is refused rather than silently written into an installed /etc.
+# unit, the trust anchor for its extension, sshd's PAM stack, and its boot
+# diagnostic script. Anything else is refused rather than silently written
+# into an installed /etc.
 if [ -n "$ETC_OVERLAY" ]; then
   [ -d "$ETC_OVERLAY" ] && [ ! -L "$ETC_OVERLAY" ] \
     || die "--etc-overlay must name a regular directory"
   while IFS= read -r entry; do
     case "$entry" in
       systemd/system/*.service|systemd/system/*.target.wants/*.service|verity.d/*.crt|pam.d/sshd) ;;
+      tilo-validation-diagnostics.sh)
+        [ -f "$ETC_OVERLAY/$entry" ] && [ ! -L "$ETC_OVERLAY/$entry" ] \
+          || die "--etc-overlay diagnostics script must be a regular file"
+        ;;
       *) die "--etc-overlay may not write /etc/$entry" ;;
     esac
   done < <(cd "$ETC_OVERLAY" && find . \( -type f -o -type l \) -printf '%P\n')
