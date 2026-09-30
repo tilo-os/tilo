@@ -567,10 +567,15 @@ fn public_client_state(stream: &UnixStream) -> Option<Arc<ClientState>> {
         return None;
     }
     if let Some(identity) = crate::shell::launcher::verified_launch_for_descendant(pid) {
-        return Some(ClientState::attributed_arc(identity));
+        return Some(ClientState::attributed_arc(identity, pid));
     }
     unattributed_host_client_allowed(credentials.uid, peer_shares_host_security_namespaces(pid))
-        .then(ClientState::new_arc)
+        .then(|| {
+            Arc::new(ClientState {
+                pid: Some(pid),
+                ..ClientState::default()
+            })
+        })
 }
 
 fn external_floating_id(connection: u64, id: &str) -> String {
@@ -7451,7 +7456,10 @@ pub fn run() {
         // Poll before processing launch actions so closed workspaces have
         // released their displays and a waiting X11 client gets its bridge.
         if let Some(xwayland) = xwayland.as_mut() {
-            xwayland.poll(&frame_builder.chrome_handle());
+            xwayland.poll(
+                &frame_builder.chrome_handle(),
+                &state.mapped_xwayland_pids(),
+            );
         }
         if let Some(service) = floating_surface_service.as_ref()
             && pump_floating_surface_service(
