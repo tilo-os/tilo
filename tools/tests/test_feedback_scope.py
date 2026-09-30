@@ -22,7 +22,9 @@ class FeedbackScopeTests(unittest.TestCase):
             # Manual acceptance forces full native qualification; ordinary
             # before-SHA handling does not. Temporary packaging/ARM branch
             # full-check triggers were removed — use workflow_dispatch.
-            selection = workflow.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
+            self.assertIn('run: bash tools/ci/select.sh', workflow)
+            script = (ROOT / 'tools/ci/select.sh').read_text(encoding='utf-8')
+            selection = script.split('selection_args=()', 1)[1].split('elif [ -z "$base" ]', 1)[0]
             self.assertEqual(selection.count('selection_args+=(--full)'), 1)
             self.assertIn('workflow_dispatch', selection)
             self.assertNotIn('package-desktop-release', selection)
