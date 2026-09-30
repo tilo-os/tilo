@@ -24,7 +24,8 @@ use crate::auth::{self, AuthenticatedPeer, Hello, HelloAck2};
 use crate::daemon::WebContext;
 use crate::transport::Envelope;
 use crate::web::protocol::{
-    Cursor, EventsPage, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
+    Cursor, EventsPage, MAX_PAGE_BYTES, MAX_PAGE_ENVELOPES, SessionChallenge, SessionGrant,
+    envelope_bytes,
 };
 
 /// A handshake must be finished within this.
@@ -34,9 +35,11 @@ const SESSION_TTL: Duration = Duration::from_secs(15 * 60);
 /// A session nobody polled for this long ends; its peer unsubscribes and the
 /// host queues for the device instead.
 const IDLE_TTL: Duration = Duration::from_secs(45);
-/// Envelopes the host may hold for a session before it is closed (the
-/// device then resubscribes and the host replays durable state).
-const MAX_LOG_ENVELOPES: usize = 8192;
+/// Event bytes the host holds for a session until the device acknowledges
+/// them. Past it the session stops taking envelopes from its peer loop, whose
+/// live deliveries then stay on disk until the device reads and its room
+/// resumes (`crate::peer::Lag`): a slow reader costs latency, not its session.
+const MAX_LOG_BYTES: usize = 16 * 1024 * 1024;
 /// Concurrent sessions and handshakes.
 const MAX_SESSIONS: usize = 256;
 const MAX_HANDSHAKES: usize = 64;
@@ -64,7 +67,16 @@ struct Log {
     /// Sequence of `items[0]`.
     first_seq: u64,
     items: VecDeque<Envelope>,
+    /// `envelope_bytes` of `items`.
+    bytes: usize,
     closed: bool,
+}
+
+enum Admit {
+    Logged,
+    Closed,
+    /// The log is at its byte budget; the envelope comes back.
+    Full(Envelope),
 }
 
 pub(crate) struct Session {
@@ -75,6 +87,8 @@ pub(crate) struct Session {
     to_host: tokio::sync::Mutex<tokio::io::WriteHalf<tokio::io::DuplexStream>>,
     log: Mutex<Log>,
     changed: Notify,
+    /// Signalled when acknowledged events leave the log.
+    drained: Notify,
     end: watch::Sender<bool>,
 }
 
@@ -89,6 +103,23 @@ impl Session {
         self.end.send_replace(true);
         self.log().closed = true;
         self.changed.notify_waiters();
+        self.drained.notify_one();
+    }
+
+    /// Log `envelope` for the device unless that would exceed
+    /// [`MAX_LOG_BYTES`]; an envelope larger than the budget is logged alone.
+    fn admit(&self, envelope: Envelope) -> Admit {
+        let size = envelope_bytes(&envelope);
+        let mut log = self.log();
+        if log.closed {
+            return Admit::Closed;
+        }
+        if log.bytes != 0 && log.bytes.saturating_add(size) > MAX_LOG_BYTES {
+            return Admit::Full(envelope);
+        }
+        log.bytes = log.bytes.saturating_add(size);
+        log.items.push_back(envelope);
+        Admit::Logged
     }
 
     pub(crate) fn token(&self) -> [u8; 32] {
@@ -228,9 +259,11 @@ impl Sessions {
             log: Mutex::new(Log {
                 first_seq: 1,
                 items: VecDeque::new(),
+                bytes: 0,
                 closed: false,
             }),
             changed: Notify::new(),
+            drained: Notify::new(),
             end,
         });
         let context = self.web.relay.peer_context();
@@ -251,14 +284,16 @@ impl Sessions {
         tokio::spawn(async move {
             let mut reader = crate::frame::FrameReader::new(browser_read);
             while let Ok(Some(envelope)) = reader.read_next().await {
-                let mut log = pumped.log();
-                if log.items.len() >= MAX_LOG_ENVELOPES {
-                    drop(log);
-                    pumped.close();
-                    return;
+                let mut envelope = envelope;
+                loop {
+                    let drained = pumped.drained.notified();
+                    match pumped.admit(envelope) {
+                        Admit::Logged => break,
+                        Admit::Closed => return,
+                        Admit::Full(back) => envelope = back,
+                    }
+                    drained.await;
                 }
-                log.items.push_back(envelope);
-                drop(log);
                 pumped.changed.notify_waiters();
             }
             pumped.close();
@@ -316,11 +351,18 @@ impl Sessions {
         };
         {
             let mut log = session.log();
-            while log.first_seq <= after && !log.items.is_empty() {
-                log.items.pop_front();
+            let mut freed = false;
+            while log.first_seq <= after
+                && let Some(envelope) = log.items.pop_front()
+            {
+                log.bytes = log.bytes.saturating_sub(envelope_bytes(&envelope));
                 log.first_seq = log.first_seq.saturating_add(1);
+                freed = true;
             }
             drop(log);
+            if freed {
+                session.drained.notify_one();
+            }
         }
         let deadline = tokio::time::Instant::now()
             .checked_add(wait)
@@ -332,11 +374,21 @@ impl Sessions {
                 let start = after.saturating_add(1).max(log.first_seq);
                 let skip =
                     usize::try_from(start.saturating_sub(log.first_seq)).unwrap_or(usize::MAX);
+                let mut page_bytes = 0usize;
                 let available: Vec<Envelope> = log
                     .items
                     .iter()
                     .skip(skip)
                     .take(MAX_PAGE_ENVELOPES)
+                    .take_while(|envelope| {
+                        let size = envelope_bytes(envelope);
+                        let fits =
+                            page_bytes == 0 || page_bytes.saturating_add(size) <= MAX_PAGE_BYTES;
+                        if fits {
+                            page_bytes = page_bytes.saturating_add(size);
+                        }
+                        fits
+                    })
                     .cloned()
                     .collect();
                 if !available.is_empty() {
