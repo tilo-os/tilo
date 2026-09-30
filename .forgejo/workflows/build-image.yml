@@ -3123,6 +3123,10 @@ jobs:
           digest="$(jq -er '."containerimage.digest"' "$metadata")"
           podman pull "registry.tilo.so/tilo/tilo-vm@$digest"
           podman tag "registry.tilo.so/tilo/tilo-vm@$digest" "$BOARD_IMAGE"
+          # The disk install below needs the scratch space this builder holds
+          # (run 53356 ran out of it with the Lenovo image).
+          docker buildx prune --builder "$BUILDER_NAME" --all --force >/dev/null
+          df -h "${RUNNER_TEMP:?}" /var/tmp
           echo "::notice::$BOARD dev image built in $(( $(date +%s) - started ))s: $candidate ($digest)"
 
       # build-image.sh with TILO_SKIP_BUILD=1 installs the image as dev-disk.yml
