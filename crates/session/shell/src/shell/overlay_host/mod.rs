@@ -518,7 +518,7 @@ pub struct ShellOverlayHost {
     /// slides out on close instead of vanishing.
     qs_transition: ui::Transition,
     /// One-shot driver so a workspace switch requests a run of frames
-    /// instead of painting once and idling (W16).
+    /// instead of painting once and idling (W16). Settles with the curve.
     workspace_switch: ui::Transition,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
@@ -3017,10 +3017,10 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
-    /// Latch overview progress during `update`, before the compositor
-    /// samples animation demand. Draw also ticks; starting only there
-    /// left Super+Tab as a one-frame jump (W16).
-    fn latch_overview_transition(&mut self) {
+    /// Latch overview progress on the chord itself, before the compositor
+    /// samples animation demand. Starting only in `update` left Super+Tab
+    /// as a timer the loop parks past (W16).
+    pub(crate) fn latch_overview_transition(&mut self) {
         let open = self
             .chrome
             .as_ref()
@@ -3034,7 +3034,8 @@ impl ShellOverlayHost {
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Draw snaps this when motion is reduced.
-    fn start_workspace_switch_frames(&mut self) {
+    /// Call on the chord, not only from `update`: demand is sampled first.
+    pub(crate) fn start_workspace_switch_frames(&mut self) {
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch.set_open(
             true,
@@ -6406,7 +6407,7 @@ impl ShellOverlayHost {
         let current = chrome.borrow().fullscreen_group();
         chrome
             .borrow_mut()
-            .set_fullscreen_group(if current == Some(group) {
+            .set_user_fullscreen_group(if current == Some(group) {
                 None
             } else {
                 Some(group)
@@ -8505,6 +8506,9 @@ impl ShellOverlayHost {
         } else {
             false
         };
+        if matched && id == "overview.toggle" {
+            self.latch_overview_transition();
+        }
         self.palette_visible = false;
         self.palette.close();
         matched
@@ -11156,6 +11160,8 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
+                drop(st);
+                self.latch_overview_transition();
             }
             *handled = true;
             return true;
@@ -11460,8 +11466,10 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                if let Some(chrome) = self.chrome.clone()
+                    && chrome.borrow_mut().switch_workspace(direction)
+                {
+                    self.start_workspace_switch_frames();
                 }
             }
             _ => return false,
@@ -11559,7 +11567,15 @@ impl ShellOverlayHost {
             A::Notifications => chrome
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
-            A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::ToggleFullscreen => {
+                // Super+M applies on the host. Super+F must too: the
+                // compositor loop then writes `set_fullscreen(None)` every
+                // tick (client xdg is overlay-only), so a later request
+                // parked in `fullscreen_group` is gone before W07 dumps.
+                if !self.toggle_focused_group_fullscreen() {
+                    chrome.borrow_mut().request_fullscreen_toggle();
+                }
+            }
             A::NextInputSource => {
                 if let Some((index, name)) =
                     select_next_input_source(settings_store::settings_path().as_deref())
@@ -12048,6 +12064,8 @@ impl ShellOverlayHost {
         if st.overlays.overview {
             st.overlays.overview = false;
             st.bump();
+            drop(st);
+            self.latch_overview_transition();
             *handled = true;
             return true;
         }
@@ -18196,7 +18214,8 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+        let next_frame = now.checked_add(Duration::from_millis(1));
         [
             (
                 "onboarding",
@@ -18227,6 +18246,11 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
+            ("root-transition", self.transition_started.and(next_frame)),
+            (
+                "workspace-switch",
+                next_frame.filter(|_| self.workspace_switch.is_animating(now)),
+            ),
         ]
     }
 

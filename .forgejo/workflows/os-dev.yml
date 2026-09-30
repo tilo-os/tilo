@@ -25,6 +25,7 @@ on:
       # Unit tests and docs never enter the image.
       - "!os/tests/test_*.py"
       - "!os/dev/test_*.py"
+      - "!os/dev/installer-console.py"
       - "!os/docs/**"
       - "!os/**/*.md"
       - ".forgejo/workflows/os-dev.yml"
