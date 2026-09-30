@@ -15,8 +15,10 @@ The acceptance run must exercise the commit that is installed, so start from a d
 from that commit:
 
 ```bash
-# once per commit: image and disk are built on the rcargo builder, only the qcow2 is copied
-TILO_DISK_BUILDER=fedora@builder TILO_DISK_SCRATCH=/srv/rcargo/scratch/devdisk-x86 \
+# once per commit: image and disk are built on a remote builder, only the qcow2 is copied;
+# TILO_DISK_CARGO is any cargo drop-in that runs `cargo run` there (see build-disk.sh)
+TILO_DISK_BUILDER=fedora@builder TILO_DISK_CARGO="<drop-in> --on-builder" \
+TILO_DISK_SCRATCH=/srv/scratch/devdisk-x86 TILO_DISK_MIRRORS='/srv/<drop-in>/p/*/w/*' \
   scripts/vm-acceptance/build-disk.sh origin/main ~/vm-images/tilo-dev-$(git rev-parse --short=9 origin/main).qcow2
 
 # a throwaway VM from that disk, every check, VM stopped and removed afterwards
