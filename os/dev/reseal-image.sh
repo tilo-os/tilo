@@ -69,7 +69,7 @@ if [ -n "$iidfile" ]; then export SOURCE_DATE_EPOCH="$epoch"; fi
 podman "${podman_args[@]}" build "${build_args[@]}" "$stage" <<EOF
 ARG BASE_IMAGE
 FROM \${BASE_IMAGE}
-RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py,z \
+RUN --mount=type=bind,source=uki-cmdline.py,target=/run/uki-cmdline.py \
     python3 /run/uki-cmdline.py set "composefs=$digest" \
  && if [ -f /boot/tilo-target/tilo-target.efi ]; then \
       python3 /run/uki-cmdline.py set "composefs=$digest" /boot/tilo-target/tilo-target.efi; \

@@ -1592,7 +1592,7 @@ impl WorkspaceSettingsOverlay {
             if is_owner {
                 self.permission_profiles_rect = permission_profiles_rect(body_rect);
             }
-            let layout = permissions_pane_layout(ws, body_rect, model.apps);
+            let layout = permissions_pane_layout(ws, body_rect, model.apps, model.local_user);
             for row in &layout.rows {
                 self.revoke_rects
                     .push((row.cap_id.clone(), row.revoke_rect));
@@ -1607,7 +1607,7 @@ impl WorkspaceSettingsOverlay {
                 scene,
                 transform,
                 body_rect,
-                (ws, model.apps),
+                (ws, model.apps, model.local_user),
                 &draft,
                 is_owner,
                 text_renderer,
