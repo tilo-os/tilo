@@ -8391,6 +8391,16 @@ pub fn run() {
                 settings_store::hardware::DesktopControlsConfig::load(),
             );
             frame_builder.host_mut().poll_display_identify();
+            // Input/display reload above does not re-theme. An appearance
+            // write must rebuild chrome on this tick and wake tiled apps so
+            // they paint the new Theme instead of keeping the last buffer.
+            frame_builder.with_chrome(|chrome| chrome.note_appearance_change());
+            for toplevel in state.xdg_shell_state.toplevel_surfaces() {
+                if toplevel.is_initial_configure_sent() {
+                    toplevel.send_configure();
+                }
+            }
+            force_first_paint = true;
             let policy = idle_policy_for_backend(tilo_power_mgmt::config::load_policy(), headless);
             power_policy = policy;
             session.set_blank_timeout(policy.idle_blank);
