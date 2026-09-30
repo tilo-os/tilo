@@ -2244,21 +2244,33 @@ fn notes_resource(sr: &SlideResource) -> Resource {
     ))
 }
 
-/// Every deck edit answers with the deck's [outline](crate::outline), so its
-/// caller sees the result without reading the deck again.
+/// The deck's own edits answer with its [outline](crate::outline), so their
+/// caller sees the result without reading the deck again. Only these: every
+/// declared result grows the catalogue the deck publishes to the broker,
+/// whose reply is capped, and a slide or element resolved by id keeps the
+/// contract the catalogue listed.
+const RETURNING_OUTLINE: &[&str] = &[
+    "add-slide",
+    ADD_ELEMENT,
+    MOVE_ELEMENT,
+    RESTYLE_ELEMENT,
+    DELETE_ELEMENT,
+    MOVE_SLIDE,
+    SET_SLIDE_TEXT,
+];
+
 fn returning_outline(mut resource: Resource) -> Resource {
+    if resource.id.as_str() != "slides.deck" {
+        return resource;
+    }
     for action in &mut resource.actions {
-        if action.kind == OperationKind::Document {
+        if RETURNING_OUTLINE.contains(&action.id.as_str()) && action.kind == OperationKind::Document
+        {
             action.contract.result = ResultSpec::Json {
                 schema: crate::outline::result_schema(),
             };
         }
     }
-    resource.children = resource
-        .children
-        .into_iter()
-        .map(returning_outline)
-        .collect();
     resource
 }
 
@@ -2270,7 +2282,7 @@ fn read_operation() -> ActionSpec {
         SlidesOperation::Read,
     )
     .with_description(
-        "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. Every deck edit returns this too",
+        "The deck as text: each slide's number, layout and {#id}, its title (# line), body and other elements each ending in its {#id}, then its speaker notes. add-slide, set-slide-text, move-slide and the element edits return this too",
     )
 }
 

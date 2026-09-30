@@ -1,5 +1,6 @@
-//! The deck as text: what `read` answers and what every deck edit returns, so
-//! a caller without a screen sees the deck it produced without a screenshot.
+//! The deck as text: what `read` answers and what the deck's edits return,
+//! so a caller without a screen sees the deck it produced without a
+//! screenshot.
 //!
 //! One block per slide, in deck order, each line ending in the `{#id}` the
 //! slide and element actions take:
@@ -65,7 +66,7 @@ pub fn of_deck(deck: &Deck) -> String {
     out
 }
 
-/// What `read` and every deck edit declare they return.
+/// What `read` and the deck's edits declare they return.
 pub fn result_schema() -> serde_json::Value {
     serde_json::json!({"type": ["string", "null"]})
 }
