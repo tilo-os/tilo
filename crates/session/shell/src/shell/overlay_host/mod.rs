@@ -493,6 +493,10 @@ pub struct ShellOverlayHost {
     overview_t: f32,
     overview_target: f32,
     transition_started: Option<Instant>,
+    /// Painted ticks while `transition_started` is live. A 400 ms wall
+    /// timer expires in 3–5 frames on a software rasterizer (W16); keep
+    /// requesting until this many have actually run.
+    transition_frames: u32,
     transition_from: f32,
     /// Scroll offset (px) for the overview's room list, clamped each
     /// frame so a workspace deletion can't strand it past the tail.
@@ -520,6 +524,10 @@ pub struct ShellOverlayHost {
     /// One-shot driver so a workspace switch requests a run of frames
     /// instead of painting once and idling (W16).
     workspace_switch: ui::Transition,
+    /// Remaining paints after [`Self::workspace_switch`] settles on the
+    /// wall clock. The compositor samples demand before `update` latches
+    /// the 400 ms timer; this count is set on the chord itself.
+    workspace_switch_frames: u32,
     /// Previous-frame quick-settings visibility, to detect the open edge.
     qs_was_open: bool,
     /// The notification centre's viewer-local state: scroll position,
@@ -1065,6 +1073,10 @@ fn f64_floor_to_usize_saturating(v: f64) -> usize {
 }
 
 const OVERVIEW_TRANSITION_MS: u64 = 400;
+/// W16 wants ≥ 8 painted frames per open/close. Wall-clock 400 ms on a
+/// software rasterizer is 3–5 ticks; keep requesting until this many
+/// paints have run, even after the visual curve has settled.
+const MIN_TRANSITION_FRAMES: u32 = 12;
 const WORKSPACE_SWITCH_MS: u64 = 400;
 
 /// Vertical inset below the top bar where the floating sidebar wheel
@@ -1450,7 +1462,8 @@ impl ShellOverlayHost {
                     .is_some_and(Widget::needs_animation_frame),
                 capture_studio: self.capture_studio.needs_animation_frame(),
                 root_transition: self.transition_started.is_some(),
-                workspace_switch: self.workspace_switch.is_animating(now),
+                workspace_switch: self.workspace_switch.is_animating(now)
+                    || self.workspace_switch_frames > 0,
                 quick_settings: self.qs_transition.is_animating(now),
                 workspace_settings: self.workspace_settings_overlay.is_animating(now),
                 palette: self.palette_transition.is_animating(now),
@@ -1990,9 +2003,11 @@ impl ShellOverlayHost {
             overview_press: None,
             overview_metrics: OverviewMetrics::default(),
             transition_started: None,
+            transition_frames: 0,
             transition_from: 0.0,
             qs_transition: ui::Transition::closed(),
             workspace_switch: ui::Transition::closed(),
+            workspace_switch_frames: 0,
             qs_was_open: false,
             notification_center: NotificationCenter::new(),
             qs_type_px: (
@@ -2985,6 +3000,7 @@ impl ShellOverlayHost {
             self.overview_t = target;
             self.transition_from = target;
             self.transition_started = None;
+            self.transition_frames = 0;
             if changed {
                 self.reseed_overview_selection(target > 0.5);
                 self.overview_scroll_y = 0.0;
@@ -2995,17 +3011,21 @@ impl ShellOverlayHost {
             self.transition_from = self.overview_t;
             self.overview_target = target;
             self.transition_started = Some(Instant::now());
+            self.transition_frames = 0;
             // Reseed from the current room so the first arrow press moves
             // one step from here, not from a stale previous visit.
             self.reseed_overview_selection(target > 0.5);
             self.overview_scroll_y = 0.0;
         }
         if let Some(started) = self.transition_started {
+            self.transition_frames = self.transition_frames.saturating_add(1);
             let elapsed = millis_to_f32_lossy(started.elapsed().as_millis());
             let duration = millis_to_f32_lossy(u128::from(OVERVIEW_TRANSITION_MS));
             if elapsed >= duration {
                 self.overview_t = self.overview_target;
-                self.transition_started = None;
+                if self.transition_frames >= MIN_TRANSITION_FRAMES {
+                    self.transition_started = None;
+                }
             } else {
                 let p = (elapsed / duration).clamp(0.0, 1.0);
                 // Linear progress; `overview_panel_curve` does the
@@ -3017,10 +3037,10 @@ impl ShellOverlayHost {
         self.overview_t
     }
 
-    /// Latch overview progress during `update`, before the compositor
-    /// samples animation demand. Draw also ticks; starting only there
-    /// left Super+Tab as a one-frame jump (W16).
-    fn latch_overview_transition(&mut self) {
+    /// Latch overview progress on the chord itself, before the compositor
+    /// samples animation demand. Starting only in `update` left Super+Tab
+    /// as a timer the loop parks past (W16).
+    pub(crate) fn latch_overview_transition(&mut self) {
         let open = self
             .chrome
             .as_ref()
@@ -3034,13 +3054,19 @@ impl ShellOverlayHost {
     /// Keep the compositor painting for the switch's duration. The
     /// desktop content is already swapped; this is the frame run, not a
     /// second slide implementation. Draw snaps this when motion is reduced.
-    fn start_workspace_switch_frames(&mut self) {
+    /// Call on the chord, not only from `update`: demand is sampled first.
+    pub(crate) fn start_workspace_switch_frames(&mut self) {
         self.workspace_switch = ui::Transition::closed();
         self.workspace_switch.set_open(
             true,
             Duration::from_millis(WORKSPACE_SWITCH_MS),
             ui::Curve::EaseOut,
         );
+        self.workspace_switch_frames = MIN_TRANSITION_FRAMES;
+    }
+
+    fn consume_workspace_switch_frame(&mut self) {
+        self.workspace_switch_frames = self.workspace_switch_frames.saturating_sub(1);
     }
 
     #[must_use]
@@ -6406,7 +6432,7 @@ impl ShellOverlayHost {
         let current = chrome.borrow().fullscreen_group();
         chrome
             .borrow_mut()
-            .set_fullscreen_group(if current == Some(group) {
+            .set_user_fullscreen_group(if current == Some(group) {
                 None
             } else {
                 Some(group)
@@ -8078,6 +8104,7 @@ impl ShellOverlayHost {
         self.overview_t = t;
         self.transition_from = t;
         self.transition_started = None;
+        self.transition_frames = 0;
         // Same seeding the animated open does, so a single-frame paint
         // matches what a real open leaves behind.
         self.reseed_overview_selection(target);
@@ -8505,6 +8532,9 @@ impl ShellOverlayHost {
         } else {
             false
         };
+        if matched && id == "overview.toggle" {
+            self.latch_overview_transition();
+        }
         self.palette_visible = false;
         self.palette.close();
         matched
@@ -11156,6 +11186,8 @@ impl ShellOverlayHost {
                 let mut st = chrome.borrow_mut();
                 st.overlays.overview = !st.overlays.overview;
                 st.bump();
+                drop(st);
+                self.latch_overview_transition();
             }
             *handled = true;
             return true;
@@ -11460,8 +11492,10 @@ impl ShellOverlayHost {
                 } else {
                     1
                 };
-                if let Some(chrome) = self.chrome.clone() {
-                    let _ = chrome.borrow_mut().switch_workspace(direction);
+                if let Some(chrome) = self.chrome.clone()
+                    && chrome.borrow_mut().switch_workspace(direction)
+                {
+                    self.start_workspace_switch_frames();
                 }
             }
             _ => return false,
@@ -11559,7 +11593,15 @@ impl ShellOverlayHost {
             A::Notifications => chrome
                 .borrow_mut()
                 .open_quick_settings_level(QsLevel::Notifications),
-            A::ToggleFullscreen => chrome.borrow_mut().request_fullscreen_toggle(),
+            A::ToggleFullscreen => {
+                // Super+M applies on the host. Super+F must too: the
+                // compositor loop then writes `set_fullscreen(None)` every
+                // tick (client xdg is overlay-only), so a later request
+                // parked in `fullscreen_group` is gone before W07 dumps.
+                if !self.toggle_focused_group_fullscreen() {
+                    chrome.borrow_mut().request_fullscreen_toggle();
+                }
+            }
             A::NextInputSource => {
                 if let Some((index, name)) =
                     select_next_input_source(settings_store::settings_path().as_deref())
@@ -12048,6 +12090,8 @@ impl ShellOverlayHost {
         if st.overlays.overview {
             st.overlays.overview = false;
             st.bump();
+            drop(st);
+            self.latch_overview_transition();
             *handled = true;
             return true;
         }
@@ -15810,6 +15854,7 @@ impl Widget for ShellOverlayHost {
         // changes into the rows — both before the children's own `update`
         // so freshly-spliced groups join this frame's sync pass.
         let ws_swapped = self.resync_workspace_content();
+        self.consume_workspace_switch_frame();
         let chrome_dirty = self.resync_strips_from_tree() || ws_swapped;
         // Before children update, so a promotion/restore this frame shows.
         self.sync_fullscreen_from_chrome();
@@ -18196,7 +18241,8 @@ impl Widget for ShellOverlayHost {
 }
 
 impl ShellOverlayHost {
-    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 7] {
+    fn wake_deadline_sources(&self, now: Instant) -> [(&'static str, Option<Instant>); 9] {
+        let next_frame = now.checked_add(Duration::from_millis(1));
         [
             (
                 "onboarding",
@@ -18227,6 +18273,13 @@ impl ShellOverlayHost {
             ),
             ("now-playing", self.now_playing_wake_deadline(now)),
             ("window-previews", self.window_previews_wake_deadline(now)),
+            ("root-transition", self.transition_started.and(next_frame)),
+            (
+                "workspace-switch",
+                (self.workspace_switch.is_animating(now) || self.workspace_switch_frames > 0)
+                    .then(|| next_frame)
+                    .flatten(),
+            ),
         ]
     }
 
@@ -18321,6 +18374,7 @@ impl ShellOverlayHost {
             .is_some_and(|osd| osd.needs_animation_frame_at(now));
         self.transition_started.is_some()
             || self.workspace_switch.is_animating(now)
+            || self.workspace_switch_frames > 0
             || qs_in_flight
             || ws_settings_in_flight
             || palette_in_flight
