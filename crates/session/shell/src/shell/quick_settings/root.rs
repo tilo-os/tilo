@@ -172,6 +172,11 @@ pub struct QuickSettingsRoot {
     // monitor) keeps the single unlabelled brightness slider.
     display_names: Vec<String>,
     keyboard_focus: Option<usize>,
+    // The root stop keyboard focus is on. `root_stops` changes while the
+    // popover is open (a slider or control appears once its device state
+    // arrives), so an index alone would move focus, or Enter, to another
+    // stop. Keyboard navigation sets it; the index follows it.
+    root_focus: Option<RootStop>,
     config: QuickSettingsConfig,
     // Hosts that inject a model (tests, screenshots and embedders) must not
     // silently rewrite the desktop user's persisted arrangement. Only the
@@ -317,6 +322,7 @@ impl QuickSettingsRoot {
             slider_drag: None,
             display_names: Vec::new(),
             keyboard_focus: None,
+            root_focus: None,
             config: config.normalised(),
             persist_config,
             edit_mode: false,
@@ -328,6 +334,7 @@ impl QuickSettingsRoot {
         // Tab selects the first stop in `root_stops` (Brightness) instead of
         // silently preselecting it and making that same Tab skip past it.
         self.keyboard_focus = None;
+        self.root_focus = None;
     }
 
     /// Named geometry for every visible root affordance. Quick Settings is
@@ -991,8 +998,17 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return None;
         }
-        self.keyboard_focus
-            .and_then(|index| self.root_stops(state).get(index).copied())
+        let stops = self.root_stops(state);
+        self.root_focus_index(&stops)
+            .and_then(|index| stops.get(index).copied())
+    }
+    /// Where keyboard focus is among `stops`: the focused stop's current
+    /// position, or none if that stop is gone.
+    fn root_focus_index(&self, stops: &[RootStop]) -> Option<usize> {
+        match self.root_focus {
+            Some(stop) => stops.iter().position(|s| *s == stop),
+            None => self.keyboard_focus,
+        }
     }
     fn is_focused(&self, state: &QuickSettingsState, stop: RootStop) -> bool {
         self.focused_stop(state) == Some(stop)
@@ -1051,6 +1067,7 @@ impl QuickSettingsRoot {
             RootStop::Edit => {
                 self.edit_mode = true;
                 self.keyboard_focus = None;
+                self.root_focus = None;
                 RootAction::LayoutChanged
             }
             RootStop::Tile(tile) => tile.action(),
@@ -1220,17 +1237,20 @@ impl QuickSettingsRoot {
     }
 
     pub fn focus_next(&mut self, state: &QuickSettingsState, backwards: bool) -> bool {
-        let count = if self.edit_mode {
+        let stops = (!self.edit_mode).then(|| self.root_stops(state));
+        let (count, current) = match &stops {
             // Editable rows, Reset defaults, Done. The header no longer
             // duplicates Done with an unexplained checkmark.
-            self.edit_controls(state).len().saturating_add(2)
-        } else {
-            self.root_stops(state).len()
+            None => (
+                self.edit_controls(state).len().saturating_add(2),
+                self.keyboard_focus,
+            ),
+            Some(stops) => (stops.len(), self.root_focus_index(stops)),
         };
         if count == 0 {
             return false;
         }
-        self.keyboard_focus = Some(match (self.keyboard_focus, backwards) {
+        let next = match (current, backwards) {
             (Some(i), true) => i.checked_sub(1).unwrap_or_else(|| count.saturating_sub(1)),
             (Some(i), false) => i
                 .checked_add(1)
@@ -1238,7 +1258,9 @@ impl QuickSettingsRoot {
                 .unwrap_or_default(),
             (None, true) => count.saturating_sub(1),
             (None, false) => 0,
-        });
+        };
+        self.keyboard_focus = Some(next);
+        self.root_focus = stops.and_then(|stops| stops.get(next).copied());
         true
     }
     /// Whether the next [`Self::focus_next`] in this direction would wrap
@@ -1248,8 +1270,9 @@ impl QuickSettingsRoot {
         if self.edit_mode {
             return false;
         }
-        let last = self.root_stops(state).len().saturating_sub(1);
-        match (self.keyboard_focus, backwards) {
+        let stops = self.root_stops(state);
+        let last = stops.len().saturating_sub(1);
+        match (self.root_focus_index(&stops), backwards) {
             (None | Some(0), true) => true,
             (Some(i), false) => i >= last,
             _ => false,
@@ -1292,11 +1315,12 @@ impl QuickSettingsRoot {
                 // its edit-mode index pointing at an unrelated root action
                 // (for example History/Notifications) on the next frame.
                 self.keyboard_focus = None;
+                self.root_focus = None;
                 return RootAction::LayoutChanged;
             }
             return RootAction::None;
         }
-        match self.root_stops(state).get(i).copied() {
+        match self.focused_stop(state) {
             Some(stop) => self.activate_stop(stop, state),
             None => RootAction::None,
         }
@@ -2454,11 +2478,16 @@ impl QuickSettingsRoot {
             _ => None,
         }
     }
-    pub fn focus_accessibility_path(&mut self, path: &[usize], _: &QuickSettingsState) -> bool {
+    pub fn focus_accessibility_path(&mut self, path: &[usize], state: &QuickSettingsState) -> bool {
         let [i] = path else {
             return false;
         };
         self.keyboard_focus = Some(*i);
+        self.root_focus = if self.edit_mode {
+            None
+        } else {
+            self.root_stops(state).get(*i).copied()
+        };
         true
     }
 }
@@ -2741,6 +2770,60 @@ mod tests {
             );
         }
 
+        /// Device state arrives while the popover is open: a slider or
+        /// control that appears or goes away changes the stop list under a
+        /// focused stop. Focus and Enter stay on the stop the user reached.
+        fn focus_stays_on_its_stop_when_stops_appear_or_vanish() {
+            let mut root = QuickSettingsRoot::default();
+            let mut state = QuickSettingsState {
+                volume_available: true,
+                ..QuickSettingsState::default()
+            };
+            root.panel = PANEL;
+            root.reset_focus();
+            assert!(root.focus_next(&state, true));
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+
+            // The volume probe fails: one stop fewer before Power.
+            state.volume_available = false;
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            // A backlight appears: one stop more.
+            state.brightness_available = true;
+            assert_eq!(
+                root.focused_stop(&state),
+                Some(RootStop::Tile(RootTile::Power))
+            );
+            assert!(!root.focus_would_wrap(&state, true));
+            assert_eq!(
+                root.activate_focused(PANEL, &mut state),
+                RootAction::OpenPowerMenu
+            );
+
+            // Stepping continues from where focus is, not from a stale index.
+            assert!(root.focus_next(&state, true));
+            let stops = root.root_stops(&state);
+            let power = stops
+                .iter()
+                .position(|s| *s == RootStop::Tile(RootTile::Power))
+                .unwrap();
+            assert_eq!(root.focused_stop(&state), stops.get(power - 1).copied());
+
+            // A focused slider that goes away leaves nothing focused rather
+            // than handing Enter to its neighbour.
+            root.reset_focus();
+            assert!(root.focus_next(&state, false));
+            assert_eq!(root.focused_stop(&state), Some(RootStop::Slider(0)));
+            state.brightness_available = false;
+            assert_eq!(root.focused_stop(&state), None);
+            assert_eq!(root.activate_focused(PANEL, &mut state), RootAction::None);
+        }
+
         fn normal_focus_order_matches_visible_actions_and_accessibility_paths() {
             let mut root = QuickSettingsRoot::default();
             let mut state = QuickSettingsState::default();
@@ -2926,6 +3009,7 @@ mod tests {
         opening_has_no_hidden_focus_and_first_tab_selects_brightness();
         reverse_tab_from_no_selection_opens_power_without_hardware();
         normal_focus_order_matches_visible_actions_and_accessibility_paths();
+        focus_stays_on_its_stop_when_stops_appear_or_vanish();
         each_focus_stop_marks_exactly_one_accessibility_node();
         every_destination_tile_click_routes_to_its_action();
         devices_and_clipboard_rows_summarise_their_panes();
