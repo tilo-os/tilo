@@ -2205,6 +2205,7 @@ impl ControlState for FrameBuilderControlState<'_> {
                 "ws_settings": overlays.ws_settings,
                 "collaborators": overlays.collaborators,
                 "room_activity": overlays.room_activity,
+                "power_menu": self.fb.host().power_menu_open(),
             },
             // What the pointer shows: a drawn shape, the focused client's
             // own surface, or nothing because the client hid it.
