@@ -325,16 +325,33 @@ pub(crate) fn close_tab_unrecorded(
     if let Some(key) = launch_key.as_deref()
         && !foreign_tabs_remain_for(&st.tree().desktop, key)
     {
+        // Wine File's tab announces wineboot.exe. That is not the desktop
+        // id the launch table uses, so terminate(key) is a no-op. Sweep
+        // every unconfined launch that now has no window.
+        let known = crate::shell::launcher::unconfined_launch_is_live(key)
+            || crate::shell::launcher::launch_key_for_surface(
+                foreign.as_ref().map_or(0, |(_, id)| *id),
+            )
+            .is_some()
+            || crate::shell::launcher::launch_key_for_app_id(
+                foreign.as_ref().map_or("", |(id, _)| id),
+            )
+            .is_some();
         crate::shell::launcher::terminate_unconfined_launches(key);
+        if !known {
+            for package_id in crate::shell::launcher::live_unconfined_package_ids() {
+                if !foreign_tabs_remain_for(&st.tree().desktop, &package_id) {
+                    crate::shell::launcher::terminate_unconfined_launches(&package_id);
+                }
+            }
+        }
     }
     st.bump();
     Ok(())
 }
 
 fn host_launch_key(app_id: &str, surface_id: u64) -> String {
-    crate::shell::launcher::launch_key_for_surface(surface_id)
-        .or_else(|| crate::shell::launcher::launch_key_for_app_id(app_id))
-        .unwrap_or_else(|| app_id.to_string())
+    crate::shell::persist::durable_app_id(surface_id, app_id)
 }
 
 fn foreign_tabs_remain_for(desktop: &crate::shell::state::DesktopTree, launch_key: &str) -> bool {
