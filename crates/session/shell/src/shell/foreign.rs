@@ -21,7 +21,8 @@
 //! Hosted as a [`ui::widget::AppWidget`] (not a post-pass blit), sharing
 //! placement/clipping/masking/fades/active-tab-only-paints with every
 //! other tile; [`ForeignSurfaceWidget::needs_animation_frame`] is `true`
-//! only when the store holds an undrawn frame, so an idle client costs one lock + lookup per tick and zero paints.
+//! only until the first buffer is presented. A later client commit is
+//! `needs_redraw` (one shot), so an idle hosted app costs zero cadence.
 //!
 //! dmabuf capture is coalesced per surface and runs outside the compositor
 //! thread. A Smithay commit [`Barrier`] keeps each submitted buffer owned by
@@ -2849,11 +2850,13 @@ impl Widget for ForeignSurfaceWidget {
         self.rect
     }
 
-    /// A pending client frame keeps animation cadence alive. A placement-only
-    /// change is edge-triggered through `needs_redraw` instead, so resizing a
-    /// static client repaints once without creating an idle frame loop.
+    /// Only an unpresented window holds animation cadence: nothing else
+    /// wakes the loop for its first paint. A later client commit is
+    /// `needs_redraw` (one shot). Treating a pending sequence as cadence
+    /// kept off-screen tiles — never drawn, so never cached — asking for
+    /// frames at the refresh rate after the app itself had gone idle.
     fn needs_animation_frame(&self) -> bool {
-        self.awaiting_first_paint() || store().frame_seq(self.surface_id) != self.cached_seq
+        self.awaiting_first_paint()
     }
 
     fn needs_redraw(&self) -> bool {
@@ -4145,8 +4148,12 @@ mod tests {
                 "the paint gate itself must settle a fitting first frame; native asks it before draw"
             );
             assert!(
-                w.needs_animation_frame(),
-                "a fresh frame requests a repaint"
+                !w.needs_animation_frame(),
+                "an idle hosted app must not keep requesting frames after its first buffer landed"
+            );
+            assert!(
+                w.needs_redraw(),
+                "the undrawn first buffer still requests one paint"
             );
             assert!(w.refresh_cache(), "cache picks up the new frame");
             assert!(
@@ -4246,6 +4253,28 @@ mod tests {
         widget_fit_rect_letterboxes_preserving_aspect();
         painted_frame_origin_matches_the_origin_input_is_mapped_with();
         moving_a_static_foreign_surface_requests_one_repaint();
+    }
+
+    /// Off-screen tiles never `draw()`, so `cached_seq` stays stale. A
+    /// pending client sequence used to keep `needs_animation_frame` true
+    /// forever and pin the host at the refresh rate. Fail if an idle
+    /// hosted app still requests frames after its first buffer landed.
+    #[test]
+    fn idle_hosted_app_does_not_keep_requesting_frames() {
+        let id = sid(71);
+        store().forget(id);
+        let mut w = ForeignSurfaceWidget::new(id, "org.example.app".into());
+        w.rect = Rect::new(0.0, 0.0, 1.0, 1.0);
+        store().publish_rgba(id, &[255, 0, 0, 255], 1, 1);
+        assert!(
+            !w.awaiting_first_paint(),
+            "the first fitting buffer has already settled the paint gate"
+        );
+        assert!(
+            !w.needs_animation_frame(),
+            "an idle hosted app must not keep requesting frames"
+        );
+        store().forget(id);
     }
 
     #[test]
