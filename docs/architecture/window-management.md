@@ -226,7 +226,12 @@ Small PRs, each carrying its action, chord, test and doc row together:
    and verified headless like keys; then gestures by finger count.
 4. Maximize keeps the chrome; maximize, full screen and restore animate.
 5. Open, close and move transitions on the rect spring, with frame-trace
-   numbers.
+   numbers. **Today** the x of every group springs when an open, close or
+   reorder moves it, retargeting mid-flight from the drawn position and
+   velocity, and an armed pass eases the strip's pan with it. A launch still
+   cuts the pan so the new window is on screen in the frame that opens it.
+   Widths (open from 0, close from the last frame, resize) and maximize are
+   next; layout still runs on every animated frame.
 6. The workspace level on Ctrl+Super, carrying through the consent sheet, and
    the display level on Alt+Super.
 
