@@ -1468,10 +1468,12 @@ jobs:
           # caches, since a cached layer keeps the file times of the build
           # that made it and any older than this commit escape
           # rewrite-timestamp's clamp (run 48898). Only main writes the layer
-          # caches; a pull request reads main's and exporting its own cost
-          # every run about two minutes.
+          # caches, and only from a cold builder: a pull request reads main's,
+          # and a builder the runner slot seeded from main's previous dev
+          # build already holds these layers; exporting them cost every run
+          # about two to three minutes.
           cache-from: type=gha,scope=tilo-os-${{ needs.plan.outputs.hardware-profile }}-toolchain-${{ matrix.arch }}
-          cache-to: ${{ github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-toolchain-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       - name: Build and cache the compile stages
         id: compile-stages
@@ -1632,7 +1634,7 @@ jobs:
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-rootfs-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # Its own lineage only, the rootfs layers: mode=max over the whole
           # OS graph exhausts BuildKit's memory (moby/buildkit#6008).
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-rootfs-{1},mode=min,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       - name: Build and cache the image tool stages
         id: tool-stages
@@ -1689,7 +1691,7 @@ jobs:
           cache-from: ${{ steps.release-mode.outputs.publish != 'true' && format('type=gha,scope=tilo-os-{0}-tools-{1}', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
           # A small graph: its intermediate steps are what the image build
           # reuses.
-          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
+          cache-to: ${{ steps.release-mode.outputs.publish != 'true' && github.ref == 'refs/heads/main' && !startsWith(steps.buildx.outputs.name, 'ci-seed-') && format('type=gha,scope=tilo-os-{0}-tools-{1},mode=max,ignore-error=true', needs.plan.outputs.hardware-profile, matrix.arch) || '' }}
 
       # Build the multi-stage bootc image. Publishing deliberately happens only
       # after the sealed image has been installed and booted below. On a release
