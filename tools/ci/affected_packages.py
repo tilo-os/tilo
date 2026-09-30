@@ -217,11 +217,8 @@ TEST_SHARD_APART = (
     frozenset({"tilo-fs", "fs-native", "private-fs"}),
     frozenset({
         "tilo-action-broker",
-        "tilo-cloud-host",
-        "tilo-device-host",
         "tilo-peer-state",
         "tilo-relay",
-        "tilo-workspace-host",
     }),
 )
 

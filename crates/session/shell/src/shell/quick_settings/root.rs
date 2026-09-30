@@ -968,10 +968,7 @@ impl QuickSettingsRoot {
     /// four destination tiles. Controls come first so the first Tab after
     /// opening reaches Brightness.
     fn root_stops(&self, state: &QuickSettingsState) -> Vec<RootStop> {
-        let mut stops: Vec<RootStop> = (0..self.slider_count())
-            .filter(|&index| self.slider_available(state, index))
-            .map(RootStop::Slider)
-            .collect();
+        let mut stops: Vec<RootStop> = (0..self.slider_count()).map(RootStop::Slider).collect();
         stops.extend(
             self.visible_controls(state)
                 .into_iter()
@@ -2521,15 +2518,9 @@ mod tests {
     fn root_controls_reflect_present_hardware_and_migrated_config() {
         fn semantic_targets_cover_every_visible_root_control_and_edit_action() {
             let mut root = QuickSettingsRoot::default();
-            let state = QuickSettingsState {
-                brightness_available: true,
-                bluetooth_available: true,
-                radios: os_actions::RadioState {
-                    wifi_available: true,
-                    ..os_actions::RadioState::default()
-                },
-                ..QuickSettingsState::default()
-            };
+            let mut state = QuickSettingsState::default();
+            state.radios.wifi_available = true;
+            state.bluetooth_available = true;
             root.panel = PANEL;
 
             let targets = root.semantic_rects(&state);
@@ -3162,14 +3153,8 @@ mod tests {
 
         fn accessibility_nodes_carry_the_rects_paint_and_hit_testing_use() {
             let mut root = QuickSettingsRoot::default();
-            let state = QuickSettingsState {
-                brightness_available: true,
-                radios: os_actions::RadioState {
-                    wifi_available: true,
-                    ..os_actions::RadioState::default()
-                },
-                ..QuickSettingsState::default()
-            };
+            let mut state = QuickSettingsState::default();
+            state.radios.wifi_available = true;
             root.panel = PANEL;
             let snapshot = root.accessibility_snapshot(&state);
             assert_eq!(snapshot.bounds.map(ui::AccessBounds::to_rect), Some(PANEL));

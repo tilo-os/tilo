@@ -16,7 +16,6 @@ pub(super) enum InvocationCaller {
         route: CrdtRoute,
         admitted: Box<AdmittedJoinIdentity>,
     },
-    Enrolled(crate::enrolled_dispatch::VerifiedEnrolledDispatch),
 }
 #[derive(Clone)]
 pub(super) struct OriginalInvocationData {
@@ -65,20 +64,11 @@ impl OriginalInvocationData {
             time: time?,
         }))
     }
-    /// The enrolled task dispatch this invocation was admitted for, if any.
-    pub(super) fn enrolled_dispatch(
-        &self,
-    ) -> Option<&crate::enrolled_dispatch::VerifiedEnrolledDispatch> {
-        match &self.caller {
-            InvocationCaller::Enrolled(dispatch) => Some(dispatch),
-            _ => None,
-        }
-    }
 }
 
 /// Immutable original facts; there is no public constructor or deserializer.
 /// This token is not an allow decision. The final owner must recheck its current
-/// certificate, membership, policy and enrolled task ledger under its held guard.
+/// certificate, membership and policy under its held guard.
 pub struct OriginalInvocation {
     broker: Weak<CapnpBrokerState>,
     peer: u64,
@@ -122,7 +112,6 @@ impl OriginalInvocation {
                 })
             }
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
-            InvocationCaller::Enrolled(dispatch) => Some(dispatch.caller()),
         }
         .ok_or_else(|| "original invocation certificate unavailable".into())
     }
@@ -130,13 +119,6 @@ impl OriginalInvocation {
         match &self.data.caller {
             InvocationCaller::Certified(caller) => caller.admitted.agent_id.as_deref(),
             InvocationCaller::Local { admitted, .. } => admitted.agent_id.as_deref(),
-            InvocationCaller::Enrolled(_) => None,
-        }
-    }
-    pub fn enrolled_dispatch(&self) -> Option<&crate::enrolled_dispatch::VerifiedEnrolledDispatch> {
-        match &self.data.caller {
-            InvocationCaller::Enrolled(dispatch) => Some(dispatch),
-            _ => None,
         }
     }
     /// Pure custody check: no owner callback, workspace snapshot or Store open.
@@ -144,7 +126,7 @@ impl OriginalInvocation {
     ///
     /// # Errors
     ///
-    /// Returns a message when the broker, worker, certificate, task custody or clock lapsed.
+    /// Returns a message when the broker, worker, certificate or clock lapsed.
     pub fn check_custody(&self) -> Result<u64, String> {
         let now = self.data.time.now_ns().map_err(|error| error.to_string())?;
         let state = self
@@ -169,9 +151,6 @@ impl OriginalInvocation {
         }
         tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
             .map_err(|_| "original invocation certificate expired")?;
-        if let InvocationCaller::Enrolled(dispatch) = &self.data.caller {
-            dispatch.check_action_custody_at(now)?;
-        }
         self.data.time.now_ns().map_err(|error| error.to_string())
     }
     /// The original person caller, decided while `state` can still say who
@@ -204,9 +183,7 @@ impl OriginalInvocation {
         Ok(Actor::agent(agent).in_room(self.data.route.cluster_id.clone()))
     }
     fn check_lifecycle(&self) -> Result<(), String> {
-        let began = std::time::Instant::now();
         self.check_custody()?;
-        let custody_us = crate::agent_timing::us(began);
         let state = self
             .broker
             .upgrade()
@@ -223,12 +200,9 @@ impl OriginalInvocation {
             return Err("original worker connection replaced".into());
         }
         // Current certificate policy may open Store; the registry lock is gone.
-        let mark = std::time::Instant::now();
         state
             .revalidate_admission(&self.worker.route, &admitted)
             .map_err(|error| error.to_string())?;
-        let worker_us = crate::agent_timing::us(mark);
-        let mark = std::time::Instant::now();
         match &self.data.caller {
             InvocationCaller::Certified(caller) => {
                 state.current_action_caller(caller)?;
@@ -238,16 +212,7 @@ impl OriginalInvocation {
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;
             }
-            InvocationCaller::Enrolled(dispatch) => dispatch.authorize_original_action(
-                &self.data.route.app_id,
-                &self.data.route.record_id,
-                &self.data.request.address.resource,
-                &self.data.request.address.action,
-                &self.data.time,
-            )?,
         }
-        let caller_us = crate::agent_timing::us(mark);
-        let mark = std::time::Instant::now();
         let tree = state
             .membership
             .as_ref()
@@ -255,7 +220,6 @@ impl OriginalInvocation {
             .snapshot()?;
         let person = self.original_person(&state)?;
         drop(state);
-        let membership_us = crate::agent_timing::us(mark);
         let workspace = tree
             .workspaces
             .iter()
@@ -286,18 +250,6 @@ impl OriginalInvocation {
         }
         drop(tree);
         self.check_custody()?;
-        crate::agent_timing::slow(
-            "lease_check",
-            self.enrolled_dispatch()
-                .map(crate::enrolled_dispatch::VerifiedEnrolledDispatch::invocation),
-            began,
-            &[
-                ("custody_us", custody_us),
-                ("worker_us", worker_us),
-                ("caller_us", caller_us),
-                ("membership_us", membership_us),
-            ],
-        );
         Ok(())
     }
 }

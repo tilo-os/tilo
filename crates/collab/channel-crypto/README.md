@@ -209,13 +209,13 @@ plaintext path.
   it seals, sends and opens them in order. A send refused after a membership
   change is re-sealed under the new epoch and retried.
 - **Committed routes** stay cleartext. When the broker serves a route as a
-  committed document, its owner (the device host, the Cloud host or the
-  shell's native workspace owner) admits and applies each edit itself, and
+  committed document, its owner (the shell's native workspace owner)
+  admits and applies each edit itself, and
   it holds no channel keys: it could not open a sealed edit, and after one
   it refuses cleartext on the route as a downgrade. Endpoints therefore do
   not ask for keys on committed routes, and a host-signed endpoint commits
   through its host. Committed routes take encryption once their owner runs
-  as a service member (below).
+  as a service member.
 - **Brokers and relays** hold gates, never keys. Every ingress path checks
   the channel's gate (`ChannelGate`): plaintext is closed off, and content
   sealed before the latest membership change is refused. Relays store and
@@ -235,41 +235,6 @@ content only as a **service member** (`shell/service_members.rs`):
 - When the deadline passes, or `revoke_service_member` ends the job, the
   steward removes it. The removal is a commit, so content keys rotate: the
   service keeps what it read and cannot open anything written afterwards.
-
-### What the Cloud host must adopt
-
-The Cloud stack (`tilo-cloud-host` and its agent workers) currently holds
-documents as a plaintext, full CRDT peer, enrolled as one more device of the
-owner. `tilo-peer-state` parks encrypted payloads as
-`RetryLater(PersistedMls)`, so on encrypted channels it stalls. With
-encryption on everywhere, it has to become a service member:
-
-1. **Device identity.** Keep the host's own device key and root-signed
-   `DeviceCert` from cloud enrolment. That key is its MLS credential
-   (`MemberKey::for_device`). A host certificate grants no reading by
-   itself.
-2. **Grant.** The owner's shell grants the host (or one agent run's
-   device) a service membership per room, with a purpose and a deadline:
-   the job's `GrantOffer.expires_at`, or the end of the agent run
-   (`grant_service_member` / `revoke_service_member`). The run's
-   `GrantAction`s stay as they are; they authorise actions, not key access.
-3. **Channel service.** Run `ChannelEncryption` on the host with a
-   `ChannelDirectory` that names the room's governor as steward, a
-   persistent state root, and a `VaultKey` from the host's secret custody.
-   Pump it with the room transport (`NeighbourMsg::Mls*` over the workspace
-   host session). It asks for access, applies Welcomes and commits, and
-   acknowledges.
-4. **Documents.** Decrypt with the route's `ChannelContentKeys` where
-   `tilo-peer-state` admits a document (`Encrypted { .. }`), instead of
-   parking it, and seal outbound changes the same way
-   (`local_outbox`, media governance). Workers that run through
-   `CollaborationManager` get this from the SDK once they are launched with
-   an identity service that answers `Request::ChannelKeys`. For
-   `HostDocuments`, answer it from the host's channel service.
-5. **Expiry.** When the grant ends, the host is removed from the group.
-   It must drop plaintext it derived for the ended job (previews, indexes)
-   under the job's retention rules, since keys it held for earlier epochs
-   stay valid for content it already had.
 
 The relay and the action broker need no change: they route and retain
 ciphertext and MLS control material without decoding either.
