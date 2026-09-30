@@ -1033,6 +1033,12 @@ impl TileHost {
         self.custody_renewal = Some(self.history_lifetime.control_domain.renewal_from(&previous));
     }
 
+    /// Typing may reach a live app that has no tab record yet. It must not
+    /// bypass a renewed lifetime or admitted owner-bound custody.
+    fn typing_may_bypass_missing_record(&self) -> bool {
+        !self.owner_bound_work && self.record_transition_error.is_none()
+    }
+
     fn prepare_record_resolution(&mut self) -> Result<(), String> {
         if !self.history_lifetime.active.get() {
             let error = "The current document owner is closed".to_string();
@@ -2157,18 +2163,25 @@ impl Widget for TileHost {
         if *ctx.handled {
             return;
         }
+        let typing = matches!(
+            event,
+            WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+        );
         let live = if let Ok(live) = self.resolve_record() {
             live
-        } else {
-            let Some(live) = self.checked_old_owner_for_recovery() else {
-                *ctx.handled = true;
-                return;
-            };
+        } else if let Some(live) = self.checked_old_owner_for_recovery() {
             Some(live)
+        } else if typing && self.typing_may_bypass_missing_record() {
+            // A running Terminal still receives keystrokes when the tab
+            // record was never bound. A renewed or closed owner must not.
+            None
+        } else {
+            *ctx.handled = true;
+            return;
         };
         self.install_declared_history();
         self.install_live_custody(crate::control_custody::CustodyAttachment::Dynamic);
-        if self.record_error.is_some() {
+        if self.record_error.is_some() && !(typing && self.typing_may_bypass_missing_record()) {
             *ctx.handled = true;
             return;
         }
@@ -2179,9 +2192,15 @@ impl Widget for TileHost {
             history.observe_pointer(event, ctx.scale_factor);
             if history.controls_event(event, ctx.scale_factor) {
                 history.route_event(app.as_mut(), event, ctx);
-                return;
-            }
-            if !history.live_interactive() {
+                let leftover_typing = matches!(
+                    event,
+                    WindowEvent::KeyboardInput { .. } | WindowEvent::Ime(_)
+                ) && !*ctx.handled
+                    && !history.captures_input();
+                if !leftover_typing {
+                    return;
+                }
+            } else if !history.live_interactive() {
                 return;
             }
         }

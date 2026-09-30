@@ -78,7 +78,8 @@ compositor**, so pick per task:
 | `--2d` (default) | `-device virtio-vga -display none` | GRUB, kernel console, greeter, **and the desktop** | llvmpipe — slow, but it runs |
 | `--gl` | `-device virtio-vga-gl -display egl-headless,rendernode=<iGPU>` | **GL compositor scanout** (2D content → "no surface") | hardware GL via virgl |
 
-`vm.sh serial` works in both (the image boots with `console=ttyS0`).
+`vm.sh serial` works in both (the image boots with `console=ttyS0` on x86 and
+`console=ttyAMA0` on ARM).
 
 * **`--2d` reaches the desktop.** `/usr/bin/shell --backend drm` paints the
   full desktop through llvmpipe, slowly. `--2d` captures a whole boot — firmware,

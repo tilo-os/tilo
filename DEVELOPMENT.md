@@ -36,9 +36,20 @@ instead: `tilo-vm vm upgrade --from sha:<commit>` for any commit CI has built,
 `--from local` for one that is not pushed yet (`tilo-vm guide images`). The
 `Build / OS dev` workflow builds every main push and every pull request that
 touches `os/`, fully cached, and publishes `tilo-ci:<ref>-<sha7>-<arch>` plus
-the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`).
+the dev image `tilo-vm:<ref>-<sha7>-ci` (`<ref>` is `main` or `pr-<number>`);
+main also moves `tilo-vm:main-ci` to its newest dev images.
 `Release / OS` builds signed, reproduced releases only: tags, the nightly run
 and a `release` dispatch of main.
+
+To run a main dev image on a physical x86_64 (or generic aarch64) machine, dispatch
+`Release / Dev VM disk` (`dev-disk.yml`) with `base_image` set to
+`registry.tilo.so/tilo/tilo-ci:main-<sha7>-x86_64`, `dev_image` to the
+`tilo-vm@sha256:…` digest of `tilo-vm:main-<sha7>-ci-x86_64` (so the image is
+not rebuilt), `tag=main-ci` and `architectures=x86_64`. Its summary links the
+disk, `tilo-vm-candidate-x86_64.qcow2`; write it to a disk of at least 64 GB
+(`sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-x86_64.qcow2 /dev/sdX`)
+and boot it. It follows `tilo-vm:main-ci`, so `sudo bootc upgrade && sudo
+systemctl reboot` moves it to main's newest dev image.
 
 The [Fedora 44 disposable-VM loop](#fedora-44-disposable-vm-loop-legacy)
 (`dist/dev/fedora44-vm-iterate.sh`) is the legacy path until slots cover what it
@@ -47,23 +58,22 @@ does; `tilo-vm guide fedora-loop` maps its commands.
 ### Board dev images on real hardware
 
 A board dev image is the board layer (`os/Containerfile.board`: firmware, device
-tree, initramfs) on the same commit's aarch64 dev image. Every `Build / OS dev`
-run with an aarch64 lane builds one per board in its own job (`board:
-lenovo-83ed`), a few minutes after the dev image:
+tree, initramfs) on the same commit's aarch64 dev image. It is sealed: bootc hands
+the kernel a device tree only from a UKI's `.dtb` section, so the image carries a
+UKI, which keeps the device tree across updates. Every `Build / OS dev` run with an
+aarch64 lane builds one per board in its own job (`board: lenovo-83ed`), which also
+installs the flashable disk:
 
 | Board | Image of one build | Moving tag (main) |
 | --- | --- | --- |
 | Lenovo Yoga Slim 7x (83ED) | `registry.tilo.so/tilo/tilo-vm:<ref>-<sha7>-lenovo-83ed` | `registry.tilo.so/tilo/tilo-vm:lenovo-83ed-ci` |
 
-To flash, get a disk of it: dispatch `Release / Dev VM disk` (`dev-disk.yml`) with
-the inputs the board job prints (`source_revision`, `base_image`, `dev_image`,
-`tag=lenovo-83ed-ci`, `architectures=aarch64`, `validate_boot=false`: CI's QEMU
-cannot boot a board device tree). Its summary links the installed disk,
-`tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT disk. Write it to a USB drive or
-the internal disk of at least 64 GB, then boot it from the firmware boot menu:
+The job's summary links the disk, `tilo-vm-candidate-aarch64.qcow2`, a 64 GB GPT
+disk. Write it to a USB drive or the internal disk of at least 64 GB, then boot it
+from the firmware boot menu:
 
 ```sh
-curl -fLO <disk URL from the run summary>
+curl -fLO <disk URL from the job summary>
 sudo qemu-img convert -p -f qcow2 -O raw tilo-vm-candidate-aarch64.qcow2 /dev/sdX
 ```
 
@@ -81,7 +91,9 @@ Routine changes land through pull requests to `main`. Each PR head revision gets
 its own affected-package check and fast-quality lint result. Both test the head
 merged onto the tip of its base branch (`main`, or the lower branch of a stack)
 at the time the run starts, and select affected packages against that tip, so a
-PR is checked as it would land. A PR that conflicts with
+PR is checked as it would land. When `main` moves after a PR's check went green,
+the lander reruns that check, which then only re-runs the packages and suites
+`main`'s new commits reach. A PR that conflicts with
 `main` fails there; merge `main` into the branch. A newer commit on the PR
 cancels the older revision's runs; every push to `main` keeps its own.
 

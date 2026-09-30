@@ -103,18 +103,14 @@ jobs:
       # llvmpipe is always present here: a GPU test that cannot get an
       # adapter is a failure, not a skip.
       TILO_REQUIRE_GPU: "1"
-      # Keep this identical to the nextest gpu-golden override. These tests
-      # need an idle software Vulkan renderer, not merely serialization with
-      # one another; the isolated tail below retains full daily coverage.
-      GOLDEN_FILTER: >-
-        (package(tilo-ui) and test(typography_visual_regression::)) or
-        (package(ebook) and (test(serif_reader_matches_typography_baseline) or test(mathematical_reader_matches_shared_typesetting_baseline))) or
-        (package(shell) and (test(e2e_shell_flows::) or test(sidebar_wheel_disc_snapshot::)))
     steps:
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           token: ${{ secrets.REGISTRY_TOKEN }}
+
+      - name: Read the shared test filters
+        run: python3 tools/ci/nextest_filters.py >> "$GITHUB_ENV"
 
       - name: Prepare Rust build caches
         id: rust-build

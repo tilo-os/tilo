@@ -21,7 +21,7 @@ use std::{
 
 /// The public HTTPS origin browsers open, e.g. `https://c1.viewer.example`.
 pub const ORIGIN_ENV: &str = "TILO_RUNTIME_VIEWER_ORIGIN";
-/// The device host's ready file (`tilo-device-host run STATE READY`).
+/// The ready file the hosting process writes once it serves.
 pub const HOST_READY_ENV: &str = "TILO_RUNTIME_VIEWER_HOST_READY";
 
 const MIN_TTL_SECONDS: u64 = 60;

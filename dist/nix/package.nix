@@ -29,12 +29,8 @@
 }:
 
 let
-  # A fixed-output vendor path can remain cached after Cargo.lock changes.
-  # Keep this fingerprint coupled to cargoHash so evaluation catches drift.
-  expectedCargoLockSha256 = "aced18cc40b1b2bddbefb300d55a10a95e15103365a3c7f7e66ed8506df5980b";
+  repoRoot = toString ../..;
 in
-assert lib.assertMsg (builtins.hashFile "sha256" ../../Cargo.lock == expectedCargoLockSha256)
-  "Cargo.lock changed: refresh cargoHash and expectedCargoLockSha256 in dist/nix/package.nix";
 rustPlatform.buildRustPackage rec {
   pname = "tilo-session";
   version = lib.removeSuffix "\n" (builtins.readFile ../VERSION);
@@ -42,12 +38,24 @@ rustPlatform.buildRustPackage rec {
     src = ../..;
     filter = path: type:
       lib.cleanSourceFilter path type
-      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ]);
+      && !(type == "directory" && builtins.elem (baseNameOf path) [ "target" "result" ])
+      # Nix and CI metadata must not change the Rust source derivation.
+      && !(builtins.elem (toString path) [
+        "${repoRoot}/flake.nix"
+        "${repoRoot}/flake.lock"
+        "${repoRoot}/dist/nix"
+        "${repoRoot}/.forgejo"
+        "${repoRoot}/.codex"
+      ]);
   };
 
-  # One fixed-output vendor closure avoids scheduling and copying each of the
-  # 1600 Cargo.lock packages as a separate remote derivation.
-  cargoHash = "sha256-u/Gr21bGYubhW+FDG3w5i2o7uY6rS1iYIue59/AGlq8=";
+  # The lock file selects registry crates directly. The three pinned Git
+  # repositories can be fetched during evaluation without hand-maintained
+  # output hashes outside nixpkgs.
+  cargoLock = {
+    lockFile = ../../Cargo.lock;
+    allowBuiltinFetchGit = true;
+  };
   cargoBuildFlags = [
     "-p" "launcher"
     "-p" "tilo-unlock-helper"
@@ -142,6 +150,10 @@ rustPlatform.buildRustPackage rec {
     grep -F '${xdg-dbus-proxy}/bin' "$out/bin/tilo-launcher"
     grep -F '${lib.getLib pam}/lib/libpam.so.0' "$out/libexec/tilo-unlock-helper"
   '';
+
+  # NixOS display managers require this when the module registers the package
+  # in services.displayManager.sessionPackages.
+  passthru.providedSessions = [ "tilo" ];
 
   meta = {
     description = "Tilo collaborative compositor as a Wayland session";
