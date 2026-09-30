@@ -2752,6 +2752,16 @@ impl ShellNetwork {
         }
     }
 
+    fn room_for_topic(&self, topic: u64) -> Option<RoomId> {
+        let replica = self.replica.lock().ok()?;
+        replica
+            .tree
+            .read()
+            .rooms()
+            .into_iter()
+            .find(|room| room_topic_id(*room) == topic)
+    }
+
     fn shared_enrolled_room(&self) -> Result<RoomId, String> {
         let mut enrolled =
             personal_room_ids(&personal_device_peer_path().with_file_name("personal-rooms.json"));
@@ -2795,15 +2805,21 @@ impl ShellNetwork {
             return;
         };
         if frame.message.is_request() {
+            let mut caller = tilo_actions::remote::Caller::authenticated(
+                identity.user_pubkey,
+                identity.device_pubkey,
+            )
+            .from_foreign_device(identity.capabilities.foreign);
+            // Opening or closing an app is refused unless the transport
+            // confined the caller to the room the frame arrived on.
+            if let Some(room) = self.room_for_topic(workspace_topic) {
+                caller = caller.in_room(room.to_string());
+            }
             if let Ok(mut inbound) = self.inbound_remote_actions.lock() {
                 inbound.push(crate::shell::remote_action_link::InboundRemoteAction {
                     workspace_topic,
                     from: peer,
-                    caller: tilo_actions::remote::Caller::authenticated(
-                        identity.user_pubkey,
-                        identity.device_pubkey,
-                    )
-                    .from_foreign_device(identity.capabilities.foreign),
+                    caller,
                     message: frame.message,
                 });
             }
@@ -7396,6 +7412,59 @@ mod tests {
     }
 
     #[test]
+    fn remote_action_from_an_authenticated_peer_is_confined_to_its_room() {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[0xA1; 32]);
+        let device = iroh::SecretKey::from_bytes(&[0xA2; 32]);
+        let person = crate::shell::collab_broker_capnp::principal_id_for_root(
+            root.verifying_key().to_bytes(),
+        );
+        let (workspace, room) = remote_action_room(&person, &person);
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace);
+        let (mut net, _commands) = shell_network_for_test(tree.shared(), 1);
+        net.require_peer_identity = true;
+        let topic = room_topic_id(room);
+        authenticated_personal_peer_on_topic(
+            &net,
+            &root,
+            &device,
+            crate::network::actor::MembershipEpoch::for_test(1),
+            topic,
+        );
+        let frame = tilo_actions::remote::RemoteActionFrame::new(
+            tilo_actions::remote::RemoteActionMessage::Invoke(
+                tilo_actions::remote::InvokeRequest {
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: tilo_actions::remote::RemoteActionTarget {
+                        provider: format!("workspace:{room}"),
+                        address: tilo_actions::ActionAddress::new("app.so.tilo.files", "open"),
+                    },
+                    argument: tilo_actions::remote::InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                },
+            ),
+        )
+        .encode()
+        .expect("frame");
+        net.dispatch_neighbour_msg(
+            topic,
+            device.public(),
+            Some(crate::network::actor::MembershipEpoch::for_test(1)),
+            false,
+            NeighbourMsg::RemoteAction { frame },
+        );
+        let inbound = net
+            .inbound_remote_actions_handle()
+            .lock()
+            .expect("inbound")
+            .clone();
+        assert_eq!(inbound.len(), 1);
+        assert_eq!(inbound[0].caller.room(), Some(room.to_string().as_str()));
+    }
+
+    #[test]
     #[allow(
         clippy::too_many_lines,
         reason = "one scenario test keeps each merged phase and its fresh fixture visible"
@@ -7494,8 +7563,9 @@ mod tests {
                     tilo_actions::remote::Caller::authenticated(
                         root_a.verifying_key().to_bytes(),
                         *device_a.public().as_bytes(),
-                    ),
-                    "the caller is the device the transport authenticated"
+                    )
+                    .in_room(room.to_string()),
+                    "the caller is the authenticated device, confined to the room topic"
                 );
                 crate::shell::collab_broker::answer_remote_actions(&net_b, Some(&host_b), inbound);
                 deliver_remote_action(&device_b, &mut commands_b, &net_a, &device_a);
