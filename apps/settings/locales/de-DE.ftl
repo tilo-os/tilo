@@ -33,7 +33,8 @@ display-vrr-unsupported = Von diesem Bildschirm nicht unterstützt
 display-vrr-driver-unsupported = Der Grafiktreiber bietet sie für diesen Bildschirm nicht an
 display-vrr-driver-rejected = Der Grafiktreiber hat das Einschalten abgelehnt
 
-# Mouse & Keyboard pane: touchpad
+
+# Displays pane: night light, rotation, built-in name
 display-builtin = Integrierter Bildschirm
 display-brightness = Helligkeit
 display-auto-brightness = Automatische Helligkeit
@@ -52,6 +53,7 @@ display-rotation-portrait-right = Hochformat rechts
 display-rotation-upside-down = Auf dem Kopf
 display-rotation-portrait-left = Hochformat links
 
+# Mouse & Keyboard pane: touchpad
 display-card-title = Bildschirme
 display-none = Keine Bildschirme an diesem Gerät erkannt.
 display-caption-switch = Super+P wechselt jederzeit zwischen Erweitern, Spiegeln und nur einem Bildschirm.
@@ -474,7 +476,7 @@ settings-category-updates-subtitle = Betriebssystem- und Firmware-Updates
 settings-category-about = Info
 settings-category-about-subtitle = Geräteidentität und Übertragung
 
-# About pane
+# Users pane
 settings-users-error-title = Diese Änderung konnte nicht übernommen werden
 settings-users-add = Benutzer hinzufügen
 settings-users-empty-accounts = Auf diesem Gerät wurden keine normalen Anmeldekonten gefunden.
@@ -519,7 +521,7 @@ settings-users-stale-command = Einen veralteten Benutzerverwaltungsbefehl ignori
 settings-users-account-gone = Das Benutzerkonto ist nicht mehr vorhanden.
 settings-users-identity-store-unavailable = Der Identitätsspeicher ist nicht verfügbar.
 
-# Notifications chrome. Focus clock times stay 24h identifiers.
+# Accounts
 notif-delivery = Zustellung
 notif-dnd-title = Nicht stören
 notif-dnd = Nicht stören
@@ -840,3 +842,72 @@ settings-about-uptime = Laufzeit
 settings-about-hardware-card = Hardware
 settings-about-processor = Prozessor
 settings-about-memory = Speicher
+accounts-intro = Verbinden Sie E-Mail, Kalender und Dateien einmal und nutzen Sie sie in passenden Apps. Kontodaten und Anmeldedaten bleiben auf diesem Gerät; sie werden nie mit einem Arbeitsbereich oder Mitarbeitenden geteilt.
+accounts-vault-local = Der Secret Service des Desktops ist nicht verfügbar, daher nutzt diese Sitzung einen nur für Sie geltenden lokalen Tresorschlüssel. Installieren oder entsperren Sie einen Secret Service für eine stärkere Schlüsselverwahrung.
+accounts-empty-sample = Sie haben noch keine Konten. Die Einträge unten sind Beispiele — mit „Hinzufügen“ legen Sie ein echtes an.
+accounts-empty = Sie haben noch keine Konten. Mit „Hinzufügen“ verbinden Sie das erste.
+accounts-remove-title = Konto entfernen?
+accounts-remove-body = { $name } wird von diesem Gerät entfernt. Lokal zwischengespeicherte Kopien können seine Apps entfernen; Daten beim Anbieter bleiben. Die verschlüsselten Anmeldedaten und der lokale Sync-Status werden gelöscht.
+accounts-remove-confirm = Von diesem Gerät entfernen
+accounts-cancel = Abbrechen
+accounts-add = Konto hinzufügen
+accounts-kind-empty = Noch keine { $kind }-Konten.
+accounts-best-effort-icloud = Mit Vorbehalt: iCloud Drive hat keine öffentliche API, daher nutzt Tilo die Web-API von iCloud.com. Das kann aufhören zu funktionieren, bis Tilo aktualisiert wird.
+accounts-status-example = Beispiel
+accounts-status-disabled = Deaktiviert
+accounts-status-syncing = Synchronisiert
+accounts-status-healthy = Aktuell
+accounts-status-offline = Offline
+accounts-status-reauth = Erneut anmelden
+accounts-status-error = Aufmerksamkeit nötig
+accounts-status-never = Noch nicht geprüft
+accounts-best-effort = Mit Vorbehalt
+accounts-sync-none = Keine Anwendung hat für dieses Konto eine Synchronisation gemeldet.
+accounts-sync-never = nie abgeschlossen
+accounts-sync-when = Letzte erfolgreiche Synchronisation: { $when }
+accounts-sync-when-msg = Letzte erfolgreiche Synchronisation: { $when } · { $message }
+accounts-reauth = Erneut anmelden
+accounts-reauth-icloud = Erneut authentifizieren
+accounts-edit = Bearbeiten
+accounts-check-server = Server prüfen
+accounts-verify = Anmeldung prüfen
+accounts-remove = Entfernen
+accounts-display-name = Anzeigename
+accounts-email = E-Mail-Adresse
+accounts-username = Benutzername
+accounts-username-or-email = Benutzername oder E-Mail
+accounts-login-name = Anmeldename
+accounts-login-placeholder = Benutzername (Standard: Ihre Adresse)
+accounts-password = Passwort oder App-Passwort
+accounts-password-short = Passwort
+accounts-server = Server
+accounts-server-url = Server-URL
+accounts-server-mail = Wird aus Ihrer E-Mail-Adresse erkannt
+accounts-save = Konto speichern
+accounts-form-add = { $kind }-Konto hinzufügen
+accounts-form-edit = { $kind }-Konto bearbeiten
+accounts-save-error = Speichern fehlgeschlagen: { $error }
+accounts-form-caption = Pflichtfelder, der sichere Endpunkt und die Anmeldedaten werden mit einer begrenzten Protokollanmeldung geprüft, bevor etwas gespeichert wird. Anmeldedaten und Entwürfe bleiben auf dem Gerät; sie gelangen nie in den Zusammenarbeitsstand oder die Kontometadaten.
+accounts-reauth-password = Neues Passwort oder App-Passwort
+accounts-reauth-account = Konto
+accounts-reauth-credential = Anmeldedaten
+accounts-reauth-caption = Das ersetzt ein vorhandenes Passwort oder App-Passwort im Konto-Tresor des Betriebssystems. Konten, die sich im Browser oder mit einer Apple-ID anmelden, bieten stattdessen eine neue Anmeldung.
+accounts-reauth-error = Anmeldedaten konnten nicht aktualisiert werden: { $error }
+accounts-reauth-save = Anmeldedaten aktualisieren
+accounts-reauth-title = Gespeichertes Passwort ersetzen
+accounts-checking = Konto wird vor dem Speichern geprüft…
+accounts-checking-reauth = Ersatz-Anmeldedaten werden geprüft…
+accounts-gone = Konto existiert nicht mehr
+accounts-timeout = Verbindungsprüfung abgelaufen
+accounts-just-now = gerade eben
+accounts-min-ago = vor { $count } Min.
+accounts-h-ago = vor { $count } Std.
+accounts-d-ago = vor { $count } T.
+accounts-kind-mail = E-Mail
+accounts-kind-caldav = Kalender (CalDAV)
+accounts-kind-webdav = Dateien (WebDAV)
+accounts-kind-nextcloud = Nextcloud
+accounts-kind-google = Google Drive
+accounts-kind-onedrive = OneDrive
+accounts-kind-dropbox = Dropbox
+accounts-kind-icloud = iCloud Drive

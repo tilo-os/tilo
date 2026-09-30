@@ -33,7 +33,8 @@ display-vrr-unsupported = Not supported by this display
 display-vrr-driver-unsupported = The graphics driver does not offer it for this display
 display-vrr-driver-rejected = The graphics driver refused to turn it on
 
-# Mouse & Keyboard pane: touchpad
+
+# Displays pane: night light, rotation, built-in name
 display-builtin = Built-in display
 display-brightness = Brightness
 display-auto-brightness = Automatic brightness
@@ -52,6 +53,7 @@ display-rotation-portrait-right = Portrait right
 display-rotation-upside-down = Upside down
 display-rotation-portrait-left = Portrait left
 
+# Mouse & Keyboard pane: touchpad
 display-card-title = Displays
 display-none = No displays detected on this device.
 display-caption-switch = Super+P switches between extend, mirror and single-screen at any time.
@@ -474,7 +476,7 @@ settings-category-updates-subtitle = Operating-system and firmware updates
 settings-category-about = About
 settings-category-about-subtitle = Device identity and transfer
 
-# About pane
+# Users pane
 settings-users-error-title = Could not apply that change
 settings-users-add = Add user
 settings-users-empty-accounts = No regular login accounts found on this device.
@@ -519,7 +521,7 @@ settings-users-stale-command = Ignored a stale user-management command.
 settings-users-account-gone = User account is no longer available.
 settings-users-identity-store-unavailable = Identity store is unavailable.
 
-# Notifications chrome. Focus clock times stay 24h identifiers.
+# Accounts
 notif-delivery = Delivery
 notif-dnd-title = Do Not Disturb
 notif-dnd = Do Not Disturb
@@ -840,3 +842,72 @@ settings-about-uptime = Uptime
 settings-about-hardware-card = Hardware
 settings-about-processor = Processor
 settings-about-memory = Memory
+accounts-intro = Connect email, calendars and files once, then use them in compatible apps. Account details and credentials stay on this device; they are never shared with a workspace or collaborators.
+accounts-vault-local = The desktop Secret Service is unavailable, so this session uses an owner-only local vault key. Install or unlock a Secret Service for stronger key custody.
+accounts-empty-sample = You have no accounts yet. The entries below are examples of what you can add — use “Add” to create a real one.
+accounts-empty = You have no accounts yet. Use “Add” to connect your first account.
+accounts-remove-title = Remove account?
+accounts-remove-body = { $name } will be removed from this device. Locally cached copies may be removed by its apps; data on the provider is not deleted. The encrypted credential and local sync-health record are removed.
+accounts-remove-confirm = Remove from this device
+accounts-cancel = Cancel
+accounts-add = Add account
+accounts-kind-empty = No { $kind } accounts yet.
+accounts-best-effort-icloud = Best effort: iCloud Drive has no public API, so Tilo uses the web API iCloud.com uses. It may stop working until Tilo is updated.
+accounts-status-example = Example
+accounts-status-disabled = Disabled
+accounts-status-syncing = Syncing
+accounts-status-healthy = Up to date
+accounts-status-offline = Offline
+accounts-status-reauth = Sign in again
+accounts-status-error = Needs attention
+accounts-status-never = Not checked yet
+accounts-best-effort = Best effort
+accounts-sync-none = No application has reported a sync for this account.
+accounts-sync-never = never completed
+accounts-sync-when = Last successful sync: { $when }
+accounts-sync-when-msg = Last successful sync: { $when } · { $message }
+accounts-reauth = Sign in again
+accounts-reauth-icloud = Re-authenticate
+accounts-edit = Edit
+accounts-check-server = Check server
+accounts-verify = Verify sign-in
+accounts-remove = Remove
+accounts-display-name = Display name
+accounts-email = Email address
+accounts-username = Username
+accounts-username-or-email = Username or email
+accounts-login-name = Login name
+accounts-login-placeholder = Username (defaults to your address)
+accounts-password = Password or app password
+accounts-password-short = Password
+accounts-server = Server
+accounts-server-url = Server URL
+accounts-server-mail = Detected from your email address
+accounts-save = Save account
+accounts-form-add = Add { $kind } account
+accounts-form-edit = Edit { $kind } account
+accounts-save-error = Could not save: { $error }
+accounts-form-caption = Required fields, the secure endpoint, and the credential are checked with a bounded protocol sign-in before anything is saved. Credentials and drafts stay device-local; they never enter collaboration state or account metadata.
+accounts-reauth-password = New password or app password
+accounts-reauth-account = Account
+accounts-reauth-credential = Credential
+accounts-reauth-caption = This replaces an existing password or app password in the OS account vault. Accounts that sign in through the browser or an Apple ID offer a new sign-in instead.
+accounts-reauth-error = Could not update credential: { $error }
+accounts-reauth-save = Update credential
+accounts-reauth-title = Replace saved password
+accounts-checking = Checking the account before saving…
+accounts-checking-reauth = Checking the replacement credential…
+accounts-gone = account no longer exists
+accounts-timeout = connection check timed out
+accounts-just-now = just now
+accounts-min-ago = { $count } min ago
+accounts-h-ago = { $count } h ago
+accounts-d-ago = { $count } d ago
+accounts-kind-mail = Email
+accounts-kind-caldav = Calendar (CalDAV)
+accounts-kind-webdav = Files (WebDAV)
+accounts-kind-nextcloud = Nextcloud
+accounts-kind-google = Google Drive
+accounts-kind-onedrive = OneDrive
+accounts-kind-dropbox = Dropbox
+accounts-kind-icloud = iCloud Drive
