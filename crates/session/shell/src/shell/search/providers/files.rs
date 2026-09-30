@@ -158,7 +158,7 @@ pub struct FilesProvider {
     /// Test helpers that inject an index pre-set this so a walk never runs.
     ready: OnceLock<()>,
     /// Lives as long as the provider so dropping it closes the watch.
-    _watch: OnceLock<RecommendedWatcher>,
+    watch: OnceLock<RecommendedWatcher>,
 }
 
 impl FilesProvider {
@@ -172,7 +172,7 @@ impl FilesProvider {
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::default()))),
             tantivy: OnceLock::new(),
             ready: OnceLock::new(),
-            _watch: OnceLock::new(),
+            watch: OnceLock::new(),
         }
     }
 
@@ -198,7 +198,7 @@ impl FilesProvider {
             .name("tilo-search-files-walk".into())
             .spawn(move || walk_home(&home, &name_index))
             .ok();
-        start_name_watch(&self.home, &self.name_index, &self._watch);
+        start_name_watch(&self.home, &self.name_index, &self.watch);
     }
 
     /// Force a re-walk of the home directory. Idempotent; safe to call from any thread.
@@ -798,7 +798,7 @@ fn start_name_watch(
     let index = Arc::clone(index);
     thread::Builder::new()
         .name("tilo-search-files-watch".into())
-        .spawn(move || watch_name_index(&home, &index, rx))
+        .spawn(move || watch_name_index(&home, &index, &rx))
         .ok();
 }
 
@@ -815,7 +815,7 @@ fn arm_name_watches(watcher: &mut RecommendedWatcher, home: &Path) {
 fn watch_name_index(
     home: &Path,
     index: &Arc<Mutex<Arc<NameIndex>>>,
-    rx: mpsc::Receiver<notify::Result<notify::Event>>,
+    rx: &mpsc::Receiver<notify::Result<notify::Event>>,
 ) {
     let mut pending = Vec::new();
     let mut walked = false;
@@ -855,7 +855,7 @@ fn watch_name_index(
 }
 
 fn published_generation(index: &Arc<Mutex<Arc<NameIndex>>>) -> u64 {
-    index.lock().ok().map(|guard| guard.generation).unwrap_or(0)
+    index.lock().ok().map_or(0, |guard| guard.generation)
 }
 
 fn event_paths(event: &notify::Result<notify::Event>) -> Vec<PathBuf> {
@@ -885,31 +885,28 @@ fn apply_watched_paths(home: &Path, index: &Arc<Mutex<Arc<NameIndex>>>, paths: &
         if rel.as_os_str().is_empty() {
             continue;
         }
-        match path.symlink_metadata() {
-            Ok(meta) => {
-                let is_dir = meta.file_type().is_dir();
-                let modified = meta.modified().ok();
-                let display = display_path(home, path);
-                let facts = NameFacts::new(&display, modified);
-                if let Some(existing) = entries.iter_mut().find(|entry| entry.path == *path) {
-                    existing.display = display;
-                    existing.facts = facts;
-                    existing.is_dir = is_dir;
-                } else {
-                    entries.push(NameEntry {
-                        path: path.clone(),
-                        display,
-                        facts,
-                        is_dir,
-                    });
-                }
-                changed = true;
+        if let Ok(meta) = path.symlink_metadata() {
+            let is_dir = meta.file_type().is_dir();
+            let modified = meta.modified().ok();
+            let display = display_path(home, path);
+            let facts = NameFacts::new(&display, modified);
+            if let Some(existing) = entries.iter_mut().find(|entry| entry.path == *path) {
+                existing.display = display;
+                existing.facts = facts;
+                existing.is_dir = is_dir;
+            } else {
+                entries.push(NameEntry {
+                    path: path.clone(),
+                    display,
+                    facts,
+                    is_dir,
+                });
             }
-            Err(_) => {
-                let before = entries.len();
-                entries.retain(|entry| entry.path != *path && !entry.path.starts_with(path));
-                changed |= entries.len() != before;
-            }
+            changed = true;
+        } else {
+            let before = entries.len();
+            entries.retain(|entry| entry.path != *path && !entry.path.starts_with(path));
+            changed |= entries.len() != before;
         }
     }
     if !changed {
@@ -1501,7 +1498,7 @@ mod tests {
             name_index: Arc::new(Mutex::new(Arc::new(NameIndex::from_entries(entries, 1)))),
             tantivy,
             ready,
-            _watch: OnceLock::new(),
+            watch: OnceLock::new(),
         }
     }
 
